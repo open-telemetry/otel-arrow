@@ -25,6 +25,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::node::NodeId;
@@ -63,9 +64,12 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
-            OTLPReceiver::from_config(&node_config.config)?,
+            OTLPReceiver::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -84,7 +88,10 @@ impl OTLPReceiver {
     }
 
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -104,9 +111,9 @@ impl OTLPReceiver {
 impl shared::Receiver<OTLPData> for OTLPReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
+        mut ctrl_msg_recv: shared::ControlChannel<OTLPData>,
         effect_handler: shared::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
@@ -212,7 +219,7 @@ mod tests {
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
         grpc_endpoint: String,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // send data to the receiver

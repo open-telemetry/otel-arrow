@@ -19,8 +19,6 @@ nodes:
         trace_weight: 0
         log_weight: 30
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-
-
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otlp:exporter"

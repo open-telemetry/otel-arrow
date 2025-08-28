@@ -4,12 +4,13 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
@@ -80,7 +81,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self) -> Result<(), Error<PData>> {
+    pub fn run_forever(self, metrics_reporter: MetricsReporter) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -124,18 +125,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
+            let manager = PipelineCtrlMsgManager::new(
+                pipeline_ctrl_msg_rx,
+                control_senders,
+                metrics_reporter,
+            );
             manager.run().await
         }));
 
         rt.block_on(async {
             local_tasks
                 .run_until(async {
+                    let mut task_results = Vec::new();
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
-                            Ok(Ok(())) => {
-                                // Task completed successfully, continue
+                            Ok(Ok(res)) => {
+                                // Task completed successfully, collect its result
+                                task_results.push(res);
                             }
                             Ok(Err(e)) => {
                                 // A task returned an error
@@ -151,7 +158,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                             }
                         }
                     }
-                    Ok(())
+                    Ok(task_results)
                 })
                 .await
         })
@@ -159,16 +166,22 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
-    pub fn get_node(&self, node_id: usize) -> Option<&dyn Node> {
+    pub fn get_node(&self, node_id: usize) -> Option<&dyn Node<PData>> {
         let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
-            NodeType::Receiver => self.receivers.get(ndef.inner.index).map(|r| r as &dyn Node),
+            NodeType::Receiver => self
+                .receivers
+                .get(ndef.inner.index)
+                .map(|r| r as &dyn Node<PData>),
             NodeType::Processor => self
                 .processors
                 .get(ndef.inner.index)
-                .map(|p| p as &dyn Node),
-            NodeType::Exporter => self.exporters.get(ndef.inner.index).map(|e| e as &dyn Node),
+                .map(|p| p as &dyn Node<PData>),
+            NodeType::Exporter => self
+                .exporters
+                .get(ndef.inner.index)
+                .map(|e| e as &dyn Node<PData>),
         }
     }
 
@@ -218,8 +231,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub async fn send_node_control_message(
         &self,
         node_id: &NodeId,
-        ctrl_msg: NodeControlMsg,
-    ) -> Result<(), Error<PData>> {
+        ctrl_msg: NodeControlMsg<PData>,
+    ) -> Result<(), TypedError<NodeControlMsg<PData>>> {
         match self.nodes.get(node_id.index) {
             Some(ndef) => match ndef.ntype {
                 NodeType::Receiver => {
@@ -244,13 +257,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         .await
                 }
             }
-            .map_err(|e| Error::NodeControlMsgSendError {
+            .map_err(|e| TypedError::NodeControlMsgSendError {
                 node: node_id.clone(),
                 error: e,
             }),
-            None => Err(Error::InternalError {
+            None => Err(TypedError::Error(Error::InternalError {
                 message: format!("node {node_id:?}"),
-            }),
+            })),
         }
     }
 }

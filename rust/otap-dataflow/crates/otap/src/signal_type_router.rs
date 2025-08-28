@@ -15,6 +15,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -60,7 +61,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_ctrl) => {
                 // No specific control handling required currently.
@@ -79,10 +80,17 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
                 // ToDo [LQ] send_message_to should returns a dedicated error when the port is not found so we can avoid to call the `connected.iter().any(...)`.
                 if has_port {
-                    effect_handler.send_message_to(desired_port, data).await
+                    effect_handler
+                        .send_message_to(desired_port, data)
+                        .await
+                        // Note: is there a nicer way to write the following?
+                        .map_err(|e| e.into())
                 } else {
                     // No matching named port: fall back to engine default behavior
-                    effect_handler.send_message(data).await
+                    effect_handler
+                        .send_message(data)
+                        .await
+                        .map_err(|e| e.into())
                 }
             }
         }
@@ -120,7 +128,10 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             config: &Value,
+             proc_cfg: &ProcessorConfig| {
         create_signal_type_router(node, config, proc_cfg)
     },
 };

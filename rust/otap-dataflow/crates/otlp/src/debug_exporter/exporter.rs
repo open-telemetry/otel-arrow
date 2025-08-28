@@ -30,6 +30,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -55,7 +56,7 @@ impl OutputWriter {
         }
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error<OTLPData>> {
+    async fn write(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -83,11 +84,12 @@ pub struct DebugExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: DEBUG_EXPORTER_URN,
-    create: |exporter_id: NodeId,
+    create: |pipeline: PipelineContext,
+             exporter_id: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            DebugExporter::from_config(&node_config.config)?,
+            DebugExporter::from_config(pipeline, &node_config.config)?,
             exporter_id,
             node_config,
             exporter_config,
@@ -104,7 +106,10 @@ impl DebugExporter {
     }
 
     /// Creates a new DebugExporter from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -124,7 +129,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // counter to count number of objects received between timerticks
         let mut counter = DebugCounter::default();
 
@@ -256,7 +261,7 @@ async fn push_metric(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
@@ -316,7 +321,7 @@ async fn push_trace(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource spans
     // collect number of spans
     let resource_spans = trace_request.resource_spans.len();
@@ -361,7 +366,7 @@ async fn push_log(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
@@ -398,7 +403,7 @@ async fn push_profile(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource profiles
     // collect number of sample records
     let resource_profiles = profile_request.resource_profiles.len();
@@ -493,7 +498,7 @@ mod tests {
         output_file: String,
     ) -> impl FnOnce(
         TestContext<OTLPData>,
-        Result<(), Error<OTLPData>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

@@ -249,7 +249,7 @@ pub(crate) fn parse_real_expression(
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
     allow_root_scalar: bool,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&accessor_expression_rule);
@@ -337,14 +337,9 @@ pub(crate) fn parse_accessor_expression(
                 true
             }
             Rule::scalar_expression => {
-                let scalar = parse_scalar_expression(pair, state)?;
+                let mut scalar = parse_scalar_expression(pair, scope)?;
 
-                let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
-                if let Err(e) = value_type_result {
-                    return Err(ParserError::from(&e));
-                }
-
-                let value_type = value_type_result.unwrap();
+                let value_type = scope.try_resolve_value_type(&mut scalar)?;
 
                 if negate_location.is_some() {
                     if let Some(t) = value_type
@@ -399,18 +394,20 @@ pub(crate) fn parse_accessor_expression(
     }
 
     if root_accessor_identity.get_value() == "source" {
-        let value_type = get_value_type(state, &value_accessor);
+        let value_type = get_value_type(scope, &value_accessor);
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
         ))
-    } else if state.is_attached_data_defined(root_accessor_identity.get_value()) {
+    } else if allow_root_scalar
+        && scope.is_attached_data_defined(root_accessor_identity.get_value())
+    {
         Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
             root_accessor_identity,
             value_accessor,
         )))
-    } else if state.is_variable_defined(root_accessor_identity.get_value()) {
+    } else if allow_root_scalar && scope.is_variable_defined(root_accessor_identity.get_value()) {
         Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
             root_accessor_identity,
@@ -428,7 +425,7 @@ pub(crate) fn parse_accessor_expression(
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
             if let Some((constant_id, value_type)) =
-                state.get_constant(root_accessor_identity.get_value())
+                scope.get_constant(root_accessor_identity.get_value())
             {
                 if value_accessor.has_selectors() {
                     // Note: It is not currently supported to access into a constant.
@@ -448,7 +445,7 @@ pub(crate) fn parse_accessor_expression(
             }
         }
 
-        if let Some(schema) = state.get_source_schema() {
+        if let Some(schema) = scope.get_source_schema() {
             match schema.get_schema_for_key(root_accessor_identity.get_value()) {
                 Some(key) => {
                     if value_accessor.has_selectors() {
@@ -549,7 +546,7 @@ pub(crate) fn parse_accessor_expression(
             );
         }
 
-        let value_type = get_value_type(state, &value_accessor);
+        let value_type = get_value_type(scope, &value_accessor);
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
@@ -557,13 +554,13 @@ pub(crate) fn parse_accessor_expression(
     }
 }
 
-fn get_value_type(state: &ParserState, value_accessor: &ValueAccessor) -> Option<ValueType> {
+fn get_value_type(scope: &dyn ParserScope, value_accessor: &ValueAccessor) -> Option<ValueType> {
     let selectors = value_accessor.get_selectors();
     let mut value_type = None;
     if selectors.is_empty() {
         value_type = Some(ValueType::Map);
     } else if selectors.len() == 1
-        && let Some(schema) = state.get_source_schema()
+        && let Some(schema) = scope.get_source_schema()
         && let ScalarExpression::Static(StaticScalarExpression::String(key)) =
             selectors.first().unwrap()
         && let Some(key_schema) = schema.get_schema_for_key(key.get_value())
@@ -1307,7 +1304,7 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source_and_default_map() {
-        let run_test = |query: &str, expected: &Vec<ScalarExpression>| {
+        let run_test = |query: &str, expected: &[ScalarExpression]| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
 
             let expression = parse_accessor_expression(
@@ -1661,22 +1658,26 @@ mod tests {
                     ConditionalScalarExpression::new(
                         QueryLocation::new_fake(),
                         LogicalExpression::Scalar(ScalarExpression::Constant(
-                            ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
+                            ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                2,
+                                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    ValueType::Boolean,
-                                    2,
-                                ),
-                            ),
+                                    false,
+                                )),
+                            )),
                         )),
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                         )),
-                        ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                            ReferenceConstantScalarExpression::new(
+                        ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                            CopyConstantScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueType::String,
                                 3,
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "hello world",
+                                )),
                             ),
                         )),
                     ),

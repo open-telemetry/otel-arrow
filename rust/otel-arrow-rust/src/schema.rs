@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 
 use arrow::array::{LargeListArray, RecordBatch};
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
 pub mod consts;
@@ -165,6 +165,10 @@ pub trait FieldExt {
 
     /// Sets the encoding column metadata key to "plain".
     fn with_plain_encoding(self) -> Self;
+
+    /// tries to convert the `Field` into the inner fields. Returns `None` if the field's data_type
+    /// is not `Struct`
+    fn as_struct_fields(&self) -> Option<&Fields>;
 }
 
 impl FieldExt for Field {
@@ -177,5 +181,13 @@ impl FieldExt for Field {
 
     fn with_plain_encoding(self) -> Self {
         self.with_encoding(consts::metadata::encodings::PLAIN)
+    }
+
+    fn as_struct_fields(&self) -> Option<&Fields> {
+        if let DataType::Struct(fields) = self.data_type() {
+            Some(fields)
+        } else {
+            None
+        }
     }
 }

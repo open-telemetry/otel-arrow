@@ -7,12 +7,13 @@
 
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
 #[derive(Debug, Clone)]
-pub enum NodeControlMsg {
+pub enum NodeControlMsg<PData> {
     /// Acknowledges that a downstream component (internal or external) has reliably received
     /// and processed telemetry data for the specified message ID.
     ///
@@ -31,6 +32,10 @@ pub enum NodeControlMsg {
         id: u64,
         /// Human-readable reason for the NACK.
         reason: String,
+
+        /// Placeholder for optional return value, making it possible for the
+        /// retry sender to be stateless.
+        pdata: Option<Box<PData>>,
     },
 
     /// Notifies the node of a configuration change.
@@ -48,6 +53,15 @@ pub enum NodeControlMsg {
     /// This variant currently carries no additional data.
     TimerTick {
         // For future usage
+    },
+
+    /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
+    ///
+    /// This separates metrics collection from the generic TimerTick to allow
+    /// fine-grained scheduling of telemetry without conflating it with other periodic tasks.
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
     },
 
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
@@ -78,6 +92,20 @@ pub enum PipelineControlMsg {
         /// Identifier of the node for which the timer is being canceled.
         node_id: usize,
     },
+
+    /// Requests the pipeline engine to start a periodic telemetry collection timer
+    /// for the specified node.
+    StartTelemetryTimer {
+        /// Identifier of the node for which the timer is being started.
+        node_id: usize,
+        /// Duration of the telemetry timer interval.
+        duration: Duration,
+    },
+    /// Requests cancellation of the periodic telemetry collection timer for the specified node.
+    CancelTelemetryTimer {
+        /// Identifier of the node for which the telemetry timer is being canceled.
+        node_id: usize,
+    },
     /// Requests shutdown of the node request manager.
     Shutdown,
 }
@@ -87,14 +115,14 @@ pub enum PipelineControlMsg {
 /// Implement this trait for node types that need to handle control messages such as configuration
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
-pub trait Controllable {
+pub trait Controllable<PData> {
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.
-    fn control_sender(&self) -> Sender<NodeControlMsg>;
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>>;
 }
 
-impl NodeControlMsg {
+impl<PData> NodeControlMsg<PData> {
     /// Returns `true` if this control message is a shutdown request.
     #[must_use]
     pub const fn is_shutdown(&self) -> bool {

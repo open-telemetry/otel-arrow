@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_aggregate_assignment_expression(
     aggregate_assignment_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<(Box<str>, AggregationExpression), ParserError> {
     let mut aggregate_assignment_rules = aggregate_assignment_expression_rule.into_inner();
 
@@ -17,14 +17,14 @@ pub(crate) fn parse_aggregate_assignment_expression(
     let destination_rule_str = destination_rule.as_str();
 
     let aggregation_expression =
-        parse_aggregate_expression(aggregate_assignment_rules.next().unwrap(), state)?;
+        parse_aggregate_expression(aggregate_assignment_rules.next().unwrap(), scope)?;
 
     Ok((destination_rule_str.into(), aggregation_expression))
 }
 
 fn parse_aggregate_expression(
     aggregate_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<AggregationExpression, ParserError> {
     let query_location = to_query_location(&aggregate_expression_rule);
 
@@ -32,7 +32,7 @@ fn parse_aggregate_expression(
         Rule::average_aggregate_expression => AggregationExpression::new(
             query_location,
             AggregationFunction::Average,
-            Some(parse_scalar_expression(aggregate_expression_rule, state)?),
+            Some(parse_scalar_expression(aggregate_expression_rule, scope)?),
         ),
         Rule::count_aggregate_expression => {
             AggregationExpression::new(query_location, AggregationFunction::Count, None)
@@ -40,17 +40,17 @@ fn parse_aggregate_expression(
         Rule::maximum_aggregate_expression => AggregationExpression::new(
             query_location,
             AggregationFunction::Maximum,
-            Some(parse_scalar_expression(aggregate_expression_rule, state)?),
+            Some(parse_scalar_expression(aggregate_expression_rule, scope)?),
         ),
         Rule::minimum_aggregate_expression => AggregationExpression::new(
             query_location,
             AggregationFunction::Minimum,
-            Some(parse_scalar_expression(aggregate_expression_rule, state)?),
+            Some(parse_scalar_expression(aggregate_expression_rule, scope)?),
         ),
         Rule::sum_aggregate_expression => AggregationExpression::new(
             query_location,
             AggregationFunction::Sum,
-            Some(parse_scalar_expression(aggregate_expression_rule, state)?),
+            Some(parse_scalar_expression(aggregate_expression_rule, scope)?),
         ),
         _ => panic!("Unexpected rule in aggregate_expression: {aggregate_expression_rule}"),
     };

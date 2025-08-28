@@ -17,12 +17,21 @@
 //! - TODO: Monitoring
 //! - TODO: Support pipeline groups
 
-use otap_df_config::{pipeline::PipelineConfig, pipeline_group::Quota};
+use crate::thread_task::spawn_thread_local_task;
+use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::{
+    PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
+};
 use otap_df_engine::PipelineFactory;
+use otap_df_engine::context::{ControllerContext, PipelineContext};
+use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
+pub mod thread_task;
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -42,12 +51,36 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Starts the controller with the given pipeline configuration and quota.
-    pub fn run_forever(&self, pipeline: PipelineConfig, quota: Quota) -> Result<(), error::Error> {
+    pub fn run_forever(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        pipeline: PipelineConfig,
+        quota: Quota,
+        admin_settings: HttpAdminSettings,
+    ) -> Result<(), error::Error> {
+        // Initialize a global metrics system and reporter.
+        // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
+        let metrics_system = MetricsSystem::default();
+        let metrics_reporter = metrics_system.reporter();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+
+        // Start the admin HTTP server
+        let metrics_registry = metrics_system.registry();
+        let admin_server_handle =
+            spawn_thread_local_task("http-admin", move |cancellation_token| {
+                otap_df_admin::run(admin_settings, metrics_registry, cancellation_token)
+            })?;
+
+        // Start the metrics aggregation
+        let metrics_agg_handle =
+            spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
+                metrics_system.run(cancellation_token)
+            })?;
+
         // Get available CPU cores for pinning
         let all_core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| error::Error::InternalError {
-                message: "Failed to get available CPU cores".to_owned(),
-            })?;
+            core_affinity::get_core_ids().ok_or_else(|| error::Error::CoreDetectionUnavailable)?;
 
         // Determine the number of CPU cores available and requested
         // If quota.num_cores is 0, use all available cores
@@ -70,21 +103,40 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
             let pipeline_config = pipeline.clone();
             let pipeline_factory = self.pipeline_factory;
+            let pipeline_handle = controller_ctx.pipeline_context_with(
+                pipeline_group_id.clone(),
+                pipeline_id.clone(),
+                core_id.id,
+                thread_id,
+            );
+            let metrics_reporter = metrics_reporter.clone();
 
+            let thread_name = format!("pipeline-core-{}", core_id.id);
             let handle = thread::Builder::new()
-                .name(format!("pipeline-core-{}", core_id.id))
+                .name(thread_name.clone())
                 .spawn(move || {
-                    Self::run_pipeline_thread(core_id, pipeline_config, pipeline_factory)
+                    Self::run_pipeline_thread(
+                        core_id,
+                        pipeline_config,
+                        pipeline_factory,
+                        pipeline_handle,
+                        metrics_reporter,
+                    )
                 })
-                .map_err(|e| error::Error::InternalError {
-                    message: format!("Failed to spawn thread {thread_id}: {e}"),
+                .map_err(|e| error::Error::ThreadSpawnError {
+                    thread_name: thread_name.clone(),
+                    source: e,
                 })?;
 
-            threads.push((core_id.id, handle));
+            threads.push((thread_name, thread_id, core_id.id, handle));
         }
 
-        // Wait for all threads to finish
-        for (core_id, handle) in threads {
+        // Drop the original metrics sender so only pipeline threads hold references
+        drop(metrics_reporter);
+
+        // Wait for all pipeline threads to finish
+        // ToDo We should collect all the errors and wait for all threads to finish instead of bailing out on the first error.
+        for (thread_name, thread_id, core_id, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     // Thread completed successfully
@@ -94,15 +146,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
                 Err(e) => {
                     // Thread join failed, handle the error
-                    return Err(error::Error::InternalError {
-                        message: format!(
-                            "Failed to join thread pipeline-core-{}: {:?}",
-                            core_id, e
-                        ),
+                    return Err(error::Error::ThreadPanic {
+                        thread_name,
+                        thread_id,
+                        core_id,
+                        panic_message: format!("{e:?}"),
                     });
                 }
             }
         }
+
+        // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
+        admin_server_handle.shutdown_and_join()?;
+        metrics_agg_handle.shutdown_and_join()?;
 
         Ok(())
     }
@@ -112,7 +168,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: core_affinity::CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-    ) -> Result<(), error::Error> {
+        pipeline_handle: PipelineContext,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
@@ -122,16 +180,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
-            .build(pipeline_config.clone())
+            .build(pipeline_handle, pipeline_config.clone())
             .map_err(|e| error::Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline
-            .run_forever()
-            .map_err(|e| error::Error::PipelineRuntimeError {
+        runtime_pipeline.run_forever(metrics_reporter).map_err(|e| {
+            error::Error::PipelineRuntimeError {
                 source: Box::new(e),
-            })
+            }
+        })
     }
 }

@@ -33,7 +33,7 @@
 //! in parallel on different cores, each with its own exporter instance.
 
 use crate::control::NodeControlMsg;
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
 use crate::node::NodeId;
@@ -53,7 +53,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A channel for receiving control and pdata messages.
@@ -65,20 +65,20 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<SharedReceiver<NodeControlMsg>>,
+    control_rx: Option<SharedReceiver<NodeControlMsg<PData>>>,
     pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
-    pending_shutdown: Option<NodeControlMsg>,
+    pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(
-        control_rx: SharedReceiver<NodeControlMsg>,
+        control_rx: SharedReceiver<NodeControlMsg<PData>>,
         pdata_rx: SharedReceiver<PData>,
     ) -> Self {
         MessageChannel {
@@ -241,8 +241,16 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

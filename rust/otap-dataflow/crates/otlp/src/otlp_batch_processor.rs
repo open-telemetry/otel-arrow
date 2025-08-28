@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::OTLP_PROCESSOR_FACTORIES;
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -9,11 +10,22 @@ use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ProcessorFactory;
+use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::processor::ProcessorWrapper;
 use prost::Message as ProstMessage;
+use serde::Deserialize;
+use serde_json::Value;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
@@ -301,7 +313,8 @@ impl ExportTraceServiceRequest {
 }
 
 /// Defines the strategy for sizing batches in the batch processor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BatchSizer {
     /// Batch by the number of top-level requests (resource groups).
     Requests,
@@ -324,9 +337,9 @@ pub struct BatchConfig {
 impl Default for BatchConfig {
     fn default() -> Self {
         Self {
-            sizer: BatchSizer::Items,
-            send_batch_size: 512,
-            timeout: Duration::from_secs(5),
+            sizer: DEFAULT_BATCH_SIZER,
+            send_batch_size: DEFAULT_SEND_BATCH_SIZE,
+            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MILLIS),
         }
     }
 }
@@ -374,10 +387,6 @@ impl GenericBatcher {
     #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
-        // ToDo: Validate should check self.config.send_batch_size > 0
-        if config.send_batch_size == 0 {
-            panic!("max_batch_size must be greater than zero");
-        }
         Self {
             traces_pending: None,
             metrics_pending: None,
@@ -399,30 +408,21 @@ impl GenericBatcher {
         req.resource_logs.len()
     }
 
-    async fn flush_traces(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_traces(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.traces_pending.take() {
             handler.send_message(OTLPData::Traces(pending)).await?;
         }
         self.last_update_traces = Instant::now();
         Ok(())
     }
-    async fn flush_metrics(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_metrics(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.metrics_pending.take() {
             handler.send_message(OTLPData::Metrics(pending)).await?;
         }
         self.last_update_metrics = Instant::now();
         Ok(())
     }
-    async fn flush_logs(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_logs(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.logs_pending.take() {
             handler.send_message(OTLPData::Logs(pending)).await?;
         }
@@ -432,10 +432,10 @@ impl GenericBatcher {
     async fn flush_on_timeout(
         &mut self,
         handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         let now = Instant::now();
         let timeout = self.config.timeout;
-        if timeout != Duration::from_secs(0) {
+        if timeout != TIMEOUT_DISABLED {
             if self.traces_pending.is_some()
                 && now.duration_since(self.last_update_traces) >= timeout
             {
@@ -452,10 +452,7 @@ impl GenericBatcher {
         }
         Ok(())
     }
-    async fn flush_all(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_all(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         self.flush_traces(handler).await?;
         self.flush_metrics(handler).await?;
         self.flush_logs(handler).await?;
@@ -469,7 +466,7 @@ impl Processor<OTLPData> for GenericBatcher {
         &mut self,
         msg: Message<OTLPData>,
         effect_handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // Check if we need to flush on requests size
 
         // ToDo: Future optimization, we should avoid to traverse multiple times the same request to compute multiple counters. That could be done in one pass.
@@ -665,6 +662,104 @@ impl Processor<OTLPData> for GenericBatcher {
         }
     }
 }
+
+// ===== Processor factory and config validation =====
+
+// Default values and sentinel constants
+const DEFAULT_SEND_BATCH_SIZE: usize = 512;
+const DEFAULT_TIMEOUT_MILLIS: u64 = 5_000;
+const DEFAULT_BATCH_SIZER: BatchSizer = BatchSizer::Items;
+const TIMEOUT_DISABLED: Duration = Duration::from_secs(0);
+
+// Validation thresholds
+const MIN_SEND_BATCH_SIZE: usize = 1;
+const MIN_TIMEOUT_MILLIS: u64 = 1;
+
+fn default_timeout_millis() -> u64 {
+    DEFAULT_TIMEOUT_MILLIS
+}
+fn default_send_batch_size() -> usize {
+    DEFAULT_SEND_BATCH_SIZE
+}
+fn default_sizer() -> BatchSizer {
+    DEFAULT_BATCH_SIZER
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    #[serde(default = "default_sizer")]
+    pub sizer: BatchSizer,
+
+    #[serde(default = "default_send_batch_size")]
+    pub send_batch_size: usize,
+
+    /// Timeout for flushing partial batches, in milliseconds.
+    #[serde(default = "default_timeout_millis")]
+    pub timeout_millis: u64,
+}
+
+impl Config {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.send_batch_size < MIN_SEND_BATCH_SIZE {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "send_batch_size must be >= 1".to_string(),
+            });
+        }
+        if self.timeout_millis < MIN_TIMEOUT_MILLIS {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "timeout_millis must be >= 1".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl From<&Config> for BatchConfig {
+    fn from(cfg: &Config) -> Self {
+        BatchConfig {
+            sizer: cfg.sizer,
+            send_batch_size: cfg.send_batch_size,
+            timeout: Duration::from_millis(cfg.timeout_millis),
+        }
+    }
+}
+/// Factory function to create the OTLP batch processor from user config.
+pub fn create_otlp_batch_processor(
+    node: NodeId,
+    config: &Value,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OTLPData>, ConfigError> {
+    let cfg: Config =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+
+    cfg.validate()?;
+
+    let user_cfg = Arc::new(NodeUserConfig::new_processor_config(
+        _OTLP_BATCH_PROCESSOR_URN,
+    ));
+    Ok(ProcessorWrapper::local(
+        GenericBatcher::new(BatchConfig::from(&cfg)),
+        node,
+        user_cfg,
+        processor_config,
+    ))
+}
+
+/// Register the OTLP batch processor as an OTLP processor factory
+#[allow(unsafe_code)]
+#[distributed_slice(OTLP_PROCESSOR_FACTORIES)]
+pub static OTLP_BATCH_PROCESSOR: ProcessorFactory<OTLPData> = ProcessorFactory {
+    name: _OTLP_BATCH_PROCESSOR_URN,
+    create: |_pipeline_ctx: PipelineContext,
+             node: NodeId,
+             config: &Value,
+             proc_cfg: &ProcessorConfig| {
+        create_otlp_batch_processor(node, config, proc_cfg)
+    },
+};
 
 #[cfg(test)]
 mod tests {
@@ -1790,6 +1885,30 @@ mod tests {
                 assert_eq!(emitted.len(), 1, "Should emit 1 batch due to byte size");
             })
             .validate(|_ctx| async {});
+    }
+}
+
+#[cfg(test)]
+mod config_validation_tests {
+    use super::*;
+    use otap_df_engine::testing::test_node;
+
+    #[test]
+    fn invalid_send_batch_size_zero_is_rejected() {
+        let node = test_node("batch-config");
+        let proc_cfg = ProcessorConfig::new("batch_config_test");
+        let cfg = serde_json::json!({
+            "send_batch_size": 0,
+            "timeout_millis": 1000,
+            "sizer": "items"
+        });
+        let res = create_otlp_batch_processor(node, &cfg, &proc_cfg);
+        match res {
+            Err(ConfigError::InvalidUserConfig { error }) => {
+                assert!(error.contains("send_batch_size"), "error: {error}");
+            }
+            _other => panic!("expected InvalidUserConfig error, got unexpected result"),
+        }
     }
 }
 

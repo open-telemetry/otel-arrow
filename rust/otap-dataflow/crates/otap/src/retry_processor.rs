@@ -39,13 +39,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use otap_df_engine::retry_processor::{RetryProcessor, RetryConfig};
-//!
-//! #[derive(Clone)]
-//! struct MyData {
-//!     id: u64,
-//!     payload: String,
-//! }
+//! use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
 //!
 //! let config = RetryConfig {
 //!     max_retries: 3,
@@ -55,20 +49,36 @@
 //!     max_pending_messages: 10000,
 //!     cleanup_interval_secs: 60,
 //! };
-//! let processor = RetryProcessor::<MyData>::with_config(config);
+//! let processor = RetryProcessor::with_config(config);
 //! ```
 
-use crate::control::NodeControlMsg;
-use crate::error::Error;
-use crate::local::processor::{EffectHandler, Processor};
-use crate::message::Message;
+use crate::pdata::OtapPdata;
+
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
+use otap_df_engine::context::PipelineContext;
+use otap_df_engine::{
+    ProcessorFactory,
+    config::ProcessorConfig,
+    control::NodeControlMsg,
+    error::Error,
+    local::processor::{EffectHandler, Processor},
+    message::Message,
+    node::NodeId,
+    processor::ProcessorWrapper,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Maximum age for failed messages before cleanup (5 minutes)
 const MAX_FAILED_MESSAGE_AGE_SECS: u64 = 300;
+
+/// URN for the RetryProcessor processor
+pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
 
 /// Configuration for the retry processor
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,27 +110,62 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PendingMessage<PData> {
-    data: PData,
+struct PendingMessage {
+    data: OtapPdata,
     retry_count: usize,
     next_retry_time: Instant,
     last_error: String,
 }
+
+/// OTAP RetryProcessor
+#[allow(unsafe_code)]
+#[distributed_slice(crate::OTAP_PROCESSOR_FACTORIES)]
+pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    name: RETRY_PROCESSOR_URN,
+    create: create_retry_processor,
+};
 
 /// A processor that handles message retries with exponential backoff
 ///
 /// The RetryProcessor maintains a queue of messages that have failed processing
 /// and retries them according to the configured retry policy. It tracks each
 /// message with a unique ID and implements exponential backoff for retry delays.
-pub struct RetryProcessor<PData: Clone + Send + 'static> {
+/// Register SignalTypeRouter as an OTAP processor factory
+pub struct RetryProcessor {
     config: RetryConfig,
-    pending_messages: HashMap<u64, PendingMessage<PData>>,
+    pending_messages: HashMap<u64, PendingMessage>,
     next_message_id: u64,
     last_cleanup_time: Instant,
 }
 
-impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
+/// Factory function to create a SignalTypeRouter processor
+pub fn create_retry_processor(
+    _pipeline_ctx: PipelineContext,
+    node: NodeId,
+    config: &Value,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    // Deserialize the (currently empty) router configuration
+    let config: RetryConfig =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("Failed to parse retry configuration: {e}"),
+        })?;
+
+    // Create the router processor
+    let router = RetryProcessor::with_config(config);
+
+    // Create NodeUserConfig and wrap as local processor
+    let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
+
+    Ok(ProcessorWrapper::local(
+        router,
+        node,
+        user_config,
+        processor_config,
+    ))
+}
+
+impl RetryProcessor {
     /// Creates a new RetryProcessor with default configuration
     #[must_use]
     pub fn new() -> Self {
@@ -150,8 +195,9 @@ impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
         &mut self,
         id: u64,
         reason: String,
-        _effect_handler: &mut EffectHandler<PData>,
-    ) -> Result<(), Error<PData>> {
+        _pdata: Option<Box<OtapPdata>>,
+        _effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         if let Some(mut pending) = self.pending_messages.remove(&id) {
             pending.retry_count += 1;
             pending.last_error = reason;
@@ -184,8 +230,8 @@ impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
 
     async fn process_pending_retries(
         &mut self,
-        effect_handler: &mut EffectHandler<PData>,
-    ) -> Result<(), Error<PData>> {
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let now = Instant::now();
         let mut ready_messages = Vec::new();
 
@@ -237,12 +283,12 @@ impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
+impl Processor<OtapPdata> for RetryProcessor {
     async fn process(
         &mut self,
-        msg: Message<PData>,
-        effect_handler: &mut EffectHandler<PData>,
-    ) -> Result<(), Error<PData>> {
+        msg: Message<OtapPdata>,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         match msg {
             Message::PData(data) => {
                 // Clone only if we need to add to retry queue AND send downstream
@@ -284,12 +330,16 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
                     self.acknowledge(id);
                     Ok(())
                 }
-                NodeControlMsg::Nack { id, reason } => {
-                    self.handle_nack(id, reason, effect_handler).await
+                NodeControlMsg::Nack { id, reason, pdata } => {
+                    self.handle_nack(id, reason, pdata, effect_handler).await
                 }
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
                     self.cleanup_expired_messages();
+                    Ok(())
+                }
+                NodeControlMsg::CollectTelemetry { .. } => {
+                    // Retry processor has no telemetry collection to perform here.
                     Ok(())
                 }
                 NodeControlMsg::Config { config } => {
@@ -312,7 +362,7 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
     }
 }
 
-impl<PData: Clone + Send + 'static> Default for RetryProcessor<PData> {
+impl Default for RetryProcessor {
     fn default() -> Self {
         Self::new()
     }
@@ -321,22 +371,23 @@ impl<PData: Clone + Send + 'static> Default for RetryProcessor<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::message::LocalSender;
-    use crate::testing::test_node;
+    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
+    use crate::grpc::OtapArrowBytes;
     use otap_df_channel::mpsc;
+    use otap_df_config::experimental::SignalType;
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use serde_json::json;
     use tokio::time::{Duration, sleep};
-
-    #[derive(Debug, Clone, PartialEq)]
-    struct TestData {
-        id: u64,
-        payload: String,
-    }
 
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
     }
 
-    fn create_test_processor() -> RetryProcessor<TestData> {
+    fn create_test_processor() -> RetryProcessor {
         let config = RetryConfig {
             max_retries: 3,
             initial_retry_delay_ms: 100,
@@ -348,11 +399,72 @@ mod tests {
         RetryProcessor::with_config(config)
     }
 
-    fn create_test_data(id: u64) -> TestData {
-        TestData {
-            id,
-            payload: format!("test_payload_{id}"),
+    fn create_test_data(_id: u64) -> OtapPdata {
+        OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(
+            create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                num_rows: 1,
+                ..Default::default()
+            }),
+        ))
+    }
+
+    /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
+    fn num_rows(pdata: &OtapPdata) -> usize {
+        match pdata.signal_type() {
+            SignalType::Logs => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records
+                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
+                    .map_or(0, |batch| batch.num_rows())
+            }
+            SignalType::Traces => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records
+                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
+                    .map_or(0, |batch| batch.num_rows())
+            }
+            SignalType::Metrics => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
+                    .map_or(0, |batch| batch.num_rows())
+            }
         }
+    }
+
+    /// Test helper to compare two OtapPdata instances for equivalence.
+    fn requests_match(expected: &OtapPdata, actual: &OtapPdata) -> bool {
+        // ToDo: Implement full semantic equivalence checking similar to Go's assert.Equiv()
+        num_rows(expected) == num_rows(actual)
+    }
+
+    #[test]
+    fn test_factory_creation() {
+        let config = json!({
+            "max_retries": 5,
+            "initial_retry_delay_ms": 500,
+            "max_retry_delay_ms": 15000,
+            "backoff_multiplier": 1.5,
+            "max_pending_messages": 5000,
+            "cleanup_interval_secs": 30
+        });
+        let processor_config = ProcessorConfig::new("test_retry");
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let result = create_retry_processor(
+            pipeline_ctx,
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -376,11 +488,11 @@ mod tests {
 
         // Should have sent message downstream
         let received = receiver.recv().await.unwrap();
-        assert_eq!(received, test_data);
+        assert!(requests_match(&test_data, &received));
     }
 
     #[tokio::test]
-    async fn test_ack_removes_pending_message() {
+    async fn test_ack_removes_pending() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
@@ -433,6 +545,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -469,6 +582,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: format!("Test failure {i}"),
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )
@@ -501,6 +615,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -521,7 +636,7 @@ mod tests {
 
         // Should have sent retry message
         let retry_data = receiver.recv().await.unwrap();
-        assert_eq!(retry_data, test_data);
+        assert!(requests_match(&test_data, &retry_data));
     }
 
     #[tokio::test]
@@ -582,6 +697,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "First failure".to_string(),
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -597,6 +713,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Second failure".to_string(),
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -633,6 +750,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: i,
                         reason: "Test failure".to_string(),
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )

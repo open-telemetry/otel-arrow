@@ -40,9 +40,9 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg>,
+        control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: LocalReceiver<NodeControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
@@ -59,9 +59,9 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg>,
+        control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: SharedReceiver<NodeControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
@@ -150,7 +150,7 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Prepare the processor runtime components without starting the processing loop.
     /// This allows external control over the message processing loop.
-    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error<PData>> {
+    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -206,10 +206,7 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
         let runtime = self.prepare_runtime().await?;
 
         match runtime {
@@ -255,7 +252,7 @@ impl<PData> ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node for ProcessorWrapper<PData> {
+impl<PData> Node<PData> for ProcessorWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ProcessorWrapper::Local { .. } => false,
@@ -284,7 +281,10 @@ impl<PData> Node for ProcessorWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ProcessorWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -293,9 +293,9 @@ impl<PData> Node for ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable for ProcessorWrapper<PData> {
+impl<PData> Controllable<PData> for ProcessorWrapper<PData> {
     /// Returns the control message sender for the processor.
-    fn control_sender(&self) -> Sender<NodeControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ProcessorWrapper::Shared { control_sender, .. } => {
@@ -311,7 +311,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
         node_id: NodeId,
         port: PortName,
         sender: Sender<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, sender) {
             (ProcessorWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
                 let _ = pdata_senders.insert(port, sender);
@@ -338,7 +338,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
         &mut self,
         node_id: NodeId,
         receiver: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, receiver) {
             (ProcessorWrapper::Local { pdata_receiver, .. }, Receiver::Local(receiver)) => {
                 *pdata_receiver = Some(receiver);
@@ -397,7 +397,7 @@ mod tests {
             &mut self,
             msg: Message<TestMsg>,
             effect_handler: &mut local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
@@ -428,7 +428,7 @@ mod tests {
             &mut self,
             msg: Message<TestMsg>,
             effect_handler: &mut shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {

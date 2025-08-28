@@ -11,7 +11,7 @@ use crate::{
 
 pub(crate) fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&conditional_expression_rule);
 
@@ -26,16 +26,16 @@ pub(crate) fn parse_conditional_expression(
     Ok(ScalarExpression::Conditional(
         ConditionalScalarExpression::new(
             query_location,
-            parse_logical_expression(condition_logical, state)?,
-            parse_scalar_expression(true_scalar, state)?,
-            parse_scalar_expression(false_scalar, state)?,
+            parse_logical_expression(condition_logical, scope)?,
+            parse_scalar_expression(true_scalar, scope)?,
+            parse_scalar_expression(false_scalar, scope)?,
         ),
     ))
 }
 
 pub(crate) fn parse_case_expression(
     case_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&case_expression_rule);
 
@@ -60,13 +60,13 @@ pub(crate) fn parse_case_expression(
     let mut i = 0;
     while i < rules_vec.len() - 1 {
         // Parse condition
-        let condition = parse_logical_expression(rules_vec[i].clone(), state)?;
+        let condition = parse_logical_expression(rules_vec[i].clone(), scope)?;
         i += 1;
 
         // Parse corresponding expression
         if i < rules_vec.len() - 1 {
             // Not the last element (which is else)
-            let expression = parse_scalar_expression(rules_vec[i].clone(), state)?;
+            let expression = parse_scalar_expression(rules_vec[i].clone(), scope)?;
             expressions_with_conditions.push((condition, expression));
             i += 1;
         } else {
@@ -79,7 +79,7 @@ pub(crate) fn parse_case_expression(
     }
 
     // Parse the else expression (last element)
-    let else_expression = parse_scalar_expression(rules_vec[rules_vec.len() - 1].clone(), state)?;
+    let else_expression = parse_scalar_expression(rules_vec[rules_vec.len() - 1].clone(), scope)?;
 
     Ok(ScalarExpression::Case(CaseScalarExpression::new(
         query_location,
@@ -90,7 +90,7 @@ pub(crate) fn parse_case_expression(
 
 pub(crate) fn parse_coalesce_expression(
     coalesce_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&coalesce_expression_rule);
 
@@ -100,16 +100,16 @@ pub(crate) fn parse_coalesce_expression(
 
     expressions.push(parse_scalar_expression(
         coalesce_rules.next().unwrap(),
-        state,
+        scope,
     )?);
 
     expressions.push(parse_scalar_expression(
         coalesce_rules.next().unwrap(),
-        state,
+        scope,
     )?);
 
     for e in coalesce_rules {
-        expressions.push(parse_scalar_expression(e, state)?);
+        expressions.push(parse_scalar_expression(e, scope)?);
     }
 
     Ok(ScalarExpression::Coalesce(CoalesceScalarExpression::new(

@@ -14,9 +14,18 @@
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
+use std::time::Duration;
 use tokio::time::Instant;
+
+/// Timer state for a node.
+struct TimerState {
+    scheduled_time: Instant,
+    duration: Duration,
+    is_canceled: bool,
+}
 
 /// Manages pipeline control messages such as recurrent and cancelable timers.
 ///
@@ -26,50 +35,135 @@ use tokio::time::Instant;
 /// Design notes:
 /// - Only one timer per node is supported at a time.
 /// - All data structures are optimized for single-threaded async use.
+/// - The timer_states map consolidates all timer information for efficiency and correctness.
 /// - The combination of `timer_map` and `canceled` ensures correctness and avoids spurious timer
 ///   events.
-pub struct PipelineCtrlMsgManager {
+///
+/// A reusable per-node repeating timer set.
+///
+/// Manages scheduling, cancellation, and expiration for recurrent timers keyed by NodeId.
+/// Optimized for single-threaded async use.
+struct TimerSet {
+    timers: BinaryHeap<Reverse<(Instant, usize)>>,
+    /// Maps node ID to timer state (scheduled time, duration, and cancellation status).
+    timer_states: HashMap<usize, TimerState>,
+}
+
+impl TimerSet {
+    fn new() -> Self {
+        Self {
+            timers: BinaryHeap::new(),
+            timer_states: HashMap::new(),
+        }
+    }
+
+    /// Schedule or replace a repeating timer for node_id.
+    fn start(&mut self, node_id: usize, duration: Duration) {
+        let when = Instant::now() + duration;
+        self.timers.push(Reverse((when, node_id)));
+        let _ = self.timer_states.insert(
+            node_id,
+            TimerState {
+                scheduled_time: when,
+                duration,
+                is_canceled: false,
+            },
+        );
+    }
+
+    /// Cancel an existing timer for node_id.
+    fn cancel(&mut self, node_id: usize) {
+        // Mark the timer as canceled.
+        if let Some(timer_state) = self.timer_states.get_mut(&node_id) {
+            timer_state.is_canceled = true;
+        }
+    }
+
+    /// Peek the next expiration instant, if any.
+    fn next_expiry(&self) -> Option<Instant> {
+        self.timers.peek().map(|Reverse((when, _))| *when)
+    }
+
+    /// Fire all due timers at or before `now`, invoking the provided callback per firing node.
+    /// Reschedules recurring timers automatically when still active.
+    fn fire_due<F: FnMut(&usize)>(&mut self, now: Instant, mut on_fire: F) {
+        while let Some(Reverse((when, node_id))) = self.timers.peek().cloned() {
+            if when > now {
+                break;
+            }
+            // Pop the entry and validate it.
+            let _ = self.timers.pop();
+            if let Some(timer_state) = self.timer_states.get_mut(&node_id) {
+                if !timer_state.is_canceled && timer_state.scheduled_time == when {
+                    // Fire callback
+                    on_fire(&node_id);
+
+                    // Schedule next recurrence based on the original scheduled time to prevent drift
+                    let next_when = timer_state.scheduled_time + timer_state.duration;
+                    self.timers.push(Reverse((next_when, node_id)));
+                    timer_state.scheduled_time = next_when;
+                } else if timer_state.is_canceled {
+                    // Clean up canceled timers
+                    let _ = self.timer_states.remove(&node_id);
+                }
+            }
+        }
+    }
+}
+
+/// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
+///
+/// Internally uses two TimerSet instances: one for generic TimerTick and one for
+/// CollectTelemetry events. It receives Start*/Cancel* requests and emits the
+/// corresponding NodeControlMsg to nodes when timers expire.
+pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<usize, Sender<NodeControlMsg>>,
-    /// Min-heap of (Instant, usize) for timer expirations.
-    timers: BinaryHeap<Reverse<(Instant, usize)>>,
-    /// Set of node IDs with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<usize>,
-    /// Maps node ID to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<usize, Instant>,
-    /// Maps node ID to the timer duration, for recurring timers.
-    durations: HashMap<usize, std::time::Duration>,
+    control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+    /// Repeating timers for generic TimerTick.
+    tick_timers: TimerSet,
+    /// Repeating timers for telemetry collection (CollectTelemetry).
+    telemetry_timers: TimerSet,
+    /// Global metrics reporter.
+    metrics_reporter: MetricsReporter,
 }
 
-impl PipelineCtrlMsgManager {
+impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<usize, Sender<NodeControlMsg>>,
+        control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
             control_senders,
-            timers: BinaryHeap::new(),
-            canceled: HashSet::new(),
-            timer_map: HashMap::new(),
-            durations: HashMap::new(),
+            tick_timers: TimerSet::new(),
+            telemetry_timers: TimerSet::new(),
+            metrics_reporter,
         }
     }
 
     /// Runs the manager event loop.
     ///
-    /// Handles incoming control messages and timer expirations.
-    /// - On StartTimer: schedules a timer for the node, updating all relevant maps.
-    /// - On CancelTimer: marks the timer as canceled and removes from maps.
+    /// Handles incoming control messages and timer expirations (both regular timers and telemetry
+    /// timers).
+    /// - On StartTimer: schedules a timer for the node.
+    /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
-    pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
-            // Get the next timer expiration, if any.
-            let next_expiry = self.timers.peek().map(|Reverse((instant, _))| *instant);
+            // Get the next expirations, if any.
+            let next_expiry = self.tick_timers.next_expiry();
+            let next_tel_expiry = self.telemetry_timers.next_expiry();
+            let next_earliest = match (next_expiry, next_tel_expiry) {
+                (Some(a), Some(b)) => Some(std::cmp::min(a, b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
             tokio::select! {
                 biased;
                 // Handle incoming control messages from nodes.
@@ -78,63 +172,100 @@ impl PipelineCtrlMsgManager {
                     match msg {
                         PipelineControlMsg::Shutdown => break,
                         PipelineControlMsg::StartTimer { node_id, duration } => {
-                            // Schedule a new timer for this node.
-                            let when = Instant::now() + duration;
-                            self.timers.push(Reverse((when, node_id)));
-                            let _ = self.timer_map.insert(node_id, when);
-                            let _ = self.durations.insert(node_id, duration);
-                            let _ = self.canceled.remove(&node_id); // Un-cancel if previously canceled.
+                            self.tick_timers.start(node_id, duration);
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
-                            // Mark the timer as canceled and remove from maps.
-                            let _ = self.canceled.insert(node_id);
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
+                            self.tick_timers.cancel(node_id);
+                        }
+                        PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
+                            self.telemetry_timers.start(node_id, duration);
+                        }
+                        PipelineControlMsg::CancelTelemetryTimer { node_id } => {
+                            self.telemetry_timers.cancel(node_id);
                         }
                     }
                 }
                 // Handle timer expiration events.
                 _ = async {
-                    if let Some(when) = next_expiry {
+                    if let Some(when) = next_earliest {
                         let now = Instant::now();
                         if when > now {
                             tokio::time::sleep_until(when).await;
                         }
-                    } else {
-                        // No timers scheduled, wait indefinitely.
-                        futures::future::pending::<()>().await;
                     }
-                }, if next_expiry.is_some() => {
-                    if let Some(Reverse((when, node_id))) = self.timers.pop() {
-                        // Only fire the timer if not canceled and not outdated.
-                        if !self.canceled.contains(&node_id) {
-                            if let Some(&exp) = self.timer_map.get(&node_id) {
-                                if exp == when {
-                                    // Timer fires: handle expiration.
-                                    if let Some(sender) = self.control_senders.get(&node_id) {
-                                        let _ = sender.send(NodeControlMsg::TimerTick {}).await;
-                                    } else {
-                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id:?}")});
-                                    }
+                }, if next_earliest.is_some() => {
+                    let now = Instant::now();
 
-                                    // Schedule next recurrence if still not canceled
-                                    if let Some(&duration) = self.durations.get(&node_id) {
-                                        let next_when = Instant::now() + duration;
-                                        self.timers.push(Reverse((next_when, node_id)));
-                                        let _ = self.timer_map.insert(node_id, next_when);
-                                    }
+                    // Collect all due timer events, then send asynchronously outside of the
+                    // TimerSet borrows to avoid blocking within the closure.
+                    let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
+
+                    // Fire all due generic timers
+                    self.tick_timers.fire_due(now, |node_id| {
+                        to_send.push((*node_id, NodeControlMsg::TimerTick {}));
+                    });
+
+                    // Fire all due telemetry timers
+                    let metrics_reporter = self.metrics_reporter.clone();
+                    self.telemetry_timers.fire_due(now, |node_id| {
+                        to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
+                    });
+
+                    // Deliver all accumulated control messages (best-effort)
+                    for (node_id, msg) in to_send {
+                        if let Some(sender) = self.control_senders.get(&node_id) {
+                            // Use try_send as a fast path:
+                            // - avoids allocating/awaiting a future when the channel has capacity
+                            // - keeps the event loop responsive and reduces timer jitter
+                            // - isolates backpressure to congested channels (only await on Full)
+                            // On Full, fall back to send(msg).await to preserve delivery
+                            match sender.try_send(msg) {
+                                Ok(()) => {}
+                                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                                    // Channel backpressured: await until space is available
+                                    let _ = sender.send(msg).await;
+                                }
+                                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                                    // Ignore closed channel
                                 }
                             }
-                        } else {
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
-                            let _ = self.canceled.remove(&node_id);
                         }
                     }
                 }
             }
         }
         Ok(())
+    }
+}
+
+// Test-only helpers to introspect internal state without exposing fields publicly.
+#[cfg(test)]
+impl<PData> PipelineCtrlMsgManager<PData> {
+    pub(crate) fn test_tick_count(&self) -> usize {
+        self.tick_timers.timers.len()
+    }
+
+    pub(crate) fn test_telemetry_count(&self) -> usize {
+        self.telemetry_timers.timers.len()
+    }
+
+    pub(crate) fn test_control_senders_len(&self) -> usize {
+        self.control_senders.len()
+    }
+
+    pub(crate) fn test_push_tick_heap(&mut self, when: Instant, node_id: usize) {
+        self.tick_timers.timers.push(Reverse((when, node_id)));
+    }
+
+    pub(crate) fn test_pop_tick_heap(&mut self) -> Option<(Instant, usize)> {
+        self.tick_timers
+            .timers
+            .pop()
+            .map(|Reverse((when, node))| (when, node))
+    }
+
+    pub(crate) fn test_tick_heap_len(&self) -> usize {
+        self.tick_timers.timers.len()
     }
 }
 
@@ -151,7 +282,10 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::{Instant, timeout};
 
-    fn create_mock_control_sender() -> (Sender<NodeControlMsg>, Receiver<NodeControlMsg>) {
+    fn create_mock_control_sender<PData>() -> (
+        Sender<NodeControlMsg<PData>>,
+        Receiver<NodeControlMsg<PData>>,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (
             Sender::Shared(SharedSender::MpscSender(tx)),
@@ -159,10 +293,10 @@ mod tests {
         )
     }
 
-    fn setup_test_manager() -> (
-        PipelineCtrlMsgManager,
+    fn setup_test_manager<PData>() -> (
+        PipelineCtrlMsgManager<PData>,
         crate::control::PipelineCtrlMsgSender,
-        HashMap<usize, Receiver<NodeControlMsg>>,
+        HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
@@ -177,7 +311,12 @@ mod tests {
             let _ = control_receivers.insert(node.index, receiver);
         }
 
-        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
+        // Create a dummy MetricsReporter for testing using MetricsSystem
+        let config = otap_df_telemetry::config::Config::default();
+        let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
+        let metrics_reporter = metrics_system.reporter();
+
+        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders, metrics_reporter);
         (manager, pipeline_tx, control_receivers, nodes)
     }
 
@@ -192,14 +331,14 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                    setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background using spawn_local (not Send)
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send StartTimer message to schedule a recurring timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -252,14 +391,14 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                    setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Schedule a timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -300,7 +439,7 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
             let node1 = nodes.first().expect("ok");
             let node2 = nodes.get(1).expect("ok");
@@ -309,7 +448,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run::<()>().await
+                manager.run().await
             });
 
             // Schedule timers for both nodes
@@ -396,7 +535,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
 		let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
@@ -404,7 +543,7 @@ mod tests {
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run::<()>().await
+                    manager.run().await
                 });
 
                 // Schedule initial timer
@@ -456,11 +595,10 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _) = setup_test_manager();
+                let (manager, pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send shutdown message
                 pipeline_tx
@@ -488,14 +626,19 @@ mod tests {
         local
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                // Create a dummy MetricsReporter for testing
+                let (metrics_tx, _metrics_rx) = flume::unbounded();
+                let metrics_reporter = MetricsReporter::new(metrics_tx);
                 // Create manager with empty control_senders map (no registered nodes)
-                let manager = PipelineCtrlMsgManager::new(pipeline_rx, HashMap::new());
-
+                let manager = PipelineCtrlMsgManager::<()>::new(
+                    pipeline_rx,
+                    HashMap::new(),
+                    metrics_reporter,
+                );
                 let duration = Duration::from_millis(50);
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -530,7 +673,7 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
             // Use different durations to test timer ordering
             let node1 = nodes.first().expect("ok");
@@ -539,7 +682,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run::<()>().await
+                manager.run().await
             });
 
             // Send timers in non-chronological order to test priority queue
@@ -653,31 +796,30 @@ mod tests {
     /// initial state for all internal data structures.
     #[tokio::test]
     async fn test_manager_creation() {
-        let (manager, _pipeline_tx, _control_receivers, _) = setup_test_manager();
+        let (manager, _pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
 
         // Verify manager is created with correct initial state
         assert_eq!(
-            manager.timers.len(),
+            manager.tick_timers.timers.len(),
             0,
             "Timer queue should be empty initially"
         );
         assert_eq!(
-            manager.canceled.len(),
+            manager.tick_timers.timer_states.len(),
             0,
-            "Canceled set should be empty initially"
+            "Timer states map should be empty initially"
         );
+        let tick_count = manager.test_tick_count();
+        assert_eq!(tick_count, 0, "Tick timer queue should be empty initially");
+
+        let telemetry_count = manager.test_telemetry_count();
         assert_eq!(
-            manager.timer_map.len(),
-            0,
-            "Timer map should be empty initially"
+            telemetry_count, 0,
+            "Telemetry timer queue should be empty initially"
         );
+
         assert_eq!(
-            manager.durations.len(),
-            0,
-            "Durations map should be empty initially"
-        );
-        assert_eq!(
-            manager.control_senders.len(),
+            manager.test_control_senders_len(),
             3,
             "Should have 3 mock control senders"
         );
@@ -691,7 +833,7 @@ mod tests {
     /// This is a unit test of the data structure, separate from the run() method.
     #[tokio::test]
     async fn test_timer_heap_ordering() {
-        let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager();
+        let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager::<()>();
 
         let node1 = nodes.first().expect("ok");
         let node2 = nodes.get(1).expect("ok");
@@ -703,15 +845,19 @@ mod tests {
         let when3 = now + Duration::from_millis(200); // Middle
 
         // Add timers in non-chronological order to test heap behavior
-        manager.timers.push(Reverse((when1, node1.index)));
-        manager.timers.push(Reverse((when2, node2.index)));
-        manager.timers.push(Reverse((when3, node3.index)));
+        manager.test_push_tick_heap(when1, node1.index);
+        manager.test_push_tick_heap(when2, node2.index);
+        manager.test_push_tick_heap(when3, node3.index);
 
         // Verify heap maintains correct size
-        assert_eq!(manager.timers.len(), 3, "All timers should be in the heap");
+        assert_eq!(
+            manager.test_tick_heap_len(),
+            3,
+            "All timers should be in the heap"
+        );
 
         // Pop timers and verify they come out in chronological order (min-heap behavior)
-        if let Some(Reverse((first_when, first_node))) = manager.timers.pop() {
+        if let Some(Reverse((first_when, first_node))) = manager.tick_timers.timers.pop() {
             assert_eq!(first_when, when2, "Earliest timer should be popped first");
             assert_eq!(
                 first_node, node2.index,
@@ -719,7 +865,7 @@ mod tests {
             );
         }
 
-        if let Some(Reverse((second_when, second_node))) = manager.timers.pop() {
+        if let Some((second_when, second_node)) = manager.test_pop_tick_heap() {
             assert_eq!(second_when, when3, "Middle timer should be popped second");
             assert_eq!(
                 second_node, node3.index,
@@ -727,7 +873,7 @@ mod tests {
             );
         }
 
-        if let Some(Reverse((third_when, third_node))) = manager.timers.pop() {
+        if let Some((third_when, third_node)) = manager.test_pop_tick_heap() {
             assert_eq!(third_when, when1, "Latest timer should be popped last");
             assert_eq!(
                 third_node, node1.index,

@@ -38,6 +38,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -180,13 +181,16 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
                 // Fast path: no actions to apply
                 if self.transform.rename.is_none() && self.transform.delete.is_none() {
-                    return effect_handler.send_message(pdata).await;
+                    return effect_handler
+                        .send_message(pdata)
+                        .await
+                        .map_err(|e| e.into());
                 }
 
                 let signal = pdata.signal_type();
@@ -195,7 +199,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
-                effect_handler.send_message(records.into()).await
+                effect_handler
+                    .send_message(records.into())
+                    .await
+                    .map_err(|e| e.into())
             }
         }
     }
@@ -207,7 +214,7 @@ fn apply_transform(
     signal: SignalType,
     transform: &AttributesTransform,
     domains: &HashSet<ApplyDomain>,
-) -> Result<(), EngineError<OtapPdata>> {
+) -> Result<(), EngineError> {
     let payloads = attrs_payloads(signal, domains);
 
     // Only apply if we have transforms to apply
@@ -295,7 +302,7 @@ fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<Arr
     out
 }
 
-fn engine_err(msg: &str) -> EngineError<OtapPdata> {
+fn engine_err(msg: &str) -> EngineError {
     EngineError::PdataConversionError {
         error: msg.to_string(),
     }
@@ -306,6 +313,7 @@ fn engine_err(msg: &str) -> EngineError<OtapPdata> {
 /// Accepts configuration in OpenTelemetry Collector attributes processor format.
 /// See the module documentation for configuration examples and supported operations.
 pub fn create_attributes_processor(
+    _pipeline_ctx: PipelineContext,
     node: NodeId,
     config: &Value,
     processor_config: &ProcessorConfig,
@@ -327,8 +335,11 @@ pub fn create_attributes_processor(
 pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: ATTRIBUTES_PROCESSOR_URN,
-        create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
-            create_attributes_processor(node, config, proc_cfg)
+        create: |pipeline_ctx: PipelineContext,
+                 node: NodeId,
+                 config: &Value,
+                 proc_cfg: &ProcessorConfig| {
+            create_attributes_processor(pipeline_ctx, node, config, proc_cfg)
         },
     };
 
@@ -341,6 +352,8 @@ mod tests {
     use prost::Message as _;
     use serde_json::json;
 
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -410,10 +423,17 @@ mod tests {
             ]
         });
 
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         // Set up processor test runtime and run one message
         let node = test_node("attributes-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
+            .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -481,9 +501,16 @@ mod tests {
             ]
         });
 
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let node = test_node("attributes-processor-delete-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
+            .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -554,9 +581,16 @@ mod tests {
             "apply_to": ["resource"]
         });
 
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let node = test_node("attributes-processor-delete-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
+            .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -618,9 +652,16 @@ mod tests {
             "apply_to": ["scope"]
         });
 
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let node = test_node("attributes-processor-delete-scope");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
+            .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -686,9 +727,16 @@ mod tests {
             "apply_to": ["signal", "resource"]
         });
 
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let node = test_node("attributes-processor-delete-signal-and-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
+            .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase

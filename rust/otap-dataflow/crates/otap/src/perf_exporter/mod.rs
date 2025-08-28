@@ -7,3 +7,4 @@
 pub mod config;
 /// Perf Exporter implementation
 pub mod exporter;
+pub mod metrics;

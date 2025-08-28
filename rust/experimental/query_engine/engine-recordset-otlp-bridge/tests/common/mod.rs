@@ -32,18 +32,47 @@ where
     }
 
     println!("Initialization:");
-    if final_results.get_diagnostics().is_empty() {
+    if final_results.diagnostics.is_empty() {
         println!("None")
     } else {
         println!("{final_results}");
     }
 
-    println!("Summaries:");
-    if final_results.summaries.is_empty() {
+    println!("Included summaries:");
+    if final_results.summaries.included_summaries.is_empty() {
         println!("None")
     } else {
-        for summary in &final_results.summaries {
-            println!("{summary:?}");
+        for included_summary in &final_results.summaries.included_summaries {
+            let diagnostics = included_summary.to_string();
+            if !diagnostics.is_empty() {
+                println!("{included_summary}");
+            }
+            println!(
+                "Id: {}, GroupBy: {:?}, Aggregation: {:?}, Map: {:?}",
+                included_summary.summary_id,
+                included_summary.group_by_values,
+                included_summary.aggregation_values,
+                included_summary.map
+            );
+        }
+    }
+
+    println!("Dropped summaries:");
+    if final_results.summaries.dropped_summaries.is_empty() {
+        println!("None")
+    } else {
+        for dropped_summary in &final_results.summaries.dropped_summaries {
+            let diagnostics = dropped_summary.to_string();
+            if !diagnostics.is_empty() {
+                println!("{dropped_summary}");
+            }
+            println!(
+                "Id: {}, GroupBy: {:?}, Aggregation: {:?}, Map: {:?}",
+                dropped_summary.summary_id,
+                dropped_summary.group_by_values,
+                dropped_summary.aggregation_values,
+                dropped_summary.map
+            );
         }
     }
 

@@ -294,12 +294,18 @@ impl<T: EnumerableValueSource<T>> ArrayValueStorage<T> {
         ArrayValueStorage::<TTarget>::new(self.values.drain(..).map(|v| v.into().into()).collect())
     }
 
-    pub fn get_values(&self) -> &Vec<T> {
+    pub fn get_values(&self) -> &[T] {
         &self.values
     }
 
     pub fn get_values_mut(&mut self) -> &mut Vec<T> {
         &mut self.values
+    }
+
+    pub fn drain(&mut self, range: ArrayRange) -> std::vec::Drain<'_, T> {
+        let start = range.get_start_range_inclusize().unwrap_or(0);
+        let end = range.get_end_range_exclusive().unwrap_or(self.values.len());
+        self.values.drain(start..end)
     }
 }
 
@@ -420,6 +426,10 @@ impl<T: EnumerableValueSource<T>> MapValueStorage<T> {
         &mut self.values
     }
 
+    pub fn take_values(self) -> HashMap<Box<str>, T> {
+        self.values
+    }
+
     pub fn into<TTarget: EnumerableValueSource<TTarget>>(mut self) -> MapValueStorage<TTarget> {
         MapValueStorage::<TTarget>::new(HashMap::from_iter(
             self.values.drain().map(|(k, v)| (k, v.into().into())),
@@ -501,5 +511,11 @@ impl<T: EnumerableValueSource<T>> MapValueMut for MapValueStorage<T> {
 
     fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
         self.values.retain(|k, v| item_callback.next(k, v));
+    }
+}
+
+impl<T: EnumerableValueSource<T>> Record for MapValueStorage<T> {
+    fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel> {
+        None
     }
 }

@@ -38,7 +38,7 @@ impl PipelineExpression {
         self.constants.len() - 1
     }
 
-    pub fn get_constants(&self) -> &Vec<StaticScalarExpression> {
+    pub fn get_constants(&self) -> &[StaticScalarExpression] {
         &self.constants
     }
 
@@ -66,6 +66,12 @@ impl PipelineExpression {
         &self.initializations
     }
 
+    pub fn get_resolution_scope(&self) -> PipelineResolutionScope<'_> {
+        PipelineResolutionScope {
+            constants: &self.constants,
+        }
+    }
+
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
         // todo: Implement constant folding and other optimizations
         Ok(())
@@ -85,6 +91,16 @@ impl Expression for PipelineExpression {
 
     fn get_name(&self) -> &'static str {
         "PipelineExpression"
+    }
+}
+
+pub struct PipelineResolutionScope<'a> {
+    constants: &'a Vec<StaticScalarExpression>,
+}
+
+impl<'a> PipelineResolutionScope<'a> {
+    pub fn get_constant(&self, constant_id: usize) -> Option<&'a StaticScalarExpression> {
+        self.constants.get(constant_id)
     }
 }
 

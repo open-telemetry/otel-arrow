@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_now_expression(
     now_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&now_expression_rule);
 
@@ -21,7 +21,7 @@ pub(crate) fn parse_now_expression(
         ))),
         Some(r) => match r.as_rule() {
             Rule::scalar_expression => {
-                let offset = parse_scalar_expression(r, state)?;
+                let offset = parse_scalar_expression(r, scope)?;
 
                 Ok(ScalarExpression::Math(MathScalarExpression::Add(
                     BinaryMathematicalScalarExpression::new(
