@@ -37,7 +37,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 // For optional conversion during flush/partitioning
 use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::otap::batching::make_output_batches as low_make_output_batches;
+use otel_arrow_rust::otap::batching::make_output_batches;
 
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
@@ -139,17 +139,21 @@ impl OtapBatchProcessor {
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-        let mut config: Config = serde_json::from_value(cfg.clone()).unwrap_or_default();
-
-        // Accept Go-style duration strings for timeout (e.g., "200ms", "2s", "1m", "1m30s").
-        // If provided as a string, parse like Go's time.ParseDuration; if numeric, keep as ms.
-        if let Some(timeout_val) = cfg.get("timeout") {
-            if let Some(s) = timeout_val.as_str() {
-                if let Some(ms) = parse_duration_ms(s) {
-                    config.timeout = ms;
+        // Normalize config to accept Go-style duration strings for timeout (e.g., "200ms").
+        // If provided as a string, parse and replace with milliseconds before deserialization.
+        let mut cfg_norm = cfg.clone();
+        if let Some(s) = cfg.get("timeout").and_then(|v| v.as_str()) {
+            if let Some(ms) = parse_duration_ms(s) {
+                if let Some(obj) = cfg_norm.as_object_mut() {
+                    let _ = obj.insert("timeout".to_string(), Value::from(ms));
                 }
             }
         }
+
+        let mut config: Config =
+            serde_json::from_value(cfg_norm).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid OTAP batch processor config: {e}"),
+            })?;
 
         // Basic validation/normalization
         if config.send_batch_size == 0 {
@@ -198,7 +202,7 @@ impl OtapBatchProcessor {
     async fn flush_current(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         self.flush_logs(effect).await?;
         self.flush_metrics(effect).await?;
         self.flush_traces(effect).await
@@ -207,7 +211,7 @@ impl OtapBatchProcessor {
     async fn flush_logs(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         // Only return early if there is nothing buffered for this signal at all
         if self.current_logs.is_empty()
             && !self
@@ -220,7 +224,7 @@ impl OtapBatchProcessor {
         let input = std::mem::take(&mut self.current_logs);
         if !input.is_empty() {
             let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match low_make_output_batches(max, input) {
+            let output_batches = match make_output_batches(max, input) {
                 Ok(v) => v,
                 Err(e) => {
                     effect
@@ -255,7 +259,7 @@ impl OtapBatchProcessor {
     async fn flush_metrics(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         if self.current_metrics.is_empty()
             && !self
                 .passthrough
@@ -267,7 +271,7 @@ impl OtapBatchProcessor {
         let input = std::mem::take(&mut self.current_metrics);
         if !input.is_empty() {
             let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match low_make_output_batches(max, input) {
+            let output_batches = match make_output_batches(max, input) {
                 Ok(v) => v,
                 Err(e) => {
                     effect
@@ -301,7 +305,7 @@ impl OtapBatchProcessor {
     async fn flush_traces(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         if self.current_traces.is_empty()
             && !self
                 .passthrough
@@ -313,7 +317,7 @@ impl OtapBatchProcessor {
         let input = std::mem::take(&mut self.current_traces);
         if !input.is_empty() {
             let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match low_make_output_batches(max, input) {
+            let output_batches = match make_output_batches(max, input) {
                 Ok(v) => v,
                 Err(e) => {
                     effect
@@ -345,13 +349,23 @@ impl OtapBatchProcessor {
     }
 }
 
+/// Factory function to create an OTAP batch processor
+pub fn create_otap_batch_processor(
+    _pipeline_ctx: otap_df_engine::context::PipelineContext,
+    node: NodeId,
+    config: &Value,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    OtapBatchProcessor::from_config(node, config, processor_config)
+}
+
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for OtapBatchProcessor {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
         effect: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(ctrl) => {
                 match ctrl {
@@ -511,11 +525,11 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
 pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: OTAP_BATCH_PROCESSOR_URN,
-        create: |_: otap_df_engine::context::PipelineContext,
+        create: |pipeline_ctx: otap_df_engine::context::PipelineContext,
                  node: NodeId,
                  cfg: &Value,
                  proc_cfg: &ProcessorConfig| {
-            OtapBatchProcessor::from_config(node, cfg, proc_cfg)
+            create_otap_batch_processor(pipeline_ctx, node, cfg, proc_cfg)
         },
     };
 
@@ -873,7 +887,7 @@ mod batching_smoke_tests {
 
     #[test]
     #[ignore]
-    fn test_low_make_output_batches_partitions_and_splits() {
+    fn test_make_output_batches_partitions_and_splits() {
         // Build mixed input: 3 traces (1 row each), 2 metrics (1 dp each), interleaved
         let input = vec![
             one_trace_record(),
@@ -884,7 +898,7 @@ mod batching_smoke_tests {
         ];
 
         // For now, use None for splitting due to upstream batching limitations when some groups are empty
-        let outputs = low_make_output_batches(None, input).expect("batching ok");
+        let outputs = make_output_batches(None, input).expect("batching ok");
 
         // Expect 2 outputs: one metrics (2 rows), one traces (3 rows)
         let mut metrics_batches = 0usize;
