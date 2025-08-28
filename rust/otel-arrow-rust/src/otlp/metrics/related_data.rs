@@ -1,17 +1,8 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::store::{Attribute16Store, Attribute32Store};
 use crate::otlp::metrics::data_points::data_point_store::{
     EHistogramDataPointsStore, HistogramDataPointsStore, NumberDataPointsStore,
@@ -56,10 +47,10 @@ impl RelatedData {
     }
 }
 
-impl TryFrom<&OtapBatch> for RelatedData {
+impl TryFrom<&OtapArrowRecords> for RelatedData {
     type Error = error::Error;
 
-    fn try_from(otap_batch: &OtapBatch) -> error::Result<Self> {
+    fn try_from(otap_batch: &OtapArrowRecords) -> error::Result<Self> {
         let mut related_data = RelatedData::default();
 
         if let Some(rb) = otap_batch.get(ArrowPayloadType::ResourceAttrs) {

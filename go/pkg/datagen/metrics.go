@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package datagen
 
@@ -731,10 +722,10 @@ func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
 		}
 
 		// The number of elements in bucket_counts array must be by one greater than
-  		// the number of elements in explicit_bounds array.
+		// the number of elements in explicit_bounds array.
 		// See https://github.com/open-telemetry/opentelemetry-proto/blob/a76fe9dea26871e8a6c494024bc9927fe73b8142/opentelemetry/proto/metrics/v1/metrics.proto#L461
 		bcs := dp.BucketCounts()
-		bcs.EnsureCapacity(10+1)
+		bcs.EnsureCapacity(10 + 1)
 		for j := 0; j < 10+1; j++ {
 			bcs.Append(uint64(dg.GenI64Range(0, 100)))
 		}

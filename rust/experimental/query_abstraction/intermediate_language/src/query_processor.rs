@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::grammar_objects::*;
 use std::error::Error;
 use std::fmt;
@@ -11,8 +14,8 @@ pub enum QueryError {
 impl fmt::Display for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QueryError::ParseError(msg) => write!(f, "Parse Error: {}", msg),
-            QueryError::ProcessingError(msg) => write!(f, "Processing Error: {}", msg),
+            QueryError::ParseError(msg) => write!(f, "Parse Error: {msg}"),
+            QueryError::ProcessingError(msg) => write!(f, "Processing Error: {msg}"),
         }
     }
 }

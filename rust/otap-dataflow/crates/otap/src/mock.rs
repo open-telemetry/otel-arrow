@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //!
@@ -10,8 +11,8 @@
 //! ToDo: [LQ] Improve the pipeline test infrastructure to allow testing the tuple `pdata channel -> OTAP Exporter - grpc -> OTAP receiver -> pdata channel`
 //!
 
-use crate::grpc::OTAPData;
-use crate::proto::opentelemetry::experimental::arrow::v1::{
+use crate::{grpc::OtapArrowBytes, pdata::OtapPdata};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
     arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
@@ -24,38 +25,38 @@ use tonic::{Request, Response, Status};
 
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceMock {
-    sender: Sender<OTAPData>,
+    sender: Sender<OtapPdata>,
 }
 
 impl ArrowLogsServiceMock {
     /// create a new ArrowLogsServiceMock struct with a sendable effect handler
     #[must_use]
-    pub fn new(sender: Sender<OTAPData>) -> Self {
+    pub fn new(sender: Sender<OtapPdata>) -> Self {
         Self { sender }
     }
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceMock {
-    sender: Sender<OTAPData>,
+    sender: Sender<OtapPdata>,
 }
 
 impl ArrowMetricsServiceMock {
     /// create a new ArrowMetricsServiceMock struct with a sendable effect handler
     #[must_use]
-    pub fn new(sender: Sender<OTAPData>) -> Self {
+    pub fn new(sender: Sender<OtapPdata>) -> Self {
         Self { sender }
     }
 }
 
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceMock {
-    sender: Sender<OTAPData>,
+    sender: Sender<OtapPdata>,
 }
 
 impl ArrowTracesServiceMock {
     /// create a new ArrowTracesServiceMock struct with a sendable effect handler
     #[must_use]
-    pub fn new(sender: Sender<OTAPData>) -> Self {
+    pub fn new(sender: Sender<OtapPdata>) -> Self {
         Self { sender }
     }
 }
@@ -81,7 +82,10 @@ impl ArrowLogsService for ArrowLogsServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(OTAPData::ArrowLogs(batch)).await {
+                let status_result = match sender_clone
+                    .send(OtapArrowBytes::ArrowLogs(batch).into())
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -121,7 +125,10 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(OTAPData::ArrowMetrics(batch)).await {
+                let status_result = match sender_clone
+                    .send(OtapArrowBytes::ArrowMetrics(batch).into())
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -160,7 +167,10 @@ impl ArrowTracesService for ArrowTracesServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(OTAPData::ArrowTraces(batch)).await {
+                let status_result = match sender_clone
+                    .send(OtapArrowBytes::ArrowTraces(batch).into())
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };

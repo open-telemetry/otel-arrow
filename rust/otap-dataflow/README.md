@@ -73,6 +73,7 @@ TBD
 - [Developer/Contributing Guide](CONTRIBUTING.md)
 - [Design Principles](docs/design-principles.md)
 - [Architecture](docs/architecture.md)
+- [Tracing Proposal](docs/tracing-proposal.md)
 - [Glossary](docs/glossary.md)
 
 ## Development Setup
@@ -100,6 +101,12 @@ cargo test --workspace
 
 ```bash
 cargo run --example <example_name>
+```
+
+**With Docker**:
+
+```bash
+docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 ```
 
 ## Contributing
