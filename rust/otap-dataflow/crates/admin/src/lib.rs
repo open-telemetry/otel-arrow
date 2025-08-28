@@ -6,6 +6,7 @@
 pub mod error;
 mod telemetry;
 mod pipeline;
+mod pipeline_group;
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -33,6 +34,7 @@ pub async fn run(
 
     let app = Router::new()
         .merge(telemetry::routes())
+        .merge(pipeline_group::routes())
         .merge(pipeline::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);
