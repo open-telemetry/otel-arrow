@@ -236,7 +236,7 @@ fn update_average(
 }
 
 /// decodes the byte array from the timestamp header and gets the equivalent duration value
-/// Expects format: "{seconds}:{nanoseconds}" as ASCII bytes
+/// Expects format: "{seconds}:{nanoseconds}" as ASCII digits
 #[inline]
 fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     let colon_pos = timestamp
