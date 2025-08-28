@@ -687,7 +687,6 @@ mod test {
                 // also the other columns are missing, so we assert the default/null values are add
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
                 Arc::new(StructArray::new(
                     Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]),
                     vec![Arc::new(UInt16Array::from_iter(vec![
@@ -697,6 +696,7 @@ mod test {
                     ]))],
                     Some(NullBuffer::new_valid(3)),
                 )),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
             ],
         )
         .unwrap();
