@@ -206,7 +206,10 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+    ) -> Result<(), Error> {
         let runtime = self.prepare_runtime().await?;
 
         match runtime {

@@ -6,7 +6,7 @@ use tokio::time::Instant;
 /// Context for OTAP requests
 #[derive(Clone, Debug)]
 pub struct Context {
-    msg_id: usize,
+    msg_id: u64,
     deadline: Instant,
     reply_count: usize,
 }
@@ -15,16 +15,10 @@ impl Context {
     pub fn has_rsvp(&self) -> bool {
         self.reply_count > 0
     }
-}
 
-/// Context for OTAP responses
-#[derive(Clone, Debug)]
-pub struct ReturnContext {
-    pub(crate) message: String,
-    pub(crate) failure: bool,
-    pub(crate) permanent: bool,
-    pub(crate) code: Option<i32>,
-    pub(crate) rejected: Option<i64>, // Note: OTLP .proto defines as i64
+    pub fn msg_id(&self) -> u64 {
+        self.msg_id
+    }
 }
 
 impl Default for Context {

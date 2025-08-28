@@ -101,7 +101,6 @@ use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
 pub use crate::context::Context;
-pub use crate::context::ReturnContext;
 
 /// module contains related to pdata
 pub mod error {

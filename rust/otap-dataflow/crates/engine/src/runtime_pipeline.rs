@@ -4,7 +4,7 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
-use crate::error::{Error, ErrorT};
+use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
@@ -232,7 +232,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         &self,
         node_id: &NodeId,
         ctrl_msg: NodeControlMsg<PData>,
-    ) -> Result<(), ErrorT<NodeControlMsg<PData>>> {
+    ) -> Result<(), TypedError<NodeControlMsg<PData>>> {
         match self.nodes.get(node_id.index) {
             Some(ndef) => match ndef.ntype {
                 NodeType::Receiver => {
@@ -257,11 +257,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         .await
                 }
             }
-            .map_err(|e| ErrorT::NodeControlMsgSendError {
+            .map_err(|e| TypedError::NodeControlMsgSendError {
                 node: node_id.clone(),
                 error: e,
             }),
-            None => Err(ErrorT::Error(Error::InternalError {
+            None => Err(TypedError::Error(Error::InternalError {
                 message: format!("node {node_id:?}"),
             })),
         }

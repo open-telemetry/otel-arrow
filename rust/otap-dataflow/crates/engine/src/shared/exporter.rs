@@ -32,8 +32,8 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::control::AckOrNack;
 use crate::control::NodeControlMsg;
-use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
@@ -207,7 +207,7 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
@@ -242,7 +242,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
@@ -250,18 +250,13 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Reply success (no return value)
-    pub async fn reply_ack(&self, ack: AckMsg) -> Result<(), Error> {
-        self.core.reply_ack(ack).await
-    }
-
-    /// Reply failure (with return value)
-    pub async fn reply_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
-        self.core.reply_nack(nack).await
+    /// Reply to a request
+    pub async fn reply(&self, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        self.core.reply(acknack).await
     }
 
     // More methods will be added in the future as needed.

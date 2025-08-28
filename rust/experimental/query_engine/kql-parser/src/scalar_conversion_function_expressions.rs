@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_tostring_expression(
     tostring_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tostring_rule);
     let mut inner = tostring_rule.into_inner();
@@ -18,7 +18,7 @@ pub(crate) fn parse_tostring_expression(
     let scalar_expr_rule = inner.next().unwrap();
 
     // Parse and wrap in conversion expression
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::String(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -26,7 +26,7 @@ pub(crate) fn parse_tostring_expression(
 
 pub(crate) fn parse_toint_expression(
     toint_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&toint_rule);
     let mut inner = toint_rule.into_inner();
@@ -35,7 +35,7 @@ pub(crate) fn parse_toint_expression(
     let scalar_expr_rule = inner.next().unwrap();
 
     // Parse and wrap in conversion expression
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Integer(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -43,14 +43,14 @@ pub(crate) fn parse_toint_expression(
 
 pub(crate) fn parse_tobool_expression(
     tobool_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tobool_rule);
     let mut inner = tobool_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Boolean(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -58,14 +58,14 @@ pub(crate) fn parse_tobool_expression(
 
 pub(crate) fn parse_tofloat_expression(
     tofloat_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tofloat_rule);
     let mut inner = tofloat_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Double(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -73,14 +73,14 @@ pub(crate) fn parse_tofloat_expression(
 
 pub(crate) fn parse_tolong_expression(
     tolong_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tolong_rule);
     let mut inner = tolong_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Integer(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -88,14 +88,14 @@ pub(crate) fn parse_tolong_expression(
 
 pub(crate) fn parse_toreal_expression(
     toreal_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&toreal_rule);
     let mut inner = toreal_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Double(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -103,14 +103,14 @@ pub(crate) fn parse_toreal_expression(
 
 pub(crate) fn parse_todouble_expression(
     todouble_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&todouble_rule);
     let mut inner = todouble_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Double(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
@@ -118,14 +118,14 @@ pub(crate) fn parse_todouble_expression(
 
 pub(crate) fn parse_todatetime_expression(
     todatetime_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&todatetime_rule);
     let mut inner = todatetime_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(
         ConvertScalarExpression::DateTime(ConversionScalarExpression::new(
             query_location,
@@ -136,14 +136,14 @@ pub(crate) fn parse_todatetime_expression(
 
 pub(crate) fn parse_totimespan_expression(
     totimespan_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&totimespan_rule);
     let mut inner = totimespan_rule.into_inner();
 
     let scalar_expr_rule = inner.next().unwrap();
 
-    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, scope)?;
     Ok(ScalarExpression::Convert(
         ConvertScalarExpression::TimeSpan(ConversionScalarExpression::new(
             query_location,

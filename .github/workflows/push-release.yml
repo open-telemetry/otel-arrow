@@ -91,7 +91,7 @@ jobs:
       - name: Extract changelog content for this release
         id: changelog
         run: |
-          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}"
+          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/release_content.txt --normalize
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -173,8 +173,8 @@ jobs:
           ## Go Modules
 
           This release includes the following Go modules:
-          - `github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}`
-          - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}`
+          - github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
+          - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
           EOF
 
           # Create the GitHub release using GitHub CLI

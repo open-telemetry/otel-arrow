@@ -182,52 +182,6 @@ impl RetryProcessor {
             last_cleanup_time: Instant::now(),
         }
     }
-
-    fn acknowledge(&mut self, id: u64) {
-        if let Some(_removed) = self.pending_messages.remove(&id) {
-            log::debug!("Acknowledged and removed message with ID: {id}");
-        } else {
-            log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
-        }
-    }
-
-    async fn handle_nack(
-        &mut self,
-        id: u64,
-        reason: String,
-        _rvalue: Option<OtapPdata>,
-        _effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        if let Some(mut pending) = self.pending_messages.remove(&id) {
-            pending.retry_count += 1;
-            pending.last_error = reason;
-
-            if pending.retry_count <= self.config.max_retries {
-                let delay_ms = (self.config.initial_retry_delay_ms as f64
-                    * self
-                        .config
-                        .backoff_multiplier
-                        .powi(pending.retry_count as i32 - 1))
-                .min(self.config.max_retry_delay_ms as f64) as u64;
-
-                pending.next_retry_time = Instant::now() + Duration::from_millis(delay_ms);
-                let retry_count = pending.retry_count;
-                let _previous = self.pending_messages.insert(id, pending);
-                log::debug!("Scheduled message {id} for retry attempt {retry_count}");
-            } else {
-                log::error!(
-                    "Message {} exceeded max retries ({}), dropping. Last error: {}",
-                    id,
-                    self.config.max_retries,
-                    pending.last_error
-                );
-            }
-        } else {
-            log::warn!("Attempted to handle nack for non-existent message with ID: {id}");
-        }
-        Ok(())
-    }
-
     async fn process_pending_retries(
         &mut self,
         effect_handler: &mut EffectHandler<OtapPdata>,
@@ -326,12 +280,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack { id } => {
-                    self.acknowledge(id);
-                    Ok(())
+                NodeControlMsg::Ack(ack) => {
+                    //log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
                 }
-                NodeControlMsg::Nack { id, reason, rvalue } => {
-                    self.handle_nack(id, reason, rvalue, effect_handler).await
+                NodeControlMsg::Nack(nack) => {
+                    // self.handle_nack(nack, effect_handler).await?;
                 }
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
@@ -548,7 +501,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -585,7 +538,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: format!("Test failure {i}"),
-                        rvalue: None,
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )
@@ -618,7 +571,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -700,7 +653,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "First failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -716,7 +669,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Second failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -753,7 +706,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: i,
                         reason: "Test failure".to_string(),
-                        rvalue: None,
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )

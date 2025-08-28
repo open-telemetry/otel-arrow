@@ -254,7 +254,9 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use arrow::array::{DictionaryArray, RecordBatch, StringArray};
     use arrow::compute::concat_batches;
+    use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
@@ -272,6 +274,8 @@ mod test {
         test_node,
     };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use otel_arrow_rust::schema::consts;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -300,6 +304,109 @@ mod test {
                     .unwrap();
             })
         }
+    }
+
+    #[test]
+    fn test_adaptive_schema_dict_upgrade_write() {
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    // this should generate an attributes key & string_val column with type Dict<u16, String>
+                    let mut attrs1 = vec![];
+                    for i in 0..257 {
+                        attrs1.push(KeyValue {
+                            key: format!("attr{i}"),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue(format!("val{i}"))),
+                            }),
+                        })
+                    }
+
+                    let pdata1 = fixtures::create_single_logs_pdata_with_attrs(attrs1);
+                    ctx.send_pdata(pdata1).await.unwrap();
+
+                    // this should generate a an attributes column with type Dict<u8, String>
+                    let pdata2 = fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
+                        key: "attr1".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("val1".to_string())),
+                        }),
+                    }]);
+
+                    ctx.send_pdata(pdata2).await.unwrap();
+
+                    // this should create a record batch with the string_val column as native array
+                    // manually switching the type b/c otherwise would need to create > u16::MAX
+                    // attributes, and it could lead to unpredictable write times which could lead
+                    // to some test flakiness.
+                    let mut attrs3 = vec![];
+                    for i in 0..20 {
+                        attrs3.push(KeyValue {
+                            key: format!("attr{i}"),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue(format!("val{i}"))),
+                            }),
+                        })
+                    }
+                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3);
+                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut attrs_batch =
+                        otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+                    let old_column = attrs_batch.remove_column(
+                        attrs_batch
+                            .schema()
+                            .index_of(consts::ATTRIBUTE_STR)
+                            .unwrap(),
+                    );
+                    let tmp = old_column
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .unwrap();
+                    let new_column =
+                        StringArray::from_iter(tmp.downcast_dict::<StringArray>().unwrap());
+                    let mut columns = attrs_batch.columns().to_vec();
+                    columns.push(Arc::new(new_column));
+                    let mut fields = attrs_batch.schema().fields().to_vec();
+                    fields.push(Arc::new(Field::new(
+                        consts::ATTRIBUTE_STR,
+                        DataType::Utf8,
+                        true,
+                    )));
+                    otap_batch.set(
+                        ArrowPayloadType::LogAttrs,
+                        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
+                    );
+                    ctx.send_pdata(otap_batch.into()).await.unwrap();
+
+                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx, exporter_result| {
+                Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 3).await;
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 278).await;
+                })
+            });
     }
 
     async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
@@ -537,7 +644,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -670,7 +777,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -679,7 +786,7 @@ mod test {
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver,
+            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {

@@ -118,7 +118,7 @@ impl TimerSet {
 /// corresponding NodeControlMsg to nodes when timers expire.
 pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
     control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
     /// Repeating timers for generic TimerTick.
@@ -133,7 +133,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
-        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
@@ -183,6 +183,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id } => {
                             self.telemetry_timers.cancel(node_id);
                         }
+                        PipelineControlMsg::DeliverAck { ..} => {
+                // @@@
+            }
+                        PipelineControlMsg::DeliverNack { ..} => {
+                // @@@
+            }
                     }
                 }
                 // Handle timer expiration events.

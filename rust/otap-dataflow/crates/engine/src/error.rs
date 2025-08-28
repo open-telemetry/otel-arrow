@@ -15,13 +15,13 @@ use std::borrow::Cow;
 /// that contain a variant type <T>. Generally these errors are
 /// returned in situations where you may want to take ownership of the
 /// request after it has failed to send. Most callers that encounter
-/// ErrorT<T> and wish to drop the <T> can use .map_err(|e| e.into())
+/// TypedError<T> and wish to drop the <T> can use .map_err(|e| e.into())
 /// to return an Error.
 #[derive(thiserror::Error, Debug)]
-pub enum ErrorT<T> {
+pub enum TypedError<T> {
     /// A wrapper for the channel errors.
     #[error("A channel error occurred: {0}")]
-    ChannelSendError(#[from] SendError<T>),
+    ChannelSendError(SendError<T>),
 
     /// A wrapper for the pipeline control message send errors.
     #[error("A pipeline control channel error occurred: {0}")]
@@ -37,19 +37,26 @@ pub enum ErrorT<T> {
         error: SendError<T>,
     },
 
-    /// A type-less error in ErrorT<T> context.
+    /// A type-less error in TypedError<T> context.
     #[error("{0}")]
     Error(Error),
 }
 
-impl<T: Sized> From<ErrorT<T>> for Error {
+impl<T: Sized> From<TypedError<T>> for Error {
     /// This drops the SendError<T> field yielding an untyped error.
-    fn from(value: ErrorT<T>) -> Self {
+    fn from(value: TypedError<T>) -> Self {
         match value {
-            ErrorT::ChannelSendError(_) => Error::ChannelSendError,
-            ErrorT::PipelineControlMsgError(_) => Error::PipelineControlMsgError,
-            ErrorT::NodeControlMsgSendError { node, .. } => Error::NodeControlMsgSendError(node),
-            ErrorT::Error(e) => e,
+            TypedError::ChannelSendError(e) => Error::ChannelSendError {
+                error: e.to_string(),
+            },
+            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
+                error: e.to_string(),
+            },
+            TypedError::NodeControlMsgSendError { node, error } => Error::NodeControlMsgSendError {
+                node,
+                error: error.to_string(),
+            },
+            TypedError::Error(e) => e,
         }
     }
 }
@@ -66,16 +73,27 @@ pub enum Error {
     ChannelRecvError(#[from] otap_df_channel::error::RecvError),
 
     /// A wrapper for the channel errors.
-    #[error("A pipeline data channel error occurred")]
-    ChannelSendError,
+    #[error("A data channel error occurred: {error}")]
+    ChannelSendError {
+        /// The reason (e.g., channel full)
+        error: String,
+    },
 
     /// A wrapper for the pipeline control message send errors.
-    #[error("A pipeline control channel error occurred")]
-    PipelineControlMsgError,
+    #[error("A control channel error occurred: {error}")]
+    PipelineControlMsgError {
+        /// The reason (e.g., channel closed)
+        error: String,
+    },
 
     /// A wrapper for the node control message send errors.
-    #[error("A node control message send error occurred in node {0}")]
-    NodeControlMsgSendError(NodeId),
+    #[error("A node control message send error occurred in node {node}: {error}")]
+    NodeControlMsgSendError {
+        /// The node to which a message could not be sent.
+        node: NodeId,
+        /// The reason (e.g., channel closed)
+        error: String,
+    },
 
     /// The specified hyper-edge is invalid.
     #[error("Invalid hyper-edge in node {source} with out port {out_port}: {error}")]

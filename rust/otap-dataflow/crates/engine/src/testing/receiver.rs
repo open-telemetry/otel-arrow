@@ -54,7 +54,9 @@ impl<PData> TestContext<PData> {
             .send(NodeControlMsg::TimerTick {})
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sends a config control message.
@@ -67,7 +69,9 @@ impl<PData> TestContext<PData> {
             .send(NodeControlMsg::Config { config })
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sends a shutdown control message.
@@ -83,7 +87,9 @@ impl<PData> TestContext<PData> {
             })
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sleeps for the specified duration.
@@ -172,7 +178,7 @@ pub struct ValidationPhase<PData> {
     // ToDo implement support for pipeline control messages in a future PR.
     #[allow(unused_variables)]
     #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {

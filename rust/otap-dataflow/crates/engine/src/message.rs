@@ -3,7 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
-use crate::control::NodeControlMsg;
+use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
@@ -32,20 +32,16 @@ impl<Data> Message<Data> {
         Message::PData(data)
     }
 
-    /// Create a ACK control message with the given ID.
+    /// Create a ACK control message
     #[must_use]
-    pub fn ack_ctrl_msg(id: u64) -> Self {
-        Message::Control(NodeControlMsg::Ack { id })
+    pub fn ack_ctrl_msg(ack: AckMsg) -> Self {
+        Message::Control(NodeControlMsg::Ack(ack))
     }
 
-    /// Create a NACK control message with the given ID and reason.
+    /// Create a NACK control message
     #[must_use]
-    pub fn nack_ctrl_msg(id: u64, reason: &str, rvalue: Option<Data>) -> Self {
-        Message::Control(NodeControlMsg::Nack {
-            id,
-            rvalue,
-            reason: reason.to_owned(),
-        })
+    pub fn nack_ctrl_msg(nack: NackMsg<Data>) -> Self {
+        Message::Control(NodeControlMsg::Nack(nack))
     }
 
     /// Creates a config control message with the given configuration.

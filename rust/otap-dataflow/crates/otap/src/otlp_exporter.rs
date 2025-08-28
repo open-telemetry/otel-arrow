@@ -6,14 +6,14 @@ use crate::grpc::{
     code_is_permanent,
     otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient},
 };
-use crate::pdata::{OtapPdata, OtlpProtoBytes, ReturnContext};
+use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, AckOrNack, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -81,34 +81,32 @@ impl OTLPExporter {
         Ok(Self { config, metrics })
     }
 
-    fn partial_success(self: &Box<Self>, rejected: i64, message: String) -> ReturnContext {
-        ReturnContext {
-            message: message,
-            failure: false,
-            permanent: false,
-            code: None,
-            rejected: Some(rejected),
-        }
+    fn partial_success(
+        self: &Box<Self>,
+        ctx: Context,
+        rejected: i64,
+        message: String,
+    ) -> AckOrNack<OtapPdata> {
+        AckOrNack::Ack(AckMsg::new(ctx.msg_id(), Some((rejected, message))))
     }
 
-    fn ok(self: &Box<Self>) -> ReturnContext {
-        ReturnContext {
-            message: "".into(),
-            failure: false,
-            permanent: false,
-            code: None,
-            rejected: None,
-        }
+    fn ok(self: &Box<Self>, ctx: Context) -> AckOrNack<OtapPdata> {
+        AckOrNack::Ack(AckMsg::new(ctx.msg_id(), None))
     }
 
-    fn grpc_status(self: &Box<Self>, status: Status) -> ReturnContext {
-        ReturnContext {
-            message: status.message().into(),
-            failure: true,
-            permanent: code_is_permanent(&status),
-            rejected: None,
-            code: Some(status.code() as i32),
-        }
+    fn grpc_status(
+        self: &Box<Self>,
+        ctx: Context,
+        status: Status,
+        pdata: Option<OtapPdata>,
+    ) -> AckOrNack<OtapPdata> {
+        AckOrNack::Nack(NackMsg::new(
+            ctx.msg_id(),
+            status.message().to_string(),
+            code_is_permanent(&status),
+            Some(status.code() as i32),
+            pdata,
+        ))
     }
 }
 
@@ -214,14 +212,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     let (context, service_req): (_, OtlpProtoBytes) = data.try_into()?;
 
-                    let return_context = match service_req {
+                    let result = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             self.metrics.export_logs_request_received.inc();
                             let rctx = logs_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(status),
+                                |status| self.grpc_status(context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(),
+                                    None => self.ok(context),
                                     Some(partial) => self.partial_success(
+                                        context,
                                         partial.rejected_log_records,
                                         partial.error_message,
                                     ),
@@ -233,10 +232,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                             self.metrics.export_metrics_request_received.inc();
                             let rctx = metrics_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(status),
+                                |status| self.grpc_status(context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(),
+                                    None => self.ok(context),
                                     Some(partial) => self.partial_success(
+                                        context,
                                         partial.rejected_data_points,
                                         partial.error_message,
                                     ),
@@ -248,10 +248,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
                             self.metrics.export_traces_request_received.inc();
                             let rctx = trace_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(status),
+                                |status| self.grpc_status(context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(),
+                                    None => self.ok(context),
                                     Some(partial) => self.partial_success(
+                                        context,
                                         partial.rejected_spans,
                                         partial.error_message,
                                     ),
@@ -261,7 +262,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             rctx
                         }
                     };
-                    effect_handler.rsvp(return_context.reply(context, rvalue))
+                    effect_handler.reply(result).await?;
                 }
                 _ => {
                     // ignore unhandled messages

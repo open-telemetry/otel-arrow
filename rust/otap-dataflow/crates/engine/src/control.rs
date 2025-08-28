@@ -14,34 +14,66 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct AckMsg {
     /// Unique identifier of the message being acknowledged.
-    id: u64,
+    _msg_id: u64,
 
-    /// Human-readable reason provided with the ACK.
-    reason: Option<String>,
+    /// Rejected items
+    _rejected: Option<(i64, String)>,
+}
 
-    /// Number of rejected items
-    rejected: Option<i64>, // Note: OTLP .proto defines as i64
+impl AckMsg {
+    /// Create a new Ack message
+    pub fn new(msg_id: u64, rejected: Option<(i64, String)>) -> Self {
+        Self {
+            _msg_id: msg_id,
+            _rejected: rejected,
+        }
+    }
 }
 
 /// The NACK
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
     /// Unique identifier of the message not being acknowledged.
-    id: u64,
+    _msg_id: u64,
 
     /// Human-readable reason for the NACK.
-    reason: String,
+    _reason: String,
 
-    failure: bool,
-    permanent: bool,
-    code: Option<i32>,
-    rejected: Option<i64>, // Note: OTLP .proto defines as i64
+    /// Protocol-independent permanent status
+    _permanent: bool,
 
-    /// Placeholder for optional return value, making it possible for the
-    /// retry sender to be stateless.
-    ///
-    /// TODO: should this be boxed to reduce the size of NodeControlMsg?
-    rvalue: Option<PData>,
+    /// Protocol-independent code number
+    _code: Option<i32>,
+
+    /// Optional return pdata
+    _pdata: Option<Box<PData>>,
+}
+
+impl<PData> NackMsg<PData> {
+    /// Create a new Nack.
+    pub fn new(
+        msg_id: u64,
+        reason: String,
+        permanent: bool,
+        code: Option<i32>,
+        pdata: Option<PData>,
+    ) -> Self {
+        Self {
+            _msg_id: msg_id,
+            _reason: reason,
+            _permanent: permanent,
+            _code: code,
+            _pdata: pdata.map(Box::new),
+        }
+    }
+}
+
+/// An Ack or a Nack
+pub enum AckOrNack<PData> {
+    /// The Ack
+    Ack(AckMsg),
+    /// The Nack
+    Nack(NackMsg<PData>),
 }
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -101,7 +133,7 @@ pub enum NodeControlMsg<PData> {
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg {
+pub enum PipelineControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -130,6 +162,22 @@ pub enum PipelineControlMsg {
     },
     /// Requests shutdown of the node request manager.
     Shutdown,
+
+    /// Let the pipeline manager deliver an Ack.
+    DeliverAck {
+        /// From which component
+        from_node_id: usize,
+        /// Acknowledgement context
+        ack: AckMsg,
+    },
+
+    /// Let the pipeline manager deliver an Nack.
+    DeliverNack {
+        /// From which component
+        from_node_id: usize,
+        /// Acknowledgement context
+        nack: NackMsg<PData>,
+    },
 }
 
 /// Trait for nodes that can receive and process control messages from the pipeline engine.
@@ -155,12 +203,12 @@ impl<PData> NodeControlMsg<PData> {
 /// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender = SharedSender<PipelineControlMsg>;
+pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
 
 /// Type alias for the channel receiver used by the pipeline engine to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
+pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
 ///
@@ -174,9 +222,9 @@ pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel(
+pub fn pipeline_ctrl_msg_channel<PData>(
     capacity: usize,
-) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
+) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),

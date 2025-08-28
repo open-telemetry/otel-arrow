@@ -32,10 +32,10 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::control::{AckMsg, NackMsg};
+use crate::control::AckOrNack;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, ErrorT};
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
@@ -88,7 +88,7 @@ impl<PData> ControlChannel<PData> {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
@@ -108,7 +108,7 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
@@ -147,10 +147,13 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), ErrorT<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => sender.send(data).await.map_err(ErrorT::ChannelSendError),
-            None => Err(ErrorT::Error(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
@@ -161,14 +164,17 @@ impl<PData> EffectHandler<PData> {
 
     /// Sends a message to a specific named out port.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), ErrorT<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.send(data).await.map_err(ErrorT::ChannelSendError),
-            None => Err(ErrorT::Error(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
@@ -204,18 +210,13 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
-    /// Reply success (no return value)
-    pub async fn reply_ack(&self, ack: AckMsg) -> Result<(), Error> {
-        self.core.reply_ack(ack).await
-    }
-
-    /// Reply failure (with return value)
-    pub async fn reply_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
-        self.core.reply_nack(nack).await
+    /// Reply to a request
+    pub async fn reply(&self, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        self.core.reply(acknack).await
     }
 
     // More methods will be added in the future as needed.
