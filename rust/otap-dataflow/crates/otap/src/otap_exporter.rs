@@ -9,10 +9,12 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OtapArrowBytes;
+use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -24,6 +26,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -32,6 +35,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -46,6 +50,7 @@ pub struct Config {
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
+    batch_metrics: MetricSet<ExporterPDataMetrics>,
 }
 
 /// Declares the OTAP exporter as a local exporter factory
@@ -72,18 +77,17 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
-    pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
+    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
+        let batch_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
         OTAPExporter {
-            config: Config {
-                grpc_endpoint,
-                compression_method,
-            },
+            config,
+            batch_metrics,
         }
     }
 
     /// Creates a new OTAPExporter from a configuration object
     pub fn from_config(
-        _pipeline_handle: PipelineContext,
+        pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -91,7 +95,7 @@ impl OTAPExporter {
                 error: e.to_string(),
             }
         })?;
-        Ok(OTAPExporter { config })
+        Ok(OTAPExporter::new(pipeline_ctx, config))
     }
 }
 
@@ -99,7 +103,7 @@ impl OTAPExporter {
 #[async_trait(?Send)]
 impl local::Exporter<OtapPdata> for OTAPExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
@@ -109,6 +113,12 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 self.config.grpc_endpoint
             ))
             .await;
+
+        let exporter_id = effect_handler.exporter_id();
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         // start a grpc client and connect to the server
         let mut arrow_metrics_client =
             ArrowMetricsServiceClient::connect(self.config.grpc_endpoint.clone())
@@ -134,7 +144,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     error: error.to_string(),
                 })?;
 
-        if let Some(compression) = self.config.compression_method {
+        if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
             arrow_logs_client = arrow_logs_client
                 .send_compressed(encoding)
@@ -152,6 +162,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 // handle control messages
                 Message::Control(NodeControlMsg::TimerTick { .. })
                 | Message::Control(NodeControlMsg::Config { .. }) => {}
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = metrics_reporter.report(&mut self.batch_metrics);
+                }
                 // shutdown the exporter
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
@@ -159,7 +174,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
                 //send data
                 Message::PData(message) => {
-                    let message: OtapArrowBytes = message.try_into()?;
+                    match message.signal_type() {
+                        SignalType::Logs => self.batch_metrics.logs_consumed.inc(),
+                        SignalType::Metrics => self.batch_metrics.metrics_consumed.inc(),
+                        SignalType::Traces => self.batch_metrics.traces_consumed.inc(),
+                    }
+                    let message: OtapArrowBytes = message
+                        .try_into()
+                        .inspect_err(|_| self.batch_metrics.metrics_failed.inc())?;
 
                     match message {
                         // match on OTAPData type and use the respective client to send message
@@ -174,21 +196,29 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             _ = arrow_metrics_client
                                 .arrow_metrics(request_stream)
                                 .await
-                                .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
+                                .map_err(|e| {
+                                    self.batch_metrics.metrics_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
                                 })?;
+                            self.batch_metrics.metrics_exported.inc();
                         }
                         OtapArrowBytes::ArrowLogs(req) => {
                             let request_stream = stream! {
                                 yield req;
                             };
                             _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
-                                |error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
+                                |e| {
+                                    self.batch_metrics.logs_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
                                 },
                             )?;
+                            self.batch_metrics.logs_exported.inc();
                         }
                         OtapArrowBytes::ArrowTraces(req) => {
                             let request_stream = stream! {
@@ -197,10 +227,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             _ = arrow_traces_client
                                 .arrow_traces(request_stream)
                                 .await
-                                .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
+                                .map_err(|e| {
+                                    self.batch_metrics.traces_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
                                 })?;
+                            self.batch_metrics.traces_exported.inc();
                         }
                     }
                 }
@@ -218,7 +252,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
 #[cfg(test)]
 mod tests {
-
     use crate::grpc::OtapArrowBytes;
     use crate::mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
@@ -391,8 +424,16 @@ mod tests {
             .expect("Server failed to start");
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let config = json!({
+            "grpc_endpoint": grpc_endpoint,
+        });
+        // Create a proper pipeline context for the benchmark
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
-            OTAPExporter::new(grpc_endpoint, None),
+            OTAPExporter::from_config(pipeline_ctx, &config).expect("Config should be valid"),
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),

@@ -12,7 +12,7 @@ nodes:
           - perf
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
+      listening_addr: "127.0.0.1:4318"
   perf:
     kind: exporter
     plugin_urn: "urn:otel:otap:perf:exporter"

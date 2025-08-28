@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
-//!
 
 use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
@@ -49,6 +48,7 @@ pub mod signal_type_router;
 
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
+mod metrics;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

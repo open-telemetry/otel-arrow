@@ -65,6 +65,7 @@ use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
+use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
@@ -518,8 +519,17 @@ fn bench_exporter(c: &mut Criterion) {
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+                    let config = json!({
+                        "grpc_endpoint": grpc_endpoint,
+                    });
+                    // Create a proper pipeline context for the benchmark
+                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                    let pipeline_ctx =
+                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
                     let mut exporter = ExporterWrapper::local(
-                        OTAPExporter::new(grpc_endpoint, None),
+                        OTAPExporter::from_config(pipeline_ctx, &config)
+                            .expect("Failed to create OTAPExporter from config"),
                         test_node("exporter"),
                         node_config,
                         &exporter_config,

@@ -3,9 +3,11 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
+use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -17,9 +19,7 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
-use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +39,7 @@ pub struct Config {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    metrics: MetricSet<OtlpExporterMetrics>,
+    pdata_metrics: MetricSet<ExporterPDataMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -66,7 +66,7 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let metrics = pipeline_ctx.register_metrics::<OtlpExporterMetrics>();
+        let batch_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -74,41 +74,11 @@ impl OTLPExporter {
             }
         })?;
 
-        Ok(Self { config, metrics })
+        Ok(Self {
+            config,
+            pdata_metrics: batch_metrics,
+        })
     }
-}
-
-/// OTLP exporter metrics moved into the node module.
-#[metric_set(name = "otlp.exporter.metrics")]
-#[derive(Debug, Default, Clone)]
-pub struct OtlpExporterMetrics {
-    /// Number of OTLP logs request received
-    #[metric(unit = "{req}")]
-    pub export_logs_request_received: Counter<u64>,
-    /// Number of OTLP logs request successful
-    #[metric(unit = "{req}")]
-    pub export_logs_request_success: Counter<u64>,
-    /// Number of OTLP logs request failed
-    #[metric(unit = "{req}")]
-    pub export_logs_request_failure: Counter<u64>,
-    /// Number of OTLP metrics request received
-    #[metric(unit = "{req}")]
-    pub export_metrics_request_received: Counter<u64>,
-    /// Number of OTLP metrics request successful
-    #[metric(unit = "{req}")]
-    pub export_metrics_request_success: Counter<u64>,
-    /// Number of OTLP metrics request failed
-    #[metric(unit = "{req}")]
-    pub export_metrics_request_failure: Counter<u64>,
-    /// Number of OTLP traces request received
-    #[metric(unit = "{req}")]
-    pub export_traces_request_received: Counter<u64>,
-    /// Number of OTLP traces request successful
-    #[metric(unit = "{req}")]
-    pub export_traces_request_success: Counter<u64>,
-    /// Number of OTLP traces request failed
-    #[metric(unit = "{req}")]
-    pub export_traces_request_failure: Counter<u64>,
 }
 
 #[async_trait(?Send)]
@@ -125,6 +95,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             ))
             .await;
 
+        let exporter_id = effect_handler.exporter_id();
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
@@ -149,7 +120,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 error: error.to_string(),
             })?;
 
-        if let Some(compression) = self.config.compression_method {
+        if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
 
             logs_client = logs_client
@@ -169,43 +140,48 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 Message::PData(data) => {
-                    let service_req: OtlpProtoBytes = data.try_into()?;
+                    match data.signal_type() {
+                        SignalType::Metrics => self.pdata_metrics.metrics_consumed.inc(),
+                        SignalType::Logs => self.pdata_metrics.logs_consumed.inc(),
+                        SignalType::Traces => self.pdata_metrics.traces_consumed.inc(),
+                    }
+                    let service_req: OtlpProtoBytes = data
+                        .try_into()
+                        .inspect_err(|_| self.pdata_metrics.metrics_failed.inc())?;
+
                     _ = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                            self.metrics.export_logs_request_received.inc();
                             _ = logs_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_logs_request_failure.inc();
+                                self.pdata_metrics.logs_failed.inc();
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
+                                    exporter: exporter_id.clone(),
                                     error: e.to_string(),
                                 }
                             })?;
-                            self.metrics.export_logs_request_success.inc();
+                            self.pdata_metrics.logs_exported.inc();
                         }
                         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                            self.metrics.export_metrics_request_received.inc();
                             _ = metrics_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_metrics_request_failure.inc();
+                                self.pdata_metrics.metrics_failed.inc();
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
+                                    exporter: exporter_id.clone(),
                                     error: e.to_string(),
                                 }
                             })?;
-                            self.metrics.export_metrics_request_success.inc();
+                            self.pdata_metrics.metrics_exported.inc();
                         }
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                            self.metrics.export_traces_request_received.inc();
                             _ = trace_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_traces_request_failure.inc();
+                                self.pdata_metrics.traces_failed.inc();
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
+                                    exporter: exporter_id.clone(),
                                     error: e.to_string(),
                                 }
                             })?;
-                            self.metrics.export_traces_request_success.inc();
+                            self.pdata_metrics.traces_exported.inc();
                         }
                     };
                 }
@@ -374,7 +350,7 @@ mod tests {
                     grpc_endpoint,
                     compression_method: None,
                 },
-                metrics: pipeline_ctx.register_metrics::<OtlpExporterMetrics>(),
+                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
