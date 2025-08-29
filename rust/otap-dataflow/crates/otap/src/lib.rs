@@ -23,9 +23,6 @@ pub mod otlp_receiver;
 /// Implementation of OTLP exporter that implements the exporter trait
 pub mod otlp_exporter;
 
-// Retry processor that is aware of the OTAP PData/context.
-pub mod retry_processor;
-
 /// Generated protobuf files
 pub mod proto;
 
@@ -43,12 +40,18 @@ mod mock;
 #[cfg(test)]
 mod fixtures;
 
+/// OTAP batch processor (skeleton)
+pub mod otap_batch_processor;
+
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
 mod metrics;
+
+/// Retry processor (OTAP-based)
+pub mod retry_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
