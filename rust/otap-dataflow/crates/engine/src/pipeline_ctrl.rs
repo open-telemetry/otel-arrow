@@ -170,7 +170,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineControlMsg::Shutdown => break,
+                        PipelineControlMsg::Shutdown {reason} => {
+                            // For now, broadcast shutdown to all nodes.
+                            // ToDo: refine to only receiver nodes.
+                            for (_, control_sender) in self.control_senders.iter() {
+                                _ = control_sender.send(NodeControlMsg::Shutdown {deadline: Default::default(), reason: reason.clone()}).await;
+                            }
+                            break;
+                        },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             self.tick_timers.start(node_id, duration);
                         }
@@ -374,7 +381,11 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -424,7 +435,11 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -518,7 +533,7 @@ mod tests {
             assert!(node2_received, "Node2 should have received TimerTick");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -579,7 +594,7 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -602,7 +617,9 @@ mod tests {
 
                 // Send shutdown message
                 pipeline_tx
-                    .send(PipelineControlMsg::Shutdown)
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
                     .await
                     .unwrap();
 
@@ -652,7 +669,11 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Manager should still be responsive for shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(
                     shutdown_result.is_ok(),
@@ -787,7 +808,7 @@ mod tests {
             assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }

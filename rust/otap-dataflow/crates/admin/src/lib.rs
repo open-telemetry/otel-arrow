@@ -4,9 +4,10 @@
 //! HTTP server for exposing admin endpoints.
 
 pub mod error;
+mod pipeline_group;
 mod telemetry;
 
-use axum::{Router, routing::get};
+use axum::Router;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -14,29 +15,31 @@ use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_engine::control::PipelineCtrlMsgSender;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
 struct AppState {
     metrics_registry: MetricsRegistryHandle,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let app_state = AppState { metrics_registry };
+    let app_state = AppState {
+        metrics_registry,
+        ctrl_msg_senders,
+    };
 
     let app = Router::new()
-        .route("/telemetry/live-schema", get(telemetry::get_live_schema))
-        .route("/telemetry/metrics", get(telemetry::get_metrics))
-        .route(
-            "/telemetry/metrics/aggregate",
-            get(telemetry::get_metrics_aggregate),
-        )
+        .merge(telemetry::routes())
+        .merge(pipeline_group::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);
 
