@@ -54,7 +54,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.142" }
 serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
-tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
+tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "signal"] }
 tokio-util = { version = "0.7.16" }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
@@ -71,6 +71,7 @@ weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 once_cell = "1.20.2"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
+slotmap = "1.0.7"
 
 [features]
 default = []

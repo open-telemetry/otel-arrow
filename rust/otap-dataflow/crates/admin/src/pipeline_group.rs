@@ -11,12 +11,13 @@
 //!
 //! ToDo Alternative -> avoid verb-y subpaths and support PATCH /.../pipelines/{pipelineId} with a body like {"status":"stopped"}. Use 409 if already stopping/stopped.
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Json, Router};
 use axum::http::StatusCode;
 use axum::routing::post;
 use serde::Serialize;
+use otap_df_engine::control::PipelineControlMsg;
 use crate::AppState;
 
 /// All the routes for pipeline groups.
@@ -45,27 +46,16 @@ struct ShutdownResponse {
 }
 
 async fn shutdown_all_pipelines(
-    State(_state): State<AppState>
+    State(state): State<AppState>
 ) -> impl IntoResponse {
-    // let result = state.controller.initiate_stop(&group_id, &pipeline_id);
-    let result = ShutdownResult::NotFound; // Placeholder until controller logic is implemented.
+    let errors: Vec<_> = state.ctrl_msg_senders
+        .iter()
+        .filter_map(|sender| {
+        sender.try_send(PipelineControlMsg::Shutdown).err()
+    }).collect();
 
-    match result {
-        ShutdownResult::Accepted => (
-            StatusCode::ACCEPTED,
-            Json(ShutdownResponse { status: "accepted" }),
-        ),
-        ShutdownResult::AlreadyStopped => (
-            StatusCode::BAD_REQUEST,
-            Json(ShutdownResponse {
-                status: "already_stopped",
-            }),
-        ),
-        ShutdownResult::NotFound => (
-            StatusCode::NOT_FOUND,
-            Json(ShutdownResponse {
-                status: "not_found",
-            }),
-        ),
-    }
+    (
+        StatusCode::ACCEPTED,
+        Json(ShutdownResponse { status: "accepted" }),
+    )
 }

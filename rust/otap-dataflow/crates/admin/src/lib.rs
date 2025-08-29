@@ -16,21 +16,24 @@ use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_engine::control::PipelineCtrlMsgSender;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
 struct AppState {
     metrics_registry: MetricsRegistryHandle,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let app_state = AppState { metrics_registry };
+    let app_state = AppState { metrics_registry, ctrl_msg_senders };
 
     let app = Router::new()
         .merge(telemetry::routes())
