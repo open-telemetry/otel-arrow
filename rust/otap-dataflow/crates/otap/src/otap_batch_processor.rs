@@ -441,9 +441,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                     self.passthrough.push(data.clone());
                                 }
                                 // Flush when reaching max, or when reaching send_batch_size
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max {
-                                    self.flush_logs(effect).await
-                                } else if self.rows_logs >= self.config.send_batch_size {
+                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max)
+                                    || self.rows_logs >= self.config.send_batch_size
+                                {
                                     self.flush_logs(effect).await
                                 } else {
                                     Ok(())
@@ -462,10 +462,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                 } else {
                                     self.passthrough.push(data.clone());
                                 }
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_metrics >= max
+                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_metrics >= max)
+                                    || self.rows_metrics >= self.config.send_batch_size
                                 {
-                                    self.flush_metrics(effect).await
-                                } else if self.rows_metrics >= self.config.send_batch_size {
                                     self.flush_metrics(effect).await
                                 } else {
                                     Ok(())
@@ -484,10 +483,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                 } else {
                                     self.passthrough.push(data.clone());
                                 }
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max
+                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max)
+                                    || self.rows_traces >= self.config.send_batch_size
                                 {
-                                    self.flush_traces(effect).await
-                                } else if self.rows_traces >= self.config.send_batch_size {
                                     self.flush_traces(effect).await
                                 } else {
                                     Ok(())
