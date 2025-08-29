@@ -1,22 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP batch processor (skeleton)
-//!
-//! Mirrors the configuration shape of the OpenTelemetry Collector batchprocessor,
-//! but operates on OtapPdata. This integration is aligned with the OtapPdata combine work.
-//!
-//! Current scope:
-//! - Buffers incoming messages and flushes by count or timer.
-//! - Does not directly mutate Arrow RecordBatches; merging/splitting is delegated to upstream OTAP
-//!   batching utilities.
-//! - Does not directly split Arrow batches; any chunking is handled by upstream batching and emitted
-//!   as multiple outputs when necessary.
-//! - Partitions emission by signal type (logs/metrics/traces) when possible, but does not re-order
-//!   or sort by time.
-//!
-//! Merging, splitting, and group-key logic are delegated to OtapPdata helpers and upstream batching
-//! utilities in otel-arrow-rust.
+//! OTAP batch processor.
+//! Batches OtapPdata by count or timer; uses upstream OTAP batching for merge/split.
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
@@ -223,21 +209,36 @@ impl OtapBatchProcessor {
         }
         let input = std::mem::take(&mut self.current_logs);
         if !input.is_empty() {
-            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match make_output_batches(max, input) {
-                Ok(v) => v,
-                Err(e) => {
-                    effect
-                        .info(&format!(
-                            "OTAP batch processor: low-level batching failed for logs: {e}; dropping"
-                        ))
-                        .await;
-                    Vec::new()
+            let max_val = self.config.send_batch_max_size;
+            if max_val <= MIN_SEND_BATCH_SIZE {
+                // Bypass upstream splitter for degenerate max; just forward each record
+                for records in input {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
                 }
-            };
-            for records in output_batches {
-                let pdata: OtapPdata = records.into();
-                effect.send_message(pdata).await?;
+            } else {
+                // Avoid upstream empty-group issue by not requesting splitting when it's unnecessary
+                let total_rows: usize = input.iter().map(|r| r.batch_length()).sum();
+                let max = if total_rows <= max_val {
+                    None
+                } else {
+                    NonZeroU64::new(max_val as u64)
+                };
+                let output_batches = match make_output_batches(max, input) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        effect
+                            .info(&format!(
+                                "OTAP batch processor: low-level batching failed for logs: {e}; dropping"
+                            ))
+                            .await;
+                        Vec::new()
+                    }
+                };
+                for records in output_batches {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
+                }
             }
         }
         // Also flush any passthrough items for this signal type
@@ -270,21 +271,34 @@ impl OtapBatchProcessor {
         }
         let input = std::mem::take(&mut self.current_metrics);
         if !input.is_empty() {
-            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match make_output_batches(max, input) {
-                Ok(v) => v,
-                Err(e) => {
-                    effect
-                        .info(&format!(
-                            "OTAP batch processor: low-level batching failed for metrics: {e}; dropping"
-                        ))
-                        .await;
-                    Vec::new()
+            let max_val = self.config.send_batch_max_size;
+            if max_val <= MIN_SEND_BATCH_SIZE {
+                for records in input {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
                 }
-            };
-            for records in output_batches {
-                let pdata: OtapPdata = records.into();
-                effect.send_message(pdata).await?;
+            } else {
+                let total_rows: usize = input.iter().map(|r| r.batch_length()).sum();
+                let max = if total_rows <= max_val {
+                    None
+                } else {
+                    NonZeroU64::new(max_val as u64)
+                };
+                let output_batches = match make_output_batches(max, input) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        effect
+                            .info(&format!(
+                                "OTAP batch processor: low-level batching failed for metrics: {e}; dropping"
+                            ))
+                            .await;
+                        Vec::new()
+                    }
+                };
+                for records in output_batches {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
+                }
             }
         }
         if !self.passthrough.is_empty() {
@@ -316,21 +330,34 @@ impl OtapBatchProcessor {
         }
         let input = std::mem::take(&mut self.current_traces);
         if !input.is_empty() {
-            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-            let output_batches = match make_output_batches(max, input) {
-                Ok(v) => v,
-                Err(e) => {
-                    effect
-                        .info(&format!(
-                            "OTAP batch processor: low-level batching failed for traces: {e}; dropping"
-                        ))
-                        .await;
-                    Vec::new()
+            let max_val = self.config.send_batch_max_size;
+            if max_val <= MIN_SEND_BATCH_SIZE {
+                for records in input {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
                 }
-            };
-            for records in output_batches {
-                let pdata: OtapPdata = records.into();
-                effect.send_message(pdata).await?;
+            } else {
+                let total_rows: usize = input.iter().map(|r| r.batch_length()).sum();
+                let max = if total_rows <= max_val {
+                    None
+                } else {
+                    NonZeroU64::new(max_val as u64)
+                };
+                let output_batches = match make_output_batches(max, input) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        effect
+                            .info(&format!(
+                                "OTAP batch processor: low-level batching failed for traces: {e}; dropping"
+                            ))
+                            .await;
+                        Vec::new()
+                    }
+                };
+                for records in output_batches {
+                    let pdata: OtapPdata = records.into();
+                    effect.send_message(pdata).await?;
+                }
             }
         }
         if !self.passthrough.is_empty() {
@@ -472,42 +499,17 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         // If conversion fails, route based on signal type.
                         match data.signal_type() {
                             SignalType::Logs => {
-                                let eff = fallback_count.max(MIN_ITEM_INCREMENT);
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_logs + eff > max
-                                {
-                                    self.flush_logs(effect).await?;
-                                }
-                                self.rows_logs += eff;
-                                self.passthrough.push(data);
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max {
-                                    self.flush_logs(effect).await
-                                } else if self.rows_logs >= self.config.send_batch_size {
-                                    self.flush_logs(effect).await
-                                } else {
-                                    Ok(())
-                                }
+                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
+                                effect.info(LOG_MSG_DROP_NON_OTAP).await;
+                                Ok(())
                             }
                             SignalType::Traces => {
-                                let eff = fallback_count.max(MIN_ITEM_INCREMENT);
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_traces + eff > max
-                                {
-                                    self.flush_traces(effect).await?;
-                                }
-                                self.rows_traces += eff;
-                                self.passthrough.push(data);
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max
-                                {
-                                    self.flush_traces(effect).await
-                                } else if self.rows_traces >= self.config.send_batch_size {
-                                    self.flush_traces(effect).await
-                                } else {
-                                    Ok(())
-                                }
+                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
+                                effect.info(LOG_MSG_DROP_NON_OTAP).await;
+                                Ok(())
                             }
                             SignalType::Metrics => {
-                                // Metrics conversion from OTLP bytes not supported yet -> drop
+                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
                                 effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                 Ok(())
                             }
@@ -535,9 +537,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 
 /// Parses duration strings from Go-style configs (e.g., "200ms", "2s", "1m").
 /// If `s` is a plain number, it's treated as milliseconds for convenience.
-/// MVP item counter: returns number of items represented by an OtapPdata message.
-/// Currently returns 1 for all inputs. In future, use actual row counts for OtapArrowRecords,
-/// and decode or approximate for other formats if needed.
+/// Item count placeholder used when conversion fails.
 fn item_count(_data: &OtapPdata) -> usize {
     MIN_ITEM_INCREMENT
 }
@@ -552,10 +552,62 @@ fn parse_duration_ms(s: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+mod test_helpers {
+    use otel_arrow_rust::otap::OtapArrowRecords;
+    use otel_arrow_rust::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+    };
+    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::status::StatusCode;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, Status, TracesData,
+    };
+
+    pub(super) fn one_trace_record() -> OtapArrowRecords {
+        let traces = TracesData::new(vec![
+            ResourceSpans::build(Resource::default())
+                .scope_spans(vec![
+                    ScopeSpans::build(InstrumentationScope::new("lib"))
+                        .spans(vec![
+                            Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
+                                .status(Status::new("ok", StatusCode::Ok))
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+        crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
+    }
+
+    pub(super) fn one_metric_record() -> OtapArrowRecords {
+        // Minimal metrics: one Gauge with one NumberDataPoint
+        let md = MetricsData::new(vec![
+            ResourceMetrics::build(Resource::default())
+                .scope_metrics(vec![
+                    ScopeMetrics::build(InstrumentationScope::new("lib"))
+                        .metrics(vec![
+                            Metric::build_gauge(
+                                "g",
+                                Gauge::new(vec![NumberDataPoint::build_double(0u64, 1.0).finish()]),
+                            )
+                            .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+        crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use otap_df_engine::testing::test_node;
     use serde_json::json;
+    use super::test_helpers::one_trace_record;
 
     #[test]
     fn test_default_config_ok() {
@@ -627,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_flush_before_append_when_exceeding_max() {
-        use crate::pdata::{OtapPdata, OtlpProtoBytes};
+        use crate::pdata::OtapPdata;
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::processor::TestRuntime;
 
@@ -646,20 +698,19 @@ mod tests {
 
         // run scenario
         let validation = phase.run_test(|mut ctx| async move {
-            // Prepare a trivial pdata message (content is irrelevant for this processor)
-            let pdata = OtapPdata::from(OtlpProtoBytes::ExportLogsRequest(Vec::new()));
-            // Send two messages; hitting max=2 should flush the two immediately
-            ctx.process(Message::PData(pdata.clone()))
+            let pdata1: OtapPdata = one_trace_record().into();
+            ctx.process(Message::PData(pdata1))
                 .await
                 .expect("process 1");
-            ctx.process(Message::PData(pdata.clone()))
+            let pdata2: OtapPdata = one_trace_record().into();
+            ctx.process(Message::PData(pdata2))
                 .await
                 .expect("process 2");
             let emitted = ctx.drain_pdata().await;
-            assert_eq!(emitted.len(), 2, "flush expected when count reaches max");
+            assert_eq!(emitted.len(), 1, "flush expected once at max boundary");
 
-            // Third message should buffer (count=1), not flushed yet
-            ctx.process(Message::PData(pdata.clone()))
+            let pdata3: OtapPdata = one_trace_record().into();
+            ctx.process(Message::PData(pdata3))
                 .await
                 .expect("process 3");
             let emitted = ctx.drain_pdata().await;
@@ -669,7 +720,6 @@ mod tests {
                 "no flush expected after third until shutdown"
             );
 
-            // Now flush remaining (the 3rd) via Shutdown
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
@@ -692,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_immediate_flush_on_max_reached() {
-        use crate::pdata::{OtapPdata, OtlpProtoBytes};
+        use crate::pdata::OtapPdata;
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::processor::TestRuntime;
 
@@ -710,9 +760,8 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            let pdata = OtapPdata::from(OtlpProtoBytes::ExportLogsRequest(Vec::new()));
+            let pdata: OtapPdata = one_trace_record().into();
             ctx.process(Message::PData(pdata)).await.expect("process 1");
-            // Should have flushed immediately
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
                 emitted.len(),
@@ -720,7 +769,6 @@ mod tests {
                 "single item should flush immediately when max=1"
             );
 
-            // No more buffered; sending Shutdown shouldn't emit more
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
@@ -765,7 +813,6 @@ mod tests {
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::processor::TestRuntime;
 
-        // Set size trigger to 1
         let cfg = json!({
             "send_batch_size": 1,
             "send_batch_max_size": 10,
@@ -801,7 +848,6 @@ mod tests {
         use otap_df_engine::testing::processor::TestRuntime;
         use std::time::Duration;
 
-        // Set size trigger high so we don't flush until shutdown
         let cfg = json!({
             "send_batch_size": 10,
             "send_batch_max_size": 10,
@@ -837,56 +883,18 @@ mod tests {
 #[cfg(test)]
 mod batching_smoke_tests {
     use super::*;
+    use super::test_helpers::{one_metric_record, one_trace_record};
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::InstrumentationScope;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
-        Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-    };
-    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::status::StatusCode;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
-        ResourceSpans, ScopeSpans, Span, Status, TracesData,
-    };
-
-    fn one_trace_record() -> OtapArrowRecords {
-        let traces = TracesData::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::new("lib"))
-                        .spans(vec![
-                            Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
-                                .status(Status::new("ok", StatusCode::Ok))
-                                .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
-    }
-
-    fn one_metric_record() -> OtapArrowRecords {
-        // Minimal metrics: one Gauge with one NumberDataPoint
-        let md = MetricsData::new(vec![
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::new("lib"))
-                        .metrics(vec![
-                            Metric::build_gauge(
-                                "g",
-                                Gauge::new(vec![NumberDataPoint::build_double(0u64, 1.0).finish()]),
-                            )
-                            .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
-    }
 
     #[test]
-    #[ignore]
+    #[ignore = "Upstream otel-arrow-rust batching/grouping occasionally panics (empty-group/unreachable in groups.rs) for this scenario. Re-enable after upstream fix."]
+    // NOTE:
+    // This smoke test validates cross-signal partitioning and expected row totals.
+    // It is ignored because certain inputs trigger invariants in the upstream
+    // otel-arrow-rust grouping/splitting implementation (e.g., generic_split or
+    // sort_record_batch), causing panics. Processor-level tests already cover
+    // flush and splitting behavior sufficiently here. Once the upstream issue is
+    // resolved, remove the #[ignore] and re-enable this test.
     fn test_make_output_batches_partitions_and_splits() {
         // Build mixed input: 3 traces (1 row each), 2 metrics (1 dp each), interleaved
         let input = vec![
@@ -897,7 +905,7 @@ mod batching_smoke_tests {
             one_trace_record(),
         ];
 
-        // For now, use None for splitting due to upstream batching limitations when some groups are empty
+        // Request no split to validate partitioning without triggering upstream empty-group issue
         let outputs = make_output_batches(None, input).expect("batching ok");
 
         // Expect 2 outputs: one metrics (2 rows), one traces (3 rows)
@@ -913,13 +921,13 @@ mod batching_smoke_tests {
                     let rb = out
                         .get(ArrowPayloadType::UnivariateMetrics)
                         .expect("metrics rb");
-                    assert!(rb.num_rows() <= 2, "metrics batch exceeds max rows");
+                    assert!(rb.num_rows() > 0, "metrics batch must be non-empty");
                     total_metrics_rows += rb.num_rows();
                 }
                 OtapArrowRecords::Traces(_) => {
                     traces_batches += 1;
                     let rb = out.get(ArrowPayloadType::Spans).expect("spans rb");
-                    assert!(rb.num_rows() <= 2, "traces batch exceeds max rows");
+                    assert!(rb.num_rows() > 0, "traces batch must be non-empty");
                     total_traces_rows += rb.num_rows();
                 }
                 OtapArrowRecords::Logs(_) => {
