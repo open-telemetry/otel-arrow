@@ -104,7 +104,7 @@ impl OTLPExporter {
         AckOrNack::Nack(NackMsg::new(
             reply.take_context(),
             status.message().to_string(),
-            code_is_permanent(&status),
+            code_is_permanent(status.code() as i32),
             Some(status.code() as i32),
             reply.take_reply_payload(),
         ))

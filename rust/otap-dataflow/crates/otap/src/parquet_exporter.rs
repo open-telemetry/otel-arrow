@@ -174,10 +174,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    let request: OtapRequest = pdata.split_into();
+                    let mut request: OtapRequest = pdata.split_into();
                     let payload = request.take_request_payload();
                     let requested: OtapArrowRecords = payload.try_into()?;
+                    // TODO some kind of guard for reply
                     let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
+                    _ = save_reply;
 
                     let mut otap_batch = requested;
 

@@ -180,7 +180,7 @@ impl Processor<OtapPdata> for RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::PData(data) => {
+            Message::PData(mut data) => {
                 let rstate = RetryState {
                     retries: 0,
                     last_ts: Instant::now(),
@@ -193,6 +193,7 @@ impl Processor<OtapPdata> for RetryProcessor {
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => {
+                    //let rstate: RetryState;
                     // @@@
                     Ok(())
                 }

@@ -172,18 +172,12 @@ pub enum PipelineControlMsg<PData: crate::PipelineData> {
 
     /// Let the pipeline manager deliver an Ack.
     DeliverAck {
-        // From which component
-        // from_node_id: usize,
-        //
         /// Acknowledgement context
         ack: AckMsg<PData>,
     },
 
     /// Let the pipeline manager deliver an Nack.
     DeliverNack {
-        // From which component
-        // from_node_id: usize,
-        //
         /// Acknowledgement context
         nack: NackMsg<PData>,
     },

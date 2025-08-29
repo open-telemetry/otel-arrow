@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::OtapArrowBytes;
+use crate::grpc::{OtapArrowBytes, code_is_permanent};
 use crate::pdata::{OtapPdata, OtapRequest};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -96,24 +96,34 @@ impl OTAPExporter {
         Ok(OTAPExporter { config })
     }
 
-    // fn partial_success(
-    //     self: &Box<Self>,
-    //     mut reply: OtapRequest,
-    //     rejected: i64,
-    //     message: String,
-    // ) -> AckOrNack<OtapPdata> {
-    //     // retry payload drops here
-    //     AckOrNack::Ack(AckMsg::new(reply.take_context(), Some((rejected, message))))
-    // }
-
     fn batch_status(
         self: &Box<Self>,
         mut reply: OtapRequest,
-        status: BatchStatus,
+        status: Option<BatchStatus>,
     ) -> AckOrNack<OtapPdata> {
-        // retry payload drops here
-
-        AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
+        status
+            .map(|batch| {
+                if batch.status_code == (tonic::Code::Ok as i32) {
+                    AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
+                } else {
+                    AckOrNack::Nack(NackMsg::new(
+                        reply.take_context(),
+                        batch.status_message,
+                        code_is_permanent(batch.status_code),
+                        Some(batch.status_code),
+                        reply.take_reply_payload(),
+                    ))
+                }
+            })
+            .unwrap_or_else(|| {
+                AckOrNack::Nack(NackMsg::new(
+                    reply.take_context(),
+                    "no reply".into(),
+                    false,
+                    None,
+                    reply.take_reply_payload(),
+                ))
+            })
     }
 
     fn grpc_status(
@@ -129,6 +139,20 @@ impl OTAPExporter {
             Some(status.code() as i32),
             reply.take_reply_payload(),
         ))
+    }
+
+    async fn respond_for(
+        self: &Box<Self>,
+        reply: OtapRequest,
+        resp: Result<tonic::Response<tonic::codec::Streaming<BatchStatus>>, Status>,
+    ) -> AckOrNack<OtapPdata> {
+        match resp {
+            Err(status) => self.grpc_status(reply, status),
+            Ok(resp) => match resp.into_inner().message().await {
+                Ok(batch_status) => self.batch_status(reply, batch_status),
+                Err(status) => self.grpc_status(reply, status),
+            },
+        }
     }
 }
 
@@ -171,7 +195,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     error: error.to_string(),
                 })?;
 
-        if let Some(compression) = self.config.compression_method {
+        if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
             arrow_logs_client = arrow_logs_client
                 .send_compressed(encoding)
@@ -207,45 +231,34 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
                     let result = match requested {
                         // match on OTAPData type and use the respective client to send message
-                        // ToDo: Add Ack/Nack handling, send a signal that data has been exported
-                        // check what message the data is
-                        OtapArrowBytes::ArrowMetrics(req) => {
-                            // handle stream differently here?
-                            // ToDo: [LQ or someone else] Check if there is a better way to handle that.
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            let resp = arrow_metrics_client.arrow_metrics(request_stream).await;
-                            let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
-                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
-                            };
-                            acknack
-                        }
-                        OtapArrowBytes::ArrowLogs(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            let resp = arrow_logs_client.arrow_logs(request_stream).await;
-                            let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
-                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
-                            };
-                            acknack
-                        }
-                        OtapArrowBytes::ArrowTraces(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            let resp = arrow_traces_client.arrow_traces(request_stream).await;
-                            let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
-                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
-                            };
-                            acknack
-                        }
+                        // ToDo: [team] Note this is a "single-request" stream; in the Golang
+                        // OTAP exporter we would keep the stream open.
+                        OtapArrowBytes::ArrowMetrics(req) => self.respond_for(
+                            save_reply,
+                            arrow_metrics_client
+                                .arrow_metrics(stream! {
+                                    yield req;
+                                })
+                                .await,
+                        ),
+                        OtapArrowBytes::ArrowLogs(req) => self.respond_for(
+                            save_reply,
+                            arrow_logs_client
+                                .arrow_logs(stream! {
+                                    yield req;
+                                })
+                                .await,
+                        ),
+                        OtapArrowBytes::ArrowTraces(req) => self.respond_for(
+                            save_reply,
+                            arrow_traces_client
+                                .arrow_traces(stream! {
+                                    yield req;
+                                })
+                                .await,
+                        ),
                     };
-                    effect_handler.reply(result).await?;
+                    effect_handler.reply(result.await).await?;
                 }
                 _ => {
                     return Err(Error::ExporterError {
