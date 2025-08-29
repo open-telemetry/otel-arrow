@@ -395,13 +395,10 @@ impl ConstantScalarExpression {
         }
     }
 
-    pub(crate) fn resolve_static<'a, 'b, 'c>(
+    pub(crate) fn resolve_static<'a>(
         &'a mut self,
-        scope: &PipelineResolutionScope<'b>,
-    ) -> ResolvedStaticScalarExpression<'c>
-    where
-        'a: 'c,
-        'b: 'c,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> ResolvedStaticScalarExpression<'a>
     {
         match self {
             ConstantScalarExpression::Reference(r) => {
