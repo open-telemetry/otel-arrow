@@ -5,7 +5,7 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn:otel:syslog_cef:receiver"
+    plugin_urn: "urn::otel::syslog_cef::receiver"
     out_ports:
       out_port:
         destinations:
@@ -15,6 +15,10 @@ nodes:
       listening_addr: "127.0.0.1:4317"
   exporter:
     kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    plugin_urn: "urn:otel:otap:perf:exporter"
     config:
-      grpc_endpoint: "http://127.0.0.1:4317"
+      frequency: 1000
+      cpu_usage: false
+      mem_usage: false
+      disk_usage: false
+      io_usage: false

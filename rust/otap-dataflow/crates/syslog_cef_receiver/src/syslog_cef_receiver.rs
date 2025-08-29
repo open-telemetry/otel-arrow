@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use otap_df_engine::control::NodeControlMsg;
-use crate::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{error::Error, local::receiver as local};
@@ -19,8 +19,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use std::sync::Arc;
 use crate::arrow_records_encoder::ArrowRecordsBuilder;
 
-#[allow(dead_code)]
-const SYLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn::otel::syslog_cef::receiver";
 
 const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
@@ -68,9 +68,9 @@ impl SyslogCefReceiver {
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static SyslogCefReceiver: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    name: SYLOG_CEF_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
+pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: SYSLOG_CEF_RECEIVER_URN,
+    create: |_pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
@@ -849,7 +849,7 @@ mod tests {
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our UDP receiver
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
             test_node(test_runtime.config().name.clone()),
@@ -876,7 +876,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
@@ -903,7 +903,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
