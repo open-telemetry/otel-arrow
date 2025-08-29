@@ -4,6 +4,7 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
+use crate::observed_state::PipelineGroupKey;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
@@ -80,4 +81,11 @@ pub enum Error {
         /// Panic message.
         panic_message: String,
     },
+    
+    /// Unkwown pipeline group key.
+    #[error("Unknown pipeline group key: {pipeline_group_key:?}")]
+    UnknownPipelineGroupKey {
+        /// The unknown pipeline group key.
+        pipeline_group_key: PipelineGroupKey,
+    }
 }

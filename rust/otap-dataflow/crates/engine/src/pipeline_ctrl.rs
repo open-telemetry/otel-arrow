@@ -170,7 +170,13 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineControlMsg::Shutdown => break,
+                        PipelineControlMsg::Shutdown => {
+                            for (_, control_sender) in self.control_senders.iter() {
+                                // ToDo we should only shutdown receiver nodes.
+                                _ = control_sender.send(NodeControlMsg::Shutdown {deadline: Default::default(), reason: "NA".to_string()}).await;
+                            }
+                            break;
+                        },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             self.tick_timers.start(node_id, duration);
                         }
