@@ -30,9 +30,8 @@ pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
 
 /// Default configuration values (parity-aligned as we confirm Go defaults)
 pub const DEFAULT_SEND_BATCH_SIZE: usize = 8192;
-/// Default upper bound on batch size used to chunk oversized inputs (in number of items)
-/// Note: In Go batchprocessor, send_batch_max_size defaults to 0 which means "use send_batch_size".
-/// We mirror that behavior by using a sentinel and normalizing at runtime.
+/// Default upper bound on batch size used to chunk oversized inputs (in number of items).
+/// See Config::send_batch_max_size for normalization semantics.
 pub const DEFAULT_SEND_BATCH_MAX_SIZE: usize = 8192;
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
@@ -82,7 +81,7 @@ fn default_send_batch_size() -> usize {
 }
 
 fn default_send_batch_max_size() -> usize {
-    FOLLOW_SEND_BATCH_SIZE_SENTINEL // Go behavior: 0 means "use send_batch_size"
+    FOLLOW_SEND_BATCH_SIZE_SENTINEL // normalized in from_config
 }
 
 fn default_timeout_ms() -> u64 {
@@ -125,8 +124,7 @@ impl OtapBatchProcessor {
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-        // Normalize config to accept Go-style duration strings for timeout (e.g., "200ms").
-        // If provided as a string, parse and replace with milliseconds before deserialization.
+        // Allow Go-style timeout strings; parse to milliseconds before deserialization.
         let mut cfg_norm = cfg.clone();
         if let Some(s) = cfg.get("timeout").and_then(|v| v.as_str()) {
             if let Some(ms) = parse_duration_ms(s) {
@@ -145,7 +143,7 @@ impl OtapBatchProcessor {
         if config.send_batch_size == 0 {
             config.send_batch_size = MIN_SEND_BATCH_SIZE;
         }
-        // Go behavior: if send_batch_max_size is 0 (sentinel), use send_batch_size
+        // Normalize 0 -> send_batch_size
         let effective_sbs = config.send_batch_size;
         let max = if config.send_batch_max_size == FOLLOW_SEND_BATCH_SIZE_SENTINEL {
             effective_sbs
@@ -418,98 +416,91 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
             }
             Message::PData(data) => {
                 let max = self.config.send_batch_max_size;
-                // Fallback item count for cases where conversion yields zero rows
-                let fallback_count = item_count(&data);
                 match OtapArrowRecords::try_from(data.clone()) {
                     Ok(rec) => {
                         let rows = rec.batch_length();
+                        // Per-signal policy: drop zero-row; pre-flush if exceeding max; append rows; flush on max or send_batch_size.
                         match &rec {
                             OtapArrowRecords::Logs(_) => {
-                                let eff = if rows > 0 { rows } else { fallback_count };
-                                // If adding this would exceed max, flush first
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_logs + eff > max
-                                {
-                                    self.flush_logs(effect).await?;
-                                }
-                                // Append count and buffer appropriate storage
-                                self.rows_logs += eff;
-                                if rows > 0 {
-                                    self.current_logs.push(rec);
-                                } else {
-                                    // zero-row conversion -> keep original pdata for passthrough
-                                    self.passthrough.push(data.clone());
-                                }
-                                // Flush when reaching max, or when reaching send_batch_size
-                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max)
-                                    || self.rows_logs >= self.config.send_batch_size
-                                {
-                                    self.flush_logs(effect).await
-                                } else {
+                                if rows == 0 {
+                                    effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                     Ok(())
+                                } else {
+                                    if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_logs + rows > max
+                                    {
+                                        self.flush_logs(effect).await?;
+                                    }
+                                    self.rows_logs += rows;
+                                    self.current_logs.push(rec);
+                                    if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_logs >= max)
+                                        || self.rows_logs >= self.config.send_batch_size
+                                    {
+                                        self.flush_logs(effect).await
+                                    } else {
+                                        Ok(())
+                                    }
                                 }
                             }
                             OtapArrowRecords::Metrics(_) => {
-                                let eff = if rows > 0 { rows } else { fallback_count };
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_metrics + eff > max
-                                {
-                                    self.flush_metrics(effect).await?;
-                                }
-                                self.rows_metrics += eff;
-                                if rows > 0 {
-                                    self.current_metrics.push(rec);
-                                } else {
-                                    self.passthrough.push(data.clone());
-                                }
-                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_metrics >= max)
-                                    || self.rows_metrics >= self.config.send_batch_size
-                                {
-                                    self.flush_metrics(effect).await
-                                } else {
+                                if rows == 0 {
+                                    effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                     Ok(())
+                                } else {
+                                    if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_metrics + rows > max
+                                    {
+                                        self.flush_metrics(effect).await?;
+                                    }
+                                    self.rows_metrics += rows;
+                                    self.current_metrics.push(rec);
+                                    if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_metrics >= max)
+                                        || self.rows_metrics >= self.config.send_batch_size
+                                    {
+                                        self.flush_metrics(effect).await
+                                    } else {
+                                        Ok(())
+                                    }
                                 }
                             }
                             OtapArrowRecords::Traces(_) => {
-                                let eff = if rows > 0 { rows } else { fallback_count };
-                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_traces + eff > max
-                                {
-                                    self.flush_traces(effect).await?;
-                                }
-                                self.rows_traces += eff;
-                                if rows > 0 {
-                                    self.current_traces.push(rec);
-                                } else {
-                                    self.passthrough.push(data.clone());
-                                }
-                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
-                                    && self.rows_traces >= max)
-                                    || self.rows_traces >= self.config.send_batch_size
-                                {
-                                    self.flush_traces(effect).await
-                                } else {
+                                if rows == 0 {
+                                    effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                     Ok(())
+                                } else {
+                                    if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_traces + rows > max
+                                    {
+                                        self.flush_traces(effect).await?;
+                                    }
+                                    self.rows_traces += rows;
+                                    self.current_traces.push(rec);
+                                    if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                        && self.rows_traces >= max)
+                                        || self.rows_traces >= self.config.send_batch_size
+                                    {
+                                        self.flush_traces(effect).await
+                                    } else {
+                                        Ok(())
+                                    }
                                 }
                             }
                         }
                     }
                     Err(_) => {
-                        // If conversion fails, route based on signal type.
+                        // Conversion failed: log and drop (TODO: Nack)
                         match data.signal_type() {
                             SignalType::Logs => {
-                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
                                 effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                 Ok(())
                             }
                             SignalType::Traces => {
-                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
                                 effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                 Ok(())
                             }
                             SignalType::Metrics => {
-                                // Conversion failed -> log and drop. TODO: emit Nack in the future.
                                 effect.info(LOG_MSG_DROP_NON_OTAP).await;
                                 Ok(())
                             }
@@ -534,13 +525,6 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
             create_otap_batch_processor(pipeline_ctx, node, cfg, proc_cfg)
         },
     };
-
-/// Parses duration strings from Go-style configs (e.g., "200ms", "2s", "1m").
-/// If `s` is a plain number, it's treated as milliseconds for convenience.
-/// Item count placeholder used when conversion fails.
-fn item_count(_data: &OtapPdata) -> usize {
-    MIN_ITEM_INCREMENT
-}
 
 /// Parses duration strings using Go-like syntax (e.g., "200ms", "2s", "1m", "1m30s").
 /// Returns milliseconds. Bare numbers are NOT accepted here to mirror Go's time.ParseDuration.
@@ -888,13 +872,7 @@ mod batching_smoke_tests {
 
     #[test]
     #[ignore = "Upstream otel-arrow-rust batching/grouping occasionally panics (empty-group/unreachable in groups.rs) for this scenario. Re-enable after upstream fix."]
-    // NOTE:
-    // This smoke test validates cross-signal partitioning and expected row totals.
-    // It is ignored because certain inputs trigger invariants in the upstream
-    // otel-arrow-rust grouping/splitting implementation (e.g., generic_split or
-    // sort_record_batch), causing panics. Processor-level tests already cover
-    // flush and splitting behavior sufficiently here. Once the upstream issue is
-    // resolved, remove the #[ignore] and re-enable this test.
+    // NOTE: Validates cross-signal partitioning and expected row totals.
     fn test_make_output_batches_partitions_and_splits() {
         // Build mixed input: 3 traces (1 row each), 2 metrics (1 dp each), interleaved
         let input = vec![
@@ -905,7 +883,7 @@ mod batching_smoke_tests {
             one_trace_record(),
         ];
 
-        // Request no split to validate partitioning without triggering upstream empty-group issue
+        // Request no split to validate partitioning only
         let outputs = make_output_batches(None, input).expect("batching ok");
 
         // Expect 2 outputs: one metrics (2 rows), one traces (3 rows)
