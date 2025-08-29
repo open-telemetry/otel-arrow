@@ -12,11 +12,11 @@ use otap_df_telemetry_macros::metric_set;
 pub struct FakeSignalReceiverMetrics {
     /// Number of logs generated.
     #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    pub logs_produced: Counter<u64>,
     /// Number of spans generated.
     #[metric(unit = "{span}")]
-    pub spans: Counter<u64>,
+    pub spans_produced: Counter<u64>,
     /// Number of metrics generated.
     #[metric(unit = "{metric}")]
-    pub metrics: Counter<u64>,
+    pub metrics_produced: Counter<u64>,
 }
