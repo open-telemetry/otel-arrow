@@ -194,7 +194,6 @@ impl Processor<OtapPdata> for RetryProcessor {
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => {
-		    ack.context
                     // @@@
                     Ok(())
                 }

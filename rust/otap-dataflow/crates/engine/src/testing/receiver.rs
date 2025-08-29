@@ -26,7 +26,7 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
-pub struct TestContext<PData> {
+pub struct TestContext<PData: crate::PipelineData> {
     /// Sender for control messages
     control_sender: Sender<NodeControlMsg<PData>>,
 }
@@ -43,7 +43,7 @@ pub struct SendValidateContext<PData> {
     counters: CtrlMsgCounters,
 }
 
-impl<PData> TestContext<PData> {
+impl<PData: crate::PipelineData> TestContext<PData> {
     /// Sends a timer tick control message.
     ///
     /// # Errors
@@ -147,7 +147,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of a receiver.
-pub struct TestPhase<PData> {
+pub struct TestPhase<PData: crate::PipelineData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -159,7 +159,7 @@ pub struct TestPhase<PData> {
 }
 
 /// Data and operations for the validation phase of a receiver.
-pub struct ValidationPhase<PData> {
+pub struct ValidationPhase<PData: crate::PipelineData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -181,7 +181,7 @@ pub struct ValidationPhase<PData> {
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
-impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
@@ -220,13 +220,13 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> Default for TestRuntime<PData> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<PData: Debug + 'static> TestPhase<PData> {
+impl<PData: crate::PipelineData + Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
@@ -293,7 +293,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 }
 
-impl<PData> ValidationPhase<PData> {
+impl<PData: crate::PipelineData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///

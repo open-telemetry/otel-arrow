@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// Note: This is useful for creating a single interface for the processor regardless of the effect
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
-pub enum ProcessorWrapper<PData> {
+pub enum ProcessorWrapper<PData: crate::PipelineData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// Index node identifier.
@@ -74,7 +74,7 @@ pub enum ProcessorWrapper<PData> {
 ///
 /// This allows external control over the message processing loop, useful for testing and custom
 /// processing scenarios.
-pub enum ProcessorWrapperRuntime<PData> {
+pub enum ProcessorWrapperRuntime<PData: crate::PipelineData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// The processor instance.
@@ -95,7 +95,7 @@ pub enum ProcessorWrapperRuntime<PData> {
     },
 }
 
-impl<PData> ProcessorWrapper<PData> {
+impl<PData: crate::PipelineData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,
@@ -255,7 +255,7 @@ impl<PData> ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node<PData> for ProcessorWrapper<PData> {
+impl<PData: crate::PipelineData> Node<PData> for ProcessorWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ProcessorWrapper::Local { .. } => false,
@@ -296,7 +296,7 @@ impl<PData> Node<PData> for ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable<PData> for ProcessorWrapper<PData> {
+impl<PData: crate::PipelineData> Controllable<PData> for ProcessorWrapper<PData> {
     /// Returns the control message sender for the processor.
     fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
@@ -308,7 +308,7 @@ impl<PData> Controllable<PData> for ProcessorWrapper<PData> {
     }
 }
 
-impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
+impl<PData: crate::PipelineData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
         node_id: NodeId,
@@ -336,7 +336,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     }
 }
 
-impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
+impl<PData: crate::PipelineData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
         node_id: NodeId,

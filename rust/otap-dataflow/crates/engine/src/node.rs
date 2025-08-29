@@ -20,7 +20,7 @@ pub use otap_df_config::NodeId as NodeName;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
-pub trait Node<PData> {
+pub trait Node<PData: crate::PipelineData> {
     /// Flag indicating whether the node is shared (true) or local (false).
     #[must_use]
     fn is_shared(&self) -> bool;
@@ -61,7 +61,7 @@ pub enum NodeType {
 }
 
 /// Trait for nodes that can send pdata to a specific port.
-pub trait NodeWithPDataSender<PData>: Node<PData> {
+pub trait NodeWithPDataSender<PData: crate::PipelineData>: Node<PData> {
     /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
@@ -72,7 +72,7 @@ pub trait NodeWithPDataSender<PData>: Node<PData> {
 }
 
 /// Trait for nodes that can receive pdata.
-pub trait NodeWithPDataReceiver<PData>: Node<PData> {
+pub trait NodeWithPDataReceiver<PData: crate::PipelineData>: Node<PData> {
     /// Sets the receiver for pdata messages on the node.
     fn set_pdata_receiver(&mut self, node: NodeId, receiver: Receiver<PData>) -> Result<(), Error>;
 }

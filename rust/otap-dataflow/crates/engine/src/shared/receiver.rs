@@ -51,7 +51,7 @@ use tokio::net::TcpListener;
 /// Receivers are responsible for accepting data from external sources and converting
 /// it into messages that can be processed by the pipeline.
 #[async_trait]
-pub trait Receiver<PData> {
+pub trait Receiver<PData: crate::PipelineData> {
     /// Similar to local::receiver::Receiver::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
@@ -64,11 +64,11 @@ pub trait Receiver<PData> {
 ///
 /// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannel<PData> {
+pub struct ControlChannel<PData: crate::PipelineData> {
     rx: SharedReceiver<NodeControlMsg<PData>>,
 }
 
-impl<PData> ControlChannel<PData> {
+impl<PData: crate::PipelineData> ControlChannel<PData> {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
     pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
@@ -87,7 +87,7 @@ impl<PData> ControlChannel<PData> {
 
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
-pub struct EffectHandler<PData> {
+pub struct EffectHandler<PData: crate::PipelineData> {
     core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
@@ -98,7 +98,7 @@ pub struct EffectHandler<PData> {
 }
 
 /// Implementation for the `Send` effect handler.
-impl<PData> EffectHandler<PData> {
+impl<PData: crate::PipelineData> EffectHandler<PData> {
     /// Creates a new sendable effect handler with the given receiver name.
     ///
     /// Use this constructor when your receiver do need to be sent across threads or

@@ -44,7 +44,7 @@ use std::time::Duration;
 
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
-pub trait Exporter<PData> {
+pub trait Exporter<PData: crate::PipelineData> {
     /// Starts the exporter and begins exporting incoming data.
     ///
     /// The pipeline engine will call this function to start the exporter in a separate task.
@@ -88,12 +88,12 @@ pub trait Exporter<PData> {
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData> {
+pub struct EffectHandler<PData: crate::PipelineData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
-impl<PData> EffectHandler<PData> {
+impl<PData: crate::PipelineData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
     pub fn new(node_id: NodeId) -> Self {

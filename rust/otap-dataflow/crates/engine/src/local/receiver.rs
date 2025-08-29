@@ -51,7 +51,7 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Receivers are responsible for accepting data from external sources and converting
 /// it into messages that can be processed by the pipeline.
 #[async_trait( ? Send)]
-pub trait Receiver<PData> {
+pub trait Receiver<PData: crate::PipelineData> {
     /// Starts the receiver and begins processing incoming external data and control messages.
     ///
     /// The pipeline engine will call this function to start the receiver in a separate task.
@@ -96,11 +96,11 @@ pub trait Receiver<PData> {
 ///
 /// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannel<PData> {
+pub struct ControlChannel<PData: crate::PipelineData> {
     rx: crate::message::Receiver<NodeControlMsg<PData>>,
 }
 
-impl<PData> ControlChannel<PData> {
+impl<PData: crate::PipelineData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
     pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
@@ -119,7 +119,7 @@ impl<PData> ControlChannel<PData> {
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData> {
+pub struct EffectHandler<PData: crate::PipelineData> {
     core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
@@ -130,7 +130,7 @@ pub struct EffectHandler<PData> {
 }
 
 /// Implementation for the `!Send` effect handler.
-impl<PData> EffectHandler<PData> {
+impl<PData: crate::PipelineData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
     #[must_use]
     pub fn new(

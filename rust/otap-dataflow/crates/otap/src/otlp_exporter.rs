@@ -6,7 +6,7 @@ use crate::grpc::{
     code_is_permanent,
     otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient},
 };
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPayload, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -83,29 +83,27 @@ impl OTLPExporter {
 
     fn partial_success(
         self: &Box<Self>,
-        ctx: OtapPdata,
+        ctx: Context,
         rejected: i64,
         message: String,
     ) -> AckOrNack<OtapPdata> {
         AckOrNack::Ack(AckMsg::new(ctx, Some((rejected, message))))
     }
 
-    fn ok(self: &Box<Self>, ctx: OtapPdata) -> AckOrNack<OtapPdata> {
+    fn ok(self: &Box<Self>, ctx: Context) -> AckOrNack<OtapPdata> {
         AckOrNack::Ack(AckMsg::new(ctx, None))
     }
 
     fn grpc_status(
         self: &Box<Self>,
-        context: OtapPdata,
+        failed: Housing<OtapPdata>,
         status: Status,
-        pdata: Option<OtapPdata>,
     ) -> AckOrNack<OtapPdata> {
         AckOrNack::Nack(NackMsg::new(
-            context,
             status.message().to_string(),
             code_is_permanent(&status),
             Some(status.code() as i32),
-            pdata,
+            failed,
         ))
     }
 }

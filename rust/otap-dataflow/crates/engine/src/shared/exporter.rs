@@ -48,7 +48,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 
 /// A trait for egress exporters (Send definition).
 #[async_trait]
-pub trait Exporter<PData> {
+pub trait Exporter<PData: crate::PipelineData> {
     /// Similar to local::exporter::Exporter::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
@@ -65,7 +65,7 @@ pub trait Exporter<PData> {
 /// Note: This approach is used to implement a graceful shutdown. The engine will first close all
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
-pub struct MessageChannel<PData> {
+pub struct MessageChannel<PData: crate::PipelineData> {
     control_rx: Option<SharedReceiver<NodeControlMsg<PData>>>,
     pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
@@ -75,7 +75,7 @@ pub struct MessageChannel<PData> {
     pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
-impl<PData> MessageChannel<PData> {
+impl<PData: crate::PipelineData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(
@@ -206,12 +206,12 @@ impl<PData> MessageChannel<PData> {
 
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData> {
+pub struct EffectHandler<PData: crate::PipelineData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
-impl<PData> EffectHandler<PData> {
+impl<PData: crate::PipelineData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
     #[must_use]
     pub fn new(node_id: NodeId) -> Self {

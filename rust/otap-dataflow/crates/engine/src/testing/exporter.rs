@@ -27,7 +27,7 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// A context object that holds transmitters for use in test tasks.
-pub struct TestContext<PData> {
+pub struct TestContext<PData: crate::PipelineData> {
     /// Sender for control messages
     control_tx: Sender<NodeControlMsg<PData>>,
     /// Sender for pipeline data
@@ -36,7 +36,7 @@ pub struct TestContext<PData> {
     counters: CtrlMsgCounters,
 }
 
-impl<PData> Clone for TestContext<PData> {
+impl<PData: crate::PipelineData> Clone for TestContext<PData> {
     fn clone(&self) -> Self {
         Self {
             control_tx: self.control_tx.clone(),
@@ -46,7 +46,7 @@ impl<PData> Clone for TestContext<PData> {
     }
 }
 
-impl<PData> TestContext<PData> {
+impl<PData: crate::PipelineData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     #[must_use]
     pub fn new(
@@ -140,7 +140,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of an exporter.
-pub struct TestPhase<PData> {
+pub struct TestPhase<PData: crate::PipelineData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -158,7 +158,7 @@ pub struct TestPhase<PData> {
 }
 
 /// Data and operations for the validation phase of an exporter.
-pub struct ValidationPhase<PData> {
+pub struct ValidationPhase<PData: crate::PipelineData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -175,7 +175,7 @@ pub struct ValidationPhase<PData> {
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
-impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
@@ -243,13 +243,13 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> Default for TestRuntime<PData> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<PData: Debug + 'static> TestPhase<PData> {
+impl<PData: crate::PipelineData + Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
     where
@@ -281,7 +281,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 }
 
-impl<PData> ValidationPhase<PData> {
+impl<PData: crate::PipelineData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///

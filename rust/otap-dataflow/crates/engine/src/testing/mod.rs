@@ -32,6 +32,13 @@ pub use node::{test_node, test_nodes};
 #[derive(Debug, PartialEq, Clone)]
 pub struct TestMsg(pub String);
 
+/// Pipeline data trait allows the engine to move context
+impl crate::PipelineData for TestMsg {
+    type Context = ();
+
+    type Payload = String;
+}
+
 impl TestMsg {
     /// Creates a new test message with the given content.
     pub fn new<S: Into<String>>(content: S) -> Self {
@@ -61,7 +68,7 @@ impl CtrlMsgCounters {
     }
 
     /// Handles incoming control messages and increments the appropriate counter.
-    pub fn update_with<PData>(&self, msg: &NodeControlMsg<PData>) {
+    pub fn update_with<PData: crate::PipelineData>(&self, msg: &NodeControlMsg<PData>) {
         match msg {
             NodeControlMsg::TimerTick { .. } => self.increment_timer_tick(),
             NodeControlMsg::Config { .. } => self.increment_config(),

@@ -27,7 +27,7 @@ use std::sync::Arc;
 ///
 /// Note: This is useful for creating a single interface for the receiver regardless of their
 /// 'sendability'.
-pub enum ReceiverWrapper<PData> {
+pub enum ReceiverWrapper<PData: crate::PipelineData> {
     /// A receiver with a `!Send` implementation.
     Local {
         /// Index node identifier.
@@ -69,7 +69,7 @@ pub enum ReceiverWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable<PData> for ReceiverWrapper<PData> {
+impl<PData: crate::PipelineData> Controllable<PData> for ReceiverWrapper<PData> {
     /// Returns the control message sender for the receiver.
     fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
@@ -81,7 +81,7 @@ impl<PData> Controllable<PData> for ReceiverWrapper<PData> {
     }
 }
 
-impl<PData> ReceiverWrapper<PData> {
+impl<PData: crate::PipelineData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(
         receiver: R,
@@ -207,7 +207,7 @@ impl<PData> ReceiverWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node<PData> for ReceiverWrapper<PData> {
+impl<PData: crate::PipelineData> Node<PData> for ReceiverWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ReceiverWrapper::Local { .. } => false,
@@ -247,7 +247,7 @@ impl<PData> Node<PData> for ReceiverWrapper<PData> {
     }
 }
 
-impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
+impl<PData: crate::PipelineData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
         node_id: NodeId,

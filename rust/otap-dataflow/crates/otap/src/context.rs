@@ -4,15 +4,6 @@
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
-pub struct RSVP {
-    /// First register
-    r0: Register,
-
-    /// Second register
-    r1: Register,
-}
-
-#[derive(Clone, Debug)]
 pub enum Register {
     /// A usize
     Usize(usize),
@@ -24,6 +15,24 @@ pub enum Register {
     None,
 }
 
+#[derive(Clone, Debug)]
+pub struct RSVP {
+    /// First register
+    r0: Register,
+
+    /// Second register
+    r1: Register,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReplyTo {
+    /// The requesting node.
+    node_id: usize,
+
+    /// Node-defined return state provided on return.
+    rsvp: RSVP,
+}
+
 /// Context for OTAP requests
 #[derive(Clone, Debug)]
 pub struct Context {
@@ -31,12 +40,40 @@ pub struct Context {
     reply_to: Vec<ReplyTo>,
 }
 
-#[derive(Clone, pub struct ReplyTo {
-    /// The requesting node.
-    node_id: usize,
+/// Context housing.
+pub struct Housing<T> {
+    pub(crate) context: Context,
+    pub(crate) value: T,
+}
 
-    /// Node-defined return state provided on return.
-    rsvp: RSVP,
+impl<T> From<(Context, T)> for Housing<T> {
+    fn from((context, value): (Context, T)) -> Self {
+        Self { context, value }
+    }
+}
+
+pub struct MutHousing<T> {
+    context: Option<Context>,
+    value: Option<T>,
+}
+
+impl<T> From<Housing<T>> for MutHousing<T> {
+    fn from(h: Housing<T>) -> Self {
+        Self {
+            context: Some(h.context),
+            value: Some(h.value),
+        }
+    }
+}
+
+impl<T> Housing<T> {
+    /// New housing with empty context.
+    pub(crate) fn new(value: T) -> Self {
+        Self {
+            context: Context::new(),
+            value,
+        }
+    }
 }
 
 impl Context {

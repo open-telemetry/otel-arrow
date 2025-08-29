@@ -26,7 +26,7 @@ use std::sync::Arc;
 ///
 /// Note: This is useful for creating a single interface for the exporter regardless of their
 /// 'sendability'.
-pub enum ExporterWrapper<PData> {
+pub enum ExporterWrapper<PData: crate::PipelineData> {
     /// An exporter with a `!Send` implementation.
     Local {
         /// Index identifier for the node.
@@ -64,7 +64,7 @@ pub enum ExporterWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable<PData> for ExporterWrapper<PData> {
+impl<PData: crate::PipelineData> Controllable<PData> for ExporterWrapper<PData> {
     /// Returns the control message sender for the exporter.
     fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
@@ -76,7 +76,7 @@ impl<PData> Controllable<PData> for ExporterWrapper<PData> {
     }
 }
 
-impl<PData> ExporterWrapper<PData> {
+impl<PData: crate::PipelineData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
     pub fn local<E>(
@@ -181,7 +181,7 @@ impl<PData> ExporterWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node<PData> for ExporterWrapper<PData> {
+impl<PData: crate::PipelineData> Node<PData> for ExporterWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ExporterWrapper::Local { .. } => false,
@@ -221,7 +221,7 @@ impl<PData> Node<PData> for ExporterWrapper<PData> {
     }
 }
 
-impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
+impl<PData: crate::PipelineData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
         node_id: NodeId,
@@ -246,7 +246,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg;
+    use crate::control::{AckMsg, NodeControlMsg};
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
@@ -456,16 +456,13 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
-            .send_async(NodeControlMsg::Ack { id: 1 })
+            .send_async(NodeControlMsg::Ack(AckMsg::new((), None)))
             .await
             .unwrap();
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            Message::Control(NodeControlMsg::Ack { id: 1 })
-        ));
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Ack(_)),));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
@@ -628,7 +625,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack(AckMsg::new((), None)))
                 .await
                 .is_err()
         );

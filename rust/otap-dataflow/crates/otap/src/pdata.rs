@@ -100,7 +100,7 @@ use prost::{EncodeError, Message};
 use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
-pub use super::context::{Context, RSVP, Register, ReplyTo};
+pub use super::context::{Context, Housing, RSVP, Register, ReplyTo};
 
 /// module contains related to pdata
 pub mod error {
@@ -147,11 +147,6 @@ impl OtlpProtoBytes {
     }
 }
 
-pub enum OtapPdata {
-    context: Context,
-    value: OtapPayload,
-}
-
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -166,12 +161,16 @@ pub enum OtapPayload {
     OtapArrowRecords(OtapArrowRecords),
 }
 
+/// Context + container telemetry data
+#[derive(Clone, Debug)]
+pub struct OtapPdata(Housing<OtapPayload>);
+
 impl OtapPdata {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
-        match self {
-            HousingSelf::OtlpBytes { value, .. } => value.signal_type(),
+        match self.0.value {
+            Self::OtlpBytes { value, .. } => value.signal_type(),
             Self::OtapArrowBytes { value, .. } => value.signal_type(),
             Self::OtapArrowRecords { value, .. } => value.signal_type(),
         }
@@ -196,9 +195,11 @@ impl OtapPdata {
             Self::OtapArrowRecords { context, .. } => context,
         }
     }
+}
 
-    #[must_use]
-    pub(crate) fn take_context(&mut self) -> Context {}
+impl otap_df_engine::PipelineData for OtapPdata {
+    type Context = Context;
+    type Payload = OtapPayload;
 }
 
 /* -------- Helper trait implementations -------- */
@@ -209,6 +210,7 @@ trait OtapPdataHelpers {
     fn signal_type(&self) -> SignalType;
 }
 
+// @@@ should this (above/below) be on OtapPayload
 impl OtapPdataHelpers for OtlpProtoBytes {
     fn signal_type(&self) -> SignalType {
         match self {

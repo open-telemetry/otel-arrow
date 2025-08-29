@@ -15,13 +15,13 @@ use tokio::net::{TcpListener, UdpSocket};
 ///
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
-pub(crate) struct EffectHandlerCore<PData> {
+pub(crate) struct EffectHandlerCore<PData: crate::PipelineData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
 }
 
-impl<PData> EffectHandlerCore<PData> {
+impl<PData: crate::PipelineData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id.
     pub(crate) fn new(node_id: NodeId) -> Self {
         Self {
@@ -221,12 +221,12 @@ impl<PData> EffectHandlerCore<PData> {
 }
 
 /// Handle to cancel a running timer.
-pub struct TimerCancelHandle<PData> {
+pub struct TimerCancelHandle<PData: crate::PipelineData> {
     node_id: usize,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
 }
 
-impl<PData> TimerCancelHandle<PData> {
+impl<PData: crate::PipelineData> TimerCancelHandle<PData> {
     /// Cancels the timer.
     pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
         self.pipeline_ctrl_msg_sender
@@ -238,12 +238,12 @@ impl<PData> TimerCancelHandle<PData> {
 }
 
 /// Handle to cancel a running telemetry timer.
-pub struct TelemetryTimerCancelHandle<PData> {
+pub struct TelemetryTimerCancelHandle<PData: crate::PipelineData> {
     node_id: NodeId,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
 }
 
-impl<PData> TelemetryTimerCancelHandle<PData> {
+impl<PData: crate::PipelineData> TelemetryTimerCancelHandle<PData> {
     /// Cancels the telemetry collection timer.
     pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
         self.pipeline_ctrl_msg_sender

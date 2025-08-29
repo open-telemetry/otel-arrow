@@ -22,7 +22,7 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
-pub struct TestContext<PData> {
+pub struct TestContext<PData: crate::PipelineData> {
     runtime: ProcessorWrapperRuntime<PData>,
     output_receiver: Option<Receiver<PData>>,
 }
@@ -32,7 +32,7 @@ pub struct ValidateContext {
     counters: CtrlMsgCounters,
 }
 
-impl<PData> TestContext<PData> {
+impl<PData: crate::PipelineData> TestContext<PData> {
     /// Creates a new TestContext from a ProcessorWrapperRuntime.
     #[must_use]
     pub fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
@@ -114,7 +114,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of a processor.
-pub struct TestPhase<PData> {
+pub struct TestPhase<PData: crate::PipelineData> {
     rt: tokio::runtime::Runtime,
     local_tasks: LocalSet,
     processor: ProcessorWrapper<PData>,
@@ -129,7 +129,7 @@ pub struct ValidationPhase {
     counters: CtrlMsgCounters,
 }
 
-impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
@@ -205,13 +205,13 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+impl<PData: crate::PipelineData + Clone + Debug + 'static> Default for TestRuntime<PData> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<PData: Debug + 'static> TestPhase<PData> {
+impl<PData: crate::PipelineData + Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase
     where

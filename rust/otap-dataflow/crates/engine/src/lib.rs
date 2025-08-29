@@ -46,6 +46,14 @@ pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
 
+/// PipelineData describes any pipeline data format.
+pub trait PipelineData {
+    /// Context propagates forward and backward.
+    type Context: Debug + Clone;
+    /// Payload propagates forward, backward only for Nack.
+    type Payload: Debug + Clone;
+}
+
 /// Trait for factory types that expose a name.
 ///
 /// This trait is used to define a common interface for different types of factories
@@ -56,7 +64,7 @@ pub trait NamedFactory {
 }
 
 /// A factory for creating receivers.
-pub struct ReceiverFactory<PData> {
+pub struct ReceiverFactory<PData: PipelineData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new receiver instance.
@@ -69,7 +77,7 @@ pub struct ReceiverFactory<PData> {
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
-impl<PData> Clone for ReceiverFactory<PData> {
+impl<PData: PipelineData> Clone for ReceiverFactory<PData> {
     fn clone(&self) -> Self {
         ReceiverFactory {
             name: self.name,
@@ -78,14 +86,14 @@ impl<PData> Clone for ReceiverFactory<PData> {
     }
 }
 
-impl<PData> NamedFactory for ReceiverFactory<PData> {
+impl<PData: PipelineData> NamedFactory for ReceiverFactory<PData> {
     fn name(&self) -> &'static str {
         self.name
     }
 }
 
 /// A factory for creating processors.
-pub struct ProcessorFactory<PData> {
+pub struct ProcessorFactory<PData: PipelineData> {
     /// The name of the processor.
     pub name: &'static str,
     /// A function that creates a new processor instance.
@@ -98,7 +106,7 @@ pub struct ProcessorFactory<PData> {
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
-impl<PData> Clone for ProcessorFactory<PData> {
+impl<PData: PipelineData> Clone for ProcessorFactory<PData> {
     fn clone(&self) -> Self {
         ProcessorFactory {
             name: self.name,
@@ -107,14 +115,14 @@ impl<PData> Clone for ProcessorFactory<PData> {
     }
 }
 
-impl<PData> NamedFactory for ProcessorFactory<PData> {
+impl<PData: PipelineData> NamedFactory for ProcessorFactory<PData> {
     fn name(&self) -> &'static str {
         self.name
     }
 }
 
 /// A factory for creating exporter.
-pub struct ExporterFactory<PData> {
+pub struct ExporterFactory<PData: PipelineData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new exporter instance.
@@ -127,7 +135,7 @@ pub struct ExporterFactory<PData> {
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
-impl<PData> Clone for ExporterFactory<PData> {
+impl<PData: PipelineData> Clone for ExporterFactory<PData> {
     fn clone(&self) -> Self {
         ExporterFactory {
             name: self.name,
@@ -136,7 +144,7 @@ impl<PData> Clone for ExporterFactory<PData> {
     }
 }
 
-impl<PData> NamedFactory for ExporterFactory<PData> {
+impl<PData: PipelineData> NamedFactory for ExporterFactory<PData> {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -170,7 +178,7 @@ where
 /// static FACTORY_REGISTRY: PipelineFactory<MyData> = build_factory();
 /// ```
 #[must_use]
-pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
+pub const fn build_factory<PData: PipelineData + 'static + Clone>() -> PipelineFactory<PData> {
     // This function should never actually be called since the macro replaces it entirely.
     // If it is called, that indicates a bug in the macro system.
     panic!(
@@ -182,7 +190,7 @@ pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
 ///
 /// This factory contains a registry of all the micro-factories for receivers, processors, and
 /// exporters, as well as the logic for creating pipelines based on a given configuration.
-pub struct PipelineFactory<PData: 'static + Clone> {
+pub struct PipelineFactory<PData: PipelineData + 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
@@ -191,7 +199,7 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
+impl<PData: PipelineData + 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -576,7 +584,7 @@ struct HyperEdgeRuntime {
 ///
 /// Each item represents a hyper-edge with source node id, port, dispatch strategy, and destination
 /// node ids.
-fn collect_hyper_edges_runtime<PData>(
+fn collect_hyper_edges_runtime<PData: PipelineData>(
     receivers: &[ReceiverWrapper<PData>],
     processors: &[ProcessorWrapper<PData>],
 ) -> Vec<HyperEdgeRuntime> {
@@ -605,4 +613,22 @@ fn collect_hyper_edges_runtime<PData>(
         }
     }
     edges
+}
+
+#[cfg(test)]
+impl PipelineData for String {
+    type Context = ();
+    type Payload = String;
+}
+
+#[cfg(test)]
+impl PipelineData for u64 {
+    type Context = ();
+    type Payload = u64;
+}
+
+#[cfg(test)]
+impl PipelineData for () {
+    type Context = ();
+    type Payload = ();
 }

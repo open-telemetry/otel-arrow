@@ -17,7 +17,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 ///
 /// Messages are categorized as either pipeline data (`PData`) or control messages (`Control`).
 #[derive(Debug, Clone)]
-pub enum Message<PData> {
+pub enum Message<PData: crate::PipelineData> {
     /// A pipeline data message traversing the pipeline.
     PData(PData),
 
@@ -25,7 +25,7 @@ pub enum Message<PData> {
     Control(NodeControlMsg<PData>),
 }
 
-impl<Data> Message<Data> {
+impl<Data: crate::PipelineData> Message<Data> {
     /// Create a data message with the given payload.
     #[must_use]
     pub fn data_msg(data: Data) -> Self {
@@ -165,7 +165,7 @@ impl<T> Receiver<T> {
 /// Note: This approach is used to implement a graceful shutdown. The engine will first close all
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
-pub struct MessageChannel<PData> {
+pub struct MessageChannel<PData: crate::PipelineData> {
     control_rx: Option<Receiver<NodeControlMsg<PData>>>,
     pdata_rx: Option<Receiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
@@ -175,7 +175,7 @@ pub struct MessageChannel<PData> {
     pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
-impl<PData> MessageChannel<PData> {
+impl<PData: crate::PipelineData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(control_rx: Receiver<NodeControlMsg<PData>>, pdata_rx: Receiver<PData>) -> Self {

@@ -20,7 +20,7 @@ use tokio::task::LocalSet;
 ///
 /// Note: Having a Debug bound on `PData` allows us to use it in logging and debugging contexts,
 /// which is useful for tracing the pipeline's execution and state.
-pub struct RuntimePipeline<PData: Debug> {
+pub struct RuntimePipeline<PData: crate::PipelineData + Debug> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
     /// A map node id to receiver runtime node.
@@ -48,7 +48,7 @@ impl PipeNode {
     }
 }
 
-impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
+impl<PData: crate::PipelineData + 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
     pub(crate) fn new(
