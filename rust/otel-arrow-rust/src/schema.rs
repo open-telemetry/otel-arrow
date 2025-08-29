@@ -1,30 +1,27 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //todo: support schema transformation if we need to implement the encoding part.
 
 // TODO write documentation for this crate
 #![allow(missing_docs)]
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
+use arrow::array::{LargeListArray, RecordBatch};
+use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
 pub mod consts;
 
+/// Trace IDs are 16 binary bytes.
+pub type TraceId = [u8; 16];
+
+/// Span IDs are 8 binary bytes.
+pub type SpanId = [u8; 8];
+
 /// Returns a new record batch with the new key/value updated in the schema metadata.
 #[must_use]
 pub fn update_schema_metadata(
-    record_batch: RecordBatch,
+    record_batch: &RecordBatch,
     key: String,
     value: String,
 ) -> RecordBatch {
@@ -37,6 +34,7 @@ pub fn update_schema_metadata(
     // safety: this should not fail, as we haven't changed the fields in the schema,
     // just the metadata, so the schema should be compatible with the columns
     record_batch
+        .clone()
         .with_schema(Arc::new(new_schema))
         .expect("can create record batch with same schema.")
 }
@@ -104,4 +102,92 @@ pub fn get_field_metadata<'a>(
     let field = &schema.fields[column_index];
     let field_metadata = field.metadata();
     field_metadata.get(key).map(|s| s.as_str())
+}
+
+/// Make a `LargeListArray` into an array whose item field is not nullable.
+///
+/// When you use `GenericListBuilder`, you'll get a list array where list elements are
+/// nullable. This is often not what we want, so this little function converts `LargeListArray`s
+/// that don't have any nulls into an equivalent form whose item field type is not nullable. This
+/// function panics if the input contains any nulls at all.
+#[must_use]
+pub fn no_nulls(values: LargeListArray) -> LargeListArray {
+    let (mut field, offsets, values, nulls) = values.into_parts();
+    assert_eq!(0, nulls.map(|n| n.null_count()).unwrap_or(0));
+    Arc::make_mut(&mut field).set_nullable(false);
+    LargeListArray::new(field, offsets, values, None)
+}
+
+/// Checks the Arrow schema field metadata to determine if the "id" field in this record batch is
+/// plain encoded.
+///
+/// It is assumed that if the ID column is plain encoded, the schema metadata will have this
+/// the encoding identified explicitly. If the encoding metadata is absent, then the batch may
+/// have been produced by the golang exporter, which adds no metadata and generally uses delta
+/// encoding for the ID column by default.
+#[must_use]
+pub fn is_id_plain_encoded(record_batch: &RecordBatch) -> bool {
+    let schema = record_batch.schema_ref();
+    let encoding = get_field_metadata(
+        schema.as_ref(),
+        consts::ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    encoding == Some(consts::metadata::encodings::PLAIN)
+}
+
+/// Checks the Arrow schema field metadata to determine if the "parent_id" field in this record
+/// batch is plain encoded.
+///
+/// It is assumed that if the Parent ID column is plain encoded, the schema metadata will have the
+/// encoding identified explicitly. If the encoding metadata is absent, then the batch may have
+/// been produced by the golang exporter, which adds no metadata and generally uses the transport
+/// optimized/quasi-delta encoding for the Parent ID column by default.
+#[must_use]
+pub fn is_parent_id_plain_encoded(record_batch: &RecordBatch) -> bool {
+    let schema = record_batch.schema_ref();
+    let encoding = get_field_metadata(
+        schema.as_ref(),
+        consts::PARENT_ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    encoding == Some(consts::metadata::encodings::PLAIN)
+}
+
+/// Additional helper methods for Arrow Field
+pub trait FieldExt {
+    /// Sets the encoding field metadata to the value passed as `encoding`
+    ///
+    /// This can be used as an indicator for various utilities that need to process the record
+    /// batch of how the column is encoded. Commonly, this is used for ID columns that may or
+    /// may not use some alternate encoding (like delta encoding)
+    fn with_encoding(self, encoding: &str) -> Self;
+
+    /// Sets the encoding column metadata key to "plain".
+    fn with_plain_encoding(self) -> Self;
+
+    /// tries to convert the `Field` into the inner fields. Returns `None` if the field's data_type
+    /// is not `Struct`
+    fn as_struct_fields(&self) -> Option<&Fields>;
+}
+
+impl FieldExt for Field {
+    fn with_encoding(mut self, encoding: &str) -> Self {
+        let current_metadata = self.metadata_mut();
+        _ = current_metadata.insert(consts::metadata::COLUMN_ENCODING.into(), encoding.into());
+
+        self
+    }
+
+    fn with_plain_encoding(self) -> Self {
+        self.with_encoding(consts::metadata::encodings::PLAIN)
+    }
+
+    fn as_struct_fields(&self) -> Option<&Fields> {
+        if let DataType::Struct(fields) = self.data_type() {
+            Some(fields)
+        } else {
+            None
+        }
+    }
 }

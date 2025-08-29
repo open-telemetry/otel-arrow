@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Trait and structures used to implement shared exporters (Send bound).
@@ -31,12 +32,14 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::control::NodeControlMsg;
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::{ControlMsg, Message};
+use crate::message::Message;
+use crate::node::NodeId;
+use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
@@ -50,7 +53,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A channel for receiving control and pdata messages.
@@ -62,21 +65,21 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
-    pdata_rx: Option<tokio::sync::mpsc::Receiver<PData>>,
+    control_rx: Option<SharedReceiver<NodeControlMsg<PData>>>,
+    pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
-    pending_shutdown: Option<ControlMsg>,
+    pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(
-        control_rx: tokio::sync::mpsc::Receiver<ControlMsg>,
-        pdata_rx: tokio::sync::mpsc::Receiver<PData>,
+        control_rx: SharedReceiver<NodeControlMsg<PData>>,
+        pdata_rx: SharedReceiver<PData>,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
@@ -134,8 +137,8 @@ impl<PData> MessageChannel<PData> {
 
                     // 1) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Some(pdata) => return Ok(Message::PData(pdata)),
-                        None => {
+                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
                                 .take()
@@ -162,30 +165,30 @@ impl<PData> MessageChannel<PData> {
 
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Some(ControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
-                            return Ok(Message::Control(ControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
+                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
                         let when = Instant::now() + deadline;
                         self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::ZERO, reason });
+                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Some(msg) => return Ok(Message::Control(msg)),
-                    None  => return Err(RecvError::Closed),
+                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Err(e)  => return Err(e),
                 },
 
                 // B) Then pdata
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
-                        Some(pdata) => {
+                        Ok(pdata) => {
                             return Ok(Message::PData(pdata));
                         }
-                        None => {
-                            return Err(RecvError::Closed);
+                        Err(e) => {
+                            return Err(e);
                         }
                     }
                 }
@@ -203,28 +206,51 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
-
-    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
-    /// will consume.
+    pub(crate) core: EffectHandlerCore,
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
         }
     }
 
-    /// Returns the name of the exporter associated with this handler.
+    /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn exporter_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for exporters to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error> {
+        self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

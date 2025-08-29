@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package assert
 
@@ -19,7 +10,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/zeebo/assert"
+	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
@@ -190,91 +181,6 @@ func TestEquivSortAndMerge(t *testing.T) {
 		ptraceotlp.NewExportRequestFromTraces(split_res_and_scope),
 	}
 	Equiv(stdTesting, expectedTraces, actualTraces)
-}
-
-func TestSingleResScope(t *testing.T) {
-	t.Parallel()
-
-	stdTesting := NewStdUnitTest(t)
-	expected := "{\n    \"resourceSpans\": [\n      {\n        \"resource\": {\n          \"attributes\": [\n            {\n              \"key\": \"hostname\",\n              \"value\": {\n                \"stringValue\": \"host3.mydomain.com\"\n              }\n            },\n            {\n              \"key\": \"unique3\",\n              \"value\": {\n                \"stringValue\": \"uv3\"\n              }\n            },\n            {\n              \"key\": \"ip\",\n              \"value\": {\n                \"stringValue\": \"192.168.0.3\"\n              }\n            },\n            {\n              \"key\": \"version\",\n              \"value\": {\n                \"doubleValue\": 1.5\n              }\n            },\n            {\n              \"key\": \"status\",\n              \"value\": {\n                \"intValue\": \"500\"\n              }\n            },\n            {\n              \"key\": \"up\",\n              \"value\": {\n                \"boolValue\": false\n              }\n            }\n          ]\n        },\n        \"scopeSpans\": [\n          {\n            \"scope\": {\n              \"name\": \"fake_generator\",\n              \"version\": \"1.0.1\"\n            },\n            \"spans\": [\n              {\n                \"traceId\": \"6d759c9c5e1a049927ca069a497b0508\",\n                \"spanId\": \"90d5ead3745935bd\",\n                \"traceState\": \"maiores\",\n                \"parentSpanId\": \"\",\n                \"kind\": 2,\n                \"droppedAttributesCount\": 9,\n                \"droppedEventsCount\": 9,\n                \"droppedLinksCount\": 6,\n                \"status\": {\n                  \"message\": \"OK\"\n                }\n              },\n              {\n                \"traceId\": \"72e8551d2f079f29231aa57088384785\",\n                \"spanId\": \"35ce5d0711df60f2\",\n                \"parentSpanId\": \"35ce5d0711df60f2\",\n                \"name\": \"GET /user-info\",\n                \"startTimeUnixNano\": \"1668124800000010667\",\n                \"endTimeUnixNano\": \"1668124800000010668\",\n                \"droppedAttributesCount\": 8,\n                \"events\": [\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\"\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010674\",\n                    \"name\": \"odit\",\n                    \"droppedAttributesCount\": 2\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"name\": \"velit\",\n                    \"attributes\": [\n                      {\n                        \"key\": \"attr_0\",\n                        \"value\": {\n                          \"stringValue\": \"est\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_1\",\n                        \"value\": {\n                          \"doubleValue\": 0.017895097521176077\n                        }\n                      },\n                      {\n                        \"key\": \"attr_2\",\n                        \"value\": {\n                          \"stringValue\": \"consectetur\"\n                        }\n                      }\n                    ],\n                    \"droppedAttributesCount\": 9\n                  },\n                  {\n                    \"name\": \"exercitationem\"\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"name\": \"soluta\",\n                    \"droppedAttributesCount\": 9\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"droppedAttributesCount\": 7\n                  },\n                  {}\n                ],\n                \"links\": [\n                  {\n                    \"traceId\": \"72e8551d2f079f29231aa57088384785\",\n                    \"spanId\": \"\",\n                    \"traceState\": \"ut\",\n                    \"attributes\": [\n                      {\n                        \"key\": \"attr_0\",\n                        \"value\": {\n                          \"intValue\": \"4055508854307121380\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_1\",\n                        \"value\": {\n                          \"intValue\": \"2603754219448080514\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_2\",\n                        \"value\": {\n                          \"stringValue\": \"ut\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_3\",\n                        \"value\": {\n                          \"intValue\": \"542986775976848616\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_4\",\n                        \"value\": {\n                          \"intValue\": \"5562030613432072994\"\n                        }\n                      }\n                    ],\n                    \"droppedAttributesCount\": 8\n                  },\n                  {\n                    \"traceId\": \"\",\n                    \"spanId\": \"\",\n                    \"traceState\": \"vel\",\n                    \"droppedAttributesCount\": 6\n                  }\n                ],\n                \"status\": {\n                  \"code\": 1\n                }\n              }\n            ]\n          }\n        ],\n        \"schemaUrl\": \"https://opentelemetry.io/schemas/1.0.0\"\n      }\n    ]\n  }"
-
-	actual := ptrace.NewTraces()
-	rs := actual.ResourceSpans().AppendEmpty()
-	rs.Resource().Attributes().PutStr("hostname", "host3.mydomain.com")
-	rs.Resource().Attributes().PutStr("unique3", "uv3")
-	rs.Resource().Attributes().PutStr("ip", "192.168.0.3")
-	rs.Resource().Attributes().PutDouble("version", 1.5)
-	rs.Resource().Attributes().PutInt("status", 500)
-	rs.Resource().Attributes().PutBool("up", false)
-	rs.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
-
-	ss := rs.ScopeSpans().AppendEmpty()
-	scope := ss.Scope()
-	scope.SetName("fake_generator")
-	scope.SetVersion("1.0.1")
-
-	span := ss.Spans().AppendEmpty()
-	span.SetTraceID(traceID("6d759c9c5e1a049927ca069a497b0508"))
-	span.SetSpanID(spanID("90d5ead3745935bd"))
-	span.TraceState().FromRaw("maiores")
-	span.SetKind(2)
-	span.SetDroppedAttributesCount(9)
-	span.SetDroppedEventsCount(9)
-	span.SetDroppedLinksCount(6)
-	span.Status().SetMessage("OK")
-
-	span = ss.Spans().AppendEmpty()
-	span.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
-	span.SetSpanID(spanID("35ce5d0711df60f2"))
-	span.SetParentSpanID(spanID("35ce5d0711df60f2"))
-	span.SetName("GET /user-info")
-	span.SetStartTimestamp(1668124800000010667)
-	span.SetEndTimestamp(1668124800000010668)
-	span.SetDroppedAttributesCount(8)
-
-	event := span.Events().AppendEmpty()
-	event.SetTimestamp(1668124800000010672)
-	event = span.Events().AppendEmpty()
-	event.SetTimestamp(1668124800000010674)
-	event.SetName("odit")
-	event.SetDroppedAttributesCount(2)
-	event = span.Events().AppendEmpty()
-	event.SetTimestamp(1668124800000010672)
-	event.SetName("velit")
-	event.Attributes().PutStr("attr_0", "est")
-	event.Attributes().PutDouble("attr_1", 0.017895097521176077)
-	event.Attributes().PutStr("attr_2", "consectetur")
-	event.SetDroppedAttributesCount(9)
-	event = span.Events().AppendEmpty()
-	event.SetName("exercitationem")
-	event = span.Events().AppendEmpty()
-	event.SetTimestamp(1668124800000010672)
-	event.SetName("soluta")
-	event.SetDroppedAttributesCount(9)
-	event = span.Events().AppendEmpty()
-	event.SetTimestamp(1668124800000010672)
-	event.SetDroppedAttributesCount(7)
-	event = span.Events().AppendEmpty()
-
-	link := span.Links().AppendEmpty()
-	link.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
-	link.TraceState().FromRaw("ut")
-	link.Attributes().PutInt("attr_0", 4055508854307121380)
-	link.Attributes().PutInt("attr_1", 2603754219448080514)
-	link.Attributes().PutStr("attr_2", "ut")
-	link.Attributes().PutInt("attr_3", 542986775976848616)
-	link.Attributes().PutInt("attr_4", 5562030613432072994)
-	link.SetDroppedAttributesCount(8)
-	link = span.Links().AppendEmpty()
-	link.TraceState().FromRaw("vel")
-	link.SetDroppedAttributesCount(6)
-
-	span.Status().SetCode(1)
-
-	actualTraces, err := ptraceotlp.NewExportRequestFromTraces(actual).MarshalJSON()
-	assert.NoError(t, err)
-
-	EquivFromBytes(stdTesting, []byte(expected), actualTraces)
 }
 
 func TestNotEquivSortAndMerge(t *testing.T) {

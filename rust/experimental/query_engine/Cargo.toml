@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "expressions",
+    "parser-abstractions",
+    "kql-parser",
+    "ottl-parser",
+    "engine-columnar",
+    "engine-recordset",
+    "engine-recordset-otlp-bridge",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["OpenTelemetry"]
+edition = "2024"
+repository = "https://github.com/open-telemetry/otel-arrow"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.86.0"
+
+[workspace.dependencies]
+arrow = "56"
+bytes = "1.10.1"
+caseless = "0.2.2"
+chrono = "0.4.41"
+hex = "0.4.3"
+opentelemetry-proto = "0.30.0"
+pest = "2.8"
+pest_derive = "2.8"
+prost = "0.13.1"
+regex = "1.11.1"
+serde_json = "1.0.140"
+sha2 = "0.10.8"
+thiserror = "2.0.12"

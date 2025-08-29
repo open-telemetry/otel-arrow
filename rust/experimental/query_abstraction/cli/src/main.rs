@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use intermediate_language::query_processor::QueryProcessor;
 use kql_plugin::kql_plugin::KqlPlugin;
 use ottl_plugin::ottl_plugin::OttlPlugin;
@@ -19,10 +22,10 @@ fn main() {
             let result = KqlPlugin::process_query(input);
             match result {
                 Ok(query) => {
-                    println!("Parsed KQL query:\n{:?}", query);
+                    println!("Parsed KQL query:\n{query:?}");
                 }
                 Err(e) => {
-                    eprintln!("Error parsing KQL query:\n{}", e);
+                    eprintln!("Error parsing KQL query:\n{e}");
                     std::process::exit(1);
                 }
             }
@@ -31,10 +34,10 @@ fn main() {
             let result = OttlPlugin::process_query(input);
             match result {
                 Ok(query) => {
-                    println!("Parsed OTTL query: {:?}", query);
+                    println!("Parsed OTTL query: {query:?}");
                 }
                 Err(e) => {
-                    eprintln!("Error parsing OTTL query: {}", e);
+                    eprintln!("Error parsing OTTL query: {e}");
                     std::process::exit(1);
                 }
             }

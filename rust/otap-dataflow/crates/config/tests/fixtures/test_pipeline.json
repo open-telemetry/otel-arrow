@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "default_node_ctrl_msg_channel_size": 100,
+    "default_pipeline_ctrl_msg_channel_size": 100,
+    "default_pdata_channel_size": 100
+  },
+  "nodes": {
+    "receiver1": {
+      "kind": "receiver",
+      "plugin_urn": "urn:test:receiver",
+      "config": null,
+      "out_ports": {}
+    },
+    "exporter1": {
+      "kind": "exporter",
+      "plugin_urn": "urn:test:exporter",
+      "config": null,
+      "out_ports": {}
+    }
+  }
+}
+

@@ -1,14 +1,7 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Error and result types
 
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::metrics::MetricType;
@@ -18,15 +11,17 @@ use num_enum::TryFromPrimitiveError;
 use snafu::{Location, Snafu};
 use std::{backtrace::Backtrace, num::TryFromIntError};
 
+/// Result type
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[allow(missing_docs)]
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("Cannot find column: {}", name))]
     ColumnNotFound { name: String, backtrace: Backtrace },
     #[snafu(display(
-        "Column {} data type mismatch, expect: {}, actual: {}",
+        "Column `{}` data type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual
@@ -132,6 +127,9 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Invalid attribute transform: {}", reason))]
+    InvalidAttributeTransform { reason: String },
+
     #[snafu(display("Unsupported parent id type. Expected u16 or u32, got: {}", actual))]
     UnsupportedParentIdType {
         actual: DataType,
@@ -154,8 +152,32 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to build stream writer"))]
+    BuildStreamWriter {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Failed to read record batch"))]
     ReadRecordBatch {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to write record batch"))]
+    WriteRecordBatch {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to batch OTAP data"))]
+    Batching {
         #[snafu(source)]
         source: ArrowError,
         #[snafu(implicit)]
@@ -176,6 +198,12 @@ pub enum Error {
 
     #[snafu(display("Metric record not found"))]
     MetricRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Span record not found"))]
+    SpanRecordNotFound {
         #[snafu(implicit)]
         location: Location,
     },
@@ -221,6 +249,25 @@ pub enum Error {
     #[snafu(display("Unsupported string dictionary key type, given: {}", data_type))]
     UnsupportedStringDictKeyType {
         data_type: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Found duplicate field name: {}", name))]
+    DuplicateFieldName {
+        name: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Invalid byte slice for ID, expect len: {} ,given len: {}",
+        expected,
+        given
+    ))]
+    InvalidId {
+        expected: usize,
+        given: usize,
         #[snafu(implicit)]
         location: Location,
     },
