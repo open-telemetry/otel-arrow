@@ -33,7 +33,7 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
@@ -260,6 +260,14 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

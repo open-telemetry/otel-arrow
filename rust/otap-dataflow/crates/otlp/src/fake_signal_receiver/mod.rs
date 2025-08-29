@@ -11,5 +11,7 @@ pub mod config;
 pub mod fake_data;
 /// generates fake signals for the receiver to emit
 pub mod fake_signal;
+/// fake signal metrics implementation
+pub mod metrics;
 /// fake signal receiver implementation
 pub mod receiver;
