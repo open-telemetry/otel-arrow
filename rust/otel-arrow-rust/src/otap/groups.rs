@@ -569,8 +569,6 @@ impl IDSeqs {
         })
     }
 
-    // TODO: this should return a `Vec<Option<RecordBatch>>` so we can avoid creating empty record
-    // batches for children who have IDs that aren't in the specified range
     fn generic_split_child_record_batch<T>(
         id_ranges: &[Option<RangeInclusive<T::Native>>],
         parent_ids: &PrimitiveArray<T>,
@@ -596,7 +594,6 @@ impl IDSeqs {
             let first_index = slice.partition_point(|id| id < range.start());
             if first_index >= slice.len() {
                 // range doesn't show up in table
-                // TODO once this is refactored to return Vec<Option<RecordBatch>> push None here
                 result.push(None);
                 continue;
             }
@@ -2046,9 +2043,8 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
-                // specifically create a parent ID range here where not all values of the parent's
-                // ID values are present to test the range is successfully handled when splitting
-                // this child ...
+                // create a parent ID range here where not all values of the parent's ID are
+                // present to test the range is successfully handled when splitting child
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1, 2])),
             ],
         )
@@ -2061,6 +2057,8 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2])),
+                // create a range where all the ID values are only present in one split to test
+                // that the other ranges will not contain a record batch for this payload type
                 Arc::new(UInt16Array::from_iter_values(vec![3, 3, 3])),
             ],
         )
