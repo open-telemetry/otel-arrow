@@ -1657,14 +1657,10 @@ mod tests {
                 ValueAccessor::new_with_selectors(vec![ScalarExpression::Conditional(
                     ConditionalScalarExpression::new(
                         QueryLocation::new_fake(),
-                        LogicalExpression::Scalar(ScalarExpression::Constant(
-                            ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                2,
-                                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    false,
-                                )),
+                                false,
                             )),
                         )),
                         ScalarExpression::Static(StaticScalarExpression::String(
