@@ -201,10 +201,9 @@ where
     OTAPDataType: Fn(BatchArrowRecords) -> OtapArrowBytes,
 {
     let batch_id = batch.batch_id;
-    let status_result = match effect_handler
-        .send_message((Context::new(None), otap_data(batch)).into())
-        .await
-    {
+    let context = Context::todo();
+    let request = OtapPdata::new(context, otap_data(batch).into());
+    let status_result = match effect_handler.send_message(request).await {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };

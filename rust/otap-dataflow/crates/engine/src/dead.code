@@ -1,0 +1,45 @@
+// pub struct MutHousing<PData: crate::PipelineData> {
+//     context: Option<PData::Context>,
+//     value: Option<PData::Payload>,
+// }
+
+// impl<T> From<Housing<T>> for MutHousing<T> {
+//     fn from(h: Housing<T>) -> Self {
+//         Self {
+//             context: Some(h.context),
+//             value: Some(h.value),
+//         }
+//     }
+// }
+
+/// Context housing.
+pub struct Housing<PData: crate::PipelineData> {
+    pub(crate) context: PData::Context,
+    pub(crate) value: PData::Payload,
+
+    _kind: PhantomData<PData>,
+}
+
+impl<PData: crate::PipelineData> From<(PData::Context, PData::Payload)> for Housing<PData> {
+    fn from((context, value): (PData::Context, PData::Payload)) -> Self {
+        Self {
+            context,
+            value,
+            _kind: PhantomData,
+        }
+    }
+}
+
+impl<PData: crate::PipelineData> Housing<PData> {
+    /// New housing with default context.
+    pub(crate) fn new(value: PData::Payload) -> Self {
+        Self {
+            context: PData::Context::default(),
+            value,
+            _kind: PhantomData,
+        }
+    }
+}
+
+use std::marker::PhantomData;
+use otap_df_engine::control::Housing;

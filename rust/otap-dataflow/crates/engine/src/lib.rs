@@ -49,7 +49,7 @@ pub mod testing;
 /// PipelineData describes any pipeline data format.
 pub trait PipelineData {
     /// Context propagates forward and backward.
-    type Context: Debug + Clone;
+    type Context: Debug + Clone + Default;
     /// Payload propagates forward, backward only for Nack.
     type Payload: Debug + Clone;
 }

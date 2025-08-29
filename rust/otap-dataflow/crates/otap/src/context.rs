@@ -34,52 +34,18 @@ pub struct ReplyTo {
 }
 
 /// Context for OTAP requests
-#[derive(Clone, Debug)]
+///
+/// Caution: clone with care.
+#[derive(Clone, Debug, Default)]
 pub struct Context {
     deadline: Option<Instant>, // Or... mandatory?
     reply_to: Vec<ReplyTo>,
 }
 
-/// Context housing.
-pub struct Housing<T> {
-    pub(crate) context: Context,
-    pub(crate) value: T,
-}
-
-impl<T> From<(Context, T)> for Housing<T> {
-    fn from((context, value): (Context, T)) -> Self {
-        Self { context, value }
-    }
-}
-
-pub struct MutHousing<T> {
-    context: Option<Context>,
-    value: Option<T>,
-}
-
-impl<T> From<Housing<T>> for MutHousing<T> {
-    fn from(h: Housing<T>) -> Self {
-        Self {
-            context: Some(h.context),
-            value: Some(h.value),
-        }
-    }
-}
-
-impl<T> Housing<T> {
-    /// New housing with empty context.
-    pub(crate) fn new(value: T) -> Self {
-        Self {
-            context: Context::new(),
-            value,
-        }
-    }
-}
-
 impl Context {
-    pub fn new(deadline: Option<Instant>) -> Self {
+    pub fn todo() -> Self {
         Self {
-            deadline,
+            deadline: None,
             reply_to: Vec::new(),
         }
     }

@@ -59,7 +59,7 @@ pub struct NackMsg<PData: crate::PipelineData> {
 impl<PData: crate::PipelineData> NackMsg<PData> {
     /// Create a new Nack.
     pub fn new(
-        failed: PData::Context,
+        context: PData::Context,
         reason: String,
         permanent: bool,
         code: Option<i32>,
@@ -69,7 +69,7 @@ impl<PData: crate::PipelineData> NackMsg<PData> {
             reason,
             permanent,
             code,
-            context: context,
+            context,
             payload: payload.map(Box::new),
         }
     }

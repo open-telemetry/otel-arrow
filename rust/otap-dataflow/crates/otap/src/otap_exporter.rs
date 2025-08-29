@@ -9,15 +9,16 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OtapArrowBytes;
-use crate::pdata::OtapPdata;
+use crate::pdata::{OtapPdata, OtapRequest};
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, AckOrNack, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
@@ -25,13 +26,14 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-    arrow_logs_service_client::ArrowLogsServiceClient,
+    BatchStatus, arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use tonic::Status;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -92,6 +94,41 @@ impl OTAPExporter {
             }
         })?;
         Ok(OTAPExporter { config })
+    }
+
+    // fn partial_success(
+    //     self: &Box<Self>,
+    //     mut reply: OtapRequest,
+    //     rejected: i64,
+    //     message: String,
+    // ) -> AckOrNack<OtapPdata> {
+    //     // retry payload drops here
+    //     AckOrNack::Ack(AckMsg::new(reply.take_context(), Some((rejected, message))))
+    // }
+
+    fn batch_status(
+        self: &Box<Self>,
+        mut reply: OtapRequest,
+        status: BatchStatus,
+    ) -> AckOrNack<OtapPdata> {
+        // retry payload drops here
+
+        AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
+    }
+
+    fn grpc_status(
+        self: &Box<Self>,
+        mut reply: OtapRequest,
+        status: Status,
+    ) -> AckOrNack<OtapPdata> {
+        AckOrNack::Nack(NackMsg::new(
+            reply.take_context(),
+            status.message().to_string(),
+            // Since this is a stsream failure...
+            false,
+            Some(status.code() as i32),
+            reply.take_reply_payload(),
+        ))
     }
 }
 
@@ -159,9 +196,16 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
                 //send data
                 Message::PData(message) => {
-                    let message: OtapArrowBytes = message.try_into().map(|(_, value)| value)?;
+                    // Note the following clones the payload in the
+                    // desired form, enabling efficient retry. We
+                    // would prefer to let Tonic borrow the request
+                    // instead of clone. TODO later, not sure how.
+                    let mut request: OtapRequest = message.split_into();
+                    let payload = request.take_request_payload();
+                    let requested: OtapArrowBytes = payload.try_into()?;
+                    let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
 
-                    match message {
+                    let result = match requested {
                         // match on OTAPData type and use the respective client to send message
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
                         // check what message the data is
@@ -171,38 +215,37 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             let request_stream = stream! {
                                 yield req;
                             };
-                            _ = arrow_metrics_client
-                                .arrow_metrics(request_stream)
-                                .await
-                                .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
-                                })?;
+                            let resp = arrow_metrics_client.arrow_metrics(request_stream).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(save_reply, status),
+                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
+                            };
+                            acknack
                         }
                         OtapArrowBytes::ArrowLogs(req) => {
                             let request_stream = stream! {
                                 yield req;
                             };
-                            _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
-                                |error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
-                                },
-                            )?;
+                            let resp = arrow_logs_client.arrow_logs(request_stream).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(save_reply, status),
+                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
+                            };
+                            acknack
                         }
                         OtapArrowBytes::ArrowTraces(req) => {
                             let request_stream = stream! {
                                 yield req;
                             };
-                            _ = arrow_traces_client
-                                .arrow_traces(request_stream)
-                                .await
-                                .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: error.to_string(),
-                                })?;
+                            let resp = arrow_traces_client.arrow_traces(request_stream).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(save_reply, status),
+                                Ok(resp) => self.batch_status(save_reply, resp.into_inner()),
+                            };
+                            acknack
                         }
-                    }
+                    };
+                    effect_handler.reply(result).await?;
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -226,7 +269,7 @@ mod tests {
     };
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
-    use crate::pdata::{Context, OtapPdata};
+    use crate::pdata::OtapPdata;
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -267,7 +310,7 @@ mod tests {
                     METRIC_BATCH_ID,
                     ArrowPayloadType::MultivariateMetrics,
                 ));
-                ctx.send_pdata((Context::new(None), metric_message).into())
+                ctx.send_pdata(OtapPdata::new_default(metric_message.into()))
                     .await
                     .expect("Failed to send metric message");
 
@@ -275,7 +318,7 @@ mod tests {
                     LOG_BATCH_ID,
                     ArrowPayloadType::Logs,
                 ));
-                ctx.send_pdata((Context::new(None), log_message).into())
+                ctx.send_pdata(OtapPdata::new_default(log_message.into()))
                     .await
                     .expect("Failed to send log message");
 
@@ -283,7 +326,7 @@ mod tests {
                     TRACE_BATCH_ID,
                     ArrowPayloadType::Spans,
                 ));
-                ctx.send_pdata((Context::new(None), trace_message).into())
+                ctx.send_pdata(OtapPdata::new_default(trace_message.into()))
                     .await
                     .expect("Failed to send trace message");
 
@@ -312,8 +355,9 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .split_into()
+                        .take_request_payload()
                         .try_into()
-                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
@@ -328,8 +372,9 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .split_into()
+                        .take_request_payload()
                         .try_into()
-                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -340,8 +385,9 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .split_into()
+                        .take_request_payload()
                         .try_into()
-                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =

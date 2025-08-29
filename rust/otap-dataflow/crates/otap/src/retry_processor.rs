@@ -180,12 +180,11 @@ impl Processor<OtapPdata> for RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::PData(mut data) => {
+            Message::PData(data) => {
                 let rstate = RetryState {
                     retries: 0,
                     last_ts: Instant::now(),
                 };
-
                 data.mut_context()
                     .reply_to(effect_handler.processor_id().index(), rstate.into());
 

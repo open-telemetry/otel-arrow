@@ -20,7 +20,7 @@
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
+use crate::pdata::{OtapPdata, OtapRequest};
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
@@ -174,7 +174,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    let mut otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v)?;
+                    let request: OtapRequest = pdata.split_into();
+                    let payload = request.take_request_payload();
+                    let requested: OtapArrowRecords = payload.try_into()?;
+                    let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
+
+                    let mut otap_batch = requested;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -247,7 +252,6 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 mod test {
     use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
-    use crate::pdata::Context;
 
     use super::*;
 
@@ -296,7 +300,7 @@ mod test {
                     }),
                 );
 
-                ctx.send_pdata((Context::new(None), otap_batch).into())
+                ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                     .await
                     .expect("Failed to send  logs message");
 
@@ -662,30 +666,32 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let otap_batch: OtapPdata = (
-                Context::new(None),
+            let otap_batch = OtapPdata::new_default(
                 OtapArrowBytes::ArrowLogs(fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         // a pretty big batch
                         num_rows: 48,
                         ..Default::default()
                     },
-                )),
-            )
-                .into();
+                ))
+                .into(),
+            );
             pdata_tx.send(otap_batch).await.unwrap();
 
-            let otap_batch2: OtapPdata = (
-                Context::new(None),
+            let otap_batch2 = OtapPdata::new_default(
                 OtapArrowBytes::ArrowLogs(fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         num_rows: 1,
                         ..Default::default()
                     },
-                )),
-            )
-                .into();
-            let mut otap_batch2: OtapArrowRecords = otap_batch2.try_into().map(|(_, v)| v).unwrap();
+                ))
+                .into(),
+            );
+            let mut otap_batch2: OtapArrowRecords = otap_batch2
+                .split_into()
+                .take_request_payload()
+                .try_into()
+                .unwrap();
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
@@ -696,7 +702,7 @@ mod test {
             );
 
             pdata_tx
-                .send((Context::new(None), otap_batch2).into())
+                .send(OtapPdata::new_default(otap_batch2.into()))
                 .await
                 .unwrap();
 
@@ -826,7 +832,7 @@ mod test {
                 }),
             );
             pdata_tx
-                .send((Context::new(None), otap_batch).into())
+                .send(OtapPdata::new_default(otap_batch.into()))
                 .await
                 .unwrap();
 

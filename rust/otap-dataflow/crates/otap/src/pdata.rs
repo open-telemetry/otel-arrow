@@ -100,7 +100,7 @@ use prost::{EncodeError, Message};
 use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
-pub use super::context::{Context, Housing, RSVP, Register, ReplyTo};
+pub use super::context::{Context, RSVP, Register, ReplyTo};
 
 /// module contains related to pdata
 pub mod error {
@@ -113,6 +113,9 @@ pub mod error {
             /// The error that occurred
             error: String,
         },
+
+        #[error("A request state error")]
+        RequestStateError,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -161,48 +164,49 @@ pub enum OtapPayload {
     OtapArrowRecords(OtapArrowRecords),
 }
 
-/// Context + container telemetry data
+/// Context + container for telemetry data
 #[derive(Clone, Debug)]
-pub struct OtapPdata(Housing<OtapPayload>);
+pub struct OtapPdata {
+    context: Context,
+    payload: OtapPayload,
+}
+
+/// Context + container housing.
+#[derive(Clone, Debug)]
+pub struct OtapRequest {
+    pub(crate) context: Option<Context>,
+    pub(crate) payload: Option<OtapPayload>,
+}
+
+/* -------- Signal type -------- */
 
 impl OtapPdata {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
-        match self.0.value {
-            Self::OtlpBytes { value, .. } => value.signal_type(),
-            Self::OtapArrowBytes { value, .. } => value.signal_type(),
-            Self::OtapArrowRecords { value, .. } => value.signal_type(),
-        }
+        self.payload.signal_type()
     }
+}
 
-    /// Returns a reference to the request context
+impl OtapPayload {
+    /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
-    pub fn context(&self) -> &Context {
+    pub fn signal_type(&self) -> SignalType {
         match self {
-            Self::OtlpBytes { context, .. } => context,
-            Self::OtapArrowBytes { context, .. } => context,
-            Self::OtapArrowRecords { context, .. } => context,
-        }
-    }
-
-    /// Returns a mut reference to the request context
-    #[must_use]
-    pub(crate) fn mut_context(&mut self) -> &mut Context {
-        match self {
-            Self::OtlpBytes { context, .. } => context,
-            Self::OtapArrowBytes { context, .. } => context,
-            Self::OtapArrowRecords { context, .. } => context,
+            Self::OtlpBytes(value) => value.signal_type(),
+            Self::OtapArrowBytes(value) => value.signal_type(),
+            Self::OtapArrowRecords(value) => value.signal_type(),
         }
     }
 }
 
+/* -------- Trait implementations -------- */
+
+/// The pipeline knows about the split form Context+Payload in the abstract.
 impl otap_df_engine::PipelineData for OtapPdata {
     type Context = Context;
     type Payload = OtapPayload;
 }
-
-/* -------- Helper trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
 trait OtapPdataHelpers {
@@ -243,60 +247,124 @@ impl OtapPdataHelpers for OtapArrowBytes {
 
 /* -------- Conversion implementations -------- */
 
-impl From<(Context, OtapArrowRecords)> for OtapPdata {
-    fn from((context, value): (Context, OtapArrowRecords)) -> Self {
-        Self::OtapArrowRecords { value, context }
+impl OtapPdata {
+    pub fn new(context: Context, payload: OtapPayload) -> Self {
+        Self { context, payload }
+    }
+
+    pub fn new_default(payload: OtapPayload) -> Self {
+        Self {
+            context: Context::default(),
+            payload,
+        }
+    }
+
+    pub fn split_into(self) -> OtapRequest {
+        OtapRequest {
+            context: Some(self.context),
+            payload: Some(self.payload),
+        }
+    }
+
+    pub(crate) fn mut_context(&mut self) -> &mut Context {
+        &mut self.context
     }
 }
 
-impl From<(Context, OtlpProtoBytes)> for OtapPdata {
-    fn from((context, value): (Context, OtlpProtoBytes)) -> Self {
-        Self::OtlpBytes { value, context }
+impl OtapRequest {
+    pub fn new_reply<T: Clone + Into<OtapPayload>>(context: Context, payload: &T) -> Self {
+        if !context.has_rsvp() {
+            Self {
+                context: Some(context),
+                payload: None,
+            }
+        } else {
+            let payload = payload.clone();
+            Self {
+                context: Some(context),
+                payload: Some(payload.into()),
+            }
+        }
+    }
+
+    pub fn take_reply_payload(&mut self) -> Option<OtapPayload> {
+        self.payload.take()
+    }
+
+    pub fn take_request_payload(&mut self) -> OtapPayload {
+        self.payload.take().expect("called once")
+    }
+
+    pub fn take_context(&mut self) -> Context {
+        self.context.take().expect("called once")
     }
 }
 
-impl From<(Context, OtapArrowBytes)> for OtapPdata {
-    fn from((context, value): (Context, OtapArrowBytes)) -> Self {
-        Self::OtapArrowBytes { value, context }
-    }
-}
-
-impl TryFrom<OtapPdata> for (Context, OtapArrowRecords) {
+impl TryFrom<OtapRequest> for OtapPdata {
     type Error = error::Error;
 
-    fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
-        match value {
-            OtapPdata::OtapArrowBytes { context, value } => value.try_into().map(|v| (context, v)),
-            OtapPdata::OtapArrowRecords { context, value } => Ok((context, value)),
-            OtapPdata::OtlpBytes { value, context } => value.try_into().map(|v| (context, v)),
+    fn try_from(request: OtapRequest) -> Result<Self, Self::Error> {
+        if request.context.is_none() || request.payload.is_none() {
+            Err(error::Error::RequestStateError)
+        } else {
+            Ok(Self {
+                context: request.context.unwrap(),
+                payload: request.payload.unwrap(),
+            })
         }
     }
 }
 
-impl TryFrom<OtapPdata> for (Context, OtlpProtoBytes) {
+impl From<OtapArrowRecords> for OtapPayload {
+    fn from(value: OtapArrowRecords) -> Self {
+        Self::OtapArrowRecords(value)
+    }
+}
+
+impl From<OtapArrowBytes> for OtapPayload {
+    fn from(value: OtapArrowBytes) -> Self {
+        Self::OtapArrowBytes(value)
+    }
+}
+
+impl From<OtlpProtoBytes> for OtapPayload {
+    fn from(value: OtlpProtoBytes) -> Self {
+        Self::OtlpBytes(value)
+    }
+}
+
+impl TryFrom<OtapPayload> for OtapArrowRecords {
     type Error = error::Error;
 
-    fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
+    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes { value, context } => value.try_into().map(|v| (context, v)),
-            OtapPdata::OtapArrowRecords { value, context } => {
-                value.try_into().map(|v| (context, v))
-            }
-            OtapPdata::OtlpBytes { value, context } => Ok((context, value)),
+            OtapPayload::OtapArrowBytes(value) => value.try_into(),
+            OtapPayload::OtapArrowRecords(value) => Ok(value),
+            OtapPayload::OtlpBytes(value) => value.try_into(),
         }
     }
 }
 
-impl TryFrom<OtapPdata> for (Context, OtapArrowBytes) {
+impl TryFrom<OtapPayload> for OtlpProtoBytes {
     type Error = error::Error;
 
-    fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
+    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes { value, context } => Ok((context, value)),
-            OtapPdata::OtapArrowRecords { value, context } => {
-                value.try_into().map(|v| (context, v))
-            }
-            OtapPdata::OtlpBytes { value, context } => value.try_into().map(|v| (context, v)),
+            OtapPayload::OtapArrowBytes(value) => value.try_into(),
+            OtapPayload::OtapArrowRecords(value) => value.try_into(),
+            OtapPayload::OtlpBytes(value) => Ok(value),
+        }
+    }
+}
+
+impl TryFrom<OtapPayload> for OtapArrowBytes {
+    type Error = error::Error;
+
+    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
+        match value {
+            OtapPayload::OtapArrowBytes(value) => Ok(value),
+            OtapPayload::OtapArrowRecords(value) => value.try_into(),
+            OtapPayload::OtlpBytes(value) => value.try_into(),
         }
     }
 }

@@ -16,7 +16,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 /// pipeline.
 ///
 /// Messages are categorized as either pipeline data (`PData`) or control messages (`Control`).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Message<PData: crate::PipelineData> {
     /// A pipeline data message traversing the pipeline.
     PData(PData),

@@ -5,7 +5,7 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::{OTAP_RECEIVER_FACTORIES, pdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -364,23 +364,15 @@ impl TryFrom<OTLPSignal> for OtapPdata {
         Ok(match value {
             OTLPSignal::Logs(logs_data) => {
                 logs_data.encode(&mut bytes).map_err(map_error)?;
-                (Context::new(None), OtlpProtoBytes::ExportLogsRequest(bytes)).into()
+                OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
             OTLPSignal::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes).map_err(map_error)?;
-                (
-                    Context::new(None),
-                    OtlpProtoBytes::ExportMetricsRequest(bytes),
-                )
-                    .into()
+                OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
             OTLPSignal::Traces(trace_data) => {
                 trace_data.encode(&mut bytes).map_err(map_error)?;
-                (
-                    Context::new(None),
-                    OtlpProtoBytes::ExportTracesRequest(bytes),
-                )
-                    .into()
+                OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
     }

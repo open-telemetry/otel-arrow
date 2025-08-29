@@ -1,0 +1,124 @@
+
+    // /// Returns a reference to the request context
+    // #[must_use]
+    // pub fn context(&self) -> &Context {
+    //     match self {
+    //         Self::OtlpBytes { context, .. } => context,
+    //         Self::OtapArrowBytes { context, .. } => context,
+    //         Self::OtapArrowRecords { context, .. } => context,
+    //     }
+    // }
+
+    // /// Returns a mut reference to the request context
+    // #[must_use]
+    // pub(crate) fn mut_context(&mut self) -> &mut Context {
+    //     match self {
+    //         Self::OtlpBytes { context, .. } => context,
+    //         Self::OtapArrowBytes { context, .. } => context,
+    //         Self::OtapArrowRecords { context, .. } => context,
+    //     }
+    // }
+// impl From<(Context, OtapArrowRecords)> for OtapPdata {
+//     fn from((context, value): (Context, OtapArrowRecords)) -> Self {
+//         Self::OtapArrowRecords { value, context }
+//     }
+// }
+// impl From<(Context, OtlpProtoBytes)> for OtapPdata {
+//     fn from((context, value): (Context, OtlpProtoBytes)) -> Self {
+//         Self::OtlpBytes { value, context }
+//     }
+// }
+// impl From<(Context, OtapArrowBytes)> for OtapPdata {
+//     fn from((context, value): (Context, OtapArrowBytes)) -> Self {
+//         Self::OtapArrowBytes { value, context }
+//     }
+// }
+
+
+// impl Default for Context {
+//     fn default() -> Self {
+//         Self {
+//             msg_id: 0,
+//             deadline: Instant::now(), // @@@
+//             reply_to: Vec::new(),
+//         }
+//     }
+// }
+struct PendingMessage {
+    data: OtapPdata,
+    retry_count: usize,
+    next_retry_time: Instant,
+    last_error: String,
+}
+
+    fn partial_success(self: &Box<Self>, rejected: i64, message: String) -> ReturnContext {
+        ReturnContext {
+            message: message,
+            failure: false,
+            permanent: false,
+            code: None,
+            rejected: Some(rejected),
+        }
+    }
+
+    fn ok(self: &Box<Self>) -> ReturnContext {
+        ReturnContext {
+            message: "".into(),
+            failure: false,
+            permanent: false,
+            code: None,
+            rejected: None,
+        }
+    }
+
+    fn grpc_status(self: &Box<Self>, status: Status) -> ReturnContext {
+        ReturnContext {
+            message: status.message().into(),
+            failure: true,
+            permanent: grpc_code_is_permanent(status.code()),
+            rejected: None,
+            code: Some(status.code()),
+        }
+    }
+                    let (context, service_req): (_, OtlpProtoBytes) = data.try_into()?;
+
+                    let return_context = match service_req {
+                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                            logs_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_log_records,
+                                        partial.error_message,
+                                    ),
+                                },
+                            )
+                        }
+                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                            metrics_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_data_points,
+                                        partial.error_message,
+                                    ),
+                                },
+                            )
+                        }
+                        OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                            trace_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_spans,
+                                        partial.error_message,
+                                    ),
+                                },
+                            )
+                        }
+                    };
+                    effect_handler.back_propagate(context, return_context)
+                }
