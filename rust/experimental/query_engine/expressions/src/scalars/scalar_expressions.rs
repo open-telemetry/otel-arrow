@@ -398,8 +398,7 @@ impl ConstantScalarExpression {
     pub(crate) fn resolve_static<'a>(
         &'a mut self,
         scope: &PipelineResolutionScope<'a>,
-    ) -> ResolvedStaticScalarExpression<'a>
-    {
+    ) -> ResolvedStaticScalarExpression<'a> {
         match self {
             ConstantScalarExpression::Reference(r) => {
                 let constant_id = r.get_constant_id();
