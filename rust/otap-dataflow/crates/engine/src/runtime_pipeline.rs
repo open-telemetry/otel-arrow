@@ -3,7 +3,9 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
@@ -81,7 +83,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self, metrics_reporter: MetricsReporter) -> Result<Vec<()>, Error> {
+    pub fn run_forever(
+        self,
+        metrics_reporter: MetricsReporter,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
+    ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -92,11 +99,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = HashMap::new();
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-            self.config
-                .pipeline_settings()
-                .default_pipeline_ctrl_msg_channel_size,
-        );
 
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.

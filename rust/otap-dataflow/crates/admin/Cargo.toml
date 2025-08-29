@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 otap-df-config = { path = "../config" }
 otap-df-telemetry = { path = "../telemetry" }
+otap-df-engine = { path = "../engine" }
 
 thiserror = { workspace = true }
 serde = { workspace = true }
