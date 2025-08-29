@@ -115,45 +115,50 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
     ) -> Result<(), Error> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        let listener_stream = TcpListenerStream::new(listener);
 
-        //start event loop
-        loop {
-            //create services for the grpc server and clone the effect handler to pass message
-            let logs_service =
-                ArrowLogsServiceImpl::new(effect_handler.clone(), self.config.message_size);
-            let metrics_service =
-                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.config.message_size);
-            let trace_service =
-                ArrowTracesServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        //create services for the grpc server and clone the effect handler to pass message
+        let logs_service =
+            ArrowLogsServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        let metrics_service =
+            ArrowMetricsServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        let trace_service =
+            ArrowTracesServiceImpl::new(effect_handler.clone(), self.config.message_size);
 
-            let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
-            let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
-            let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
+        let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
+        let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
+        let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
 
-            // apply the tonic compression if it is set
-            if let Some(ref compression) = self.config.compression_method {
-                let encoding = compression.map_to_compression_encoding();
+        // apply the tonic compression if it is set
+        if let Some(ref compression) = self.config.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-                logs_service_server = logs_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                metrics_service_server = metrics_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-            }
+            logs_service_server = logs_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            metrics_service_server = metrics_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            trace_service_server = trace_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+        }
 
-            tokio::select! {
-                biased; //prioritize ctrl_msg over all other blocks
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    match ctrl_msg {
+        let server = Server::builder()
+            .add_service(logs_service_server)
+            .add_service(metrics_service_server)
+            .add_service(trace_service_server);
+
+        tokio::select! {
+            biased; //prioritize ctrl_msg over all other blocks
+
+            // Process internal events
+            ctrl_msg_result = async {
+                loop {
+                    match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
-                            break;
+                            return Ok(());
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -163,20 +168,19 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         }
                     }
                 }
-                // Poll the grpc server
-                result = Server::builder()
-                .add_service(logs_service_server)
-                .add_service(metrics_service_server)
-                .add_service(trace_service_server)
-                .serve_with_incoming(&mut listener_stream)=> {
-                    if let Err(error) = result {
-                        // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
-                    }
+            } => {
+                return ctrl_msg_result;
+            },
+
+            // Run server
+            result = server.serve_with_incoming(listener_stream) => {
+                if let Err(error) = result {
+                    // Report receiver error
+                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
                 }
             }
         }
-        //Exit event loop
+
         Ok(())
     }
 }
