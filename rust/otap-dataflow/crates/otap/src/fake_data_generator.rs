@@ -143,9 +143,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     // if signals per second is set then we should rate limit
                     match signal_status {
                         Ok(_) => {
-                            self.metrics.logs.add(log_count as u64);
-                            self.metrics.metrics.add(metric_count as u64);
-                            self.metrics.spans.add(trace_count as u64);
+                            self.metrics.logs_produced.add(log_count as u64);
+                            self.metrics.metrics_produced.add(metric_count as u64);
+                            self.metrics.spans_produced.add(trace_count as u64);
                             if signals_per_second.is_some() {
                                 // check if need to sleep
                                 let remaining_time = wait_till - Instant::now();
