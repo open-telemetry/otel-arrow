@@ -462,7 +462,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                 } else {
                                     self.passthrough.push(data.clone());
                                 }
-                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_metrics >= max)
+                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_metrics >= max)
                                     || self.rows_metrics >= self.config.send_batch_size
                                 {
                                     self.flush_metrics(effect).await
@@ -483,7 +484,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                 } else {
                                     self.passthrough.push(data.clone());
                                 }
-                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max)
+                                if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_traces >= max)
                                     || self.rows_traces >= self.config.send_batch_size
                                 {
                                     self.flush_traces(effect).await
@@ -602,10 +604,10 @@ mod test_helpers {
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::one_trace_record;
     use super::*;
     use otap_df_engine::testing::test_node;
     use serde_json::json;
-    use super::test_helpers::one_trace_record;
 
     #[test]
     fn test_default_config_ok() {
@@ -880,8 +882,8 @@ mod tests {
 
 #[cfg(test)]
 mod batching_smoke_tests {
-    use super::*;
     use super::test_helpers::{one_metric_record, one_trace_record};
+    use super::*;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
     #[test]
