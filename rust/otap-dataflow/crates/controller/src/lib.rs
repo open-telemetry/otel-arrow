@@ -24,6 +24,9 @@ use otap_df_config::{
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
+use otap_df_engine::control::{
+    PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
+};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -65,14 +68,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
 
-        // Start the admin HTTP server
-        let metrics_registry = metrics_system.registry();
-        let admin_server_handle =
-            spawn_thread_local_task("http-admin", move |cancellation_token| {
-                otap_df_admin::run(admin_settings, metrics_registry, cancellation_token)
-            })?;
-
         // Start the metrics aggregation
+        let metrics_registry = metrics_system.registry();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 metrics_system.run(cancellation_token)
@@ -100,7 +97,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start one thread per core
         let mut threads = Vec::with_capacity(requested_cores.len());
+        let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
+
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+            let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
+                pipeline
+                    .pipeline_settings()
+                    .default_pipeline_ctrl_msg_channel_size,
+            );
+            ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
+
             let pipeline_config = pipeline.clone();
             let pipeline_factory = self.pipeline_factory;
             let pipeline_handle = controller_ctx.pipeline_context_with(
@@ -121,6 +127,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_factory,
                         pipeline_handle,
                         metrics_reporter,
+                        pipeline_ctrl_msg_tx,
+                        pipeline_ctrl_msg_rx,
                     )
                 })
                 .map_err(|e| error::Error::ThreadSpawnError {
@@ -134,15 +142,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
-        // Wait for all pipeline threads to finish
-        // ToDo We should collect all the errors and wait for all threads to finish instead of bailing out on the first error.
+        // Start the admin HTTP server
+        let admin_server_handle =
+            spawn_thread_local_task("http-admin", move |cancellation_token| {
+                otap_df_admin::run(
+                    admin_settings,
+                    ctrl_msg_senders,
+                    metrics_registry,
+                    cancellation_token,
+                )
+            })?;
+
+        // Wait for all pipeline threads to finish and collect their results
+        let mut results = Vec::with_capacity(threads.len());
         for (thread_name, thread_id, core_id, handle) in threads {
             match handle.join() {
-                Ok(Ok(_)) => {
-                    // Thread completed successfully
-                }
-                Ok(Err(e)) => {
-                    return Err(e);
+                Ok(result) => {
+                    results.push(result);
                 }
                 Err(e) => {
                     // Thread join failed, handle the error
@@ -155,6 +171,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
             }
         }
+
+        // In this project phase (alpha), we just print the results of the pipelines and park the
+        // main thread indefinitely. This is useful for debugging and demonstration purposes.
+        // We can for example use the shutdown endpoint and still inspect the metrics.
+        // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.
+        // ToDo Maintain an internal Global Observed State that will exposed by the admin endpoints and use by a reconciler to orchestrate pipeline updates.
+        #[allow(clippy::dbg_macro)] // Use for demonstration purposes (temp)
+        {
+            dbg!(&results);
+        }
+        thread::park();
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
@@ -170,6 +197,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_handle: PipelineContext,
         metrics_reporter: MetricsReporter,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
     ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
@@ -186,10 +215,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline.run_forever(metrics_reporter).map_err(|e| {
-            error::Error::PipelineRuntimeError {
+        runtime_pipeline
+            .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
+            .map_err(|e| error::Error::PipelineRuntimeError {
                 source: Box::new(e),
-            }
-        })
+            })
     }
 }
