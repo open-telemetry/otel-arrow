@@ -165,7 +165,7 @@ impl OTAPExporter {
                 Ok(batch_status) => self.batch_status(effect_handler, reply, batch_status).await,
                 Err(status) => self.grpc_status(effect_handler, reply, status).await,
             },
-        };
+        }?;
     }
 }
 

@@ -46,6 +46,7 @@ pub struct Context {
 }
 
 impl Context {
+    /// Incomplete! Context TODOs in a number of places.
     pub fn todo() -> Self {
         Self {
             deadline: None,
@@ -53,14 +54,17 @@ impl Context {
         }
     }
 
+    /// Returns true if there is a caller waiting for a reply.
     pub fn has_reply_state(&self) -> bool {
         !self.reply_to.is_empty()
     }
 
+    /// Pushes new reply-to state.
     pub(crate) fn reply_to(&mut self, node_id: usize, state: ReplyState) {
         self.reply_to.push(ReplyTo { node_id, state });
     }
 
+    /// Indicates the return destination by node_id index.
     pub(crate) fn reply_node_id(&self) -> usize {
         self.reply_to.last().expect("has_reply_state").node_id
     }
