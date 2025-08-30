@@ -193,7 +193,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     retries: 0,
                     last_ts: Instant::now(),
                 };
-                data.mut_context()
+                data.context
                     .reply_to(effect_handler.processor_id().index(), rstate.into());
 
                 effect_handler.send_message(data).await?;

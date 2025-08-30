@@ -158,14 +158,14 @@ impl OTAPExporter {
         effect_handler: &local::EffectHandler<OtapPdata>,
         reply: OtapRequest,
         resp: Result<tonic::Response<tonic::codec::Streaming<BatchStatus>>, Status>,
-    ) {
+    ) -> Result<(), Error> {
         match resp {
             Err(status) => self.grpc_status(effect_handler, reply, status).await,
             Ok(resp) => match resp.into_inner().message().await {
                 Ok(batch_status) => self.batch_status(effect_handler, reply, batch_status).await,
                 Err(status) => self.grpc_status(effect_handler, reply, status).await,
             },
-        }?;
+        }
     }
 }
 
@@ -274,7 +274,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .await,
                         ),
                     }
-                    .await;
+                    .await?;
                 }
                 _ => {
                     return Err(Error::ExporterError {

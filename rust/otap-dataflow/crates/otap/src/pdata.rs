@@ -114,9 +114,12 @@ pub mod error {
             error: String,
         },
 
+        /// An error involving the assembly of an OtapPdata context
+        /// and payload.
         #[error("A request state error")]
         RequestStateError,
 
+        /// An invalid data conversion attempted on a register.
         #[error("A register error")]
         RegisterError,
     }
@@ -170,11 +173,12 @@ pub enum OtapPayload {
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
-    context: Context,
-    payload: OtapPayload,
+    pub(crate) context: Context,
+    pub(crate) payload: OtapPayload,
 }
 
-/// Context + container housing.
+/// Context + container housing. This is used for Context and Ack/Nack
+/// handling.
 #[derive(Clone, Debug)]
 pub struct OtapRequest {
     pub(crate) context: Option<Context>,
@@ -251,10 +255,12 @@ impl OtapPdataHelpers for OtapArrowBytes {
 /* -------- Conversion implementations -------- */
 
 impl OtapPdata {
+    /// Construct new OtapData from context and payload.
     pub fn new(context: Context, payload: OtapPayload) -> Self {
         Self { context, payload }
     }
 
+    /// Construct new OtapData with payload using default context.
     pub fn new_default(payload: OtapPayload) -> Self {
         Self {
             context: Context::default(),
@@ -262,19 +268,18 @@ impl OtapPdata {
         }
     }
 
+    /// Disassembles the data into context and payload.
     pub fn split_into(self) -> OtapRequest {
         OtapRequest {
             context: Some(self.context),
             payload: Some(self.payload),
         }
     }
-
-    pub(crate) fn mut_context(&mut self) -> &mut Context {
-        &mut self.context
-    }
 }
 
 impl OtapRequest {
+    /// Constructs a request holder for returning a retryable request by
+    /// cloning the request payload in its (potentially modified) state.
     pub fn new_reply<T: Clone + Into<OtapPayload>>(context: Context, payload: &T) -> Self {
         if !context.has_reply_state() {
             Self {
@@ -290,18 +295,22 @@ impl OtapRequest {
         }
     }
 
+    /// The return destination of the reply.
     pub fn return_node_id(&self) -> usize {
         self.context.as_ref().expect("has context").reply_node_id()
     }
 
+    /// To form a Nack message, this is the potentially-cloned payload.
     pub fn take_reply_payload(&mut self) -> Option<OtapPayload> {
         self.payload.take()
     }
 
+    /// To send the request, take it.
     pub fn take_request_payload(&mut self) -> OtapPayload {
         self.payload.take().expect("called once")
     }
 
+    /// Take the context.
     pub fn take_context(&mut self) -> Context {
         self.context.take().expect("called once")
     }
