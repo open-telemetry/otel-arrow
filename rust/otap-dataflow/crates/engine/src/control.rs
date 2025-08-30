@@ -19,10 +19,10 @@ pub struct AckMsg<PData: crate::PipelineData> {
     // type i.e., we would use PData::Context. That will be a large
     // change, for now we expect PData with empty data and returning
     // context.
-    context: PData::Context,
+    pub context: PData::Context,
 
     /// Rejected items
-    rejected: Option<(i64, String)>,
+    pub rejected: Option<(i64, String)>,
 }
 
 impl<PData: crate::PipelineData> AckMsg<PData> {
@@ -41,19 +41,19 @@ pub struct NackMsg<PData: crate::PipelineData> {
     // type i.e., we would use PData::Context. That will be a large
     // change, for now we expect PData with empty data and returning
     // context.
-    context: PData::Context,
+    pub context: PData::Context,
 
     /// Human-readable reason for the NACK.
-    reason: String,
+    pub reason: String,
 
     /// Protocol-independent permanent status
-    permanent: bool,
+    pub permanent: bool,
 
     /// Protocol-independent code number
-    code: Option<i32>,
+    pub code: Option<i32>,
 
     /// Optional return pdata
-    payload: Option<Box<PData::Payload>>,
+    pub payload: Option<Box<PData::Payload>>,
 }
 
 impl<PData: crate::PipelineData> NackMsg<PData> {
@@ -172,12 +172,18 @@ pub enum PipelineControlMsg<PData: crate::PipelineData> {
 
     /// Let the pipeline manager deliver an Ack.
     DeliverAck {
+        /// Destination
+        node_id: usize,
+
         /// Acknowledgement context
         ack: AckMsg<PData>,
     },
 
     /// Let the pipeline manager deliver an Nack.
     DeliverNack {
+        /// Destination
+        node_id: usize,
+
         /// Acknowledgement context
         nack: NackMsg<PData>,
     },

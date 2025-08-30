@@ -50,7 +50,7 @@
 //! let processor = RetryProcessor::with_config(config);
 //! ```
 
-use crate::pdata::{OtapPdata, RSVP, Register};
+use crate::pdata::{OtapPdata, ReplyState};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -59,7 +59,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
-    control::NodeControlMsg,
+    control::{AckOrNack, NodeControlMsg},
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -163,12 +163,20 @@ struct RetryState {
     last_ts: Instant, // r1
 }
 
-impl From<RetryState> for RSVP {
+impl From<RetryState> for ReplyState {
     fn from(value: RetryState) -> Self {
-        Self::new(
-            Register::Usize(value.retries),
-            Register::Instant(value.last_ts),
-        )
+        Self::new(value.retries.into(), value.last_ts.into())
+    }
+}
+
+impl TryFrom<ReplyState> for RetryState {
+    type Error = crate::pdata::error::Error;
+
+    fn try_from(value: ReplyState) -> Result<Self, Self::Error> {
+        Ok(Self {
+            retries: value.r0.try_into()?,
+            last_ts: value.r1.try_into()?,
+        })
     }
 }
 
@@ -192,13 +200,58 @@ impl Processor<OtapPdata> for RetryProcessor {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack(ack) => {
-                    //let rstate: RetryState;
-                    // @@@
+                NodeControlMsg::Ack(mut ack) => {
+                    _ = ack.context.reply_to.pop().expect("has_rsvp");
+                    let node_id = ack.context.reply_node_id();
+                    effect_handler.reply(node_id, AckOrNack::Ack(ack)).await?;
                     Ok(())
                 }
-                NodeControlMsg::Nack(nack) => {
-                    // @@@
+                NodeControlMsg::Nack(mut nack) => {
+                    let mut rstate: RetryState = nack
+                        .context
+                        .reply_to
+                        .pop()
+                        .expect("has_reply")
+                        .state
+                        .try_into()?;
+
+                    let node_id = nack.context.reply_node_id();
+
+                    if rstate.retries >= self.config.max_retries || nack.payload.is_none() {
+                        effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
+                        return Ok(());
+                    }
+                    // TODO: new Nack messages explaining what/why, instead of direct
+                    // propagation as below?
+                    //
+                    // TODO: compute sleep; the check below should
+                    // really test whether we expire before the
+                    // backoff.
+
+                    let expired = nack
+                        .context
+                        .deadline
+                        .map(|dead| Instant::now().duration_since(dead).is_zero())
+                        .unwrap_or(false);
+
+                    if expired {
+                        effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
+                        return Ok(());
+                    }
+
+                    // Increment the retry count
+                    rstate.retries += 1;
+
+                    nack.context
+                        .reply_to(effect_handler.processor_id().index(), rstate.into());
+
+                    effect_handler
+                        .send_message(OtapPdata::new(
+                            nack.context,
+                            *nack.payload.expect("checked"),
+                        ))
+                        .await?;
+
                     Ok(())
                 }
                 NodeControlMsg::TimerTick { .. } => {

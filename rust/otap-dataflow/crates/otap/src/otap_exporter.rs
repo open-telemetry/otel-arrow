@@ -96,63 +96,76 @@ impl OTAPExporter {
         Ok(OTAPExporter { config })
     }
 
-    fn batch_status(
+    async fn batch_status(
         self: &Box<Self>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
         mut reply: OtapRequest,
         status: Option<BatchStatus>,
-    ) -> AckOrNack<OtapPdata> {
-        status
-            .map(|batch| {
-                if batch.status_code == (tonic::Code::Ok as i32) {
-                    AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
-                } else {
-                    AckOrNack::Nack(NackMsg::new(
-                        reply.take_context(),
-                        batch.status_message,
-                        code_is_permanent(batch.status_code),
-                        Some(batch.status_code),
-                        reply.take_reply_payload(),
-                    ))
-                }
-            })
-            .unwrap_or_else(|| {
-                AckOrNack::Nack(NackMsg::new(
-                    reply.take_context(),
-                    "no reply".into(),
-                    false,
-                    None,
-                    reply.take_reply_payload(),
-                ))
-            })
+    ) -> Result<(), Error> {
+        effect_handler
+            .reply(
+                reply.return_node_id(),
+                status
+                    .map(|batch| {
+                        if batch.status_code == (tonic::Code::Ok as i32) {
+                            AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
+                        } else {
+                            AckOrNack::Nack(NackMsg::new(
+                                reply.take_context(),
+                                batch.status_message,
+                                code_is_permanent(batch.status_code),
+                                Some(batch.status_code),
+                                reply.take_reply_payload(),
+                            ))
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        AckOrNack::Nack(NackMsg::new(
+                            reply.take_context(),
+                            "no reply".into(),
+                            false,
+                            None,
+                            reply.take_reply_payload(),
+                        ))
+                    }),
+            )
+            .await
     }
 
-    fn grpc_status(
+    async fn grpc_status(
         self: &Box<Self>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
         mut reply: OtapRequest,
         status: Status,
-    ) -> AckOrNack<OtapPdata> {
-        AckOrNack::Nack(NackMsg::new(
-            reply.take_context(),
-            status.message().to_string(),
-            // Since this is a stsream failure...
-            false,
-            Some(status.code() as i32),
-            reply.take_reply_payload(),
-        ))
+    ) -> Result<(), Error> {
+        effect_handler
+            .reply(
+                reply.return_node_id(),
+                AckOrNack::Nack(NackMsg::new(
+                    reply.take_context(),
+                    status.message().to_string(),
+                    // Since this is a stsream failure...
+                    false,
+                    Some(status.code() as i32),
+                    reply.take_reply_payload(),
+                )),
+            )
+            .await
     }
 
     async fn respond_for(
         self: &Box<Self>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
         reply: OtapRequest,
         resp: Result<tonic::Response<tonic::codec::Streaming<BatchStatus>>, Status>,
-    ) -> AckOrNack<OtapPdata> {
+    ) {
         match resp {
-            Err(status) => self.grpc_status(reply, status),
+            Err(status) => self.grpc_status(effect_handler, reply, status).await,
             Ok(resp) => match resp.into_inner().message().await {
-                Ok(batch_status) => self.batch_status(reply, batch_status),
-                Err(status) => self.grpc_status(reply, status),
+                Ok(batch_status) => self.batch_status(effect_handler, reply, batch_status).await,
+                Err(status) => self.grpc_status(effect_handler, reply, status).await,
             },
-        }
+        };
     }
 }
 
@@ -229,11 +242,12 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     let requested: OtapArrowBytes = payload.try_into()?;
                     let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
 
-                    let result = match requested {
+                    match requested {
                         // match on OTAPData type and use the respective client to send message
                         // ToDo: [team] Note this is a "single-request" stream; in the Golang
                         // OTAP exporter we would keep the stream open.
                         OtapArrowBytes::ArrowMetrics(req) => self.respond_for(
+                            &effect_handler,
                             save_reply,
                             arrow_metrics_client
                                 .arrow_metrics(stream! {
@@ -242,6 +256,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .await,
                         ),
                         OtapArrowBytes::ArrowLogs(req) => self.respond_for(
+                            &effect_handler,
                             save_reply,
                             arrow_logs_client
                                 .arrow_logs(stream! {
@@ -250,6 +265,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .await,
                         ),
                         OtapArrowBytes::ArrowTraces(req) => self.respond_for(
+                            &effect_handler,
                             save_reply,
                             arrow_traces_client
                                 .arrow_traces(stream! {
@@ -257,8 +273,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 })
                                 .await,
                         ),
-                    };
-                    effect_handler.reply(result.await).await?;
+                    }
+                    .await;
                 }
                 _ => {
                     return Err(Error::ExporterError {

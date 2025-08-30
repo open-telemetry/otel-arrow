@@ -202,15 +202,15 @@ impl<PData: crate::PipelineData> EffectHandlerCore<PData> {
     }
 
     /// Reply to a request
-    pub async fn reply(&self, acknack: AckOrNack<PData>) -> Result<(), Error> {
+    pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
         let pipeline_ctrl_msg_sender = self
             .pipeline_ctrl_msg_sender
             .clone()
             .expect("[Internal Error] Node request sender not set.");
         pipeline_ctrl_msg_sender
             .send(match acknack {
-                AckOrNack::Ack(ack) => PipelineControlMsg::DeliverAck { ack },
-                AckOrNack::Nack(nack) => PipelineControlMsg::DeliverNack { nack },
+                AckOrNack::Ack(ack) => PipelineControlMsg::DeliverAck { node_id, ack },
+                AckOrNack::Nack(nack) => PipelineControlMsg::DeliverNack { node_id, nack },
             })
             .await
             .map_err(|e| Error::PipelineControlMsgError {

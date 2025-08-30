@@ -100,7 +100,7 @@ use prost::{EncodeError, Message};
 use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
-pub use super::context::{Context, RSVP, Register, ReplyTo};
+pub use super::context::{Context, Register, ReplyState, ReplyTo};
 
 /// module contains related to pdata
 pub mod error {
@@ -116,6 +116,9 @@ pub mod error {
 
         #[error("A request state error")]
         RequestStateError,
+
+        #[error("A register error")]
+        RegisterError,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -273,7 +276,7 @@ impl OtapPdata {
 
 impl OtapRequest {
     pub fn new_reply<T: Clone + Into<OtapPayload>>(context: Context, payload: &T) -> Self {
-        if !context.has_rsvp() {
+        if !context.has_reply_state() {
             Self {
                 context: Some(context),
                 payload: None,
@@ -285,6 +288,10 @@ impl OtapRequest {
                 payload: Some(payload.into()),
             }
         }
+    }
+
+    pub fn return_node_id(&self) -> usize {
+        self.context.as_ref().expect("has context").reply_node_id()
     }
 
     pub fn take_reply_payload(&mut self) -> Option<OtapPayload> {

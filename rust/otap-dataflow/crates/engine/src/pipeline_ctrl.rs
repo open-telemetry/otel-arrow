@@ -183,11 +183,11 @@ impl<PData: crate::PipelineData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id } => {
                             self.telemetry_timers.cancel(node_id);
                         }
-                        PipelineControlMsg::DeliverAck { .. } => {
-                // @@@
+                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                self.try_send(node_id, NodeControlMsg::Ack(ack)).await;
             }
-                        PipelineControlMsg::DeliverNack { .. } => {
-                // @@@
+                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                self.try_send(node_id, NodeControlMsg::Nack(nack)).await;
             }
                     }
                 }
@@ -219,28 +219,32 @@ impl<PData: crate::PipelineData> PipelineCtrlMsgManager<PData> {
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        if let Some(sender) = self.control_senders.get(&node_id) {
-                            // Use try_send as a fast path:
-                            // - avoids allocating/awaiting a future when the channel has capacity
-                            // - keeps the event loop responsive and reduces timer jitter
-                            // - isolates backpressure to congested channels (only await on Full)
-                            // On Full, fall back to send(msg).await to preserve delivery
-                            match sender.try_send(msg) {
-                                Ok(()) => {}
-                                Err(otap_df_channel::error::SendError::Full(msg)) => {
-                                    // Channel backpressured: await until space is available
-                                    let _ = sender.send(msg).await;
-                                }
-                                Err(otap_df_channel::error::SendError::Closed(_)) => {
-                                    // Ignore closed channel
-                                }
-                            }
-                        }
+            self.try_send(node_id, msg).await;
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    async fn try_send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+        if let Some(sender) = self.control_senders.get(&node_id) {
+            // Use try_send as a fast path:
+            // - avoids allocating/awaiting a future when the channel has capacity
+            // - keeps the event loop responsive and reduces timer jitter
+            // - isolates backpressure to congested channels (only await on Full)
+            // On Full, fall back to send(msg).await to preserve delivery
+            match sender.try_send(msg) {
+                Ok(()) => {}
+                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    // Channel backpressured: await until space is available
+                    let _ = sender.send(msg).await;
+                }
+                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                    // Ignore closed channel
+                }
+            }
+        }
     }
 }
 

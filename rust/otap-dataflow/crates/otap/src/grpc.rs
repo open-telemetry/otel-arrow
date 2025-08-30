@@ -232,10 +232,6 @@ pub enum OtapArrowBytes {
 }
 
 /// returns true for gRPC error status codes that OTLP considers permanent.
-pub(crate) fn status_is_permanent(status: &Status) -> bool {
-    code_is_permanent(status.code() as i32)
-}
-
 pub(crate) fn code_is_permanent(_code: i32) -> bool {
     // TODO
     true

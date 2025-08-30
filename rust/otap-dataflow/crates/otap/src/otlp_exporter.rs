@@ -81,33 +81,54 @@ impl OTLPExporter {
         Ok(Self { config, metrics })
     }
 
-    fn partial_success(
+    async fn partial_success(
         self: &Box<Self>,
+        effect_handler: &EffectHandler<OtapPdata>,
         mut reply: OtapRequest,
         rejected: i64,
         message: String,
-    ) -> AckOrNack<OtapPdata> {
+    ) -> Result<(), Error> {
         // retry payload drops here
-        AckOrNack::Ack(AckMsg::new(reply.take_context(), Some((rejected, message))))
+        effect_handler
+            .reply(
+                reply.return_node_id(),
+                AckOrNack::Ack(AckMsg::new(reply.take_context(), Some((rejected, message)))),
+            )
+            .await
     }
 
-    fn ok(self: &Box<Self>, mut reply: OtapRequest) -> AckOrNack<OtapPdata> {
-        // retry payload drops here
-        AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
-    }
-
-    fn grpc_status(
+    async fn ok(
         self: &Box<Self>,
+        effect_handler: &EffectHandler<OtapPdata>,
+        mut reply: OtapRequest,
+    ) -> Result<(), Error> {
+        effect_handler
+            .reply(
+                reply.return_node_id(),
+                // retry payload drops here
+                AckOrNack::Ack(AckMsg::new(reply.take_context(), None)),
+            )
+            .await
+    }
+
+    async fn grpc_status(
+        self: &Box<Self>,
+        effect_handler: &EffectHandler<OtapPdata>,
         mut reply: OtapRequest,
         status: Status,
-    ) -> AckOrNack<OtapPdata> {
-        AckOrNack::Nack(NackMsg::new(
-            reply.take_context(),
-            status.message().to_string(),
-            code_is_permanent(status.code() as i32),
-            Some(status.code() as i32),
-            reply.take_reply_payload(),
-        ))
+    ) -> Result<(), Error> {
+        effect_handler
+            .reply(
+                reply.return_node_id(),
+                AckOrNack::Nack(NackMsg::new(
+                    reply.take_context(),
+                    status.message().to_string(),
+                    code_is_permanent(status.code() as i32),
+                    Some(status.code() as i32),
+                    reply.take_reply_payload(),
+                )),
+            )
+            .await
     }
 }
 
@@ -214,19 +235,25 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let requested: OtlpProtoBytes = payload.try_into()?;
                     let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
 
-                    let result = match requested {
+                    match requested {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             self.metrics.export_logs_request_received.inc();
                             let resp = logs_client.export(bytes).await;
                             let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
+                                Err(status) => {
+                                    self.grpc_status(&effect_handler, save_reply, status).await
+                                }
                                 Ok(resp) => match resp.into_inner().partial_success {
-                                    None => self.ok(save_reply),
-                                    Some(partial) => self.partial_success(
-                                        save_reply,
-                                        partial.rejected_log_records,
-                                        partial.error_message,
-                                    ),
+                                    None => self.ok(&effect_handler, save_reply).await,
+                                    Some(partial) => {
+                                        self.partial_success(
+                                            &effect_handler,
+                                            save_reply,
+                                            partial.rejected_log_records,
+                                            partial.error_message,
+                                        )
+                                        .await
+                                    }
                                 },
                             };
                             self.metrics.export_logs_request_success.inc();
@@ -236,14 +263,20 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             self.metrics.export_traces_request_received.inc();
                             let resp = trace_client.export(bytes).await;
                             let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
+                                Err(status) => {
+                                    self.grpc_status(&effect_handler, save_reply, status).await
+                                }
                                 Ok(resp) => match resp.into_inner().partial_success {
-                                    None => self.ok(save_reply),
-                                    Some(partial) => self.partial_success(
-                                        save_reply,
-                                        partial.rejected_spans,
-                                        partial.error_message,
-                                    ),
+                                    None => self.ok(&effect_handler, save_reply).await,
+                                    Some(partial) => {
+                                        self.partial_success(
+                                            &effect_handler,
+                                            save_reply,
+                                            partial.rejected_spans,
+                                            partial.error_message,
+                                        )
+                                        .await
+                                    }
                                 },
                             };
                             self.metrics.export_traces_request_success.inc();
@@ -253,21 +286,26 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             self.metrics.export_metrics_request_received.inc();
                             let resp = metrics_client.export(bytes).await;
                             let acknack = match resp {
-                                Err(status) => self.grpc_status(save_reply, status),
+                                Err(status) => {
+                                    self.grpc_status(&effect_handler, save_reply, status).await
+                                }
                                 Ok(resp) => match resp.into_inner().partial_success {
-                                    None => self.ok(save_reply),
-                                    Some(partial) => self.partial_success(
-                                        save_reply,
-                                        partial.rejected_data_points,
-                                        partial.error_message,
-                                    ),
+                                    None => self.ok(&effect_handler, save_reply).await,
+                                    Some(partial) => {
+                                        self.partial_success(
+                                            &effect_handler,
+                                            save_reply,
+                                            partial.rejected_data_points,
+                                            partial.error_message,
+                                        )
+                                        .await
+                                    }
                                 },
                             };
                             self.metrics.export_metrics_request_success.inc();
                             acknack
                         }
-                    };
-                    effect_handler.reply(result).await?;
+                    }?;
                 }
                 _ => {
                     // ignore unhandled messages

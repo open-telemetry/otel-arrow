@@ -264,8 +264,8 @@ impl<PData: crate::PipelineData> EffectHandler<PData> {
     }
 
     /// Reply to a request
-    pub async fn reply(&self, acknack: AckOrNack<PData>) -> Result<(), Error> {
-        self.core.reply(acknack).await
+    pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        self.core.reply(node_id, acknack).await
     }
 
     // More methods will be added in the future as needed.
