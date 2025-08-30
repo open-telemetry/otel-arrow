@@ -3,7 +3,8 @@
 
 #![warn(missing_docs)]
 
-//! Syslog CEF receiver implementation
+use otap_df_otap::pdata::OtapPdata;
+// Syslog CEF receiver implementation
 
 /// Syslog CEF receiver module
 pub mod syslog_cef_receiver;
@@ -13,3 +14,4 @@ pub mod parser;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
+

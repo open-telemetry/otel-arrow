@@ -20,6 +20,7 @@ otap-df-pdata-views = { path = "../pdata-views"}
 otap-df-otap = { path = "../otap" }
 
 # Workspace dependencies
+linkme = { workspace = true }
 arrow.workspace = true
 async-trait.workspace = true
 chrono = { version = "0.4", features = ["serde"] }

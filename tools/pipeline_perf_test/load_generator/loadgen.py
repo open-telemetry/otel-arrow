@@ -475,10 +475,18 @@ class LoadGenerator:
         timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
 
         # Create log message body (similar to OTLP body)
-        log_message = self.generate_random_string(body_size)
+        log_message = self.generate_log_message()
 
         syslog_message = f"{pri}{timestamp} {hostname} {tag}: {log_message}\n"
         return syslog_message.encode('utf-8')
+    
+    def generate_log_message(self, ) -> str:
+        """
+        Generate a random alphanumeric string of the specified length.
+        """
+
+        return ("Rule /Common/collection_v3_syslog <HTTP_RESPONSE>: METRICS_SYSLOG: <134>1 2025-07-31T06:46:36Z nginx.f5kc.com f5-http - http-metrics timestamp=1753962396400|method=POST|host=nginx.f5kc.com|uri=/api/v1/orders|sanitized_path=/api/v1/|status=200|req_size=341|resp_size=31|total_ms=17|ttfb_ms=1|server_ms=1|ssl_ms=38|tcp_rtt_ms=1398|client_ip=10.5.5.2|xff_1=|xff_2=|xff_3=|client_type=python|vs_name=/Common/nginx.f5kc.com-https|pool_name=/Common/appstudy_pool_member|server_addr=10.14.2.200|content_type=application/octet-stream|server_header=nginx/1.27.1|powered_by=none|req_headers=Host:nginx.f5kc.com,User-Agent:python-requests/2.32.3,Accept-Encoding:gzip, deflate,Accept:*/*,Connection:keep-alive,Content-Type:application/json,Content-Length:341|req_headers_filtered=4|req_cookies=|resp_cookies=|resp_headers_filtered=0|tls_version=TLSv1.2|tls_bits=128")
+        
 
     def run_loadgen(self, args_dict):
         """
