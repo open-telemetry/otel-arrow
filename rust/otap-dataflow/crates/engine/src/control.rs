@@ -107,7 +107,10 @@ pub enum PipelineControlMsg {
         node_id: usize,
     },
     /// Requests shutdown of the pipeline.
-    Shutdown,
+    Shutdown {
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
 }
 
 /// Trait for nodes that can receive and process control messages from the pipeline engine.

@@ -4,9 +4,9 @@
 //! HTTP server for exposing admin endpoints.
 
 pub mod error;
+mod pipeline_group;
 mod telemetry;
 mod pipeline;
-mod pipeline_group;
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -33,7 +33,10 @@ pub async fn run(
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let app_state = AppState { metrics_registry, ctrl_msg_senders };
+    let app_state = AppState {
+        metrics_registry,
+        ctrl_msg_senders,
+    };
 
     let app = Router::new()
         .merge(telemetry::routes())
