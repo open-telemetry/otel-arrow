@@ -1421,7 +1421,7 @@ impl UnifiedDictionaryKeySelector {
         // otherwise we need to count the values ...
 
         let values_arr = match maybe_dict_column_arr.data_type() {
-            DataType::Dictionary(K, _) => match K.as_ref() {
+            DataType::Dictionary(k, _) => match k.as_ref() {
                 DataType::UInt8 => {
                     let dict_col = maybe_dict_column_arr
                         .as_any()
@@ -1970,52 +1970,6 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_batch_coalescer() {
-        // TODO albert this test isn't needed
-
-        let rb1 = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "a",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                false,
-            )])),
-            vec![Arc::new(
-                DictionaryArray::try_new(
-                    UInt8Array::from_iter_values([0, 1, 2]),
-                    Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
-                )
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-
-        let rb2 = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "a",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                false,
-            )])),
-            vec![Arc::new(
-                DictionaryArray::try_new(
-                    UInt8Array::from_iter_values([0, 1, 2]),
-                    Arc::new(StringArray::from_iter_values(["a", "d", "c"])),
-                )
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-
-        let mut bb = arrow::compute::BatchCoalescer::new(rb1.schema().clone(), 8);
-
-        bb.push_batch(rb1).unwrap();
-        bb.push_batch(rb2).unwrap();
-        bb.finish_buffered_batch().unwrap();
-        let result = bb.next_completed_batch().unwrap();
-
-        println!("{:?}", result);
-    }
-
-    #[test]
     fn test_unify_null_filling() {
         let a = record_batch!(
             ("id", Int32, [1, 2, 3]),
@@ -2072,11 +2026,6 @@ mod test {
             batches[1][0],
             Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
         )
-    }
-
-    #[test]
-    fn test_adds_missing_dict_columns_to_record_batch() {
-        todo!()
     }
 
     #[test]
@@ -2288,18 +2237,240 @@ mod test {
     }
 
     #[test]
-    fn test_unify_dict_keeps_u16_if_fits() {
-        todo!()
-    }
-
-    #[test]
     fn test_unify_dict_handling_upgrades_keys_u16_to_native() {
-        todo!()
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        )]));
+
+        let num_rows = 40000;
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..num_rows),
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..num_rows),
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{}", i as u32 + 30000)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        // add an empty batch to ensure we'll add an empty dict array as well
+        let rb_c = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("f2", DataType::Int32, true)])),
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows as i32))],
+        )
+        .unwrap();
+
+        // now we have created two record batches with a total of 70000 different values across two
+        // dictionaries keyed by u16. Test if the unify code will recognize that this won't fit in
+        // a u16 keyed dictionary if they were combined, so we need to upgrade the key type ...
+        let mut batches: [[Option<RecordBatch>; 1]; 3] = [[Some(rb_a)], [Some(rb_b)], [Some(rb_c)]];
+        unify(&mut batches).unwrap();
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new("f1", DataType::Utf8, true),
+            Field::new("f2", DataType::Int32, true),
+        ]));
+
+        let expected_rb_a = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{i}")),
+                )),
+                Arc::new(Int32Array::new_null(num_rows as usize)),
+            ],
+        )
+        .unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{}", i as u32 + 30000)),
+                )),
+                Arc::new(Int32Array::new_null(num_rows as usize)),
+            ],
+        )
+        .unwrap();
+
+        let expected_rb_c = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("f2", DataType::Int32, true),
+                Field::new("f1", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                Arc::new(StringArray::new_null(num_rows as usize)),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+        assert_eq!(batches[2][0].as_ref().unwrap(), &expected_rb_c);
     }
 
     #[test]
-    fn test_unify_dict_handling_keeps_u16_if_would_fit_in_u8_but_no_u8_keys_in_batches() {
-        todo!()
+    fn test_unify_dict_keeps_u16_if_fits() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        )]));
+
+        let num_rows = 40000;
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..num_rows),
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..num_rows),
+                Arc::new(StringArray::from_iter_values(
+                    (0..num_rows).map(|i| format!("{}", i + 10000)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        // add an empty batch to ensure we'll add an empty dict array as well
+        let rb_c = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("f2", DataType::Int32, true)])),
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows as i32))],
+        )
+        .unwrap();
+
+        // now we have created two record batches with a total of 50000 different values across two
+        // dictionaries keyed by u16. Test if the unify code will recognize that this will fit in
+        // a u16 keyed dictionary if they were combined, so we can keep the original type ..
+        let mut batches: [[Option<RecordBatch>; 1]; 3] = [[Some(rb_a)], [Some(rb_b)], [Some(rb_c)]];
+        unify(&mut batches).unwrap();
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "f1",
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new("f2", DataType::Int32, true),
+        ]));
+
+        let expected_rb_a = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values(0..num_rows),
+                    Arc::new(StringArray::from_iter_values(
+                        (0..num_rows).map(|i| format!("{i}")),
+                    )),
+                )),
+                Arc::new(Int32Array::new_null(num_rows as usize)),
+            ],
+        )
+        .unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values(0..num_rows),
+                    Arc::new(StringArray::from_iter_values(
+                        (0..num_rows).map(|i| format!("{}", i + 10000)),
+                    )),
+                )),
+                Arc::new(Int32Array::new_null(num_rows as usize)),
+            ],
+        )
+        .unwrap();
+
+        let expected_rb_c = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("f2", DataType::Int32, true),
+                Field::new(
+                    "f1",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::new_null(num_rows as usize),
+                    Arc::new(StringArray::from_iter_values(Vec::<String>::new())),
+                )),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+        assert_eq!(batches[2][0].as_ref().unwrap(), &expected_rb_c);
+    }
+
+    #[test]
+    fn test_unify_dict_handling_does_not_downgrade_u16_keys() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        )]));
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{}", i + 20)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        // now we have created two record batches with a total of 220 different values across two
+        // dictionaries keyed by u16. Test if the unify code will recognize that, although this
+        // could fit in a u8 keyed dictionary, b/c we never saw a u8 keyed dict in the inputs
+        // we assume that we need to keep the dict size as u16
+        let mut batches: [[Option<RecordBatch>; 1]; 2] =
+            [[Some(rb_a.clone())], [Some(rb_b.clone())]];
+        unify(&mut batches).unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &rb_b);
     }
 
     #[test]
