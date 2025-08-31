@@ -10,12 +10,11 @@ use std::{
     sync::Arc,
 };
 
-use ahash::RandomState;
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, FixedSizeBinaryArray,
-        Float32Array, GenericByteArray, PrimitiveArray, RecordBatch, RecordBatchOptions,
-        StringArray, StructArray, UInt16Array, UInt32Array, cast,
+        GenericByteArray, PrimitiveArray, RecordBatch, RecordBatchOptions, StringArray,
+        StructArray, UInt16Array, UInt32Array,
     },
     buffer::NullBuffer,
     compute::cast,
@@ -23,24 +22,18 @@ use arrow::{
         ArrowNativeTypeOp, ByteArrayType, DataType, Field, Fields, Float32Type, Float64Type,
         Int32Type, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     },
-    record_batch,
 };
-use ciborium::value;
-use hashbrown::HashTable;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use snafu::ResultExt;
 
 use crate::{
-    encode::record::array::{
-        BinaryArrayBuilder, FixedSizeBinaryArrayBuilder, Int64ArrayBuilder, StringArrayBuilder,
-    },
     otap::{
         DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore,
         POSITION_LOOKUP, Traces, batch_length, child_payload_types,
         error::{self, Result},
     },
-    proto::opentelemetry::{arrow::v1::ArrowPayloadType, metrics::v1::metric::Data},
+    proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::consts,
 };
 
@@ -1582,65 +1575,6 @@ impl UnifiedDictionaryKeySelector {
     }
 }
 
-fn record_batch_has_dictionary(rb: &RecordBatch) -> bool {
-    rb.schema()
-        .fields()
-        .iter()
-        .any(|field| field_has_dictionary(field))
-}
-
-fn field_has_dictionary(field: &Field) -> bool {
-    // Although the OTAP schema has both Arrow Struct and List field types, all the List fields are
-    // of primitives except for QuantileValues which does not use dictionary encoding, so we can
-    // ignore List types. But we still have to recurse on Struct types. OTAP doesn't use any of the
-    // other recursive data types like Map.
-    match field.data_type() {
-        DataType::Dictionary(_, _) => true,
-        DataType::Struct(fields) => fields.iter().any(|field| field_has_dictionary(field)),
-        _ => false,
-    }
-}
-
-fn flatten_field_dictionary(field: &Field) -> Field {
-    match field.data_type() {
-        DataType::Dictionary(_key, value) => {
-            let value = *value.clone();
-            field.clone().with_data_type(value)
-        }
-        DataType::Struct(struct_fields) => field.clone().with_data_type(DataType::Struct(
-            struct_fields
-                .iter()
-                .map(|field| flatten_field_dictionary(field))
-                .collect::<Fields>(),
-        )),
-        _ => field.clone(),
-    }
-}
-
-fn flatten_dictionary_column(old_field: &Field, column: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
-    match old_field.data_type() {
-        DataType::Dictionary(key, _value) if **key == DataType::UInt8 => {
-            flatten_dictionary_array(DictionaryArray::<UInt8Type>::from(column.to_data()))
-        }
-
-        DataType::Dictionary(key, _value) if **key == DataType::UInt16 => {
-            flatten_dictionary_array(DictionaryArray::<UInt16Type>::from(column.to_data()))
-        }
-
-        DataType::Struct(_struct_fields) => {
-            // This is where we recurse by way of flatten_dictionary_record_batch
-            let (rb, nulls) =
-                NullableRecordBatch::from(StructArray::from(column.to_data())).into_parts();
-            let rb = flatten_dictionary_record_batch(rb)?;
-            let result: Arc<dyn Array> = Arc::new(StructArray::from(
-                NullableRecordBatch::from_parts(rb, nulls),
-            ));
-            Ok(result)
-        }
-        _ => unreachable!(),
-    }
-}
-
 fn try_record_dictionary_fields(
     record_batch: &RecordBatch,
     total_batch_size: usize,
@@ -1926,85 +1860,6 @@ fn try_unify_struct_fields(
         new_columns,
         current_array.nulls().cloned(),
     ))
-}
-
-// `RecordBatch` and `StructArray` are very similar and have `From` impls for conversion between
-// them; however, `RecordBatch` can't represent top-level nulls while `StructArray` can, so
-// converting a `StructArray` with top-level nulls into a `RecordBatch` will panic. This structure
-// encodes the extra nullability information so you can avoid having to impl the same code for both.
-struct NullableRecordBatch {
-    rb: RecordBatch,
-    nulls: Option<NullBuffer>,
-}
-
-impl NullableRecordBatch {
-    fn into_parts(self) -> (RecordBatch, Option<NullBuffer>) {
-        (self.rb, self.nulls)
-    }
-
-    fn from_parts(rb: RecordBatch, nulls: Option<NullBuffer>) -> Self {
-        Self { rb, nulls }
-    }
-}
-
-impl From<NullableRecordBatch> for StructArray {
-    fn from(value: NullableRecordBatch) -> Self {
-        let (schema, columns, _len) = value.rb.into_parts();
-        let nulls = value.nulls;
-        let fields = schema.fields.clone(); // FIXME: surely we can avoid this?
-        StructArray::new(fields, columns, nulls)
-    }
-}
-
-impl From<StructArray> for NullableRecordBatch {
-    fn from(array: StructArray) -> Self {
-        let (fields, columns, nulls) = array.into_parts();
-        let schema = Schema::new(fields);
-        let rb = RecordBatch::try_new(Arc::new(schema), columns)
-            .expect("RecordBatch construction from StructArray without nulls should never fail");
-        Self { rb, nulls }
-    }
-}
-
-fn flatten_dictionary_record_batch(rb: RecordBatch) -> Result<RecordBatch> {
-    // I need a dummy object to swap into column Vecs while I mutate and replace the column I
-    // actually care about.
-    let mut dummy = arrow::array::new_null_array(&DataType::UInt8, 0);
-
-    let (schema, mut columns, _num_rows) = rb.into_parts();
-    let schema = Arc::unwrap_or_clone(schema);
-    let mut builder = SchemaBuilder::from(&schema);
-
-    for (field_index, field) in schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(_i, field)| field_has_dictionary(field))
-    {
-        // Flatten the field object
-        *builder.field_mut(field_index) = Arc::new(flatten_field_dictionary(field));
-
-        // ...and now flatten the column
-        std::mem::swap(&mut columns[field_index], &mut dummy);
-        // Now, our dummy value is stored in `columns` and `dummy` refers to the column we care about.
-        let mut column = flatten_dictionary_column(field, dummy)?;
-        std::mem::swap(&mut columns[field_index], &mut column);
-        dummy = column;
-        assert_eq!(dummy.len(), 0);
-    }
-
-    let schema = Arc::new(builder.finish());
-    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
-}
-
-fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
-    array: DictionaryArray<K>,
-) -> Result<Arc<dyn Array>> {
-    let (keys, values) = array.into_parts();
-    let options = Some(arrow::compute::TakeOptions {
-        check_bounds: false,
-    });
-    arrow::compute::take(&values, &keys, options).context(error::BatchingSnafu)
 }
 
 #[cfg(test)]
