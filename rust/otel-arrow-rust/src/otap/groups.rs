@@ -1231,7 +1231,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
     // the first element in the tuple is the struct field definition, and the second element is
     // the a map of struct field name -> field definition
     // TODO - we could avoid some heap allocations if this map's values were just an Arc<Field> ...
-    let mut struct_fields: BTreeMap<String, (Field, BTreeMap<String, Field>)> = BTreeMap::new();
+    let mut struct_fields: BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)> =
+        BTreeMap::new();
 
     let mut all_batch_indices: HashSet<usize> = HashSet::new();
 
@@ -1277,27 +1278,14 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             // try to get the fields that should be in each struct column
             if let Some(rb) = &batches[payload_type_index] {
                 try_record_dictionary_fields(rb, total_batch_size, &mut dict_fields)?;
-                try_record_struct_fields(rb, &mut struct_fields)?;
+                try_record_struct_fields(rb, total_batch_size, &mut struct_fields)?;
             }
-
-            // // Let's flatten out dictionary columns
-            // // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
-            // // dict columns together preserving the space savings when possible!
-            // if batches[payload_type_index]
-            //     .as_ref()
-            //     .map(record_batch_has_dictionary)
-            //     .unwrap_or(false)
-            // {
-            //     if let Some(rb) = batches[payload_type_index].take() {
-            //         let rb = flatten_dictionary_record_batch(rb)?;
-            //         let _ = batches[payload_type_index].replace(rb);
-            //     }
-            // }
         }
 
         for batches in batches.iter() {
             if let Some(rb) = &batches[payload_type_index] {
                 try_count_dictionary_values(rb, &mut dict_fields)?;
+                try_count_struct_dictionary_fields(rb, &mut struct_fields)?;
             }
         }
 
@@ -1354,6 +1342,11 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         }
     }
     Ok(())
+}
+
+struct StructFieldToUnify {
+    field: Field,
+    dictionary: Option<UnifiedDictionaryKeySelector>,
 }
 
 struct UnifiedDictionaryKeySelector {
@@ -1736,7 +1729,8 @@ fn try_unify_dictionary_fields(
 
 fn try_record_struct_fields(
     record_batch: &RecordBatch,
-    all_struct_fields: &mut BTreeMap<String, (Field, BTreeMap<String, Field>)>,
+    total_batch_size: usize,
+    all_struct_fields: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<()> {
     for rb_field in record_batch.schema_ref().fields() {
         if let DataType::Struct(struct_fields) = rb_field.data_type() {
@@ -1755,18 +1749,53 @@ fn try_record_struct_fields(
 
             for struct_field in struct_fields {
                 if all_this_struct_fields.get(struct_field.name()).is_none() {
-                    let desired_field = match struct_field.data_type() {
-                        // for dictionaries, the type we want (for now) is actually the native
-                        // array type.
-                        // TODO - when we add the optimization to not flatten the dictionaries
-                        // we should probably just keep the original type here?
-                        DataType::Dictionary(_, val) => {
-                            struct_field.as_ref().clone().with_data_type(*val.clone())
+                    let dict_key_selector = match struct_field.data_type() {
+                        DataType::Dictionary(dict_key_type, _) => {
+                            Some(UnifiedDictionaryKeySelector::new(
+                                total_batch_size,
+                                dict_key_type.as_ref().clone(),
+                            ))
                         }
-                        _ => struct_field.as_ref().clone(),
+                        _ => None,
                     };
-                    _ = all_this_struct_fields.insert(struct_field.name().clone(), desired_field);
+                    _ = all_this_struct_fields.insert(
+                        struct_field.name().clone(),
+                        StructFieldToUnify {
+                            field: struct_field.as_ref().clone(),
+                            dictionary: dict_key_selector,
+                        },
+                    );
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn try_count_struct_dictionary_fields(
+    record_batch: &RecordBatch,
+    all_struct_fields_defs: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
+) -> Result<()> {
+    for (rb_field_name, (_, desired_struct_fields)) in all_struct_fields_defs {
+        let struct_arr = match record_batch.column_by_name(&rb_field_name) {
+            Some(column) => column.as_any().downcast_ref::<StructArray>().unwrap(),
+            None => {
+                // the struct field isn't contained in this record batch, so we don't need to count
+                // the values in its dictionary columns
+                continue;
+            }
+        };
+
+        for (struct_field_name, struct_field) in desired_struct_fields {
+            let dict_key_selector = match struct_field.dictionary.as_mut() {
+                Some(dict_key_selector) => dict_key_selector,
+                // skip field if it's not a dict field
+                None => continue,
+            };
+
+            if let Some(column) = struct_arr.column_by_name(&struct_field_name) {
+                dict_key_selector.visit_dictionary_values(column);
             }
         }
     }
@@ -1776,14 +1805,14 @@ fn try_record_struct_fields(
 
 fn try_unify_struct_columns(
     record_batch: &RecordBatch,
-    all_struct_fields_defs: &BTreeMap<String, (Field, BTreeMap<String, Field>)>,
+    all_struct_fields_defs: &BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema_ref();
     let mut rb_fields = schema.fields.to_vec();
     let mut rb_columns = record_batch.columns().to_vec();
 
-    for (struct_field_name, (rb_field, desired_struct_fields)) in all_struct_fields_defs {
-        match schema.index_of(struct_field_name) {
+    for (rb_field_name, (rb_field, desired_struct_fields)) in all_struct_fields_defs {
+        match schema.index_of(rb_field_name) {
             Ok(rb_field_index) => {
                 let field = schema.field(rb_field_index);
 
@@ -1807,11 +1836,16 @@ fn try_unify_struct_columns(
 
             Err(_) => {
                 let len = record_batch.num_rows();
-                let struct_fields =
-                    Fields::from(desired_struct_fields.values().cloned().collect::<Vec<_>>());
+                let struct_fields = Fields::from(
+                    desired_struct_fields
+                        .values()
+                        .map(|s| &s.field)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
                 let struct_columns = desired_struct_fields
                     .values()
-                    .map(|field| arrow::array::new_null_array(field.data_type(), len))
+                    .map(|s| arrow::array::new_null_array(s.field.data_type(), len))
                     .collect::<Vec<_>>();
                 let struct_nulls = rb_field
                     .is_nullable()
@@ -1838,20 +1872,33 @@ fn try_unify_struct_columns(
 
 fn try_unify_struct_fields(
     current_array: &StructArray,
-    desired_fields: &BTreeMap<String, Field>,
+    desired_fields: &BTreeMap<String, StructFieldToUnify>,
 ) -> Result<StructArray> {
     let mut new_columns = Vec::with_capacity(desired_fields.len());
     let array_len = current_array.len();
     let curr_fields = current_array.fields();
-    for (field_name, field_def) in desired_fields {
+    for (field_name, desired_struct_field) in desired_fields {
+        let data_type = match &desired_struct_field.dictionary {
+            Some(dict_key_selector) => {
+                let dict_values_type = match desired_struct_field.field.data_type() {
+                    DataType::Dictionary(_, v) => v.as_ref().clone(),
+                    native => native.clone(),
+                };
+                match dict_key_selector.choose_key_type() {
+                    Some(key_type) => {
+                        DataType::Dictionary(Box::new(key_type), Box::new(dict_values_type))
+                    }
+                    None => dict_values_type,
+                }
+            }
+            None => desired_struct_field.field.data_type().clone(),
+        };
+
         match curr_fields.find(field_name) {
             Some((field_index, current_field)) => {
                 let current_column = current_array.column(field_index).clone();
-                // TODO - flattening the dictionaries here is not what we want to do long-term
                 let new_column = match current_field.data_type() {
-                    DataType::Dictionary(_, _) => {
-                        flatten_dictionary_column(current_field, current_column)?
-                    }
+                    DataType::Dictionary(_, _) => cast(&current_column, &data_type).unwrap(),
                     _ => current_column,
                 };
 
@@ -1861,13 +1908,19 @@ fn try_unify_struct_fields(
             None => {
                 // create an all null array with the desired type
                 let new_struct_column =
-                    arrow::array::new_null_array(field_def.data_type(), array_len);
+                    arrow::array::new_null_array(desired_struct_field.field.data_type(), array_len);
                 new_columns.push(new_struct_column);
             }
         }
     }
 
-    let new_fields = Fields::from(desired_fields.values().cloned().collect::<Vec<_>>());
+    let new_fields = Fields::from(
+        desired_fields
+            .values()
+            .map(|s| &s.field)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     Ok(StructArray::new(
         new_fields,
         new_columns,
