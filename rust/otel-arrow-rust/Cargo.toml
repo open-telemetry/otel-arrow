@@ -22,9 +22,11 @@ trace = []
 derive = []
 
 [dependencies]
+ahash = "0.8.11"
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features = ["zstd"] }
 ciborium = "0.2.2"
+hashbrown = "0.15.3"
 lazy_static = "1.5"
 num_enum = "0.7"
 otlp-derive = { path = "./src/pdata/otlp/derive" }

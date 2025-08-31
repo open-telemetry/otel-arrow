@@ -3,34 +3,44 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
     ops::{Add, Range, RangeFrom, RangeInclusive},
     sync::Arc,
 };
 
+use ahash::RandomState;
 use arrow::{
     array::{
-        Array, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch, StructArray,
-        UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, FixedSizeBinaryArray,
+        Float32Array, GenericByteArray, PrimitiveArray, RecordBatch, StringArray, StructArray,
+        UInt16Array, UInt32Array, cast,
     },
     buffer::NullBuffer,
+    compute::cast,
     datatypes::{
-        ArrowNativeTypeOp, DataType, Field, Fields, Schema, SchemaBuilder, UInt8Type, UInt16Type,
+        ArrowNativeTypeOp, ByteArrayType, DataType, Field, Fields, Float32Type, Float64Type,
+        Int32Type, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     },
+    record_batch,
 };
+use ciborium::value;
+use hashbrown::HashTable;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use snafu::ResultExt;
 
 use crate::{
+    encode::record::array::{
+        BinaryArrayBuilder, FixedSizeBinaryArrayBuilder, Int64ArrayBuilder, StringArrayBuilder,
+    },
     otap::{
         DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore,
         POSITION_LOOKUP, Traces, batch_length, child_payload_types,
         error::{self, Result},
     },
-    proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    proto::opentelemetry::{arrow::v1::ArrowPayloadType, metrics::v1::metric::Data},
     schema::consts,
 };
 
@@ -1203,23 +1213,24 @@ impl<T> IDRange<T> {
 /// * `batches` - this is a 2D array where each element in the outer array contains an inner array
 ///   and each element in the inner array contains the record batch for a given payload type
 fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
-    // FIXME: we need to handle StructFields; consider schema flattening?
-
     let mut schemas = Vec::with_capacity(batches.len());
 
     // FIXME: perhaps this whole function should coalesce operations against the same
     // `RecordBatch`es together? At least investigate the performance cost of calling
     // RecordBatch::into_parts/try_new repeatedly.
 
-    // `field_name_to_col_indices` maps column name to vector of col-indices
+    // `field_name_to_batch_indices` maps column name to vector of col-indices
     let mut field_name_to_batch_indices: HashMap<String, HashSet<usize>> = HashMap::new();
     // FIXME: replace sets with a real bitset type, ideally one that stores small sets inline
     // without allocations.
 
-    // map of struct columns where, keyed by the struct field name, and the values are a map of
-    // field name -> field definition for the columns in the struct array.
-    // TODO comment on this datastructure is not correct
-    // TODO - we could avoid some heap allocations if this took an Arc<Field> ...
+    // TODO comment
+    let mut dict_fields: BTreeMap<String, UnifiedDictionaryKeySelector> = BTreeMap::new();
+
+    // map of struct columns where, keyed by the struct field name, and the values are a tuple
+    // the first element in the tuple is the struct field definition, and the second element is
+    // the a map of struct field name -> field definition
+    // TODO - we could avoid some heap allocations if this map's values were just an Arc<Field> ...
     let mut struct_fields: BTreeMap<String, (Field, BTreeMap<String, Field>)> = BTreeMap::new();
 
     let mut all_batch_indices: HashSet<usize> = HashSet::new();
@@ -1253,30 +1264,46 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             let _ = all_batch_indices.insert(batch_index);
         });
 
-        for batches in batches.iter_mut() {
+        // this will be used to initialize the dictionary key selector. There are certain
+        // optimizations that can be made when choosing the correct key sizes using this value
+        let total_batch_size = batches
+            .iter()
+            .filter_map(|batches| batches[payload_type_index].as_ref())
+            .map(|rb| rb.num_rows())
+            .sum();
+
+        for batches in batches.iter() {
             // try to get the fields that should be in each struct column
             if let Some(rb) = &batches[payload_type_index] {
+                try_record_dictionary_fields(rb, total_batch_size, &mut dict_fields)?;
                 try_record_struct_fields(rb, &mut struct_fields)?;
             }
 
-            // Let's flatten out dictionary columns
-            // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
-            // dict columns together preserving the space savings when possible!
-            if batches[payload_type_index]
-                .as_ref()
-                .map(record_batch_has_dictionary)
-                .unwrap_or(false)
-            {
-                if let Some(rb) = batches[payload_type_index].take() {
-                    let rb = flatten_dictionary_record_batch(rb)?;
-                    let _ = batches[payload_type_index].replace(rb);
-                }
+            // // Let's flatten out dictionary columns
+            // // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
+            // // dict columns together preserving the space savings when possible!
+            // if batches[payload_type_index]
+            //     .as_ref()
+            //     .map(record_batch_has_dictionary)
+            //     .unwrap_or(false)
+            // {
+            //     if let Some(rb) = batches[payload_type_index].take() {
+            //         let rb = flatten_dictionary_record_batch(rb)?;
+            //         let _ = batches[payload_type_index].replace(rb);
+            //     }
+            // }
+        }
+
+        for batches in batches.iter() {
+            if let Some(rb) = &batches[payload_type_index] {
+                try_count_dictionary_values(rb, &mut dict_fields)?;
             }
         }
 
         // unify all the struct columns
         for batches in batches.iter_mut() {
             if let Some(rb) = batches[payload_type_index].take() {
+                let rb = try_unify_dictionary_fields(&rb, &dict_fields)?;
                 let rb = try_unify_struct_columns(&rb, &struct_fields)?;
                 let _ = batches[payload_type_index].replace(rb);
             }
@@ -1321,6 +1348,239 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         }
     }
     Ok(())
+}
+
+struct UnifiedDictionaryKeySelector {
+    largest_key_data_type: DataType,
+    smallest_key_data_type: DataType,
+    total_batch_size: usize,
+    state: ahash::RandomState,
+    dedup: BTreeSet<u64>,
+    // dedup: HashSet<&'a [u8]>
+}
+
+impl UnifiedDictionaryKeySelector {
+    fn new(total_batch_size: usize, key_data_type: DataType) -> Self {
+        Self {
+            total_batch_size,
+
+            // TODO is this kind of a hokey way to do this?
+            largest_key_data_type: key_data_type.clone(),
+            smallest_key_data_type: key_data_type,
+
+            // TODO - if we know the batch size is < 256 we don't need these dedup stuff and we
+            // can just fully calculate the max key size from the batch size?
+            state: Default::default(),
+            dedup: BTreeSet::new(),
+            // dedup: HashSet::new(),
+        }
+    }
+
+    fn visit_key_data_type(&mut self, key_data_type: &DataType) {
+        // TODO comment on the logic here
+        if key_data_type == &DataType::UInt16 {
+            self.largest_key_data_type = DataType::UInt16
+        }
+
+        if key_data_type == &DataType::UInt8 {
+            self.smallest_key_data_type = DataType::UInt8
+        }
+    }
+
+    fn visit_dictionary_values(&mut self, maybe_dict_column_arr: &ArrayRef) {
+        if self.can_stop() {
+            // we've already seen enough values that we can decide the dictionary key size
+
+            return;
+        }
+
+        // check how many unique values there are ...
+
+        // if total_batch_size < u8::MAX {
+        //   stop - we know the values will fit in a u8
+        // }
+
+        // if total_batch_size < u16::MAX && total_unique_values > u8::MAX {
+        //   stop -- we know that values will fit in a u16 but not in a u8
+        // }
+
+        // if total_batch_size - total_duplicates < u16::MAX && min_desired_key_type = u16 {
+        //   stop -- we know the values will fit into a u16
+        // }
+
+        // if total_batch_Size - total_duplicates < u8::MAX {
+        //    stop -- we know the values will fit into a u8
+        //}
+
+        // otherwise we need to count the values ...
+
+        let values_arr = match maybe_dict_column_arr.data_type() {
+            DataType::Dictionary(K, _) => match K.as_ref() {
+                DataType::UInt8 => {
+                    let dict_col = maybe_dict_column_arr
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .unwrap();
+                    dict_col.values()
+                }
+                DataType::UInt16 => {
+                    let dict_col = maybe_dict_column_arr
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .unwrap();
+                    dict_col.values()
+                }
+                _ => {
+                    todo!("invalid key type")
+                }
+            },
+            _ => {
+                // assume it's natve column
+                maybe_dict_column_arr
+            }
+        };
+
+        match values_arr.data_type() {
+            DataType::Binary => {
+                let bin_array = values_arr.as_any().downcast_ref::<BinaryArray>().unwrap();
+                self.visit_bytes_dict_values(bin_array);
+            }
+            DataType::Utf8 => {
+                let str_array = values_arr.as_any().downcast_ref::<StringArray>().unwrap();
+                self.visit_bytes_dict_values(str_array);
+            }
+            DataType::FixedSizeBinary(_) => {
+                let fsb_array = values_arr
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .unwrap();
+                self.visit_fsb_dict_values(fsb_array);
+            }
+            DataType::UInt16 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<UInt16Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::UInt32 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<UInt32Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::UInt64 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<UInt64Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::Int16 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int64Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::Int32 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int32Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::Int64 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int64Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+            DataType::Float32 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Float32Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+
+            DataType::Float64 => {
+                let prim_array = values_arr
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Float64Type>>()
+                    .unwrap();
+                self.visit_primitive_values(prim_array);
+            }
+
+            _ => {
+                // TODO spelling and proper error message my goodness man ...
+                todo!("unexepected dict type")
+            }
+        }
+    }
+
+    fn can_stop(&self) -> bool {
+        // TODO
+        false
+    }
+
+    fn visit_bytes_dict_values<T: ByteArrayType>(&mut self, byte_array: &GenericByteArray<T>) {
+        for value_native in byte_array.iter().flatten() {
+            let value_bytes: &[u8] = value_native.as_ref();
+            let hash = self.state.hash_one(value_bytes);
+            _ = self.dedup.insert(hash);
+            if self.can_stop() {
+                break;
+            }
+        }
+    }
+
+    fn visit_fsb_dict_values(&mut self, fsb_array: &FixedSizeBinaryArray) {
+        for value_bytes in fsb_array.iter().flatten() {
+            let hash = self.state.hash_one(value_bytes);
+            _ = self.dedup.insert(hash);
+            if self.can_stop() {
+                break;
+            }
+        }
+    }
+
+    fn visit_primitive_values<T: ArrowPrimitiveType>(
+        &mut self,
+        primitive_array: &PrimitiveArray<T>,
+    ) {
+        let size = size_of::<T::Native>();
+        let values_buffer = primitive_array.values().inner();
+        for i in 0..primitive_array.len() {
+            if primitive_array.is_null(i) {
+                continue;
+            }
+
+            let offset = i * size;
+            let value_bytes = &values_buffer[offset..offset + size];
+            let hash = self.state.hash_one(value_bytes);
+            _ = self.dedup.insert(hash);
+            if self.can_stop() {
+                break;
+            }
+        }
+    }
+
+    fn choose_key_type(&self) -> Option<DataType> {
+        // TODO check boundary condition here ...
+        if self.dedup.len() <= u8::MAX as usize {
+            return Some(self.smallest_key_data_type.clone());
+        }
+
+        // TODO check boundary conditions ...
+        if self.dedup.len() <= u16::MAX as usize {
+            return Some(DataType::UInt16);
+        }
+
+        return None;
+    }
 }
 
 fn record_batch_has_dictionary(rb: &RecordBatch) -> bool {
@@ -1380,6 +1640,86 @@ fn flatten_dictionary_column(old_field: &Field, column: Arc<dyn Array>) -> Resul
         }
         _ => unreachable!(),
     }
+}
+
+fn try_record_dictionary_fields(
+    record_batch: &RecordBatch,
+    total_batch_size: usize,
+    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryKeySelector>,
+) -> Result<()> {
+    let schema = record_batch.schema_ref();
+
+    for field in schema.fields() {
+        if let DataType::Dictionary(dict_key_type, _) = field.data_type() {
+            let field_name = field.name();
+            if dictionary_fields.contains_key(field.name()) {
+                dictionary_fields
+                    .get_mut(field.name())
+                    .unwrap()
+                    .visit_key_data_type(&dict_key_type.as_ref());
+            } else {
+                // TODO -- here we might want to pass the data type
+                _ = dictionary_fields.insert(
+                    field_name.clone(),
+                    UnifiedDictionaryKeySelector::new(
+                        total_batch_size,
+                        dict_key_type.as_ref().clone(),
+                    ),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn try_count_dictionary_values(
+    record_batch: &RecordBatch,
+    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryKeySelector>,
+) -> Result<()> {
+    for (field_name, dict_key_selector) in dictionary_fields.iter_mut() {
+        if let Some(column) = record_batch.column_by_name(field_name) {
+            dict_key_selector.visit_dictionary_values(column);
+        }
+    }
+
+    Ok(())
+}
+
+fn try_unify_dictionary_fields(
+    record_batch: &RecordBatch,
+    dictionary_fields: &BTreeMap<String, UnifiedDictionaryKeySelector>,
+) -> Result<RecordBatch> {
+    let schema = record_batch.schema_ref();
+    let mut columns = record_batch.columns().to_vec();
+    let mut fields = schema.fields.to_vec();
+
+    for (field_name, dict_key_selector) in dictionary_fields.iter() {
+        if let Ok(field_index) = schema.index_of(&field_name) {
+            let column = &columns[field_index];
+            let values_type = match column.data_type() {
+                DataType::Dictionary(_, v) => v.as_ref().clone(),
+                native => native.clone(),
+            };
+            let new_column = match dict_key_selector.choose_key_type() {
+                Some(key_type) => cast(
+                    column,
+                    &DataType::Dictionary(Box::new(key_type), Box::new(values_type)),
+                ),
+                None => cast(column, &values_type),
+            }
+            .unwrap();
+
+            let new_field = fields[field_index]
+                .as_ref()
+                .clone()
+                .with_data_type(new_column.data_type().clone());
+            fields[field_index] = Arc::new(new_field);
+            columns[field_index] = new_column;
+        }
+    }
+
+    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
 }
 
 fn try_record_struct_fields(
@@ -1618,6 +1958,52 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_batch_coalescer() {
+        // TODO albert this test isn't needed
+
+        let rb1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            )])),
+            vec![Arc::new(
+                DictionaryArray::try_new(
+                    UInt8Array::from_iter_values([0, 1, 2]),
+                    Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let rb2 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            )])),
+            vec![Arc::new(
+                DictionaryArray::try_new(
+                    UInt8Array::from_iter_values([0, 1, 2]),
+                    Arc::new(StringArray::from_iter_values(["a", "d", "c"])),
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let mut bb = arrow::compute::BatchCoalescer::new(rb1.schema().clone(), 8);
+
+        bb.push_batch(rb1).unwrap();
+        bb.push_batch(rb2).unwrap();
+        bb.finish_buffered_batch().unwrap();
+        let result = bb.next_completed_batch().unwrap();
+
+        println!("{:?}", result);
+    }
+
+    #[test]
     fn test_unify_null_filling() {
         let a = record_batch!(
             ("id", Int32, [1, 2, 3]),
@@ -1674,6 +2060,135 @@ mod test {
             batches[1][0],
             Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
         )
+    }
+
+    #[test]
+    fn test_adds_missing_dict_columns_to_record_batch() {
+        todo!()
+    }
+
+    #[test]
+    fn test_unify_dict_handling_upgrades_keys_u8_to_u16() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            false,
+        )]));
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{}", i + 100)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        // now we have created two record batches with a total of 300 different values across two
+        // dictionaries keyed by u8. Test if the unify code will recognize that this won't fit in
+        // a u8 keyed dictionary if they were combined, so we need to upgrade the key type ...
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a)], [Some(rb_b)]];
+        unify(&mut batches).unwrap();
+
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        )]));
+
+        let expected_rb_a = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{}", i + 100)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+    }
+
+    #[test]
+    fn test_unify_dict_keeps_u8_if_fits() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            false,
+        )]));
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{i}")),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values(0..200),
+                Arc::new(StringArray::from_iter_values(
+                    (0..200).map(|i| format!("{}", i + 20)),
+                )),
+            ))],
+        )
+        .unwrap();
+
+        // now we have created two record batches with a total of 220 different values across two
+        // dictionaries keyed by u8. Test if the unify code will recognize that this will fit in
+        // a u8 keyed dictionary if they were combined, so no changes needed
+        let mut batches: [[Option<RecordBatch>; 1]; 2] =
+            [[Some(rb_a.clone())], [Some(rb_b.clone())]];
+        unify(&mut batches).unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &rb_b);
+    }
+
+    #[test]
+    fn test_unify_dict_keeps_u16_if_fits() {
+        todo!()
+    }
+
+    #[test]
+    fn test_unify_dict_handling_upgrades_keys_u16_to_native() {
+        todo!()
+    }
+
+    #[test]
+    fn test_unify_dict_handling_keeps_u16_if_would_fit_in_u8_but_no_u8_keys_in_batches() {
+        todo!()
     }
 
     #[test]
