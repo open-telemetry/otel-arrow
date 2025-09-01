@@ -13,8 +13,8 @@ use std::{
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, FixedSizeBinaryArray,
-        GenericByteArray, PrimitiveArray, RecordBatch, RecordBatchOptions, StringArray,
-        StructArray, UInt16Array, UInt32Array,
+        GenericByteArray, PrimitiveArray, RecordBatch, StringArray, StructArray, UInt16Array,
+        UInt32Array,
     },
     buffer::NullBuffer,
     compute::cast,
@@ -25,7 +25,7 @@ use arrow::{
 };
 use itertools::Itertools;
 use smallvec::SmallVec;
-use snafu::ResultExt;
+use snafu::{OptionExt, ResultExt};
 
 use crate::{
     otap::{
@@ -1217,13 +1217,13 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
     // FIXME: replace sets with a real bitset type, ideally one that stores small sets inline
     // without allocations.
 
-    // TODO comment
+    // `dict_fields` contains state needed to compute the size of the dictionary keys in the
+    // unified record batch. This is so we don't overflow the dictionary when combining batches
     let mut dict_fields: BTreeMap<String, UnifiedDictionaryKeySelector> = BTreeMap::new();
 
     // map of struct columns where, keyed by the struct field name, and the values are a tuple
     // the first element in the tuple is the struct field definition, and the second element is
-    // the a map of struct field name -> field definition
-    // TODO - we could avoid some heap allocations if this map's values were just an Arc<Field> ...
+    // the a map of struct field name -> field definition + maybe dictionary state
     let mut struct_fields: BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)> =
         BTreeMap::new();
 
@@ -1291,9 +1291,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             }
         }
 
-        // repopulate the list of schemas due to any changes ...
-        // TODO, is this schemas even needed?
-        schemas.clear(); // We're going to reuse this allocation across loop iterations
+        // repopulate the list of schemas in case any dictionary datatypes were changed
+        schemas.clear();
         schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
 
         // Let's find missing optional columns; note that this must happen after we deal with the
@@ -1342,159 +1341,190 @@ struct StructFieldToUnify {
     dictionary: Option<UnifiedDictionaryKeySelector>,
 }
 
+/// This will be used to inspect the values in some dictionary column to determine what key type
+/// should be used.
+///
+/// To do this, it should first visit all the dictionary data types, for the column in every batch
+/// whose schema is being unified, so it can decide what is the smallest key type allowed for the
+/// column. To do this, call [`Self::visit_key_data_type`].
+///
+/// Next, it should visit the values, where it will try to calculate the total cardinality across
+/// the combined columns until it figures out what key type will fit all the values. To invoke this
+/// use the [`Self::visit_dictionary_values`].
 struct UnifiedDictionaryKeySelector {
-    largest_key_data_type: DataType,
     smallest_key_data_type: DataType,
     total_batch_size: usize,
+    total_values_visited: usize,
     state: ahash::RandomState,
     dedup: BTreeSet<u64>,
-    // dedup: HashSet<&'a [u8]>
 }
 
 impl UnifiedDictionaryKeySelector {
     fn new(total_batch_size: usize, key_data_type: DataType) -> Self {
         Self {
             total_batch_size,
-
-            // TODO is this kind of a hokey way to do this?
-            largest_key_data_type: key_data_type.clone(),
             smallest_key_data_type: key_data_type,
-
-            // TODO - if we know the batch size is < 256 we don't need these dedup stuff and we
-            // can just fully calculate the max key size from the batch size?
+            total_values_visited: 0,
             state: Default::default(),
             dedup: BTreeSet::new(),
-            // dedup: HashSet::new(),
         }
     }
 
-    fn visit_key_data_type(&mut self, key_data_type: &DataType) {
-        // TODO comment on the logic here
-        if key_data_type == &DataType::UInt16 {
-            self.largest_key_data_type = DataType::UInt16
+    /// Returns boolean of whether the type of key to use for this dictionary column can be known
+    /// based on the available data.
+    ///
+    /// In the worst case scenario, this needs to look at every value in the dict column of all
+    /// record batches whose schema are being unified. However, if certain conditions are met then
+    /// we can make an early decision and avoid looking at so many values
+    fn key_selected(&self) -> bool {
+        // if this is true, we know the values can fit into whatever size dictionary we want
+        if self.total_batch_size <= u8::MAX as usize {
+            return true;
         }
 
+        // we know the values can fit into a dict keyed by u16 because of the batch size, but
+        // we also know there's no chance they'll fit into a u8, so the key decision is made
+        if self.total_batch_size <= u16::MAX as usize && self.dedup.len() > u8::MAX as usize {
+            return true;
+        }
+
+        // if this is true, we know we need to use the native array type
+        if self.dedup.len() > u16::MAX as usize {
+            return true;
+        }
+
+        // calculate the max cardinality based on the total batch size and the number of duplicate
+        // values we've visited
+        let duplicates_visited = self.total_values_visited - self.dedup.len();
+        let possible_max_cardinality = self.total_batch_size - duplicates_visited;
+
+        // if we can determine that the values would fit in the desired key size, we can return early
+        if possible_max_cardinality < u16::MAX as usize
+            && self.smallest_key_data_type == DataType::UInt16
+        {
+            return true;
+        }
+
+        if possible_max_cardinality <= u8::MAX as usize {
+            return true;
+        }
+
+        false
+    }
+
+    fn visit_key_data_type(&mut self, key_data_type: &DataType) {
         if key_data_type == &DataType::UInt8 {
             self.smallest_key_data_type = DataType::UInt8
         }
     }
 
-    fn visit_dictionary_values(&mut self, maybe_dict_column_arr: &ArrayRef) {
-        if self.can_stop() {
+    fn visit_dictionary_values(&mut self, maybe_dict_column_arr: &ArrayRef) -> Result<()> {
+        if self.key_selected() {
             // we've already seen enough values that we can decide the dictionary key size
-
-            return;
+            return Ok(());
         }
 
-        // check how many unique values there are ...
-
-        // if total_batch_size < u8::MAX {
-        //   stop - we know the values will fit in a u8
-        // }
-
-        // if total_batch_size < u16::MAX && total_unique_values > u8::MAX {
-        //   stop -- we know that values will fit in a u16 but not in a u8
-        // }
-
-        // if total_batch_size - total_duplicates < u16::MAX && min_desired_key_type = u16 {
-        //   stop -- we know the values will fit into a u16
-        // }
-
-        // if total_batch_Size - total_duplicates < u8::MAX {
-        //    stop -- we know the values will fit into a u8
-        //}
-
-        // otherwise we need to count the values ...
-
+        // access the array containing the dictionary values ...
         let values_arr = match maybe_dict_column_arr.data_type() {
             DataType::Dictionary(k, _) => match k.as_ref() {
                 DataType::UInt8 => {
                     let dict_col = maybe_dict_column_arr
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .unwrap();
+                        .expect("can cast array to data type");
                     dict_col.values()
                 }
                 DataType::UInt16 => {
                     let dict_col = maybe_dict_column_arr
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt16Type>>()
-                        .unwrap();
+                        .expect("can cast array to data type");
                     dict_col.values()
                 }
-                _ => {
-                    todo!("invalid key type")
+                key_type => {
+                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt32],
+                        actual: key_type.clone(),
+                    }
+                    .build());
                 }
             },
             _ => {
-                // assume it's natve column
+                // assume it's native column
                 maybe_dict_column_arr
             }
         };
 
+        // visit the dictionary values until we decide on the key type ..
         match values_arr.data_type() {
             DataType::Binary => {
-                let bin_array = values_arr.as_any().downcast_ref::<BinaryArray>().unwrap();
+                let bin_array = values_arr
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .expect("can cast array to data type");
                 self.visit_bytes_dict_values(bin_array);
             }
             DataType::Utf8 => {
-                let str_array = values_arr.as_any().downcast_ref::<StringArray>().unwrap();
+                let str_array = values_arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("can cast array to data type");
                 self.visit_bytes_dict_values(str_array);
             }
             DataType::FixedSizeBinary(_) => {
                 let fsb_array = values_arr
                     .as_any()
                     .downcast_ref::<FixedSizeBinaryArray>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_fsb_dict_values(fsb_array);
             }
             DataType::UInt16 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<UInt16Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::UInt32 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<UInt32Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::UInt64 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<UInt64Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::Int16 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<Int64Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::Int32 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<Int32Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::Int64 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<Int64Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
             DataType::Float32 => {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<Float32Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
 
@@ -1502,20 +1532,33 @@ impl UnifiedDictionaryKeySelector {
                 let prim_array = values_arr
                     .as_any()
                     .downcast_ref::<PrimitiveArray<Float64Type>>()
-                    .unwrap();
+                    .expect("can cast array to data type");
                 self.visit_primitive_values(prim_array);
             }
 
-            _ => {
-                // TODO spelling and proper error message my goodness man ...
-                todo!("unexepected dict type")
+            value_type => {
+                return Err(error::UnsupportedDictionaryValueTypeSnafu {
+                    expect_oneof: vec![
+                        DataType::Binary,
+                        DataType::Utf8,
+                        DataType::FixedSizeBinary(16),
+                        DataType::FixedSizeBinary(8),
+                        DataType::UInt16,
+                        DataType::UInt32,
+                        DataType::UInt64,
+                        DataType::Int16,
+                        DataType::Int32,
+                        DataType::Int64,
+                        DataType::Float32,
+                        DataType::Float64,
+                    ],
+                    actual: value_type.clone(),
+                }
+                .build());
             }
-        }
-    }
+        };
 
-    fn can_stop(&self) -> bool {
-        // TODO
-        false
+        Ok(())
     }
 
     fn visit_bytes_dict_values<T: ByteArrayType>(&mut self, byte_array: &GenericByteArray<T>) {
@@ -1523,7 +1566,8 @@ impl UnifiedDictionaryKeySelector {
             let value_bytes: &[u8] = value_native.as_ref();
             let hash = self.state.hash_one(value_bytes);
             _ = self.dedup.insert(hash);
-            if self.can_stop() {
+            self.total_values_visited += 1;
+            if self.key_selected() {
                 break;
             }
         }
@@ -1533,7 +1577,8 @@ impl UnifiedDictionaryKeySelector {
         for value_bytes in fsb_array.iter().flatten() {
             let hash = self.state.hash_one(value_bytes);
             _ = self.dedup.insert(hash);
-            if self.can_stop() {
+            self.total_values_visited += 1;
+            if self.key_selected() {
                 break;
             }
         }
@@ -1554,24 +1599,25 @@ impl UnifiedDictionaryKeySelector {
             let value_bytes = &values_buffer[offset..offset + size];
             let hash = self.state.hash_one(value_bytes);
             _ = self.dedup.insert(hash);
-            if self.can_stop() {
+            self.total_values_visited += 1;
+            if self.key_selected() {
                 break;
             }
         }
     }
 
+    /// Choose the key type to use for the dictionary. If it returns `None` it means
+    /// use the native array type (not a dictionary array)
     fn choose_key_type(&self) -> Option<DataType> {
-        // TODO check boundary condition here ...
         if self.dedup.len() <= u8::MAX as usize {
             return Some(self.smallest_key_data_type.clone());
         }
 
-        // TODO check boundary conditions ...
         if self.dedup.len() <= u16::MAX as usize {
             return Some(DataType::UInt16);
         }
 
-        return None;
+        None
     }
 }
 
@@ -1588,10 +1634,10 @@ fn try_record_dictionary_fields(
             if dictionary_fields.contains_key(field.name()) {
                 dictionary_fields
                     .get_mut(field.name())
-                    .unwrap()
-                    .visit_key_data_type(&dict_key_type.as_ref());
+                    // safety: we've just checked that the ma contains the key
+                    .expect("can access dict field")
+                    .visit_key_data_type(dict_key_type.as_ref());
             } else {
-                // TODO -- here we might want to pass the data type
                 _ = dictionary_fields.insert(
                     field_name.clone(),
                     UnifiedDictionaryKeySelector::new(
@@ -1612,7 +1658,7 @@ fn try_count_dictionary_values(
 ) -> Result<()> {
     for (field_name, dict_key_selector) in dictionary_fields.iter_mut() {
         if let Some(column) = record_batch.column_by_name(field_name) {
-            dict_key_selector.visit_dictionary_values(column);
+            dict_key_selector.visit_dictionary_values(column)?;
         }
     }
 
@@ -1628,12 +1674,16 @@ fn try_unify_dictionary_fields(
     let mut fields = schema.fields.to_vec();
 
     for (field_name, dict_key_selector) in dictionary_fields.iter() {
-        if let Ok(field_index) = schema.index_of(&field_name) {
+        if let Ok(field_index) = schema.index_of(field_name) {
             let column = &columns[field_index];
             let values_type = match column.data_type() {
                 DataType::Dictionary(_, v) => v.as_ref().clone(),
                 native => native.clone(),
             };
+
+            // safety: casting the dictionary keys should be infallible here as we're
+            // either casting to a native dict (which should be infallible), or we're
+            // casting the keys to a size we've calculated will fit
             let new_column = match dict_key_selector.choose_key_type() {
                 Some(key_type) => cast(
                     column,
@@ -1641,7 +1691,7 @@ fn try_unify_dictionary_fields(
                 ),
                 None => cast(column, &values_type),
             }
-            .unwrap();
+            .expect("can cast dictionary column");
 
             let new_field = fields[field_index]
                 .as_ref()
@@ -1652,13 +1702,10 @@ fn try_unify_dictionary_fields(
         }
     }
 
-    // TODO, unsure if options are needed here generally, this would only be needed for af fully empty dict
-    Ok(RecordBatch::try_new_with_options(
-        Arc::new(Schema::new(fields)),
-        columns,
-        &RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows())),
-    )
-    .unwrap())
+    // safety: should be safe to expect that building the record batch won't fail here. The schema
+    // should match the columns and the columns should all have the correct length
+    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .expect("can unify dict columns"))
 }
 
 fn try_record_struct_fields(
@@ -1712,8 +1759,14 @@ fn try_count_struct_dictionary_fields(
     all_struct_fields_defs: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<()> {
     for (rb_field_name, (_, desired_struct_fields)) in all_struct_fields_defs {
-        let struct_arr = match record_batch.column_by_name(&rb_field_name) {
-            Some(column) => column.as_any().downcast_ref::<StructArray>().unwrap(),
+        let struct_arr = match record_batch.column_by_name(rb_field_name) {
+            Some(column) => column
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .with_context(|| error::InvalidListArraySnafu {
+                    expect_oneof: vec![DataType::Struct(Fields::empty())],
+                    actual: column.data_type().clone(),
+                })?,
             None => {
                 // the struct field isn't contained in this record batch, so we don't need to count
                 // the values in its dictionary columns
@@ -1728,8 +1781,8 @@ fn try_count_struct_dictionary_fields(
                 None => continue,
             };
 
-            if let Some(column) = struct_arr.column_by_name(&struct_field_name) {
-                dict_key_selector.visit_dictionary_values(column);
+            if let Some(column) = struct_arr.column_by_name(struct_field_name) {
+                dict_key_selector.visit_dictionary_values(column)?;
             }
         }
     }
@@ -1808,11 +1861,15 @@ fn try_unify_struct_fields(
     current_array: &StructArray,
     desired_fields: &BTreeMap<String, StructFieldToUnify>,
 ) -> Result<StructArray> {
+    let mut new_fields = Vec::with_capacity(desired_fields.len());
     let mut new_columns = Vec::with_capacity(desired_fields.len());
     let array_len = current_array.len();
     let curr_fields = current_array.fields();
     for (field_name, desired_struct_field) in desired_fields {
+        // determine the correct data type for the column
         let data_type = match &desired_struct_field.dictionary {
+            // if it's a dictionary column, use the key selector + the values type
+            // to compute the type
             Some(dict_key_selector) => {
                 let dict_values_type = match desired_struct_field.field.data_type() {
                     DataType::Dictionary(_, v) => v.as_ref().clone(),
@@ -1825,14 +1882,29 @@ fn try_unify_struct_fields(
                     None => dict_values_type,
                 }
             }
+
+            // it's not a dictionary column, so the value type will just be the type specified
+            // by the original schema
             None => desired_struct_field.field.data_type().clone(),
         };
+
+        new_fields.push(
+            desired_struct_field
+                .field
+                .clone()
+                .with_data_type(data_type.clone()),
+        );
 
         match curr_fields.find(field_name) {
             Some((field_index, current_field)) => {
                 let current_column = current_array.column(field_index).clone();
                 let new_column = match current_field.data_type() {
-                    DataType::Dictionary(_, _) => cast(&current_column, &data_type).unwrap(),
+                    DataType::Dictionary(_, _) => {
+                        // safety: casting the dictionary keys should be infallible here as we're
+                        // either casting to a native dict (which should be infallible), or we're
+                        // casting the keys to a size we've calculated will fit
+                        cast(&current_column, &data_type).expect("can cast dictionary column")
+                    }
                     _ => current_column,
                 };
 
@@ -1848,15 +1920,8 @@ fn try_unify_struct_fields(
         }
     }
 
-    let new_fields = Fields::from(
-        desired_fields
-            .values()
-            .map(|s| &s.field)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
     Ok(StructArray::new(
-        new_fields,
+        Fields::from(new_fields),
         new_columns,
         current_array.nulls().cloned(),
     ))
@@ -1864,12 +1929,12 @@ fn try_unify_struct_fields(
 
 #[cfg(test)]
 mod test {
+    use arrow::array::record_batch;
     use arrow::array::{
         ArrayRef, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array, RecordBatch,
         StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt64Array,
     };
-    use arrow::array::{RecordBatchOptions, record_batch};
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
+    use arrow::datatypes::{ArrowDictionaryKeyType, DataType, Field, Schema, TimeUnit, UInt8Type};
     use arrow_schema;
 
     use crate::otlp::metrics::MetricType;
@@ -1904,35 +1969,6 @@ mod test {
                 record_batch!(("id", Int32, [4, 5, 6]), ("b", Float64, [None, None, None]))
                     .unwrap()
             )
-        )
-    }
-
-    #[test]
-    fn test_unify_flatten_dicts() {
-        use arrow::array::{Int32Array, UInt8Array};
-
-        let a = record_batch!(("id", Int32, [1, 2, 3]));
-        let b = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "id",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
-                true,
-            )])),
-            vec![Arc::new(DictionaryArray::<UInt8Type>::new(
-                UInt8Array::from_iter_values(vec![0, 0, 1, 1]),
-                Arc::new(Int32Array::from_iter_values(vec![2, 3])),
-            ))],
-        );
-        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(a.unwrap())], [Some(b.unwrap())]];
-
-        unify(&mut batches).unwrap();
-        assert_eq!(
-            batches[0][0],
-            Some(record_batch!(("id", Int32, [1, 2, 3])).unwrap())
-        );
-        assert_eq!(
-            batches[1][0],
-            Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
         )
     }
 
@@ -2482,10 +2518,9 @@ mod test {
         )
         .unwrap();
 
-        let rb_b = RecordBatch::try_new_with_options(
-            Arc::new(Schema::empty()),
-            vec![],
-            &RecordBatchOptions::new().with_row_count(Some(3)),
+        let rb_b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("f2", DataType::Int32, true)])),
+            vec![Arc::new(Int32Array::from_iter_values(vec![1, 2, 3]))],
         )
         .unwrap();
 
@@ -2493,8 +2528,13 @@ mod test {
         unify(&mut batches).unwrap();
 
         let expected_rb_b = RecordBatch::try_new(
-            schema,
+            Arc::new(Schema::new(vec![
+                Field::new("f2", DataType::Int32, true),
+                Field::new("s1", DataType::Struct(vec![field.clone()].into()), true),
+                Field::new("s2", DataType::Struct(vec![field.clone()].into()), false),
+            ])),
             vec![
+                Arc::new(Int32Array::from_iter_values(vec![1, 2, 3])),
                 Arc::new(StructArray::new(
                     vec![field.clone()].into(),
                     vec![Arc::new(UInt8Array::from_iter(vec![None, None, None]))],
@@ -2509,12 +2549,11 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(batches[0][0].as_ref().unwrap(), &rb_a);
         assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
     }
 
     #[test]
-    fn test_unify_struct_flattens_dicts() {
+    fn test_unify_struct_adds_missing_dict_columns() {
         let struct_field = Field::new(
             "f1",
             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2540,45 +2579,156 @@ mod test {
         )
         .unwrap();
 
-        let rb_b = RecordBatch::try_new_with_options(
-            Arc::new(Schema::empty()),
-            vec![],
-            &RecordBatchOptions::new().with_row_count(Some(2)),
+        let rb_b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("f2", DataType::Int32, true)])),
+            vec![Arc::new(Int32Array::from_iter_values(vec![1, 2]))],
         )
         .unwrap();
 
         let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a.clone())], [Some(rb_b)]];
         unify(&mut batches).unwrap();
 
-        let expected_struct_fields = Fields::from(vec![Field::new("f1", DataType::Utf8, true)]);
-        let expected_schema = Arc::new(Schema::new(vec![Field::new(
-            "s1",
-            DataType::Struct(expected_struct_fields.clone()),
-            false,
-        )]));
-
-        let expected_rb_a = RecordBatch::try_new(
-            expected_schema.clone(),
-            vec![Arc::new(StructArray::new(
-                expected_struct_fields.clone(),
-                vec![Arc::new(StringArray::from_iter_values(vec!["a", "b"]))],
-                None,
-            ))],
-        )
-        .unwrap();
-
         let expected_rb_b = RecordBatch::try_new(
-            expected_schema.clone(),
-            vec![Arc::new(StructArray::new(
-                expected_struct_fields.clone(),
-                vec![Arc::new(StringArray::from_iter(vec![None::<String>, None]))],
-                None,
-            ))],
+            Arc::new(Schema::new(vec![
+                Field::new("f2", DataType::Int32, true),
+                Field::new(
+                    "s1",
+                    DataType::Struct(vec![struct_field.clone()].into()),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(vec![1, 2])),
+                Arc::new(StructArray::new(
+                    Fields::from(vec![struct_field.clone()]),
+                    vec![Arc::new(DictionaryArray::new(
+                        UInt8Array::new_null(2),
+                        Arc::new(StringArray::from_iter_values(Vec::<String>::new())),
+                    ))],
+                    None,
+                )),
+            ],
         )
         .unwrap();
+
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+    }
+
+    #[test]
+    fn test_unify_struct_can_upgrade_dict_columns() {
+        fn gen_struct_rb<T: ArrowDictionaryKeyType + ArrowPrimitiveType>(
+            val_offset: usize,
+        ) -> RecordBatch
+        where
+            T::Native: From<u8>,
+        {
+            let struct_field = Field::new(
+                "f1",
+                DataType::Dictionary(Box::new(T::DATA_TYPE), Box::new(DataType::Utf8)),
+                true,
+            );
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "f1",
+                DataType::Struct(Fields::from(vec![struct_field.clone()])),
+                true,
+            )]));
+
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(StructArray::new(
+                    Fields::from(vec![struct_field.clone()]),
+                    vec![Arc::new(DictionaryArray::new(
+                        PrimitiveArray::<T>::from_iter_values((0u8..200).map(T::Native::from)),
+                        Arc::new(StringArray::from_iter_values(
+                            (0..200).map(|i| format!("{}", i + val_offset)),
+                        )),
+                    ))],
+                    None,
+                ))],
+            )
+            .unwrap()
+        }
+
+        let rb_a = gen_struct_rb::<UInt8Type>(0);
+        let rb_b = gen_struct_rb::<UInt8Type>(100);
+
+        // now we have created two record batches with a total of 300 different values across two
+        // dictionaries keyed by u8. Test if the unify code will recognize that this won't fit in
+        // a u8 keyed dictionary if they were combined, so we need to upgrade the key type.
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a)], [Some(rb_b)]];
+        unify(&mut batches).unwrap();
+
+        let expected_rb_a = gen_struct_rb::<UInt16Type>(0);
+        let expected_rb_b = gen_struct_rb::<UInt16Type>(100);
 
         assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
         assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+    }
+
+    #[test]
+    fn unifying_dicts_can_downgrade_from_u16_and_native() {
+        let rb_a = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            )])),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values(vec![0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"])),
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                false,
+            )])),
+            vec![Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values(vec![0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(vec!["d", "e", "f"])),
+            ))],
+        )
+        .unwrap();
+
+        let rb_c = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from_iter_values(vec!["g", "h", "i"]))],
+        )
+        .unwrap();
+
+        let mut batches: [[Option<RecordBatch>; 1]; 3] = [[Some(rb_a)], [Some(rb_b)], [Some(rb_c)]];
+        unify(&mut batches).unwrap();
+
+        fn gen_expected(str_vals: Vec<&str>) -> RecordBatch {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "a",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                )])),
+                vec![Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 1, 2]),
+                    Arc::new(StringArray::from_iter_values(str_vals)),
+                ))],
+            )
+            .unwrap()
+        }
+
+        assert_eq!(
+            batches[0][0].as_ref().unwrap(),
+            &gen_expected(vec!["a", "b", "c"])
+        );
+        assert_eq!(
+            batches[1][0].as_ref().unwrap(),
+            &gen_expected(vec!["d", "e", "f"])
+        );
+        assert_eq!(
+            batches[2][0].as_ref().unwrap(),
+            &gen_expected(vec!["g", "h", "i"])
+        );
     }
 
     fn make_logs() -> OtapArrowRecords {
