@@ -10,4 +10,4 @@ pub mod logs;
 pub mod metrics;
 pub mod traces;
 
-pub(crate) mod array;
+pub mod array;
