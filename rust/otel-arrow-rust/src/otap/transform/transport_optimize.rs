@@ -19,9 +19,8 @@ use arrow::{
         RecordBatch, StructArray, UInt16Array, UInt32Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
-    compute::{SortOptions, and, sort_to_indices, take_record_batch},
+    compute::{SortColumn, SortOptions, and, take_record_batch},
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
-    row::{RowConverter, SortField},
 };
 use snafu::{OptionExt, ResultExt};
 
@@ -32,7 +31,7 @@ use crate::{
         create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
-        remove_delta_encoding_from_column,
+        remove_delta_encoding_from_column, sort_to_indices,
     },
     otlp::attributes::{parent_id::ParentId, store::AttributeValueType},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -423,59 +422,31 @@ fn sort_record_batch(
 
     if sort_inputs.is_empty() {
         Ok(record_batch.clone())
-    } else if sort_inputs.len() == 1 {
-        let sort_options = SortOptions {
-            descending: false,
-            nulls_first: false,
-        };
-
-        // safety: this will only panic if the type we pass doesn't support sorting. All the
-        // columns returned from `get_sort_column_paths` should contain types that are arrow
-        // considers sortable, so this should be safe
-        let indices = sort_to_indices(&sort_inputs[0], Some(sort_options), None)
-            .expect("error sorting column");
-
-        // safety: take_record_batch will only error here if we're taking indices not outside the
-        // range of the batch. But since we've calculated the indices by sorting the existing
-        // indices this shouldn't happen
-        Ok(take_record_batch(record_batch, &indices).expect("error taking sort result"))
     } else {
-        // multi-column sort .. using row converter to convert the rows.
-        //
-        // For multi-column sort, it is faster to use the row model for sorting and compare the
-        // row bytes directly instead of having to fetch & compare the values from multiple columns
-        // See here for more discussion:
-        // https://arrow.apache.org/blog/2022/11/07/multi-column-sorts-in-arrow-rust-part-1/
-
-        let sort_options = SortOptions {
-            nulls_first: false,
-            descending: false,
-        };
-        let sort_fields = sort_inputs
+        let sort_columns = sort_inputs
             .iter()
-            .map(|col| SortField::new_with_options(col.data_type().clone(), sort_options))
-            .collect();
+            .map(|array| SortColumn {
+                values: array.clone(),
+                options: Some(SortOptions {
+                    descending: false,
+                    nulls_first: false,
+                }),
+            })
+            .collect::<Vec<_>>();
 
-        // safety: this should only return an error if there are some types in the columns we're
-        // sorting that are not supported by row converter, none of which are included in the
-        // columns we're sorting on
-        let converter = RowConverter::new(sort_fields).expect("error creating row converter");
+        // safety: this will only panic if there's some columns we pass that aren't supported
+        // either in row converter or by arrow's sort_to_indices kernel, but based on the columns
+        // we`re choosing in [`get_sort_column_paths`] this shouldn't happen
+        let indices = sort_to_indices(&sort_columns).expect("error sorting to column indices");
 
-        // safety: this will only panic if we pass in a set of columns that don't match the
-        // expected for the `RowConverter`, which clearly will not happen here because we created
-        // the row converter directly from the columns we're passing
-        let rows = converter
-            .convert_columns(&sort_inputs)
-            .expect("error converting columns for sorting");
-
-        let mut sort: Vec<_> = rows.iter().enumerate().collect();
-        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-        let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
-
-        // safety: take_record_batch will only error here if we're taking indices not outside the
-        // range of the batch. But since we've calculated the indices by sorting the existing
-        // indices this shouldn't happen
-        Ok(take_record_batch(record_batch, &indices).expect("error taking sort result"))
+        if indices.values().is_sorted() {
+            Ok(record_batch.clone())
+        } else {
+            // safety: take_record_batch will only error here if we're taking indices not outside the
+            // range of the batch. But since we've calculated the indices by sorting the existing
+            // indices this shouldn't happen
+            Ok(take_record_batch(record_batch, &indices).expect("error taking sort result"))
+        }
     }
 }
 

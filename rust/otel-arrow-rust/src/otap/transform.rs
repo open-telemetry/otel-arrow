@@ -7,12 +7,14 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
+    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{and, concat};
+use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
+use arrow::error::ArrowError;
+use arrow::row::{RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 
 use crate::arrays::{NullableArrayAccessor, get_u8_array};
@@ -1462,6 +1464,51 @@ fn take_null_buffer_ranges(
             None => Some(nulls.clone()),
         }
     })
+}
+
+/// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
+/// sort or single column sort
+pub(crate) fn sort_to_indices(
+    sort_columns: &[SortColumn],
+) -> std::result::Result<UInt32Array, ArrowError> {
+    if sort_columns.len() == 1 {
+        arrow::compute::sort_to_indices(&sort_columns[0].values, sort_columns[0].options, None)
+    } else {
+        // multi-column sort .. using row converter to convert the rows.
+        //
+        // For multi-column sort, it is faster to use the row model for sorting and compare the
+        // row bytes directly instead of having to fetch & compare the values from multiple columns
+        // See here for more discussion:
+        // https://arrow.apache.org/blog/2022/11/07/multi-column-sorts-in-arrow-rust-part-1/
+
+        let sort_fields = sort_columns
+            .iter()
+            .map(|sort_col| {
+                SortField::new_with_options(
+                    sort_col.values.data_type().clone(),
+                    sort_col.options.unwrap_or_default(),
+                )
+            })
+            .collect();
+
+        let row_converter = RowConverter::new(sort_fields)?;
+        let sort_arrays = sort_columns
+            .iter()
+            .map(|sort_col| sort_col.values.clone())
+            .collect::<Vec<_>>();
+
+        // safety: this will only panic if we pass in a set of columns that don't match the
+        // expected for the `RowConverter`, which clearly will not happen here because we created
+        // the row converter directly from the columns we're passing
+        let rows = row_converter
+            .convert_columns(&sort_arrays)
+            .expect("error converting columns for sorting");
+        let mut sort: Vec<_> = rows.iter().enumerate().collect();
+        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+
+        let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+        Ok(indices)
+    }
 }
 
 #[cfg(test)]
