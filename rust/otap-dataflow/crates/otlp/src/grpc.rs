@@ -156,8 +156,3 @@ pub enum OTLPData {
     /// Profiles Object
     Profiles(ExportProfilesServiceRequest),
 }
-
-impl otap_df_engine::PipelineData for OTLPData {
-    type Context = ();
-    type Payload = OTLPData;
-}

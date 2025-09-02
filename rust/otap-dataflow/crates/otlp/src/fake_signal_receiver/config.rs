@@ -26,12 +26,6 @@ pub enum OTLPSignal {
     /// log pdata
     Logs(LogsData),
 }
-
-impl otap_df_engine::PipelineData for OTLPSignal {
-    type Context = ();
-    type Payload = OTLPSignal;
-}
-
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {

@@ -12,36 +12,26 @@ use std::time::Duration;
 
 /// The ACK
 #[derive(Debug, Clone)]
-pub struct AckMsg<PData: crate::PipelineData> {
+pub struct AckMsg<PData> {
     /// Reply-to information.
-    // Note! This Box<PData: crate::PipelineData> should be <Context> which can be
-    // accomplished by making PData bound by a trait and associated
-    // type i.e., we would use PData::Context. That will be a large
-    // change, for now we expect PData with empty data and returning
-    // context.
-    pub context: PData::Context,
+    pub context: Box<PData>,
 
     /// Rejected items
     pub rejected: Option<(i64, String)>,
 }
 
-impl<PData: crate::PipelineData> AckMsg<PData> {
+impl<PData> AckMsg<PData> {
     /// Create a new Ack message
-    pub fn new(context: PData::Context, rejected: Option<(i64, String)>) -> Self {
+    pub fn new(context: Box<PData>, rejected: Option<(i64, String)>) -> Self {
         Self { context, rejected }
     }
 }
 
 /// The NACK
 #[derive(Debug, Clone)]
-pub struct NackMsg<PData: crate::PipelineData> {
+pub struct NackMsg<PData> {
     /// Reply-to information.
-    // Note! This Box<PData: crate::PipelineData> should be <Context> which can be
-    // accomplished by making PData bound by a trait and associated
-    // type i.e., we would use PData::Context. That will be a large
-    // change, for now we expect PData with empty data and returning
-    // context.
-    pub context: PData::Context,
+    pub context: Box<PData>,
 
     /// Human-readable reason for the NACK.
     pub reason: String,
@@ -51,32 +41,22 @@ pub struct NackMsg<PData: crate::PipelineData> {
 
     /// Protocol-independent code number
     pub code: Option<i32>,
-
-    /// Optional return pdata
-    pub payload: Option<Box<PData::Payload>>,
 }
 
-impl<PData: crate::PipelineData> NackMsg<PData> {
+impl<PData> NackMsg<PData> {
     /// Create a new Nack.
-    pub fn new(
-        context: PData::Context,
-        reason: String,
-        permanent: bool,
-        code: Option<i32>,
-        payload: Option<PData::Payload>,
-    ) -> Self {
+    pub fn new(context: Box<PData>, reason: String, permanent: bool, code: Option<i32>) -> Self {
         Self {
+            context,
             reason,
             permanent,
             code,
-            context,
-            payload: payload.map(Box::new),
         }
     }
 }
 
 /// An Ack or a Nack
-pub enum AckOrNack<PData: crate::PipelineData> {
+pub enum AckOrNack<PData> {
     /// The Ack
     Ack(AckMsg<PData>),
     /// The Nack
@@ -86,7 +66,7 @@ pub enum AckOrNack<PData: crate::PipelineData> {
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
 #[derive(Debug, Clone)]
-pub enum NodeControlMsg<PData: crate::PipelineData> {
+pub enum NodeControlMsg<PData> {
     /// Acknowledges that a downstream component (internal or external) has reliably received
     /// and processed telemetry data for the specified message ID.
     ///
@@ -140,7 +120,7 @@ pub enum NodeControlMsg<PData: crate::PipelineData> {
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg<PData: crate::PipelineData> {
+pub enum PipelineControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -194,14 +174,14 @@ pub enum PipelineControlMsg<PData: crate::PipelineData> {
 /// Implement this trait for node types that need to handle control messages such as configuration
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
-pub trait Controllable<PData: crate::PipelineData> {
+pub trait Controllable<PData> {
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.
     fn control_sender(&self) -> Sender<NodeControlMsg<PData>>;
 }
 
-impl<PData: crate::PipelineData> NodeControlMsg<PData> {
+impl<PData> NodeControlMsg<PData> {
     /// Returns `true` if this control message is a shutdown request.
     #[must_use]
     pub const fn is_shutdown(&self) -> bool {
@@ -231,7 +211,7 @@ pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PDat
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel<PData: crate::PipelineData>(
+pub fn pipeline_ctrl_msg_channel<PData>(
     capacity: usize,
 ) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);

@@ -209,12 +209,6 @@ impl OtapPayload {
 
 /* -------- Trait implementations -------- */
 
-/// The pipeline knows about the split form Context+Payload in the abstract.
-impl otap_df_engine::PipelineData for OtapPdata {
-    type Context = Context;
-    type Payload = OtapPayload;
-}
-
 /// Helper methods that internal representations of OTAP PData should implement
 trait OtapPdataHelpers {
     /// Returns the type of signal represented by this `OtapPdata` instance.

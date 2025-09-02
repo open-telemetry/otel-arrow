@@ -116,7 +116,7 @@ impl TimerSet {
 /// Internally uses two TimerSet instances: one for generic TimerTick and one for
 /// CollectTelemetry events. It receives Start*/Cancel* requests and emits the
 /// corresponding NodeControlMsg to nodes when timers expire.
-pub struct PipelineCtrlMsgManager<PData: crate::PipelineData> {
+pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
@@ -129,7 +129,7 @@ pub struct PipelineCtrlMsgManager<PData: crate::PipelineData> {
     metrics_reporter: MetricsReporter,
 }
 
-impl<PData: crate::PipelineData> PipelineCtrlMsgManager<PData> {
+impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
@@ -250,7 +250,7 @@ impl<PData: crate::PipelineData> PipelineCtrlMsgManager<PData> {
 
 // Test-only helpers to introspect internal state without exposing fields publicly.
 #[cfg(test)]
-impl<PData: crate::PipelineData> PipelineCtrlMsgManager<PData> {
+impl<PData> PipelineCtrlMsgManager<PData> {
     pub(crate) fn test_tick_count(&self) -> usize {
         self.tick_timers.timers.len()
     }
@@ -292,7 +292,7 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::{Instant, timeout};
 
-    fn create_mock_control_sender<PData: crate::PipelineData>() -> (
+    fn create_mock_control_sender<PData>() -> (
         Sender<NodeControlMsg<PData>>,
         Receiver<NodeControlMsg<PData>>,
     ) {
@@ -303,7 +303,7 @@ mod tests {
         )
     }
 
-    fn setup_test_manager<PData: crate::PipelineData>() -> (
+    fn setup_test_manager<PData>() -> (
         PipelineCtrlMsgManager<PData>,
         crate::control::PipelineCtrlMsgSender<PData>,
         HashMap<usize, Receiver<NodeControlMsg<PData>>>,

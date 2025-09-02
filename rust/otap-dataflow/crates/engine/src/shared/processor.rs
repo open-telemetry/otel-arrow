@@ -44,7 +44,7 @@ use std::time::Duration;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
-pub trait Processor<PData: crate::PipelineData> {
+pub trait Processor<PData> {
     /// Processes a message and optionally produces effects, such as generating new pdata messages.
     ///
     /// This method is called by the pipeline engine for each message that arrives at the processor.
@@ -85,7 +85,7 @@ pub trait Processor<PData: crate::PipelineData> {
 
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData: crate::PipelineData> {
+pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the processor.
@@ -96,7 +96,7 @@ pub struct EffectHandler<PData: crate::PipelineData> {
 }
 
 /// Implementation for the `Send` effect handler.
-impl<PData: crate::PipelineData> EffectHandler<PData> {
+impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
     #[must_use]
     pub fn new(
