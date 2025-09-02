@@ -16,6 +16,9 @@ pub enum StaticScalarExpression {
     /// Resolve a static bool value provided directly in a query.
     Boolean(BooleanScalarExpression),
 
+    /// Resolve a static value provided by a constant directly in a query.
+    Constant(CopyConstantScalarExpression),
+
     /// Resolve a static DateTime value provided directly in a query.
     DateTime(DateTimeScalarExpression),
 
@@ -49,6 +52,7 @@ impl StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(_) => false,
             StaticScalarExpression::Boolean(_) => true,
+            StaticScalarExpression::Constant(_) => true,
             StaticScalarExpression::DateTime(_) => true,
             StaticScalarExpression::Double(_) => true,
             StaticScalarExpression::Integer(_) => true,
@@ -143,6 +147,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => a.get_query_location(),
             StaticScalarExpression::Boolean(b) => b.get_query_location(),
+            StaticScalarExpression::Constant(c) => c.get_query_location(),
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
@@ -158,6 +163,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(_) => "StaticScalar(Array)",
             StaticScalarExpression::Boolean(_) => "StaticScalar(Boolean)",
+            StaticScalarExpression::Constant(_) => "StaticScalar(Constant)",
             StaticScalarExpression::DateTime(_) => "StaticScalar(DateTime)",
             StaticScalarExpression::Double(_) => "StaticScalar(Double)",
             StaticScalarExpression::Integer(_) => "StaticScalar(Integer)",
@@ -175,6 +181,7 @@ impl AsStaticValue for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
+            StaticScalarExpression::Constant(c) => c.get_value().to_static_value(),
             StaticScalarExpression::DateTime(d) => StaticValue::DateTime(d),
             StaticScalarExpression::Double(d) => StaticValue::Double(d),
             StaticScalarExpression::Integer(i) => StaticValue::Integer(i),
@@ -215,6 +222,50 @@ impl Expression for BooleanScalarExpression {
 impl BooleanValue for BooleanScalarExpression {
     fn get_value(&self) -> bool {
         self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyConstantScalarExpression {
+    query_location: QueryLocation,
+    constant_id: usize,
+    value: Box<StaticScalarExpression>,
+}
+
+impl CopyConstantScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        constant_id: usize,
+        value: StaticScalarExpression,
+    ) -> CopyConstantScalarExpression {
+        // Note: It doesn't make sense for a constant to point to another
+        // constant so we validate this but if it does happen for some reason it
+        // shouldn't cause any problems.
+        debug_assert!(!matches!(value, StaticScalarExpression::Constant(_)));
+
+        Self {
+            query_location,
+            constant_id,
+            value: value.into(),
+        }
+    }
+
+    pub fn get_constant_id(&self) -> usize {
+        self.constant_id
+    }
+
+    pub fn get_value(&self) -> &StaticScalarExpression {
+        &self.value
+    }
+}
+
+impl Expression for CopyConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CopyConstantScalarExpression"
     }
 }
 
