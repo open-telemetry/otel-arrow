@@ -44,14 +44,14 @@ impl Expression for TransformExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetTransformExpression {
     query_location: QueryLocation,
-    source: ImmutableValueExpression,
+    source: ScalarExpression,
     destination: MutableValueExpression,
 }
 
 impl SetTransformExpression {
     pub fn new(
         query_location: QueryLocation,
-        source: ImmutableValueExpression,
+        source: ScalarExpression,
         destination: MutableValueExpression,
     ) -> SetTransformExpression {
         Self {
@@ -61,7 +61,7 @@ impl SetTransformExpression {
         }
     }
 
-    pub fn get_source(&self) -> &ImmutableValueExpression {
+    pub fn get_source(&self) -> &ScalarExpression {
         &self.source
     }
 
