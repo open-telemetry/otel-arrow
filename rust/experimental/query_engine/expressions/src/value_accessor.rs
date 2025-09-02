@@ -65,7 +65,7 @@ impl ValueAccessor {
             if let Some(ResolvedStaticScalarExpression::Computed(s)) =
                 selector.try_resolve_static(scope)?
             {
-                *selector = ScalarExpression::Static(s);
+                *selector = ScalarExpression::Static(s.clone());
             }
         }
         Ok(())
