@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -77,23 +78,35 @@ pub struct DebugProcessor {
     output: Option<String>,
 }
 
+/// Factory function to create an DebugProcessor.
+///
+/// See the module documentation for configuration examples
+pub fn create_debug_processor(
+    _pipeline_ctx: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    Ok(ProcessorWrapper::local(
+        DebugProcessor::from_config(&node_config.config)?,
+        node,
+        node_config,
+        processor_config,
+    ))
+}
+
+
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DEBUG_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: DEBUG_PROCESSOR_URN,
-        create: |_pipeline_ctx: PipelineContext,
+        create: |pipeline_ctx: PipelineContext,
                  node: NodeId,
-                 config: &Value,
+                 node_config: Arc<NodeUserConfig>,
                  proc_cfg: &ProcessorConfig| {
-            let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-            Ok(ProcessorWrapper::local(
-                DebugProcessor::from_config(config)?,
-                node,
-                user_config,
-                proc_cfg,
-            ))
+            create_debug_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
     };
 
@@ -106,9 +119,9 @@ impl DebugProcessor {
     }
 
     /// Creates a new DebugProcessor from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
