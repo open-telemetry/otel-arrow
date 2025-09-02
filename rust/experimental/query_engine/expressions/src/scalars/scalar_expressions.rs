@@ -402,6 +402,21 @@ impl ReferenceConstantScalarExpression {
             .get_constant(constant_id)
             .unwrap_or_else(|| panic!("Constant for id '{constant_id}' was not found on pipeline"));
 
+        if let StaticScalarExpression::Constant(c) = value {
+            // Note: Special case for nested reference of constants. Take let a
+            // = 1; let b = a; let c = b; Without special handling we would do
+            // let a = 1; let b = copied(0, 1); let c = copied(1, copied(0, 1));
+            // But we unpack the inner copy so we get let a = 1; let b =
+            // copied(0, 1); let c = copied(1, 1);
+            return ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Constant(
+                CopyConstantScalarExpression::new(
+                    self.get_query_location().clone(),
+                    constant_id,
+                    c.get_value().clone(),
+                ),
+            ));
+        }
+
         match value.foldable() {
             true => {
                 // Note: If we get a folded static we convert the

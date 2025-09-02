@@ -167,6 +167,35 @@ mod tests {
                 .unwrap(),
         );
 
+        run_test_success(
+            "let a = 1; let b = a; let c = b;",
+            PipelineExpressionBuilder::new("let a = 1; let b = a; let c = b;")
+                .with_constants(vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                ])
+                .build()
+                .unwrap(),
+        );
+
         // Note: The let statement becomes an unreferenced folded constant so
         // the whole expression essentially becomes a no-op.
         run_test_success(
