@@ -198,7 +198,7 @@ impl PartitionSequenceIdGenerator {
             .enumerate()
             .map(|(i, field)| {
                 if i == id_column_index {
-                    Arc::new(Field::new(column_name, DataType::UInt32, false))
+                    Arc::new(Field::new(column_name, DataType::UInt32, true))
                 } else {
                     field.clone()
                 }

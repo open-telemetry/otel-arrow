@@ -9,21 +9,21 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - exporter
+        - exporter
         dispatch_strategy: round_robin
     config:
       traffic_config:
-        # max_signal_count: 1000
         max_batch_size: 1000
         signals_per_second: 30
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   exporter:
     kind: exporter
-    plugin_urn: "urn:otel:otap:perf:exporter"
+    plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
-      frequency: 1000
-      cpu_usage: false
-      mem_usage: false
-      disk_usage: false
-      io_usage: false
+      base_uri: /tmp
+      partitioning_strategies:
+      - schema_metadata: ["_part_id"]
+      writer_options:
+        flush_when_older_than: 10s
+

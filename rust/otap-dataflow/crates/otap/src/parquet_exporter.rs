@@ -266,7 +266,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use arrow::array::{DictionaryArray, RecordBatch, StringArray};
+    use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt16Array};
     use arrow::compute::concat_batches;
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
     use fixtures::SimpleDataGenOptions;
@@ -1077,5 +1077,63 @@ mod test {
                     }
                 })
             });
+    }
+
+    #[test]
+    fn test_handles_null_ids_correctly() {
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let num_rows = 100;
+        let otap_batch = OtapArrowBytes::ArrowLogs(
+            fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                num_rows,
+                with_main_record_attrs: false,
+                with_resource_attrs: false,
+                with_scope_attrs: false,
+                ..Default::default()
+            }),
+        );
+
+        // replace the logs ID column with nulls
+        let pdata: OtapPdata = otap_batch.into();
+        let mut otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let (schema, mut columns, _) = logs.clone().into_parts();
+        columns[schema.index_of(consts::ID).unwrap()] = Arc::new(UInt16Array::new_null(num_rows));
+        otap_batch.set(
+            ArrowPayloadType::Logs,
+            RecordBatch::try_new(schema, columns).unwrap(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(otap_batch.into()).await.unwrap();
+                    ctx.send_shutdown(Duration::from_millis(1000), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx, exporter_result| {
+                Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
+                })
+            })
     }
 }
