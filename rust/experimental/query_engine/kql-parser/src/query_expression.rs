@@ -167,6 +167,35 @@ mod tests {
                 .unwrap(),
         );
 
+        run_test_success(
+            "let a = 1; let b = a; let c = b;",
+            PipelineExpressionBuilder::new("let a = 1; let b = a; let c = b;")
+                .with_constants(vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                ])
+                .build()
+                .unwrap(),
+        );
+
         // Note: The let statement becomes an unreferenced folded constant so
         // the whole expression essentially becomes a no-op.
         run_test_success(
@@ -239,12 +268,10 @@ mod tests {
             .with_expressions(vec![
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::Integer,
-                            0,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::Integer,
+                        0,
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -270,12 +297,10 @@ mod tests {
                                     "attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueType::String,
-                                    1,
-                                ),
+                            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::String,
+                                1,
                             )),
                         ]),
                     )),
