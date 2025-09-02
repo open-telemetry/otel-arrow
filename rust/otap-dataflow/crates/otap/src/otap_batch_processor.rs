@@ -39,7 +39,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 200;
 /// Semantic constants (avoid magic numbers)
 /// Minimum allowed send_batch_size
 pub const MIN_SEND_BATCH_SIZE: usize = 1;
-/// Sentinel meaning: follow send_batch_size for max size (Go parity)
+/// Sentinel meaning: no upper limit for max size (Go parity)
 pub const FOLLOW_SEND_BATCH_SIZE_SENTINEL: usize = 0;
 /// Minimum allowed metadata cardinality limit when specified
 pub const MIN_METADATA_CARDINALITY_LIMIT: usize = 1;
@@ -67,7 +67,7 @@ pub struct Config {
     #[serde(default = "default_send_batch_size")]
     pub send_batch_size: usize,
     /// Hard cap for splitting very large inputs.
-    /// Go behavior: 0 (or missing) => use send_batch_size; we use 0 as default and normalize later
+    /// Go behavior: 0 means no upper limit; missing defaults to 0 (unlimited).
     #[serde(default = "default_send_batch_max_size")]
     pub send_batch_max_size: usize,
     /// Flush non-empty batches on this interval (milliseconds).
@@ -179,17 +179,21 @@ impl OtapBatchProcessor {
             })?;
 
         // Basic validation/normalization
-        if config.send_batch_size == 0 {
-            config.send_batch_size = MIN_SEND_BATCH_SIZE;
+        // Allow send_batch_size = 0 to mean: ignore size threshold (send immediately),
+        // subject only to send_batch_max_size when non-zero (Go parity).
+        // Keep send_batch_max_size = 0 as unlimited (no upper bound).
+        // Validate: when both are non-zero, max must be >= size.
+        if config.send_batch_max_size != 0
+            && config.send_batch_size != 0
+            && config.send_batch_max_size < config.send_batch_size
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "invalid OTAP batch processor config: send_batch_max_size ({}) must be >= send_batch_size ({}) or 0 (unlimited)",
+                    config.send_batch_max_size, config.send_batch_size
+                ),
+            });
         }
-        // Normalize 0 -> send_batch_size
-        let effective_sbs = config.send_batch_size;
-        let max = if config.send_batch_max_size == FOLLOW_SEND_BATCH_SIZE_SENTINEL {
-            effective_sbs
-        } else {
-            config.send_batch_max_size
-        };
-        config.send_batch_max_size = max;
 
         if let Some(limit) = config.metadata_cardinality_limit {
             if limit < MIN_METADATA_CARDINALITY_LIMIT {
@@ -811,7 +815,7 @@ use super::test_helpers::{one_trace_record, logs_record_with_n_entries};
         use otap_df_engine::testing::processor::TestRuntime;
 
         let cfg = json!({
-            "send_batch_size": 10, // keep large so count threshold doesn't trigger
+            "send_batch_size": 2, // match max to isolate max-boundary behavior
             "send_batch_max_size": 2,
             "timeout": 10
         });
@@ -914,7 +918,7 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
         use otap_df_engine::testing::processor::TestRuntime;
 
         let cfg = json!({
-            "send_batch_size": 10,
+            "send_batch_size": 1,
             "send_batch_max_size": 1, // reaching max on first push triggers immediate flush-after-push
             "timeout": 10
         });
@@ -954,7 +958,7 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
         validation.validate(|_vctx| async move {});
     }
     #[test]
-    fn test_max_defaults_to_size_when_zero_or_missing() {
+    fn test_max_zero_means_unlimited_and_missing_ok() {
         let cfg = json!({
             "send_batch_size": 7,
             "send_batch_max_size": 0,
@@ -965,7 +969,7 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
         let res = OtapBatchProcessor::from_config(node.clone(), &cfg, &proc_cfg);
         assert!(res.is_ok());
 
-        // Missing max -> also defaults to size
+        // Missing max -> defaults to unlimited (0)
         let cfg2 = json!({
             "send_batch_size": 9,
             "timeout": "200ms"
@@ -1052,9 +1056,9 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::processor::TestRuntime;
 
-        // Configure: small max to force splitting, large send_batch_size to avoid count-based flushes
+        // Configure: oversize single record relative to limits; guard prevents splitting
         let cfg = json!({
-            "send_batch_size": 1000,
+            "send_batch_size": 3,
             "send_batch_max_size": 3,
             "timeout": 10
         });
