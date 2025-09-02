@@ -7,6 +7,8 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
+use otel_arrow_rust::schema::{SpanId, TraceId};
+
 use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
 use crate::otlp::bytes::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
@@ -456,8 +458,10 @@ impl LogRecordView for RawLogRecord<'_> {
     }
 
     #[inline]
-    fn span_id(&self) -> Option<&[u8]> {
-        self.bytes_parser.advance_to_find_field(LOG_RECORD_SPAN_ID)
+    fn span_id(&self) -> Option<&SpanId> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_SPAN_ID)
+            .and_then(|slice| slice.try_into().ok())
     }
 
     #[inline]
@@ -470,7 +474,9 @@ impl LogRecordView for RawLogRecord<'_> {
     }
 
     #[inline]
-    fn trace_id(&self) -> Option<&[u8]> {
-        self.bytes_parser.advance_to_find_field(LOG_RECORD_TRACE_ID)
+    fn trace_id(&self) -> Option<&TraceId> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_TRACE_ID)
+            .and_then(|slice| slice.try_into().ok())
     }
 }
