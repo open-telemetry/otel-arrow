@@ -1270,23 +1270,23 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         for batches in batches.iter() {
             // try to get the fields that should be in each struct column
             if let Some(rb) = &batches[payload_type_index] {
-                try_record_dictionary_fields(rb, total_batch_size, &mut dict_fields)?;
-                try_record_struct_fields(rb, total_batch_size, &mut struct_fields)?;
+                try_discover_dictionaries(rb, total_batch_size, &mut dict_fields)?;
+                try_discover_structs(rb, total_batch_size, &mut struct_fields)?;
             }
         }
 
         for batches in batches.iter() {
             if let Some(rb) = &batches[payload_type_index] {
                 try_count_dictionary_values(rb, &mut dict_fields)?;
-                try_count_struct_dictionary_fields(rb, &mut struct_fields)?;
+                try_count_struct_dictionary_values(rb, &mut struct_fields)?;
             }
         }
 
         // unify all the struct columns
         for batches in batches.iter_mut() {
             if let Some(rb) = batches[payload_type_index].take() {
-                let rb = try_unify_dictionary_fields(&rb, &dict_fields)?;
-                let rb = try_unify_struct_columns(&rb, &struct_fields)?;
+                let rb = try_unify_dictionaries(&rb, &dict_fields)?;
+                let rb = try_unify_structs(&rb, &struct_fields)?;
                 let _ = batches[payload_type_index].replace(rb);
             }
         }
@@ -1621,7 +1621,7 @@ impl UnifiedDictionaryKeySelector {
     }
 }
 
-fn try_record_dictionary_fields(
+fn try_discover_dictionaries(
     record_batch: &RecordBatch,
     total_batch_size: usize,
     dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryKeySelector>,
@@ -1665,7 +1665,7 @@ fn try_count_dictionary_values(
     Ok(())
 }
 
-fn try_unify_dictionary_fields(
+fn try_unify_dictionaries(
     record_batch: &RecordBatch,
     dictionary_fields: &BTreeMap<String, UnifiedDictionaryKeySelector>,
 ) -> Result<RecordBatch> {
@@ -1708,7 +1708,7 @@ fn try_unify_dictionary_fields(
         .expect("can unify dict columns"))
 }
 
-fn try_record_struct_fields(
+fn try_discover_structs(
     record_batch: &RecordBatch,
     total_batch_size: usize,
     all_struct_fields: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
@@ -1754,7 +1754,7 @@ fn try_record_struct_fields(
     Ok(())
 }
 
-fn try_count_struct_dictionary_fields(
+fn try_count_struct_dictionary_values(
     record_batch: &RecordBatch,
     all_struct_fields_defs: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<()> {
@@ -1790,7 +1790,7 @@ fn try_count_struct_dictionary_fields(
     Ok(())
 }
 
-fn try_unify_struct_columns(
+fn try_unify_structs(
     record_batch: &RecordBatch,
     all_struct_fields_defs: &BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<RecordBatch> {
