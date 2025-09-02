@@ -8,6 +8,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -27,7 +28,10 @@ pub struct NoopExporter;
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             NoopExporter::from_config()?,
             node,

@@ -6,7 +6,7 @@ This crate will contain the implementation of the debug processor.
 
 ## Example Config
 
-```
+```yaml
 config:
     verbosity: normal
 ```
