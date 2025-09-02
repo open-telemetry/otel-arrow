@@ -10,3 +10,8 @@ Pre-requisite, create some OTAP parquet data using the parquet exporter. For exa
 # run in the otap-dataflow directory
 cargo run --bin df_engine -- --pipeline configs/fake-parquet.yaml
 ```
+
+Run example:
+```
+cargo run --package parquet-query-examples --example query_logs
+```
