@@ -51,8 +51,7 @@ const LOG_MSG_SHUTTING_DOWN: &str = "OTAP batch processor shutting down";
 const LOG_MSG_DROP_EMPTY: &str = "OTAP batch processor: dropping empty OTAP record (0 rows)";
 const LOG_MSG_DROP_CONVERSION_FAILED: &str =
     "OTAP batch processor: dropping message: OTAP conversion failed";
-const LOG_MSG_BATCHING_FAILED_PREFIX: &str =
-    "OTAP batch processor: low-level batching failed for";
+const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
 /// Signal label constants (avoid repeated string literals)
@@ -215,16 +214,8 @@ impl OtapBatchProcessor {
         Ok(ProcessorWrapper::local(proc, node, user_config, proc_cfg))
     }
 
-    /// Returns true if any per-signal buffered rows reach or exceed the emission threshold.
-    /// Uses actual row counts from OTAP records.
-    fn size_triggers_emission(&self) -> bool {
-        let threshold = self.config.send_batch_size;
-        self.rows_logs >= threshold
-            || self.rows_metrics >= threshold
-            || self.rows_traces >= threshold
-    }
 
-/// Flush all per-signal buffers (logs, metrics, traces). Does nothing if all are empty.
+    /// Flush all per-signal buffers (logs, metrics, traces). Does nothing if all are empty.
     async fn flush_current(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
@@ -262,8 +253,8 @@ impl OtapBatchProcessor {
                     let mut output_batches = match make_output_batches(Some(max_nz), input) {
                         Ok(v) => v,
                         Err(e) => {
-log_batching_failed(effect, SIG_LOGS, &e).await;
-                                Vec::new()
+                            log_batching_failed(effect, SIG_LOGS, &e).await;
+                            Vec::new()
                         }
                     };
 
@@ -342,8 +333,8 @@ log_batching_failed(effect, SIG_LOGS, &e).await;
                     let mut output_batches = match make_output_batches(Some(max_nz), input) {
                         Ok(v) => v,
                         Err(e) => {
-log_batching_failed(effect, SIG_METRICS, &e).await;
-                                Vec::new()
+                            log_batching_failed(effect, SIG_METRICS, &e).await;
+                            Vec::new()
                         }
                     };
 
@@ -420,8 +411,8 @@ log_batching_failed(effect, SIG_METRICS, &e).await;
                     let mut output_batches = match make_output_batches(Some(max_nz), input) {
                         Ok(v) => v,
                         Err(e) => {
-log_batching_failed(effect, SIG_TRACES, &e).await;
-                                Vec::new()
+                            log_batching_failed(effect, SIG_TRACES, &e).await;
+                            Vec::new()
                         }
                     };
 
@@ -520,7 +511,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         let rows = rec.batch_length();
                         // Per-signal policy: drop zero-row; pre-flush if exceeding max; append rows; flush on max or send_batch_size.
                         match &rec {
-OtapArrowRecords::Logs(_) => {
+                            OtapArrowRecords::Logs(_) => {
                                 if rows == 0 {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
@@ -545,7 +536,7 @@ OtapArrowRecords::Logs(_) => {
                                     }
                                 }
                             }
-OtapArrowRecords::Metrics(_) => {
+                            OtapArrowRecords::Metrics(_) => {
                                 if rows == 0 {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
@@ -570,7 +561,7 @@ OtapArrowRecords::Metrics(_) => {
                                     }
                                 }
                             }
-OtapArrowRecords::Traces(_) => {
+                            OtapArrowRecords::Traces(_) => {
                                 if rows == 0 {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
@@ -600,15 +591,15 @@ OtapArrowRecords::Traces(_) => {
                     Err(_) => {
                         // Conversion failed: log and drop (TODO: Nack)
                         match data.signal_type() {
-SignalType::Logs => {
+                            SignalType::Logs => {
                                 effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
                                 Ok(())
                             }
-SignalType::Traces => {
+                            SignalType::Traces => {
                                 effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
                                 Ok(())
                             }
-SignalType::Metrics => {
+                            SignalType::Metrics => {
                                 effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
                                 Ok(())
                             }
@@ -650,6 +641,9 @@ mod test_helpers {
 
     // Test helper constants to avoid magic strings in scope names
     const TEST_SCOPE_NAME: &str = "lib";
+    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+    };
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
     };
@@ -658,15 +652,12 @@ mod test_helpers {
     use otel_arrow_rust::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
     };
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
-        LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
-    };
 
     pub(super) fn one_trace_record() -> OtapArrowRecords {
         let traces = TracesData::new(vec![
             ResourceSpans::build(Resource::default())
                 .scope_spans(vec![
-ScopeSpans::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                    ScopeSpans::build(InstrumentationScope::new(TEST_SCOPE_NAME))
                         .spans(vec![
                             Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
                                 .status(Status::new("ok", StatusCode::Ok))
@@ -684,7 +675,7 @@ ScopeSpans::build(InstrumentationScope::new(TEST_SCOPE_NAME))
         let md = MetricsData::new(vec![
             ResourceMetrics::build(Resource::default())
                 .scope_metrics(vec![
-ScopeMetrics::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                    ScopeMetrics::build(InstrumentationScope::new(TEST_SCOPE_NAME))
                         .metrics(vec![
                             Metric::build_gauge(
                                 "g",
@@ -699,37 +690,17 @@ ScopeMetrics::build(InstrumentationScope::new(TEST_SCOPE_NAME))
         crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
     }
 
-    pub(super) fn traces_record_with_n_spans(n: usize) -> OtapArrowRecords {
-        let spans: Vec<Span> = (0..n)
-            .map(|i| {
-                Span::build(vec![i as u8; 16], vec![i as u8; 8], format!("span{i}"), 1u64)
-                    .status(Status::new("ok", StatusCode::Ok))
-                    .finish()
-            })
-            .collect();
-        let traces = TracesData::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::new(TEST_SCOPE_NAME))
-                        .spans(spans)
-                        .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
-    }
 
     pub(super) fn logs_record_with_n_entries(n: usize) -> OtapArrowRecords {
         let logs: Vec<LogRecord> = (0..n)
-            .map(|i| {
-                LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}"))
-                    .finish()
-            })
+            .map(|i| LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}")).finish())
             .collect();
         let logs_data = LogsData::new(vec![
             ResourceLogs::build(Resource::default())
                 .scope_logs(vec![
-ScopeLogs::build(InstrumentationScope::new(TEST_SCOPE_NAME)).log_records(logs).finish(),
+                    ScopeLogs::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                        .log_records(logs)
+                        .finish(),
                 ])
                 .finish(),
         ]);
@@ -739,11 +710,11 @@ ScopeLogs::build(InstrumentationScope::new(TEST_SCOPE_NAME)).log_records(logs).f
 
 #[cfg(test)]
 mod tests {
-use super::test_helpers::{one_trace_record, logs_record_with_n_entries};
+    use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
     use super::*;
     use otap_df_engine::testing::test_node;
-    use serde_json::json;
     use otel_arrow_rust::otap::OtapArrowRecords;
+    use serde_json::json;
 
     // Test constants to avoid magic numbers/strings
     const TEST_SHUTDOWN_DEADLINE_MS: u64 = 50;
@@ -862,7 +833,7 @@ use super::test_helpers::{one_trace_record, logs_record_with_n_entries};
 
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
-ctx.process(Message::Control(NodeControlMsg::Shutdown {
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
@@ -914,7 +885,11 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 .await
                 .expect("timer tick");
             let emitted = ctx.drain_pdata().await;
-            assert_eq!(emitted.len(), 1, "flush expected on timer regardless of size");
+            assert_eq!(
+                emitted.len(),
+                1,
+                "flush expected on timer regardless of size"
+            );
         });
 
         validation.validate(|_vctx| async move {});
@@ -951,7 +926,7 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
 
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
-ctx.process(Message::Control(NodeControlMsg::Shutdown {
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
@@ -1047,7 +1022,7 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
             let emitted = ctx.drain_pdata().await;
             assert_eq!(emitted.len(), 0, "no flush before shutdown");
 
-ctx.process(Message::Control(NodeControlMsg::Shutdown {
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
@@ -1097,7 +1072,11 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
             );
             let first = emitted.into_iter().next().unwrap();
             let first_rec: OtapArrowRecords = first.try_into().unwrap();
-            assert_eq!(first_rec.batch_length(), 5, "guard prevents splitting a single record");
+            assert_eq!(
+                first_rec.batch_length(),
+                5,
+                "guard prevents splitting a single record"
+            );
 
             // Shutdown should not produce any additional items (nothing buffered)
             use otap_df_engine::control::NodeControlMsg;
@@ -1109,7 +1088,11 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
             .await
             .expect("shutdown");
             let emitted = ctx.drain_pdata().await;
-            assert_eq!(emitted.len(), 0, "no remainder expected on shutdown with guard");
+            assert_eq!(
+                emitted.len(),
+                0,
+                "no remainder expected on shutdown with guard"
+            );
         });
 
         validation.validate(|_vctx| async move {});
@@ -1123,7 +1106,6 @@ mod batching_smoke_tests {
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
     // Test constants for batching smoke tests
-    const TEST_BATCHING_SMOKE_EXPECTED_LOGS_PANIC_NOTE: &str = "Upstream otel-arrow-rust batching/grouping occasionally panics (empty-group/unreachable in groups.rs) for this scenario. Re-enable after upstream fix.";
 
     #[test]
     #[ignore = "upstream-batching-bug"]
