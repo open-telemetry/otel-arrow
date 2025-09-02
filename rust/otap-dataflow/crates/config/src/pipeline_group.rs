@@ -81,6 +81,20 @@ pub struct Quota {
     /// If set to a value greater than 0, it will use that many cores.
     #[serde(default = "default_num_cores")]
     pub num_cores: usize,
+
+    /// Optional inclusive range of CPU core IDs to pin threads to, e.g., start..=end.
+    /// When specified, this takes precedence over `num_cores`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_id_range: Option<CoreIdRange>,
+}
+
+/// Inclusive CPU core ID range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CoreIdRange {
+    /// Start core ID (inclusive).
+    pub start: usize,
+    /// End core ID (inclusive). Must be >= start.
+    pub end: usize,
 }
 
 fn default_num_cores() -> usize {

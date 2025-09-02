@@ -30,6 +30,8 @@ use otap_df_engine::control::{
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
+use core_affinity::CoreId;
+use crate::error::Error;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -61,7 +63,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline: PipelineConfig,
         quota: Quota,
         admin_settings: HttpAdminSettings,
-    ) -> Result<(), error::Error> {
+    ) -> Result<(), Error> {
         // Initialize a global metrics system and reporter.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let metrics_system = MetricsSystem::default();
@@ -75,27 +77,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 metrics_system.run(cancellation_token)
             })?;
 
-        // Get available CPU cores for pinning
-        let all_core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| error::Error::CoreDetectionUnavailable)?;
-
-        // Determine the number of CPU cores available and requested
-        // If quota.num_cores is 0, use all available cores
-        // If quota.num_cores is greater than available cores, use the minimum
-        // If quota.num_cores is less than available cores, use the requested number
-        let num_cpu_cores = all_core_ids.len();
-        let num_requested_cores = if quota.num_cores == 0 {
-            num_cpu_cores
-        } else {
-            quota.num_cores.min(num_cpu_cores)
-        };
-
-        let requested_cores = all_core_ids
-            .into_iter()
-            .take(num_requested_cores)
-            .collect::<Vec<_>>();
-
-        // Start one thread per core
+        // Start one thread per requested core
+        let requested_cores = Self::compute_requested_cores(quota)?;
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
@@ -131,7 +114,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_ctrl_msg_rx,
                     )
                 })
-                .map_err(|e| error::Error::ThreadSpawnError {
+                .map_err(|e| Error::ThreadSpawnError {
                     thread_name: thread_name.clone(),
                     source: e,
                 })?;
@@ -162,7 +145,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
                 Err(e) => {
                     // Thread join failed, handle the error
-                    return Err(error::Error::ThreadPanic {
+                    return Err(Error::ThreadPanic {
                         thread_name,
                         thread_id,
                         core_id,
@@ -190,16 +173,70 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Ok(())
     }
 
+    /// Returns the list of CPU core IDs to use based on the given quota.
+    fn compute_requested_cores(quota: Quota) -> Result<Vec<CoreId>, Error> {
+        // Get available CPU cores for pinning
+        let all_core_ids =
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
+
+        // If a specific core ID range is requested, select matching cores, otherwise derive by count
+        let requested_cores = if let Some(range) = quota.core_id_range.as_ref() {
+            let mut available_ids: Vec<_> = all_core_ids.clone().into_iter().collect();
+            available_ids.sort_by_key(|c| c.id);
+            if range.start > range.end {
+                return Err(Error::InvalidCoreRange {
+                    start: range.start,
+                    end: range.end,
+                    message: "Start of range is greater than end".to_owned(),
+                    available: available_ids.iter().map(|c| c.id).collect(),
+                });
+            }
+            let selected: Vec<_> = available_ids
+                .into_iter()
+                .filter(|c| c.id >= range.start && c.id <= range.end)
+                .collect();
+            if selected.is_empty() {
+                return Err(Error::InvalidCoreRange {
+                    start: range.start,
+                    end: range.end,
+                    message: "No available cores in the specified range".to_owned(),
+                    available: core_affinity::get_core_ids()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| c.id)
+                        .collect(),
+                });
+            }
+            selected
+        } else {
+            // Determine the number of CPU cores available and requested
+            // If quota.num_cores is 0, use all available cores
+            // If quota.num_cores is greater than available cores, use the minimum
+            // If quota.num_cores is less than available cores, use the requested number
+            let num_cpu_cores = all_core_ids.len();
+            let num_requested_cores = if quota.num_cores == 0 {
+                num_cpu_cores
+            } else {
+                quota.num_cores.min(num_cpu_cores)
+            };
+
+            let mut available_ids: Vec<_> = all_core_ids.into_iter().collect();
+            available_ids.sort_by_key(|c| c.id);
+            available_ids.into_iter().take(num_requested_cores).collect()
+        };
+        Ok(requested_cores)
+    }
+
     /// Runs a single pipeline in the current thread.
     fn run_pipeline_thread(
-        core_id: core_affinity::CoreId,
+        core_id: CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_handle: PipelineContext,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
-    ) -> Result<Vec<()>, error::Error> {
+    ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
@@ -210,14 +247,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
             .build(pipeline_handle, pipeline_config.clone())
-            .map_err(|e| error::Error::PipelineRuntimeError {
+            .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
             .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
-            .map_err(|e| error::Error::PipelineRuntimeError {
+            .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
     }

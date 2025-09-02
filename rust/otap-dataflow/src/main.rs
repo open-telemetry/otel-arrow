@@ -11,6 +11,7 @@ use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
+use otap_df_config::pipeline_group::CoreIdRange;
 
 #[global_allocator]
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
@@ -29,12 +30,38 @@ struct Args {
     pipeline: PathBuf,
 
     /// Number of cores to use (0 for default)
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value = "0", conflicts_with = "core_id_range")]
     num_cores: usize,
+
+    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3").
+    #[arg(long, value_name = "START..END", value_parser = parse_core_id_range, conflicts_with = "num_cores")]
+    core_id_range: Option<CoreIdRange>,
 
     /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
     #[arg(long, default_value = "127.0.0.1:8080")]
     http_admin_bind: String,
+}
+
+fn parse_core_id_range(s: &str) -> Result<CoreIdRange, String> {
+    // Accept format:  "a..b", "a-b"
+    let normalized = s.replace("..", "-");
+    let mut parts = normalized.split('-');
+    let start = parts
+        .next()
+        .ok_or_else(|| "missing start of core id range".to_string())?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| "invalid start (expected unsigned integer)".to_string())?;
+    let end = parts
+        .next()
+        .ok_or_else(|| "missing end of core id range".to_string())?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| "invalid end (expected unsigned integer)".to_string())?;
+    if parts.next().is_some() {
+        return Err("unexpected extra data after end of range".to_string());
+    }
+    Ok(CoreIdRange { start, end })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,9 +83,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let quota = Quota {
         num_cores: args.num_cores,
+        core_id_range: args.core_id_range.clone(),
     };
 
-    println!("Starting pipeline with {} cores", args.num_cores);
+    if let Some(r) = &quota.core_id_range {
+        println!(
+            "Starting pipeline on core ID range [{}-{}]",
+            r.start, r.end
+        );
+    } else {
+        println!("Starting pipeline with {} cores", args.num_cores);
+    }
 
     let admin_settings = otap_df_config::engine::HttpAdminSettings {
         bind_address: args.http_admin_bind,
@@ -129,6 +164,7 @@ fn system_info() -> String {
     format!(
         "Examples:
   {} --pipeline configs/otlp-perf.yaml --num-cores 4
+  {} --pipeline configs/otlp-perf.yaml --core-id-range 2-5
   {} -p configs/otlp-perf.yaml
 
 System Information:
@@ -142,6 +178,7 @@ Available Plugin URNs:
   Exporters: {}
 
 Configuration files can be found in the configs/ directory.{}",
+        env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_NAME"),
         available_cores,

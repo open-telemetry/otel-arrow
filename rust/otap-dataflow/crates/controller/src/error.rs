@@ -46,6 +46,21 @@ pub enum Error {
     #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
     CoreDetectionUnavailable,
 
+    /// Invalid or out-of-bounds requested CPU core ID range.
+    #[error(
+        "Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}"
+    )]
+    InvalidCoreRange {
+        /// Start of the requested range (inclusive).
+        start: usize,
+        /// End of the requested range (inclusive).
+        end: usize,
+        /// Error message.
+        message: String,
+        /// The available CPU core IDs detected on this system.
+        available: Vec<usize>,
+    },
+
     /// Core affinity error.
     #[error("Failed to set core affinity for thread {thread_id} to core {core_id}: {message}")]
     CoreAffinityError {
