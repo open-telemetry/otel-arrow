@@ -13,14 +13,7 @@ use crate::{
 pub(crate) fn parse_source_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
-) -> Result<
-    (
-        QueryLocation,
-        ImmutableValueExpression,
-        SourceScalarExpression,
-    ),
-    ParserError,
-> {
+) -> Result<(QueryLocation, ScalarExpression, SourceScalarExpression), ParserError> {
     let query_location = to_query_location(&assignment_expression_rule);
 
     let mut assignment_rules = assignment_expression_rule.into_inner();
@@ -72,11 +65,7 @@ pub(crate) fn parse_source_assignment_expression(
         _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
 
-    Ok((
-        query_location,
-        ImmutableValueExpression::Scalar(scalar),
-        destination,
-    ))
+    Ok((query_location, scalar, destination))
 }
 
 pub(crate) fn parse_let_expression(
@@ -104,7 +93,7 @@ pub(crate) fn parse_let_expression(
 
     Ok(TransformExpression::Set(SetTransformExpression::new(
         query_location,
-        ImmutableValueExpression::Scalar(scalar),
+        scalar,
         MutableValueExpression::Variable(VariableScalarExpression::new(
             identifier.get_query_location().clone(),
             identifier,
@@ -170,11 +159,8 @@ mod tests {
             "new_attribute = 1",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -192,11 +178,8 @@ mod tests {
             "variable = 'hello world'",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hello world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -262,11 +245,8 @@ mod tests {
             "let var1 = 1;",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),

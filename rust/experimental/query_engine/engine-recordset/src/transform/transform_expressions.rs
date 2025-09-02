@@ -10,12 +10,9 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::*,
-    resolved_value_mut::*,
-    scalars::*,
+    execution_context::*, resolved_value_mut::*, scalars::*,
     transform::reduce_map_transform_expression::execute_map_reduce_transform_expression,
-    value_expressions::{execute_immutable_value_expression, execute_mutable_value_expression},
-    *,
+    value_expressions::execute_mutable_value_expression, *,
 };
 
 pub fn execute_transform_expression<'a, TRecord: Record>(
@@ -24,7 +21,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
 ) -> Result<(), ExpressionError> {
     match transform_expression {
         TransformExpression::Set(s) => {
-            let mut source = execute_immutable_value_expression(execution_context, s.get_source())?;
+            let mut source = execute_scalar_expression(execution_context, s.get_source())?;
 
             let mutable_value_expression = s.get_destination();
 
@@ -437,12 +434,10 @@ mod tests {
         // Test updating a key on source
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
             MutableValueExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -462,16 +457,14 @@ mod tests {
         // Test updating a key on source using data read from the source
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "key3",
-                        )),
-                    )]),
-                ),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key3",
+                    )),
+                )]),
             )),
             MutableValueExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -497,12 +490,10 @@ mod tests {
         // Test adding a key
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
             MutableValueExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -522,12 +513,10 @@ mod tests {
         // Test updating an index
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
             MutableValueExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![
@@ -553,12 +542,10 @@ mod tests {
         // Test updating an index using negative lookup
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
             MutableValueExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![
@@ -645,11 +632,8 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hello world!",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world!"),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -670,12 +654,10 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                    VariableScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
-                        ValueAccessor::new(),
-                    ),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
+                    ValueAccessor::new(),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -696,11 +678,8 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "goodbye world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "goodbye world"),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -721,11 +700,8 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "goodbye world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "goodbye world"),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -755,11 +731,8 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "goodbye world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "goodbye world"),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -790,11 +763,8 @@ mod tests {
         run_test(
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "goodbye world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "goodbye world"),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
