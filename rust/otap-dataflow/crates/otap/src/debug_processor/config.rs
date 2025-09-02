@@ -9,11 +9,11 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verbosity {
-    /// display the most detailed information available
+    /// displays the number of received signals + extracts all of the fields in the signal object
     Detailed,
-    /// display the basic amount of information available and some detail about each request
+    /// displays the number of received signals + extracts a few of the fields in the signal object such as attributes, trace_id, body
     Normal,
-    /// just display number of logs, metrics, traces, profiles received with some additional detail about samples/datapoints
+    /// just display number of logs, metrics, traces
     Basic,
 }
 

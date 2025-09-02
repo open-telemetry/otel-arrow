@@ -50,7 +50,7 @@ impl Exporter<OtapPdata> for NoopExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         _effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,

@@ -56,7 +56,7 @@ impl OutputWriter {
         }
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error<OtapPdata>> {
+    async fn write(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -82,7 +82,10 @@ pub struct DebugProcessor {
 pub static DEBUG_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: DEBUG_PROCESSOR_URN,
-        create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+        create: |_pipeline_ctx: PipelineContext,
+                 node: NodeId,
+                 config: &Value,
+                 proc_cfg: &ProcessorConfig| {
             let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
             Ok(ProcessorWrapper::local(
                 DebugProcessor::from_config(config)?,
@@ -121,7 +124,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         // create a marshaler to take the otlp objects and extract various data to report
         let marshaler: Box<dyn ViewMarshaler> = if self.config.verbosity() == Verbosity::Normal {
             Box::new(NormalViewMarshaler)
@@ -211,7 +214,7 @@ async fn push_metric(
     metric_request: MetricsData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
@@ -269,7 +272,7 @@ async fn push_trace(
     trace_request: TracesData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     // collect number of resource spans
     // collect number of spans
     let resource_spans = trace_request.resource_spans.len();
@@ -307,7 +310,7 @@ async fn push_log(
     log_request: LogsData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
