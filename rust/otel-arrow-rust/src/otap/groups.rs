@@ -1267,22 +1267,30 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             .map(|rb| rb.num_rows())
             .sum();
 
+        // In the three following loops it first discovers all struct and dictionary fields, then
+        // counts the dictionary values, and finally unifies the columns. There's a couple reasons
+        // why we do this in three separate loops.
+        //
+        // First, discovering all the dictionaries (including dictionaries nested within structs),
+        // allows us to infer the smallest allowed key type for the column. Knowing this up-front
+        // can make deciding the actual key type to use for the dictionary faster (see
+        // [`UnifiedDictionaryKeySelector::choose_key_type`] for details).
+        //
+        // Also, we need to look at all the batches to count the key type (in the second loop),
+        // before we can convert the columns (in the third loop), so we know what dictionary to key
+        // type will fit all the different values when we combine the batches.
         for batches in batches.iter() {
-            // try to get the fields that should be in each struct column
             if let Some(rb) = &batches[payload_type_index] {
                 try_discover_dictionaries(rb, total_batch_size, &mut dict_fields)?;
                 try_discover_structs(rb, total_batch_size, &mut struct_fields)?;
             }
         }
-
         for batches in batches.iter() {
             if let Some(rb) = &batches[payload_type_index] {
                 try_count_dictionary_values(rb, &mut dict_fields)?;
                 try_count_struct_dictionary_values(rb, &mut struct_fields)?;
             }
         }
-
-        // unify all the struct columns
         for batches in batches.iter_mut() {
             if let Some(rb) = batches[payload_type_index].take() {
                 let rb = try_unify_dictionaries(&rb, &dict_fields)?;
