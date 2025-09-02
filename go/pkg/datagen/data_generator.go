@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package datagen
 
@@ -49,9 +40,8 @@ type TestEntropy struct {
 	start int64
 }
 
-func NewTestEntropy(seed int64) TestEntropy {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	rng := rand.New(rand.NewSource(seed))
+func NewTestEntropy() TestEntropy {
+	rng := rand.New(rand.NewSource(42))
 
 	// let the start time happen in 2022 as the first rng draw.
 	start := time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC).

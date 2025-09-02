@@ -1,0 +1,331 @@
+# This test suite illustrates a basic setup for testing the openelemetry
+# go collector in 2 different configs - one with batching enabled and one
+# without. Both tests use randomly generated log messages sent from the load-generator instance.
+# Both tests are run for 30 seconds after a short warm-up.
+name: Test Go Collector With and Without Batch Processor
+# Components are the individual systems, services, or tools that are involved in your test environment
+components:
+  # Components are named and specify how they are configured, deployed, executed, and monitored.
+  load-generator:
+    # A deployment strategy describes how the component is created and destroyed.
+    deployment:
+      # The docker deployment strategy loosely mirrors a docker-compose style service configuration.
+      docker:
+        image: load_generator:latest
+        network: testbed
+        command: ["--serve"]
+        environment:
+          - OTLP_ENDPOINT=otel-collector:4317
+          - SYSLOG_SERVER=otel-collector
+          - SYSLOG_PORT=514
+          - SYSLOG_TRANSPORT=udp
+        ports:
+          - "5001:5001"
+        build:
+          context: ./load_generator
+    # An execution strategy describes start / stop logic to apply to the component.
+    execution:
+      # The pipeline_perf_loadgen strategy calls the start/stop api endpoint on the load-generator
+      # with the specified parameters.
+      pipeline_perf_loadgen:
+        threads: 2
+        batch_size: 500
+        load_type: syslog
+    # A monitoring strategy describes how the component should be monitored.
+    monitoring:
+      # The docker_component monitoring strategy uses the docker api to monitoring container cpu, memory, network.
+      docker_component: {}
+      # The prometheus monitoring strategy calls the specified endpoint periodically to record metrics.
+      prometheus:
+        endpoint: http://localhost:5001/metrics
+  otel-collector:
+    deployment:
+      docker:
+        image: otel/opentelemetry-collector-contrib:latest
+        network: testbed
+        volumes:
+          - ./test_suites/collector_batch_comparison/otel-collector/collector-config-without-batch-processor.yaml:/etc/otel/collector-config.yaml:ro
+        command: ["--config", "/etc/otel/collector-config.yaml"]
+        ports:
+          - "8888:8888"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8888/metrics
+        include:
+          - otelcol_exporter_send_failed_log_records_total
+          - otelcol_exporter_sent_log_records_total
+          - otelcol_process_cpu_seconds_total
+          - otelcol_process_memory_rss_bytes
+          - otelcol_receiver_accepted_log_records_total
+  backend-service:
+    deployment:
+      docker:
+        image: backend:latest
+        network: testbed
+        ports:
+          - "5317:5317"
+          - "5000:5000"
+        build:
+          context: ./backend
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:5000/prom_metrics
+
+# The "tests" section describes 1 or more tests to execute when the suite is run.
+tests:
+    # Tests are named, and contain "steps" and "hooks" (optional) which describe the execution flow.
+  - name: Test Without Batch Processor
+    # Each step describes an "action" and hooks (optional)
+    steps:
+      - name: Deploy All
+        action:
+          # The multi_component_action invokes the specified phase on 1 or more components, here deploying
+          # all components using their docker deployment strategy configs.
+          multi_component_action:
+            phase: deploy
+      - name: Monitor All
+        action:
+          multi_component_action:
+            phase: start_monitoring
+      - name: Wait For Otel
+        action:
+          # The "wait" action pauses for the specified time before continuing.
+          wait:
+            delay_seconds: 5
+      - name: Start Load Generator
+        action:
+          # The component_action invokes the specified phase on 1 component, here starting the load from
+          # the load-generator component using it's execution strategy.
+          component_action:
+            phase: start
+            target: load-generator
+      - name: Wait For Stability
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Observe Load
+        action:
+          wait:
+            delay_seconds: 30
+        # Hooks are applied before/after step (or test or suite) logic to further customize
+        # execution flow as needed.
+        hooks:
+          # These hooks are used to mark start/end of the observation window where we expect
+          # the test to be in a "steady state".
+          run:
+            pre:
+                # The record_event hook emits a custom span event before the test step runs
+                # with the name "observation_start" and other metadata attributes applied
+                # by the framework (test name, suite name, step name, etc)
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+      - name: Stop Load Generator
+        action:
+          component_action:
+            phase: stop
+            target: load-generator
+      - name: Wait For Drain
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Stop Monitoring All
+        action:
+          multi_component_action:
+            phase: stop_monitoring
+      - name: Destroy All
+        action:
+          multi_component_action:
+            phase: destroy
+
+    # Add a second test definition that will execute after the first.
+  - name: Test With Batch Processor
+    steps:
+      - name: Reconfigure Collector
+        # The update_component_strategy action will merge a partial strategy config with the existing config.
+        # In this case, it updates the otel-collector component to use a new config (with batching enabled).
+        # This impacts the strategy configuration only, there's no change to the running component until the
+        # associated strategy is invoked.
+        action:
+          update_component_strategy:
+            target: otel-collector
+            deployment:
+              docker:
+                volumes:
+                  - ./test_suites/collector_batch_comparison/otel-collector/collector-config-with-batch-processor.yaml:/etc/otel/collector-config.yaml:ro
+      - name: Deploy All
+        action:
+          multi_component_action:
+            phase: deploy
+      - name: Monitor All
+        action:
+          multi_component_action:
+            phase: start_monitoring
+      - name: Wait For Otel
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Start Load Generator
+        action:
+          component_action:
+            phase: start
+            target: load-generator
+      - name: Wait For Stability
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Observe Load
+        action:
+          wait:
+            delay_seconds: 30
+        hooks:
+          run:
+            pre:
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+      - name: Stop Load Generator
+        action:
+          component_action:
+            phase: stop
+            target: load-generator
+      - name: Wait For Drain
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Stop Monitoring All
+        action:
+          multi_component_action:
+            phase: stop_monitoring
+      - name: Destroy All
+        action:
+          multi_component_action:
+            phase: destroy
+
+# Test Suite Hooks (Before / After All Tests)
+hooks:
+  run:
+    post:
+        # This report type collects e.g. logs sent / lost / rate /etc.
+        # We declare it once for each test (With/Without batch) by adjusting
+        # the start and stop event window.
+      - pipeline_perf_report:
+          name: Perf - Without Batch Processor
+          output:
+            - format:
+                # Use a custom report jinja template for compatability
+                # with github actions benchmark.
+                template:
+                  path: ./report_templates/gh_action_benchmark/pipeline_perf_report.j2
+              destination:
+                file:
+                  directory: results/without-batch-processor
+          # Start and end events to set report window.
+          between_events:
+            # We use the test start/end events instead of a narrower window to make sure
+            # we get readings from all components before load starts sending.
+            start:
+              name: test_framework.test_start
+              attributes:
+                test.name: Test Without Batch Processor
+            end:
+              name: test_framework.test_end
+              attributes:
+                test.name: Test Without Batch Processor
+      - pipeline_perf_report:
+          name: Perf - With Batch Processor
+          output:
+            - format:
+                template:
+                  path: ./report_templates/gh_action_benchmark/pipeline_perf_report.j2
+              destination:
+                file:
+                  directory: results/with-batch-processor
+          # Start and end events to set report window.
+          between_events:
+            start:
+              name: test_framework.test_start
+              attributes:
+                test.name: Test With Batch Processor
+            end:
+              name: test_framework.test_end
+              attributes:
+                test.name: Test With Batch Processor
+        # The process report gathers cpu / memory values for the specified components.
+        # Again we declare 1 for each test (with / without batch).
+      - process_report:
+          name: Process - Without Batch Processor
+          output:
+            - format:
+                template:
+                  path: ./report_templates/gh_action_benchmark/process_report.j2
+              destination:
+                file:
+                  directory: results/without-batch-processor
+          # Only report on the specified components here (or leave empty for all)
+          components:
+            - otel-collector
+          # Start and end events to set report window.
+          between_events:
+            # We use the custom start/end events here because we're measuring 'gauge' values.
+            # We're ok missing initial readings (where it's warming up), and only want the
+            # cpu/memory measurements "at stable load".
+            start:
+              name: observation_start
+              attributes:
+                test.name: Test Without Batch Processor
+            end:
+              name: observation_stop
+              attributes:
+                test.name: Test Without Batch Processor
+      - process_report:
+          name: Process - With Batch Processor
+          output:
+            - format:
+                template:
+                  path: ./report_templates/gh_action_benchmark/process_report.j2
+              destination:
+                file:
+                  directory: results/with-batch-processor
+          components:
+            - otel-collector
+          between_events:
+            start:
+              name: observation_start
+              attributes:
+                test.name: Test With Batch Processor
+            end:
+              name: observation_stop
+              attributes:
+                test.name: Test With Batch Processor
+        # This report will print a side-by-side comparison of the 2 pipeline perf reports
+        # to the console.
+      - comparison_report:
+          name: Compare PipelinePerf
+          reports:
+            - Perf - Without Batch Processor
+            - Perf - With Batch Processor
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+
+        # This report will print a side-by-side comparison of the 2 process reports
+        # to the console.
+      - comparison_report:
+          name: Compare Process
+          reports:
+            - Process - Without Batch Processor
+            - Process - With Batch Processor
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}

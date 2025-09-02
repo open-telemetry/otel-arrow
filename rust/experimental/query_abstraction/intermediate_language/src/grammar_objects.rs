@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::fmt::Debug;
 
 #[derive(Clone, PartialEq)]
@@ -57,7 +60,7 @@ impl Debug for Statement {
             }
             Statement::Extend(ident, expr, pred_opt) => {
                 writeln!(f, "Extend")?;
-                writeln!(f, "├── Field: {:?}", ident)?;
+                writeln!(f, "├── Field: {ident:?}")?;
                 match pred_opt {
                     Some(pred) => {
                         writeln!(f, "├── Expression:")?;
@@ -83,26 +86,26 @@ impl Statement {
         match self {
             Statement::Filter(predicate) => {
                 writeln!(f, "Filter")?;
-                write!(f, "{}└── ", indent)?;
-                predicate.fmt_with_indent(f, &format!("{}    ", indent))
+                write!(f, "{indent}└── ")?;
+                predicate.fmt_with_indent(f, &format!("{indent}    "))
             }
             Statement::Extend(ident, expr, pred_opt) => {
                 writeln!(f, "Extend")?;
-                writeln!(f, "{}├── Field: {:?}", indent, ident)?;
+                writeln!(f, "{indent}├── Field: {ident:?}")?;
                 match pred_opt {
                     Some(pred) => {
-                        writeln!(f, "{}├── Expression:", indent)?;
-                        write!(f, "{}│   └── ", indent)?;
-                        expr.fmt_with_indent(f, &format!("{}│       ", indent))?;
+                        writeln!(f, "{indent}├── Expression:")?;
+                        write!(f, "{indent}│   └── ")?;
+                        expr.fmt_with_indent(f, &format!("{indent}│       "))?;
                         writeln!(f)?;
-                        writeln!(f, "{}└── Condition:", indent)?;
-                        write!(f, "{}    └── ", indent)?;
-                        pred.fmt_with_indent(f, &format!("{}        ", indent))
+                        writeln!(f, "{indent}└── Condition:")?;
+                        write!(f, "{indent}    └── ")?;
+                        pred.fmt_with_indent(f, &format!("{indent}        "))
                     }
                     None => {
-                        writeln!(f, "{}└── Expression:", indent)?;
-                        write!(f, "{}    └── ", indent)?;
-                        expr.fmt_with_indent(f, &format!("{}        ", indent))
+                        writeln!(f, "{indent}└── Expression:")?;
+                        write!(f, "{indent}    └── ")?;
+                        expr.fmt_with_indent(f, &format!("{indent}        "))
                     }
                 }
             }
@@ -121,8 +124,8 @@ pub enum Expression {
 impl Debug for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expression::Identifier(ident) => write!(f, "{:?}", ident),
-            Expression::Literal(lit) => write!(f, "{:?}", lit),
+            Expression::Identifier(ident) => write!(f, "{ident:?}"),
+            Expression::Literal(lit) => write!(f, "{lit:?}"),
             Expression::Predicate(pred) => {
                 writeln!(f, "Predicate")?;
                 write!(f, "└── ")?;
@@ -140,17 +143,17 @@ impl Debug for Expression {
 impl Expression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         match self {
-            Expression::Identifier(ident) => write!(f, "{:?}", ident),
-            Expression::Literal(lit) => write!(f, "{:?}", lit),
+            Expression::Identifier(ident) => write!(f, "{ident:?}"),
+            Expression::Literal(lit) => write!(f, "{lit:?}"),
             Expression::Predicate(pred) => {
                 writeln!(f, "Predicate")?;
-                write!(f, "{}└── ", indent)?;
-                pred.fmt_with_indent(f, &format!("{}    ", indent))
+                write!(f, "{indent}└── ")?;
+                pred.fmt_with_indent(f, &format!("{indent}    "))
             }
             Expression::EnclosedExpression(expr) => {
                 writeln!(f, "EnclosedExpression")?;
-                write!(f, "{}└── ", indent)?;
-                expr.fmt_with_indent(f, &format!("{}    ", indent))
+                write!(f, "{indent}└── ")?;
+                expr.fmt_with_indent(f, &format!("{indent}    "))
             }
         }
     }
@@ -167,10 +170,10 @@ impl Debug for Predicate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Predicate::BinaryLogicalExpression(ble) => {
-                write!(f, "{:?}", ble)
+                write!(f, "{ble:?}")
             }
             Predicate::ComparisonExpression(ce) => {
-                write!(f, "{:?}", ce)
+                write!(f, "{ce:?}")
             }
             Predicate::NegatedExpression(expr) => {
                 writeln!(f, "NegatedExpression")?;
@@ -188,8 +191,8 @@ impl Predicate {
             Predicate::ComparisonExpression(ce) => ce.fmt_with_indent(f, indent),
             Predicate::NegatedExpression(expr) => {
                 writeln!(f, "NegatedExpression")?;
-                write!(f, "{}└── ", indent)?;
-                expr.fmt_with_indent(f, &format!("{}    ", indent))
+                write!(f, "{indent}└── ")?;
+                expr.fmt_with_indent(f, &format!("{indent}    "))
             }
         }
     }
@@ -216,11 +219,11 @@ impl Debug for BinaryLogicalExpression {
 impl BinaryLogicalExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "BinaryLogicalExpression ({:?})", self.boolean_operator)?;
-        write!(f, "{}├── ", indent)?;
-        self.left.fmt_with_indent(f, &format!("{}│   ", indent))?;
+        write!(f, "{indent}├── ")?;
+        self.left.fmt_with_indent(f, &format!("{indent}│   "))?;
         writeln!(f)?;
-        write!(f, "{}└── ", indent)?;
-        self.right.fmt_with_indent(f, &format!("{}    ", indent))
+        write!(f, "{indent}└── ")?;
+        self.right.fmt_with_indent(f, &format!("{indent}    "))
     }
 }
 
@@ -245,11 +248,11 @@ impl Debug for ComparisonExpression {
 impl ComparisonExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "ComparisonExpression ({:?})", self.comparison_operator)?;
-        write!(f, "{}├── ", indent)?;
-        self.left.fmt_with_indent(f, &format!("{}│   ", indent))?;
+        write!(f, "{indent}├── ")?;
+        self.left.fmt_with_indent(f, &format!("{indent}│   "))?;
         writeln!(f)?;
-        write!(f, "{}└── ", indent)?;
-        self.right.fmt_with_indent(f, &format!("{}    ", indent))
+        write!(f, "{indent}└── ")?;
+        self.right.fmt_with_indent(f, &format!("{indent}    "))
     }
 }
 
@@ -274,9 +277,9 @@ pub enum Literal {
 impl Debug for Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Literal::Bool(val) => write!(f, "Bool({})", val),
-            Literal::Int(val) => write!(f, "Int({})", val),
-            Literal::String(val) => write!(f, "String(\"{}\")", val),
+            Literal::Bool(val) => write!(f, "Bool({val})"),
+            Literal::Int(val) => write!(f, "Int({val})"),
+            Literal::String(val) => write!(f, "String(\"{val}\")"),
         }
     }
 }

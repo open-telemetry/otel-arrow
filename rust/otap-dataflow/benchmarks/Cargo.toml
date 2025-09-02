@@ -11,12 +11,22 @@ rust-version.workspace = true
 [dependencies]
 tokio.workspace = true
 serde_json.workspace = true
+mimalloc = "0.1.47"
+otap-df-otap = { path="../crates/otap"}
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
+otap-df-engine = { path = "../crates/engine"}
+otap-df-otlp = { path="../crates/otlp"}
+otap-df-telemetry = { path="../crates/telemetry"}
+otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
+otap-df-syslog-cef = { path="../crates/syslog_cef_receiver"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
+otel-arrow-rust = { path = "../../otel-arrow-rust"}
+fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
 flume = "0.11.1"
@@ -24,9 +34,16 @@ core_affinity = "0.8.3"
 local-sync = "0.1.1"
 async-unsync = "0.3.0"
 unsync = "0.1.2"
-
+tonic = "0.13.1"
+portpicker = "0.1.1"
+prost = "0.13"
+tokio-stream = "0.1.17"
 [lints]
 workspace = true
+
+[[bench]]
+name = "otlp"
+harness = false
 
 [[bench]]
 name = "config"
@@ -36,6 +53,26 @@ harness = false
 name = "channel"
 harness = false
 
+[[bench]]
+name = "exporter"
+harness = false
+
+[[bench]]
+name = "otap_encoder"
+harness = false
+
+[[bench]]
+name = "pdata_views"
+harness = false
+
+[[bench]]
+name = "retry_processor"
+harness = false
+
+[[bench]]
+name = "syslog_cef_receiver"
+harness = false
+
 [profile.bench]
 opt-level = 3
 debug = false
@@ -43,3 +80,4 @@ incremental = false
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+

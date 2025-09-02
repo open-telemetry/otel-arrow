@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Test utilities for exporters.
@@ -6,9 +7,16 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+};
+use crate::error::Error;
 use crate::exporter::ExporterWrapper;
-use crate::message::{ControlMsg, Receiver, Sender};
-use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::{Receiver, Sender};
+use crate::node::NodeWithPDataReceiver;
+use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -21,7 +29,7 @@ use tokio::time::sleep;
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
     /// Sender for control messages
-    control_tx: Sender<ControlMsg>,
+    control_tx: Sender<NodeControlMsg<PData>>,
     /// Sender for pipeline data
     pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
@@ -42,7 +50,7 @@ impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     #[must_use]
     pub fn new(
-        control_tx: Sender<ControlMsg>,
+        control_tx: Sender<NodeControlMsg<PData>>,
         pdata_tx: Sender<PData>,
         counters: CtrlMsgCounters,
     ) -> Self {
@@ -64,8 +72,8 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx.send(ControlMsg::TimerTick {}).await
+    pub async fn send_timer_tick(&self) -> Result<(), SendError<NodeControlMsg<PData>>> {
+        self.control_tx.send(NodeControlMsg::TimerTick {}).await
     }
 
     /// Sends a config control message.
@@ -73,8 +81,10 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx.send(ControlMsg::Config { config }).await
+    pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg<PData>>> {
+        self.control_tx
+            .send(NodeControlMsg::Config { config })
+            .await
     }
 
     /// Sends a shutdown control message.
@@ -86,9 +96,9 @@ impl<PData> TestContext<PData> {
         &self,
         deadline: Duration,
         reason: &str,
-    ) -> Result<(), SendError<ControlMsg>> {
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
-            .send(ControlMsg::Shutdown {
+            .send(NodeControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
@@ -138,11 +148,13 @@ pub struct TestPhase<PData> {
 
     counters: CtrlMsgCounters,
 
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
     pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
+
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -155,9 +167,12 @@ pub struct ValidationPhase<PData> {
     context: TestContext<PData>,
 
     /// Join handle for the running the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
-    _pd: PhantomData<PData>,
+    // ToDo implement support for pipeline control messages in a future PR.
+    #[allow(unused_variables)]
+    #[allow(dead_code)]
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -188,47 +203,42 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
-    pub fn set_exporter(self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
-        let (control_tx, control_rx, pdata_tx, pdata_rx) = match &exporter {
+    pub fn set_exporter(self, mut exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = match &exporter {
             ExporterWrapper::Local { .. } => {
-                let (control_tx, control_rx) =
-                    create_not_send_channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     create_not_send_channel(self.config.control_channel.capacity);
                 (
-                    Sender::Local(control_tx),
-                    Receiver::Local(control_rx),
-                    Sender::Local(pdata_tx),
-                    Receiver::Local(pdata_rx),
+                    Sender::Local(LocalSender::MpscSender(pdata_tx)),
+                    Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)),
                 )
             }
             ExporterWrapper::Shared { .. } => {
-                let (control_tx, control_rx) =
-                    tokio::sync::mpsc::channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     tokio::sync::mpsc::channel(self.config.control_channel.capacity);
                 (
-                    Sender::Shared(control_tx),
-                    Receiver::Shared(control_rx),
-                    Sender::Shared(pdata_tx),
-                    Receiver::Shared(pdata_rx),
+                    Sender::Shared(SharedSender::MpscSender(pdata_tx)),
+                    Receiver::Shared(SharedReceiver::MpscReceiver(pdata_rx)),
                 )
             }
         };
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
-            exporter
-                .start(control_rx, pdata_rx)
-                .await
-                .expect("Exporter event loop failed");
-        });
+        exporter
+            .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
+            .expect("Failed to set PData receiver");
+        let run_exporter_handle = self
+            .local_tasks
+            .spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counter.clone(),
-            control_sender: control_tx,
+            control_sender,
             pdata_sender: pdata_tx,
             run_exporter_handle,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }
@@ -257,7 +267,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             local_tasks: self.local_tasks,
             context,
             run_exporter_handle: self.run_exporter_handle,
-            _pd: PhantomData,
+            pipeline_ctrl_msg_receiver: self.pipeline_ctrl_msg_receiver,
         }
     }
 
@@ -286,18 +296,19 @@ impl<PData> ValidationPhase<PData> {
     /// The result of the provided future.
     pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(TestContext<PData>) -> Fut,
+        F: FnOnce(TestContext<PData>, Result<(), Error>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         let local_tasks = std::mem::take(&mut self.local_tasks);
         self.rt.block_on(local_tasks);
 
-        self.rt
+        let result = self
+            .rt
             .block_on(self.run_exporter_handle)
-            .expect("Exporter task failed");
+            .expect("failed to join exporter task handle");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(self.context))
+        self.rt.block_on(future_fn(self.context, result))
     }
 }

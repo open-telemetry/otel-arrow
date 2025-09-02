@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Note from @lquerel: This is an old experimental module that I keep around for reference.
@@ -314,7 +315,7 @@ impl PipelineDag {
         let chain_output = last_node.output_type;
 
         let chain_id = format!("chain({})", chain.join("+"));
-        let chain_config = Value::String(format!("Merged chain: {:?}", chain));
+        let chain_config = Value::String(format!("Merged chain: {chain:?}"));
 
         let chain_node = Node {
             id: chain_id.clone(),

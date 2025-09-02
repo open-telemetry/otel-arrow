@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package logs_test
 
@@ -21,21 +12,23 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	logsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/logs/arrow"
-	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	logsarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/arrow"
+	logsotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 var (
@@ -53,7 +46,7 @@ var (
 func TestLogsEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(5000, 100))
@@ -68,12 +61,97 @@ func TestLogsEncodingDecoding(t *testing.T) {
 func TestInvalidLogsDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(100, 100))
 
 	MultiRoundOfCheckEncodeMessUpDecode(t, expectedRequest)
+}
+
+func TestDecodingWithMissingOptionalTraceSpanIdFields(t *testing.T) {
+	entropy := datagen.NewTestEntropy()
+	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewSingleResourceAttributes(), entropy.NewSingleInstrumentationScopes())
+
+	// generate a record batch of OTLP Logs
+	data := plogotlp.NewExportRequestFromLogs(logsGen.Generate(5, 100))
+
+	// convert the OTLP logs to an OTAP record
+	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	recordBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats, nil)
+	conf := config.DefaultConfig()
+	for {
+		lb, err := logsarrow.NewLogsBuilder(recordBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats(), nil)
+		require.NoError(t, err)
+		defer lb.Release()
+
+		err = lb.Append(data.Logs())
+		require.NoError(t, err)
+
+		record, err = recordBuilder.NewRecord()
+		if err == nil {
+			relatedRecords, err = lb.RelatedData().BuildRecordMessages()
+			require.NoError(t, err)
+			break
+		}
+		require.Error(t, acommon.ErrSchemaNotUpToDate)
+	}
+
+	// find the column index of trace_id and span_id columns
+	schema := record.Schema()
+	columnIndices := schema.FieldIndices(constants.TraceId)
+	require.Equal(t, 1, len(columnIndices))
+	traceIdColumnIndex := columnIndices[0]
+
+	columnIndices = schema.FieldIndices(constants.SpanId)
+	require.Equal(t, 1, len(columnIndices))
+	spanIdColumnIndex := columnIndices[0]
+
+	// adjust index of column we're going to remove because traceID will get removed first below
+	if spanIdColumnIndex > traceIdColumnIndex {
+		spanIdColumnIndex -= 1
+	}
+
+	// remove the trace_id and span_id columns
+	columns := record.Columns()
+	columns = append(columns[:traceIdColumnIndex], columns[traceIdColumnIndex+1:]...)
+	columns = append(columns[:spanIdColumnIndex], columns[spanIdColumnIndex+1:]...)
+
+	// update schema
+	fields := schema.Fields()
+	fields = append(fields[:traceIdColumnIndex], fields[traceIdColumnIndex+1:]...)
+	fields = append(fields[:spanIdColumnIndex], fields[spanIdColumnIndex+1:]...)
+	schema = arrow.NewSchema(fields, nil)
+
+	// create new record with these columns removed
+	record = array.NewRecord(schema, columns, record.NumRows())
+
+	// Try converting the arrow records back to OTLP
+	relatedData, _, err := logsotlp.RelatedDataFrom(relatedRecords)
+	require.NoError(t, err)
+
+	otlpLogs, err := logsotlp.LogsFrom(record, relatedData)
+	defer record.Release()
+	require.NoError(t, err)
+
+	// check that the trace ID and span ID are what we expect, which is an empty array all 0s
+	for resourceIdx := range otlpLogs.ResourceLogs().Len() {
+		resource := otlpLogs.ResourceLogs().At(resourceIdx)
+		for scopeIdx := range resource.ScopeLogs().Len() {
+			scope := resource.ScopeLogs().At(scopeIdx)
+			for logIdx := range scope.LogRecords().Len() {
+				log := scope.LogRecords().At(logIdx)
+				spanId := log.SpanID()
+				traceId := log.TraceID()
+				expectedSpanId := make([]byte, 8)
+				expectedTraceId := make([]byte, 16)
+				require.Equal(t, expectedSpanId, spanId[:])
+				require.Equal(t, expectedTraceId, traceId[:])
+			}
+		}
+	}
 }
 
 func CheckEncodeDecode(
@@ -126,7 +204,7 @@ func MultiRoundOfCheckEncodeMessUpDecode(
 	t *testing.T,
 	expectedRequest plogotlp.ExportRequest,
 ) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		CheckEncodeMessUpDecode(t, expectedRequest, rng)
