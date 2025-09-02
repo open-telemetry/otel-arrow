@@ -33,7 +33,6 @@ This directory contains auto-generated documentation for all plugin registries.
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `pipeline_perf_loadgen` | `pipeline_perf_loadgen` | `lib.impl.strategies.execution.pipeline_perf_loadgen` | `PipelinePerfLoadgenExecution` | `PipelinePerfLoadgenConfig` | Execution strategy implementation for controlling the pipeline performance load generator |
-| `df_perf_wrapper` | `df_perf_wrapper` | `lib.impl.strategies.execution.df_perf_wrapper` | `DFPerfWrapperExecution` | `DFPerfWrapperConfig` | Execution strategy implementation for controlling the dataflow engine with perf exporter |
 
 ## Plugin Summary: `hook_strategies`
 
