@@ -525,6 +525,7 @@ OtapArrowRecords::Logs(_) => {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
                                 } else {
+                                    // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_logs + rows > max
                                     {
@@ -532,6 +533,8 @@ OtapArrowRecords::Logs(_) => {
                                     }
                                     self.rows_logs += rows;
                                     self.current_logs.push(rec);
+                                    // Post-append: flush when we hit the boundary exactly (>= max),
+                                    // and also honor send_batch_size as a trigger (0 => immediate).
                                     if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_logs >= max)
                                         || self.rows_logs >= self.config.send_batch_size
@@ -547,6 +550,7 @@ OtapArrowRecords::Metrics(_) => {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
                                 } else {
+                                    // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_metrics + rows > max
                                     {
@@ -554,6 +558,8 @@ OtapArrowRecords::Metrics(_) => {
                                     }
                                     self.rows_metrics += rows;
                                     self.current_metrics.push(rec);
+                                    // Post-append: flush on boundary equality (>= max) and
+                                    // honor send_batch_size as a trigger (0 => immediate).
                                     if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_metrics >= max)
                                         || self.rows_metrics >= self.config.send_batch_size
@@ -569,6 +575,7 @@ OtapArrowRecords::Traces(_) => {
                                     effect.info(LOG_MSG_DROP_EMPTY).await;
                                     Ok(())
                                 } else {
+                                    // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_traces + rows > max
                                     {
@@ -576,6 +583,8 @@ OtapArrowRecords::Traces(_) => {
                                     }
                                     self.rows_traces += rows;
                                     self.current_traces.push(rec);
+                                    // Post-append: flush on boundary equality (>= max) and
+                                    // honor send_batch_size as a trigger (0 => immediate).
                                     if (max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
                                         && self.rows_traces >= max)
                                         || self.rows_traces >= self.config.send_batch_size
