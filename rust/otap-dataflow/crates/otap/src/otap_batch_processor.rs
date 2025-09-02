@@ -493,12 +493,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
             Message::Control(ctrl) => {
                 match ctrl {
                     otap_df_engine::control::NodeControlMsg::TimerTick { .. } => {
-                        // Follow OTLP semantics: only flush on timer if a size threshold has been reached
-                        if self.size_triggers_emission() {
-                            self.flush_current(effect, FlushReason::Timer).await
-                        } else {
-                            Ok(())
-                        }
+                        // Follow OTLP/Collector semantics: flush pending batches on timer regardless of size
+                        // (i.e., timeout sends the current batch even if below send_batch_size).
+                        self.flush_current(effect, FlushReason::Timer).await
                     }
                     otap_df_engine::control::NodeControlMsg::Config { .. } => Ok(()),
                     otap_df_engine::control::NodeControlMsg::Shutdown { .. } => {
@@ -867,6 +864,46 @@ ctx.process(Message::Control(NodeControlMsg::Shutdown {
         });
 
         // no additional validation phase assertions needed
+        validation.validate(|_vctx| async move {});
+    }
+
+    #[test]
+    fn test_flush_on_timer_even_if_below_size() {
+        use crate::pdata::OtapPdata;
+        use otap_df_engine::message::Message;
+        use otap_df_engine::testing::processor::TestRuntime;
+
+        let cfg = json!({
+            "send_batch_size": 1000, // large so count threshold won't trigger
+            "send_batch_max_size": 1000,
+            "timeout": 200 // timer value is not used directly in test; we send TimerTick manually
+        });
+        let processor_config = ProcessorConfig::new("otap_batch_test_timer_flush");
+        let test_rt = TestRuntime::new();
+        let node = test_node(processor_config.name.clone());
+        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
+            .expect("proc from config");
+
+        let phase = test_rt.set_processor(proc);
+
+        let validation = phase.run_test(|mut ctx| async move {
+            // Process a single small record (below thresholds)
+            let pdata: OtapPdata = one_trace_record().into();
+            ctx.process(Message::PData(pdata)).await.expect("process 1");
+
+            // No flush before timer
+            let emitted = ctx.drain_pdata().await;
+            assert_eq!(emitted.len(), 0, "no flush expected before timer");
+
+            // Send a timer tick -> should flush pending batch even below size
+            use otap_df_engine::control::NodeControlMsg;
+            ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
+                .await
+                .expect("timer tick");
+            let emitted = ctx.drain_pdata().await;
+            assert_eq!(emitted.len(), 1, "flush expected on timer regardless of size");
+        });
+
         validation.validate(|_vctx| async move {});
     }
 
