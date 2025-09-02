@@ -7,7 +7,7 @@ use crate::*;
 pub enum ResolvedStaticScalarExpression<'a> {
     Reference(&'a StaticScalarExpression),
     Computed(StaticScalarExpression),
-    FoldedConstant(&'a StaticScalarExpression),
+    FoldEligibleReference(&'a StaticScalarExpression),
 }
 
 impl ResolvedStaticScalarExpression<'_> {
@@ -20,7 +20,7 @@ impl ResolvedStaticScalarExpression<'_> {
                 None
             }
             ResolvedStaticScalarExpression::Computed(s) => Some(s),
-            ResolvedStaticScalarExpression::FoldedConstant(s) => Some(s.clone()),
+            ResolvedStaticScalarExpression::FoldEligibleReference(s) => Some(s.clone()),
         }
     }
 }
@@ -30,18 +30,17 @@ impl AsStaticValue for ResolvedStaticScalarExpression<'_> {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s.to_static_value(),
             ResolvedStaticScalarExpression::Computed(s) => s.to_static_value(),
-            ResolvedStaticScalarExpression::FoldedConstant(s) => s.to_static_value(),
+            ResolvedStaticScalarExpression::FoldEligibleReference(s) => s.to_static_value(),
         }
     }
 }
 
-#[cfg(test)]
 impl AsRef<StaticScalarExpression> for ResolvedStaticScalarExpression<'_> {
     fn as_ref(&self) -> &StaticScalarExpression {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s,
             ResolvedStaticScalarExpression::Computed(s) => s,
-            ResolvedStaticScalarExpression::FoldedConstant(s) => s,
+            ResolvedStaticScalarExpression::FoldEligibleReference(s) => s,
         }
     }
 }
