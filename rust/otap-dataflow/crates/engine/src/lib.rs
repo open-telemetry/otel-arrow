@@ -22,7 +22,6 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
-use serde_json::Value;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
