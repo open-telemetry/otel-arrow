@@ -1080,7 +1080,7 @@ mod test {
     }
 
     #[test]
-    fn test_handles_null_ids_correctly() {
+    fn test_handles_null_ids() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
