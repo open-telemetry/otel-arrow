@@ -315,16 +315,13 @@ fn engine_err(msg: &str) -> EngineError {
 pub fn create_attributes_processor(
     _pipeline_ctx: PipelineContext,
     node: NodeId,
-    config: &Value,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(
-        ATTRIBUTES_PROCESSOR_URN,
-    ));
     Ok(ProcessorWrapper::local(
-        AttributesProcessor::from_config(config)?,
+        AttributesProcessor::from_config(&node_config.config)?,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }
@@ -337,9 +334,9 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
         name: ATTRIBUTES_PROCESSOR_URN,
         create: |pipeline_ctx: PipelineContext,
                  node: NodeId,
-                 config: &Value,
+                 node_config: Arc<NodeUserConfig>,
                  proc_cfg: &ProcessorConfig| {
-            create_attributes_processor(pipeline_ctx, node, config, proc_cfg)
+            create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
     };
 
@@ -432,8 +429,11 @@ mod tests {
         // Set up processor test runtime and run one message
         let node = test_node("attributes-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
-            .expect("create processor");
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -509,8 +509,11 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
-            .expect("create processor");
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -589,8 +592,11 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
-            .expect("create processor");
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -660,8 +666,11 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-scope");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
-            .expect("create processor");
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -735,8 +744,11 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-signal-and-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let proc = create_attributes_processor(pipeline_ctx, node, &cfg, rt.config())
-            .expect("create processor");
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
