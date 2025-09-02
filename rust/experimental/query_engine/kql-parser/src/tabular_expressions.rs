@@ -958,12 +958,10 @@ mod tests {
             "extend const_str = const_str",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                    ReferenceConstantScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueType::String,
-                        0,
-                    ),
+                ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueType::String,
+                    0,
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -1300,12 +1298,10 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::String,
-                            0,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::String,
+                        0,
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2494,7 +2490,7 @@ mod tests {
                                     "Attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                            ScalarExpression::Static(StaticScalarExpression::Constant(
                                 CopyConstantScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     0,
