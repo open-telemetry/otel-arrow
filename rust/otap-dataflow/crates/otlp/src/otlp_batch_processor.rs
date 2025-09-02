@@ -24,7 +24,6 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use prost::Message as ProstMessage;
 use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -727,13 +726,14 @@ impl From<&Config> for BatchConfig {
 /// Factory function to create the OTLP batch processor from user config.
 pub fn create_otlp_batch_processor(
     node: NodeId,
-    config: &Value,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OTLPData>, ConfigError> {
-    let cfg: Config =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let cfg: Config = serde_json::from_value(node_config.config.clone()).map_err(|e| {
+        ConfigError::InvalidUserConfig {
             error: e.to_string(),
-        })?;
+        }
+    })?;
 
     cfg.validate()?;
 
@@ -755,9 +755,9 @@ pub static OTLP_BATCH_PROCESSOR: ProcessorFactory<OTLPData> = ProcessorFactory {
     name: _OTLP_BATCH_PROCESSOR_URN,
     create: |_pipeline_ctx: PipelineContext,
              node: NodeId,
-             config: &Value,
+             node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig| {
-        create_otlp_batch_processor(node, config, proc_cfg)
+        create_otlp_batch_processor(node, node_config, proc_cfg)
     },
 };
 
@@ -1902,7 +1902,9 @@ mod config_validation_tests {
             "timeout_millis": 1000,
             "sizer": "items"
         });
-        let res = create_otlp_batch_processor(node, &cfg, &proc_cfg);
+        let mut node_config = NodeUserConfig::new_processor_config(_OTLP_BATCH_PROCESSOR_URN);
+        node_config.config = cfg;
+        let res = create_otlp_batch_processor(node, Arc::new(node_config), &proc_cfg);
         match res {
             Err(ConfigError::InvalidUserConfig { error }) => {
                 assert!(error.contains("send_batch_size"), "error: {error}");
