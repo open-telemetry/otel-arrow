@@ -18,9 +18,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
-use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -95,7 +95,6 @@ pub fn create_debug_processor(
     ))
 }
 
-
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
@@ -120,11 +119,10 @@ impl DebugProcessor {
 
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            ConfigError::InvalidUserConfig {
+        let config: Config =
+            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
-            }
-        })?;
+            })?;
         Ok(DebugProcessor {
             config,
             output: None,
