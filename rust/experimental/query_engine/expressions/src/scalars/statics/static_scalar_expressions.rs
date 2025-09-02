@@ -238,6 +238,11 @@ impl CopyConstantScalarExpression {
         constant_id: usize,
         value: StaticScalarExpression,
     ) -> CopyConstantScalarExpression {
+        // Note: It doesn't make sense for a constant to point to another
+        // constant so we validate this but if it does happen for some reason it
+        // shouldn't cause any problems.
+        debug_assert!(!matches!(value, StaticScalarExpression::Constant(_)));
+
         Self {
             query_location,
             constant_id,

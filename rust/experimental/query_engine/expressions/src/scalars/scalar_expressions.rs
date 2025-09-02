@@ -144,7 +144,7 @@ impl ScalarExpression {
         unreachable!()
     }
 
-    pub(crate) fn try_resolve_static_inner<'a>(
+    fn try_resolve_static_inner<'a>(
         &'a mut self,
         scope: &PipelineResolutionScope<'a>,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
@@ -161,7 +161,11 @@ impl ScalarExpression {
                 v.accessor.try_fold(scope)?;
                 Ok(None)
             }
-            ScalarExpression::Static(_) => unreachable!(),
+            ScalarExpression::Static(_) => {
+                // Note: Static resolution should be handled before the call to
+                // try_resolve_static_inner.
+                unreachable!()
+            }
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
             ScalarExpression::Collection(c) => c.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
