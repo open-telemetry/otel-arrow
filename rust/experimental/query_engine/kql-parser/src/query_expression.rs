@@ -239,12 +239,10 @@ mod tests {
             .with_expressions(vec![
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::Integer,
-                            0,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::Integer,
+                        0,
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -270,12 +268,10 @@ mod tests {
                                     "attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueType::String,
-                                    1,
-                                ),
+                            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::String,
+                                1,
                             )),
                         ]),
                     )),

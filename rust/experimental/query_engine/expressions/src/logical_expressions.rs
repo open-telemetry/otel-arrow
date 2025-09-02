@@ -56,6 +56,17 @@ impl LogicalExpression {
             LogicalExpression::Contains(c) => c.try_resolve_static(scope),
             LogicalExpression::Matches(m) => m.try_resolve_static(scope),
         }? {
+            match s {
+                ResolvedStaticScalarExpression::FoldEligibleReference(r)
+                | ResolvedStaticScalarExpression::Reference(r) => {
+                    if let Value::Boolean(b) = r.to_value() {
+                        // Note: We don't fold a static which is already a valid bool.
+                        return Ok(Some(b.get_value()));
+                    }
+                }
+                _ => {}
+            }
+
             let value = s.to_value();
 
             if let Some(b) = value.convert_to_bool() {
