@@ -127,6 +127,23 @@ pub(crate) fn parse_comparison_expression(
                         )),
                     )))
                 }
+                Rule::matches_regex_token => {
+                    let mut e = LogicalExpression::Matches(MatchesLogicalExpression::new(
+                        query_location,
+                        left,
+                        right,
+                    ));
+
+                    // Note: Call into try_resolve_static here is to try to
+                    // validate the regex string and bubble up any errors. It
+                    // can be removed if/when expression tree gets constant
+                    // folding which should automatically call into
+                    // try_resolve_static.
+                    e.try_resolve_static(&scope.get_pipeline().get_resolution_scope())
+                        .map_err(|e| ParserError::from(&e))?;
+
+                    Ok(e)
+                }
 
                 Rule::contains_token => Ok(LogicalExpression::Contains(
                     ContainsLogicalExpression::new(query_location, left, right, true),
@@ -272,6 +289,7 @@ pub(crate) fn parse_logical_expression(
 #[cfg(test)]
 mod tests {
     use pest::Parser;
+    use regex::Regex;
 
     use crate::KqlPestParser;
 
@@ -316,6 +334,14 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+
+            state.push_constant(
+                "const_regex",
+                StaticScalarExpression::Regex(RegexScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    Regex::new(".*").unwrap(),
+                )),
+            );
 
             let mut result = KqlPestParser::parse(Rule::comparison_expression, input).unwrap();
 
@@ -480,6 +506,61 @@ mod tests {
                             false,
                         ))
                         .into(),
+                    ),
+                )),
+            )),
+        );
+
+        // Note: This whole expression folds to a constant value.
+        run_test(
+            "'hello world' matches regex '^hello world$'",
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            ))),
+        );
+
+        // Note: The string regex pattern gets folded into a compiled regex
+        // expression.
+        run_test(
+            "Name matches regex '^hello world$'",
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "Name",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Regex(
+                    RegexScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Regex::new("^hello world$").unwrap(),
+                    ),
+                )),
+            )),
+        );
+
+        run_test(
+            "Name matches regex const_regex",
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "Name",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                    ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::Regex,
+                        0,
                     ),
                 )),
             )),
