@@ -348,10 +348,6 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
-            // (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-            //     processor: node_id,
-            //     error: "Expected a local receiver for PData".to_owned(),
-            // }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
                 error: "Expected a shared receiver for PData".to_owned(),

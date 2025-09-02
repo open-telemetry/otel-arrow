@@ -315,7 +315,6 @@ fn engine_err(msg: &str) -> EngineError {
 pub fn create_attributes_processor(
     _pipeline_ctx: PipelineContext,
     node: NodeId,
-    // config: &Value,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
