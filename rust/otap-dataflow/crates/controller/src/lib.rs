@@ -78,7 +78,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Start one thread per requested core
-        let requested_cores = Self::compute_requested_cores(quota)?;
+        // Get available CPU cores for pinning
+        let requested_cores = Self::compute_requested_cores(
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
+            quota
+        )?;
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
@@ -174,11 +178,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Returns the list of CPU core IDs to use based on the given quota.
-    fn compute_requested_cores(quota: Quota) -> Result<Vec<CoreId>, Error> {
-        // Get available CPU cores for pinning
-        let all_core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
-
+    fn compute_requested_cores(all_core_ids: Vec<CoreId>, quota: Quota) -> Result<Vec<CoreId>, Error> {
         // If a specific core ID range is requested, select matching cores, otherwise derive by count
         let requested_cores = if let Some(range) = quota.core_id_range.as_ref() {
             let mut available_ids: Vec<_> = all_core_ids.clone().into_iter().collect();
@@ -257,5 +257,108 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn available_core_ids() -> Vec<CoreId> {
+        vec![
+            CoreId { id: 0 }, CoreId { id: 1 }, CoreId { id: 2 }, CoreId { id: 3 },
+            CoreId { id: 4 }, CoreId { id: 5 }, CoreId { id: 6 }, CoreId { id: 7 },
+        ]
+    }
+
+    fn to_ids(v: &[CoreId]) -> Vec<usize> {
+        v.iter().map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn compute_all_cores_by_default() {
+        let quota = Quota {
+            num_cores: 0,
+            core_id_range: None,
+        };
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn compute_limited_by_num_cores() {
+        let quota = Quota {
+            num_cores: 4,
+            core_id_range: None,
+        };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::compute_requested_cores(available_core_ids.clone(), quota).unwrap();
+        assert_eq!(result.len(), 4);
+        let expected_ids: Vec<usize> = available_core_ids.into_iter().take(4).map(|c| c.id).collect();
+        assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn compute_with_valid_single_core_range() {
+        let available_core_ids = available_core_ids();
+        let first_id = available_core_ids[0].id;
+        let quota = Quota {
+            num_cores: 0,
+            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange {
+                start: first_id,
+                end: first_id,
+            }),
+        };
+        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![first_id]);
+    }
+
+    #[test]
+    fn compute_with_valid_multi_core_range() {
+        let quota = Quota {
+            num_cores: 0,
+            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 5 }),
+        };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn compute_with_inverted_range_errors() {
+        let quota = Quota {
+            num_cores: 0,
+            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 1 }),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreRange { start, end, .. } => {
+                assert_eq!(start, 2);
+                assert_eq!(end, 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compute_with_out_of_bounds_range_errors() {
+        let start = 100;
+        let end = 110;
+        let quota = Quota {
+            num_cores: 0,
+            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start, end }),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreRange { start: s, end: e, .. } => {
+                assert_eq!(s, start);
+                assert_eq!(e, end);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
