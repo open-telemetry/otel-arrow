@@ -49,6 +49,7 @@ pub mod signal_type_router;
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
 mod metrics;
+mod otap_batch_metrics;
 
 /// Retry processor (OTAP-based)
 pub mod retry_processor;
