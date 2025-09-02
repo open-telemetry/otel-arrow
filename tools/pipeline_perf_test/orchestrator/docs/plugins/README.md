@@ -60,7 +60,7 @@ This directory contains auto-generated documentation for all plugin registries.
 | `multi_component_action` | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |
 | `update_component_strategy` | `update_component_strategy` | `lib.impl.actions.update_component_strategy` | `UpdateComponentStrategyAction` | `UpdateComponentStrategyConfig` | Step action that applies updates to a strategy configuration of a managed component |
-| `no_op` | `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Abstract base class representing a test step action |
+| `no_op` | `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Step action that does nothing when execute is called |
 
 ## Plugin Summary: `report_formatters`
 

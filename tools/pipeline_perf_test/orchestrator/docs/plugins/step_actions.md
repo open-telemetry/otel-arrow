@@ -8,7 +8,7 @@
 | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |
 | `update_component_strategy` | `lib.impl.actions.update_component_strategy` | `UpdateComponentStrategyAction` | `UpdateComponentStrategyConfig` | Step action that applies updates to a strategy configuration of a managed component |
-| `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Abstract base class representing a test step action |
+| `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Step action that does nothing when execute is called |
 
 ---
 
@@ -180,14 +180,7 @@ tests:
 
 ```python
 """
-Abstract base class representing a test step action.
-
-This class defines the interface for all test step actions that can be
-performed in a testing framework. Each action must be initialized with
-a configuration object and must implement an execution method that takes
-the current test step context.
-
-Subclasses are required to implement the __init__ and execute methods.
+Step action that does nothing when execute is called.
 """
 ```
 
