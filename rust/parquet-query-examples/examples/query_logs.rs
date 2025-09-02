@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::compute::concat_batches;
 use arrow::datatypes::DataType;
 use arrow::util::pretty::print_batches;
