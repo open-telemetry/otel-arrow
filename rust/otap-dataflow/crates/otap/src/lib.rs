@@ -36,6 +36,13 @@ pub mod parquet_exporter;
 pub mod perf_exporter;
 
 pub mod fake_data_generator;
+
+/// Implementation of debug processor that outputs received signals in a string format for user view
+pub mod debug_processor;
+
+/// Implementation of a noop exporter that acts as a exporter placeholder
+pub mod noop_exporter;
+
 /// testing utilities
 #[cfg(test)]
 mod mock;
