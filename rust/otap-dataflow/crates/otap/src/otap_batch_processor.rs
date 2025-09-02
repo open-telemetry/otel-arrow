@@ -116,8 +116,6 @@ pub struct OtapBatchProcessor {
     current_logs: Vec<OtapArrowRecords>,
     current_metrics: Vec<OtapArrowRecords>,
     current_traces: Vec<OtapArrowRecords>,
-    // For inputs that cannot be converted to OTAP (currently dropped with a log)
-    passthrough: Vec<OtapPdata>,
     // Running row counts per signal for size triggers
     rows_logs: usize,
     rows_metrics: usize,
@@ -206,7 +204,6 @@ impl OtapBatchProcessor {
             current_logs: Vec::new(),
             current_metrics: Vec::new(),
             current_traces: Vec::new(),
-            passthrough: Vec::new(),
             rows_logs: 0,
             rows_metrics: 0,
             rows_traces: 0,
@@ -240,12 +237,7 @@ impl OtapBatchProcessor {
         reason: FlushReason,
     ) -> Result<(), EngineError> {
         // Only return early if there is nothing buffered for this signal at all
-        if self.current_logs.is_empty()
-            && !self
-                .passthrough
-                .iter()
-                .any(|p| p.signal_type() == SignalType::Logs)
-        {
+        if self.current_logs.is_empty() {
             return Ok(());
         }
         let input = std::mem::take(&mut self.current_logs);
@@ -320,18 +312,6 @@ log_batching_failed(effect, SIG_LOGS, &e).await;
                 }
             }
         }
-        // Also flush any passthrough items for this signal type
-        if !self.passthrough.is_empty() {
-            let mut remaining = Vec::with_capacity(self.passthrough.len());
-            for pdata in self.passthrough.drain(..) {
-                if pdata.signal_type() == SignalType::Logs {
-                    effect.send_message(pdata).await?;
-                } else {
-                    remaining.push(pdata);
-                }
-            }
-            self.passthrough = remaining;
-        }
         Ok(())
     }
 
@@ -340,12 +320,7 @@ log_batching_failed(effect, SIG_LOGS, &e).await;
         effect: &mut local::EffectHandler<OtapPdata>,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
-        if self.current_metrics.is_empty()
-            && !self
-                .passthrough
-                .iter()
-                .any(|p| p.signal_type() == SignalType::Metrics)
-        {
+        if self.current_metrics.is_empty() {
             return Ok(());
         }
         let input = std::mem::take(&mut self.current_metrics);
@@ -415,17 +390,6 @@ log_batching_failed(effect, SIG_METRICS, &e).await;
                 }
             }
         }
-        if !self.passthrough.is_empty() {
-            let mut remaining = Vec::with_capacity(self.passthrough.len());
-            for pdata in self.passthrough.drain(..) {
-                if pdata.signal_type() == SignalType::Metrics {
-                    effect.send_message(pdata).await?;
-                } else {
-                    remaining.push(pdata);
-                }
-            }
-            self.passthrough = remaining;
-        }
         Ok(())
     }
 
@@ -434,12 +398,7 @@ log_batching_failed(effect, SIG_METRICS, &e).await;
         effect: &mut local::EffectHandler<OtapPdata>,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
-        if self.current_traces.is_empty()
-            && !self
-                .passthrough
-                .iter()
-                .any(|p| p.signal_type() == SignalType::Traces)
-        {
+        if self.current_traces.is_empty() {
             return Ok(());
         }
         let input = std::mem::take(&mut self.current_traces);
@@ -508,17 +467,6 @@ log_batching_failed(effect, SIG_TRACES, &e).await;
                     self.rows_traces = 0;
                 }
             }
-        }
-        if !self.passthrough.is_empty() {
-            let mut remaining = Vec::with_capacity(self.passthrough.len());
-            for pdata in self.passthrough.drain(..) {
-                if pdata.signal_type() == SignalType::Traces {
-                    effect.send_message(pdata).await?;
-                } else {
-                    remaining.push(pdata);
-                }
-            }
-            self.passthrough = remaining;
         }
         Ok(())
     }
