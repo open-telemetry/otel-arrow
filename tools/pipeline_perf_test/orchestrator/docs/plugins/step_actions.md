@@ -8,6 +8,7 @@
 | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |
 | `update_component_strategy` | `lib.impl.actions.update_component_strategy` | `UpdateComponentStrategyAction` | `UpdateComponentStrategyConfig` | Step action that applies updates to a strategy configuration of a managed component |
+| `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Abstract base class representing a test step action |
 
 ---
 
@@ -163,4 +164,40 @@ tests:
               docker:
                 volumes:
                   - ./configs/test_batch_sizes/component_configs/collector-config-batch-10k.yaml:/etc/otel/collector-config.yaml:ro
+```
+
+## `no_op`
+
+**Class**: `lib.impl.actions.no_op_action.NoOpAction`
+
+**Config Class**: `lib.impl.actions.no_op_action.NoOpActionConfig`
+
+**Supported Contexts:**
+
+- StepContext
+
+**Description:**
+
+```python
+"""
+Abstract base class representing a test step action.
+
+This class defines the interface for all test step actions that can be
+performed in a testing framework. Each action must be initialized with
+a configuration object and must implement an execution method that takes
+the current test step context.
+
+Subclasses are required to implement the __init__ and execute methods.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+tests:
+  - name: Test Placeholder Step
+    steps:
+      - name: Do Nothing Step
+        action:
+          no_op: {}
 ```

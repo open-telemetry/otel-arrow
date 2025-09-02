@@ -24,6 +24,7 @@ components:
         command: python -m ./load_generator/loadgen.py --serve
         environment: {}
 """
+
 import os
 import shlex
 import subprocess
@@ -99,9 +100,7 @@ components:
         """Initialize the strategy and specify default hooks to register."""
         self.config = config
         self.default_component_hooks = {
-            HookableComponentPhase.POST_DEPLOY: [
-                EnsureProcess(EnsureProcessConfig())
-            ]
+            HookableComponentPhase.POST_DEPLOY: [EnsureProcess(EnsureProcessConfig())]
         }
         self.stop_event = None
 
