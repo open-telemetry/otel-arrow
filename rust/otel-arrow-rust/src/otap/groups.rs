@@ -3,13 +3,14 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
     ops::{Add, Range, RangeFrom, RangeInclusive},
     sync::Arc,
 };
 
+use ahash::AHashSet;
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, FixedSizeBinaryArray,
@@ -1219,7 +1220,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
     // `dict_fields` contains state needed to compute the size of the dictionary keys in the
     // unified record batch. This is so we don't overflow the dictionary when combining batches
-    let mut dict_fields: BTreeMap<String, UnifiedDictionaryKeySelector> = BTreeMap::new();
+    let mut dict_fields: BTreeMap<String, UnifiedDictionaryTypeSelector> = BTreeMap::new();
 
     // map of struct columns where, keyed by the struct field name, and the values are a tuple
     // the first element in the tuple is the struct field definition, and the second element is
@@ -1259,34 +1260,26 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             let _ = all_batch_indices.insert(batch_index);
         });
 
-        // this will be used to initialize the dictionary key selector. There are certain
-        // optimizations that can be made when choosing the correct key sizes using this value
-        let total_batch_size = select(batches, payload_type_index)
-            .map(|rb| rb.num_rows())
-            .sum();
-
         // In the three following loops it first discovers all struct and dictionary fields, then
         // counts the dictionary values, and finally unifies the columns. There's a couple reasons
         // why we do this in three separate loops.
         //
-        // First, discovering all the dictionaries (including dictionaries nested within structs),
-        // allows us to infer the smallest allowed key type for the column. Knowing this up-front
-        // can make deciding the actual key type to use for the dictionary faster (see
-        // [`UnifiedDictionaryKeySelector::choose_key_type`] for details).
+        // First, we need to discover all the dictionary columns and struct columns (first loop).
+        // Then, we  collect references to the columns for each batch in into
+        // `UnifiedDictionaryTypeSelector` (in the second loop). This gives the struct enough
+        // context to make a determination about the key type. Finally, we convert the columns to
+        // the correct type in the third loop.
         //
-        // Also, we need to look at all the batches to count the key type (in the second loop),
-        // before we can convert the columns (in the third loop), so we know what dictionary to key
-        // type will fit all the different values when we combine the batches.
         for batches in batches.iter() {
             if let Some(rb) = &batches[payload_type_index] {
-                try_discover_dictionaries(rb, total_batch_size, &mut dict_fields)?;
-                try_discover_structs(rb, total_batch_size, &mut struct_fields)?;
+                try_discover_dictionaries(rb, &mut dict_fields)?;
+                try_discover_structs(rb, &mut struct_fields)?;
             }
         }
         for batches in batches.iter() {
             if let Some(rb) = &batches[payload_type_index] {
-                try_count_dictionary_values(rb, &mut dict_fields)?;
-                try_count_struct_dictionary_values(rb, &mut struct_fields)?;
+                try_visit_dictionary_values(rb, &mut dict_fields)?;
+                try_visit_struct_dictionary_values(rb, &mut struct_fields)?;
             }
         }
         for batches in batches.iter_mut() {
@@ -1344,91 +1337,42 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
 struct StructFieldToUnify {
     field: Field,
-    dictionary: Option<UnifiedDictionaryKeySelector>,
+    dictionary: Option<UnifiedDictionaryTypeSelector>,
+}
+
+#[derive(Clone)]
+enum UnifiedDictionaryType {
+    Dictionary(DataType),
+    Native,
 }
 
 /// This will be used to inspect the values in some dictionary column to determine what key type
-/// should be used.
+/// should be used, or if it should be the native type (no dictionary encoding).
 ///
 /// To do this, it should first visit all the dictionary data types, for the column in every batch
 /// whose schema is being unified, so it can decide what is the smallest key type allowed for the
-/// column. To do this, call [`Self::visit_key_data_type`].
+/// column. To do this, call [`Self::visit_dict_array`].
 ///
 /// Next, it should visit the values, where it will try to calculate the total cardinality across
 /// the combined columns until it figures out what key type will fit all the values. To invoke this
-/// use the [`Self::visit_dictionary_values`].
-struct UnifiedDictionaryKeySelector {
-    smallest_key_data_type: DataType,
+/// use the [`Self::select_column_data_type`].
+struct UnifiedDictionaryTypeSelector {
     total_batch_size: usize,
-    total_values_visited: usize,
-    state: ahash::RandomState,
-    dedup: BTreeSet<u64>,
+    values_arrays: Vec<ArrayRef>,
+    smallest_key_type: DataType,
 }
 
-impl UnifiedDictionaryKeySelector {
-    fn new(total_batch_size: usize, key_data_type: DataType) -> Self {
+impl UnifiedDictionaryTypeSelector {
+    fn new() -> Self {
         Self {
-            total_batch_size,
-            smallest_key_data_type: key_data_type,
-            total_values_visited: 0,
-            state: Default::default(),
-            dedup: BTreeSet::new(),
+            total_batch_size: 0,
+            values_arrays: Vec::new(),
+            smallest_key_type: DataType::UInt16,
         }
     }
 
-    /// Returns boolean of whether the type of key to use for this dictionary column can be known
-    /// based on the available data.
-    ///
-    /// In the worst case scenario, this needs to look at every value in the dict column of all
-    /// record batches whose schema are being unified. However, if certain conditions are met then
-    /// we can make an early decision and avoid looking at so many values
-    fn key_selected(&self) -> bool {
-        // if this is true, we know the values can fit into whatever size dictionary we want
-        if self.total_batch_size <= u8::MAX as usize {
-            return true;
-        }
-
-        // we know the values can fit into a dict keyed by u16 because of the batch size, but
-        // we also know there's no chance they'll fit into a u8, so the key decision is made
-        if self.total_batch_size <= u16::MAX as usize && self.dedup.len() > u8::MAX as usize {
-            return true;
-        }
-
-        // if this is true, we know we need to use the native array type
-        if self.dedup.len() > u16::MAX as usize {
-            return true;
-        }
-
-        // calculate the max cardinality based on the total batch size and the number of duplicate
-        // values we've visited
-        let duplicates_visited = self.total_values_visited - self.dedup.len();
-        let possible_max_cardinality = self.total_batch_size - duplicates_visited;
-
-        // if we can determine that the values would fit in the desired key size, we can return early
-        if possible_max_cardinality < u16::MAX as usize
-            && self.smallest_key_data_type == DataType::UInt16
-        {
-            return true;
-        }
-
-        if possible_max_cardinality <= u8::MAX as usize {
-            return true;
-        }
-
-        false
-    }
-
-    fn visit_key_data_type(&mut self, key_data_type: &DataType) {
-        if key_data_type == &DataType::UInt8 {
-            self.smallest_key_data_type = DataType::UInt8
-        }
-    }
-
-    fn visit_dictionary_values(&mut self, maybe_dict_column_arr: &ArrayRef) -> Result<()> {
-        if self.key_selected() {
-            // we've already seen enough values that we can decide the dictionary key size
-            return Ok(());
-        }
+    fn visit_dict_array(&mut self, maybe_dict_column_arr: &ArrayRef) -> Result<()> {
+        self.total_batch_size += maybe_dict_column_arr.len();
 
         // access the array containing the dictionary values ...
         let values_arr = match maybe_dict_column_arr.data_type() {
@@ -1438,6 +1382,7 @@ impl UnifiedDictionaryKeySelector {
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
                         .expect("can cast array to data type");
+                    self.smallest_key_type = DataType::UInt8;
                     dict_col.values()
                 }
                 DataType::UInt16 => {
@@ -1461,196 +1406,166 @@ impl UnifiedDictionaryKeySelector {
             }
         };
 
-        // visit the dictionary values until we decide on the key type ..
-        match values_arr.data_type() {
-            DataType::Binary => {
-                let bin_array = values_arr
-                    .as_any()
-                    .downcast_ref::<BinaryArray>()
-                    .expect("can cast array to data type");
-                self.visit_bytes_dict_values(bin_array);
-            }
-            DataType::Utf8 => {
-                let str_array = values_arr
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("can cast array to data type");
-                self.visit_bytes_dict_values(str_array);
-            }
-            DataType::FixedSizeBinary(_) => {
-                let fsb_array = values_arr
-                    .as_any()
-                    .downcast_ref::<FixedSizeBinaryArray>()
-                    .expect("can cast array to data type");
-                self.visit_fsb_dict_values(fsb_array);
-            }
-            DataType::UInt16 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<UInt16Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::UInt32 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<UInt32Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::UInt64 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<UInt64Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::Int16 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int64Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::Int32 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int32Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::Int64 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int64Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-            DataType::Float32 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Float32Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-
-            DataType::Float64 => {
-                let prim_array = values_arr
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Float64Type>>()
-                    .expect("can cast array to data type");
-                self.visit_primitive_values(prim_array);
-            }
-
-            value_type => {
-                return Err(error::UnsupportedDictionaryValueTypeSnafu {
-                    expect_oneof: vec![
-                        DataType::Binary,
-                        DataType::Utf8,
-                        DataType::FixedSizeBinary(16),
-                        DataType::FixedSizeBinary(8),
-                        DataType::UInt16,
-                        DataType::UInt32,
-                        DataType::UInt64,
-                        DataType::Int16,
-                        DataType::Int32,
-                        DataType::Int64,
-                        DataType::Float32,
-                        DataType::Float64,
-                    ],
-                    actual: value_type.clone(),
-                }
-                .build());
-            }
-        };
+        self.values_arrays.push(values_arr.clone());
 
         Ok(())
     }
 
-    fn visit_bytes_dict_values<T: ByteArrayType>(&mut self, byte_array: &GenericByteArray<T>) {
-        for value_native in byte_array.iter().flatten() {
-            let value_bytes: &[u8] = value_native.as_ref();
-            let hash = self.state.hash_one(value_bytes);
-            _ = self.dedup.insert(hash);
-            self.total_values_visited += 1;
-            if self.key_selected() {
-                break;
+    fn select_column_data_type(&self) -> Result<UnifiedDictionaryType> {
+        // check early termination conditions
+        if self.total_batch_size <= u8::MAX as usize {
+            return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+        }
+
+        if self.smallest_key_type == DataType::UInt16 && self.total_batch_size <= u16::MAX as usize
+        {
+            return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+        }
+
+        // iterate the values until we've either visited them all, or at least enough of them that
+        // we can decide what the datatype should be.
+        let mut total_values_visited = 0;
+        let mut dedup: AHashSet<&[u8]> = AHashSet::with_capacity(u16::MAX as usize); // TODO, is this too big?
+        for values_arr in &self.values_arrays {
+            for i in 0..values_arr.len() {
+                let value = access_array_bytes(values_arr, i)?;
+                _ = match value {
+                    Some(value) => dedup.insert(value),
+                    None => continue,
+                };
+
+                // check early termination conditions
+                if dedup.len() > u16::MAX as usize {
+                    return Ok(UnifiedDictionaryType::Native);
+                }
+
+                total_values_visited += 1;
+                let duplicates_visited = total_values_visited - dedup.len();
+                let possible_max_cardinality = self.total_batch_size - duplicates_visited;
+
+                // if we can determine that the values would fit in the desired key size, we can return early
+                if possible_max_cardinality < u16::MAX as usize
+                    && self.smallest_key_type == DataType::UInt16
+                {
+                    return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+                }
+
+                if possible_max_cardinality <= u8::MAX as usize {
+                    return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+                }
             }
         }
-    }
 
-    fn visit_fsb_dict_values(&mut self, fsb_array: &FixedSizeBinaryArray) {
-        for value_bytes in fsb_array.iter().flatten() {
-            let hash = self.state.hash_one(value_bytes);
-            _ = self.dedup.insert(hash);
-            self.total_values_visited += 1;
-            if self.key_selected() {
-                break;
+        // we've now visited all the values, so make the determination of key type based on the
+        // total cardinality
+        Ok(if dedup.len() <= u8::MAX as usize {
+            UnifiedDictionaryType::Dictionary(self.smallest_key_type.clone())
+        } else if dedup.len() <= u16::MAX as usize {
+            UnifiedDictionaryType::Dictionary(DataType::UInt16)
+        } else {
+            UnifiedDictionaryType::Native
+        })
+    }
+}
+
+macro_rules! visit_prim_arm {
+    ($ty:ty, $values_arr:ident, $val:expr) => {{
+        let prim_array = $values_arr
+            .as_any()
+            .downcast_ref::<PrimitiveArray<$ty>>()
+            .expect("can cast array to data type");
+        Ok(access_primitive_dict_values(prim_array, $val))
+    }};
+}
+
+fn access_array_bytes(array: &ArrayRef, index: usize) -> Result<Option<&[u8]>> {
+    match array.data_type() {
+        DataType::Utf8 => {
+            let str_array = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("can cast array to data type");
+            Ok(access_bytes_dict_values(str_array, index))
+        }
+        DataType::Binary => {
+            let bin_array = array
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .expect("can cast array to data type");
+            Ok(access_bytes_dict_values(bin_array, index))
+        }
+        DataType::FixedSizeBinary(_) => {
+            let fsb_array = array
+                .as_any()
+                .downcast_ref::<FixedSizeBinaryArray>()
+                .expect("can cast array to data type");
+            Ok(access_fsb_dict_values(fsb_array, index))
+        }
+        DataType::UInt16 => visit_prim_arm!(UInt16Type, array, index),
+        DataType::UInt32 => visit_prim_arm!(UInt32Type, array, index),
+        DataType::UInt64 => visit_prim_arm!(UInt64Type, array, index),
+        DataType::Int32 => visit_prim_arm!(Int32Type, array, index),
+        DataType::Int64 => visit_prim_arm!(Int64Type, array, index),
+        DataType::Float32 => visit_prim_arm!(Float32Type, array, index),
+        DataType::Float64 => visit_prim_arm!(Float64Type, array, index),
+        value_type => {
+            return Err(error::UnsupportedDictionaryValueTypeSnafu {
+                expect_oneof: vec![
+                    DataType::Binary,
+                    DataType::Utf8,
+                    DataType::FixedSizeBinary(16),
+                    DataType::FixedSizeBinary(8),
+                    DataType::UInt16,
+                    DataType::UInt32,
+                    DataType::UInt64,
+                    DataType::Int32,
+                    DataType::Int64,
+                    DataType::Float32,
+                    DataType::Float64,
+                ],
+                actual: value_type.clone(),
             }
+            .build());
         }
     }
+}
 
-    fn visit_primitive_values<T: ArrowPrimitiveType>(
-        &mut self,
-        primitive_array: &PrimitiveArray<T>,
-    ) {
+fn access_bytes_dict_values<T: ByteArrayType>(
+    byte_array: &GenericByteArray<T>,
+    index: usize,
+) -> Option<&[u8]> {
+    byte_array
+        .is_valid(index)
+        .then(|| byte_array.value(index).as_ref())
+}
+
+fn access_fsb_dict_values(fsb_array: &FixedSizeBinaryArray, index: usize) -> Option<&[u8]> {
+    fsb_array.is_valid(index).then(|| fsb_array.value(index))
+}
+
+fn access_primitive_dict_values<T: ArrowPrimitiveType>(
+    array: &PrimitiveArray<T>,
+    index: usize,
+) -> Option<&[u8]> {
+    array.is_valid(index).then(|| {
         let size = size_of::<T::Native>();
-        let values_buffer = primitive_array.values().inner();
-        for i in 0..primitive_array.len() {
-            if primitive_array.is_null(i) {
-                continue;
-            }
-
-            let offset = i * size;
-            let value_bytes = &values_buffer[offset..offset + size];
-            let hash = self.state.hash_one(value_bytes);
-            _ = self.dedup.insert(hash);
-            self.total_values_visited += 1;
-            if self.key_selected() {
-                break;
-            }
-        }
-    }
-
-    /// Choose the key type to use for the dictionary. If it returns `None` it means
-    /// use the native array type (not a dictionary array)
-    fn choose_key_type(&self) -> Option<DataType> {
-        if self.dedup.len() <= u8::MAX as usize {
-            return Some(self.smallest_key_data_type.clone());
-        }
-
-        if self.dedup.len() <= u16::MAX as usize {
-            return Some(DataType::UInt16);
-        }
-
-        None
-    }
+        let values_buffer = array.values().inner();
+        let offset = index * size;
+        &values_buffer[offset..offset + size]
+    })
 }
 
 fn try_discover_dictionaries(
     record_batch: &RecordBatch,
-    total_batch_size: usize,
-    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryKeySelector>,
+    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryTypeSelector>,
 ) -> Result<()> {
     let schema = record_batch.schema_ref();
 
     for field in schema.fields() {
-        if let DataType::Dictionary(dict_key_type, _) = field.data_type() {
-            let field_name = field.name();
-            if dictionary_fields.contains_key(field.name()) {
-                dictionary_fields
-                    .get_mut(field.name())
-                    // safety: we've just checked that the ma contains the key
-                    .expect("can access dict field")
-                    .visit_key_data_type(dict_key_type.as_ref());
-            } else {
-                _ = dictionary_fields.insert(
-                    field_name.clone(),
-                    UnifiedDictionaryKeySelector::new(
-                        total_batch_size,
-                        dict_key_type.as_ref().clone(),
-                    ),
-                );
+        if let DataType::Dictionary(_, _) = field.data_type() {
+            if !dictionary_fields.contains_key(field.name()) {
+                _ = dictionary_fields
+                    .insert(field.name().clone(), UnifiedDictionaryTypeSelector::new());
             }
         }
     }
@@ -1658,13 +1573,13 @@ fn try_discover_dictionaries(
     Ok(())
 }
 
-fn try_count_dictionary_values(
+fn try_visit_dictionary_values(
     record_batch: &RecordBatch,
-    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryKeySelector>,
+    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryTypeSelector>,
 ) -> Result<()> {
     for (field_name, dict_key_selector) in dictionary_fields.iter_mut() {
         if let Some(column) = record_batch.column_by_name(field_name) {
-            dict_key_selector.visit_dictionary_values(column)?;
+            dict_key_selector.visit_dict_array(column)?;
         }
     }
 
@@ -1673,13 +1588,13 @@ fn try_count_dictionary_values(
 
 fn try_unify_dictionaries(
     record_batch: &RecordBatch,
-    dictionary_fields: &BTreeMap<String, UnifiedDictionaryKeySelector>,
+    dictionary_fields: &BTreeMap<String, UnifiedDictionaryTypeSelector>,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema_ref();
     let mut columns = record_batch.columns().to_vec();
     let mut fields = schema.fields.to_vec();
 
-    for (field_name, dict_key_selector) in dictionary_fields.iter() {
+    for (field_name, dict_type_selector) in dictionary_fields.iter() {
         if let Ok(field_index) = schema.index_of(field_name) {
             let column = &columns[field_index];
             let values_type = match column.data_type() {
@@ -1690,12 +1605,12 @@ fn try_unify_dictionaries(
             // safety: casting the dictionary keys should be infallible here as we're
             // either casting to a native dict (which should be infallible), or we're
             // casting the keys to a size we've calculated will fit
-            let new_column = match dict_key_selector.choose_key_type() {
-                Some(key_type) => cast(
+            let new_column = match dict_type_selector.select_column_data_type()? {
+                UnifiedDictionaryType::Dictionary(key_type) => cast(
                     column,
                     &DataType::Dictionary(Box::new(key_type), Box::new(values_type)),
                 ),
-                None => cast(column, &values_type),
+                UnifiedDictionaryType::Native => cast(column, &values_type),
             }
             .expect("can cast dictionary column");
 
@@ -1716,7 +1631,6 @@ fn try_unify_dictionaries(
 
 fn try_discover_structs(
     record_batch: &RecordBatch,
-    total_batch_size: usize,
     all_struct_fields: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<()> {
     for rb_field in record_batch.schema_ref().fields() {
@@ -1736,15 +1650,10 @@ fn try_discover_structs(
 
             for struct_field in struct_fields {
                 if all_this_struct_fields.get(struct_field.name()).is_none() {
-                    let dict_key_selector = match struct_field.data_type() {
-                        DataType::Dictionary(dict_key_type, _) => {
-                            Some(UnifiedDictionaryKeySelector::new(
-                                total_batch_size,
-                                dict_key_type.as_ref().clone(),
-                            ))
-                        }
-                        _ => None,
-                    };
+                    let dict_key_selector =
+                        matches!(struct_field.data_type(), DataType::Dictionary(_, _))
+                            .then(|| UnifiedDictionaryTypeSelector::new());
+
                     _ = all_this_struct_fields.insert(
                         struct_field.name().clone(),
                         StructFieldToUnify {
@@ -1760,7 +1669,7 @@ fn try_discover_structs(
     Ok(())
 }
 
-fn try_count_struct_dictionary_values(
+fn try_visit_struct_dictionary_values(
     record_batch: &RecordBatch,
     all_struct_fields_defs: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<()> {
@@ -1788,7 +1697,7 @@ fn try_count_struct_dictionary_values(
             };
 
             if let Some(column) = struct_arr.column_by_name(struct_field_name) {
-                dict_key_selector.visit_dictionary_values(column)?;
+                dict_key_selector.visit_dict_array(column)?;
             }
         }
     }
@@ -1881,11 +1790,11 @@ fn try_unify_struct_fields(
                     DataType::Dictionary(_, v) => v.as_ref().clone(),
                     native => native.clone(),
                 };
-                match dict_key_selector.choose_key_type() {
-                    Some(key_type) => {
+                match dict_key_selector.select_column_data_type()? {
+                    UnifiedDictionaryType::Dictionary(key_type) => {
                         DataType::Dictionary(Box::new(key_type), Box::new(dict_values_type))
                     }
-                    None => dict_values_type,
+                    UnifiedDictionaryType::Native => dict_values_type,
                 }
             }
 
