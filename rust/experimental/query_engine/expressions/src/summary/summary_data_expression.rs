@@ -53,6 +53,25 @@ impl SummaryDataExpression {
     pub fn push_post_expression(&mut self, expression: DataExpression) {
         self.post_expressions.push(expression);
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        for (_, group_by) in &mut self.group_by_expressions {
+            group_by.try_resolve_static(scope)?;
+        }
+
+        for (_, agg) in &mut self.aggregation_expressions {
+            agg.try_fold(scope)?;
+        }
+
+        for e in &mut self.post_expressions {
+            e.try_fold(scope)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Expression for SummaryDataExpression {
@@ -91,6 +110,17 @@ impl AggregationExpression {
 
     pub fn get_value_expression(&self) -> &Option<ScalarExpression> {
         &self.value_expression
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        if let Some(v) = &mut self.value_expression {
+            v.try_resolve_static(scope)?;
+        }
+
+        Ok(())
     }
 }
 

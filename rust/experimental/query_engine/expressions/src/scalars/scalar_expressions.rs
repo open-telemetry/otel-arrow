@@ -150,15 +150,15 @@ impl ScalarExpression {
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
             ScalarExpression::Source(s) => {
-                s.accessor.try_fold(scope)?;
+                s.try_fold(scope)?;
                 Ok(None)
             }
             ScalarExpression::Attached(a) => {
-                a.accessor.try_fold(scope)?;
+                a.try_fold(scope)?;
                 Ok(None)
             }
             ScalarExpression::Variable(v) => {
-                v.accessor.try_fold(scope)?;
+                v.try_fold(scope)?;
                 Ok(None)
             }
             ScalarExpression::Static(_) => {
@@ -274,6 +274,13 @@ impl SourceScalarExpression {
     pub fn get_value_type(&self) -> Option<ValueType> {
         self.value_type.clone()
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
+    }
 }
 
 impl Expression for SourceScalarExpression {
@@ -313,6 +320,13 @@ impl AttachedScalarExpression {
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
+    }
 }
 
 impl Expression for AttachedScalarExpression {
@@ -351,6 +365,13 @@ impl VariableScalarExpression {
 
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
     }
 }
 

@@ -21,6 +21,20 @@ pub enum TransformExpression {
     RemoveMapKeys(RemoveMapKeysTransformExpression),
 }
 
+impl TransformExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            TransformExpression::Set(s) => s.try_fold(scope),
+            TransformExpression::Remove(r) => r.try_fold(scope),
+            TransformExpression::ReduceMap(r) => r.try_fold(scope),
+            TransformExpression::RemoveMapKeys(r) => r.try_fold(scope),
+        }
+    }
+}
+
 impl Expression for TransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
@@ -68,6 +82,16 @@ impl SetTransformExpression {
     pub fn get_destination(&self) -> &MutableValueExpression {
         &self.destination
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.source.try_resolve_static(scope)?;
+        self.destination.try_fold(scope)?;
+
+        Ok(())
+    }
 }
 
 impl Expression for SetTransformExpression {
@@ -100,6 +124,15 @@ impl RemoveTransformExpression {
     pub fn get_target(&self) -> &MutableValueExpression {
         &self.target
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.target.try_fold(scope)?;
+
+        Ok(())
+    }
 }
 
 impl Expression for RemoveTransformExpression {
@@ -119,6 +152,18 @@ pub enum RemoveMapKeysTransformExpression {
 
     /// A map key transformation providing the top-level keys to retain. All other data is removed.
     Retain(MapKeyListExpression),
+}
+
+impl RemoveMapKeysTransformExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(m)
+            | RemoveMapKeysTransformExpression::Retain(m) => m.try_fold(scope),
+        }
+    }
 }
 
 impl Expression for RemoveMapKeysTransformExpression {
@@ -164,6 +209,19 @@ impl MapKeyListExpression {
     pub fn get_keys(&self) -> &[ScalarExpression] {
         &self.keys
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.target.try_fold(scope)?;
+
+        for k in &mut self.keys {
+            k.try_resolve_static(scope)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Expression for MapKeyListExpression {
@@ -183,6 +241,19 @@ pub enum ReduceMapTransformExpression {
 
     /// A map reduction providing the data to retain. All other data is removed.
     Retain(MapSelectionExpression),
+}
+
+impl ReduceMapTransformExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            ReduceMapTransformExpression::Remove(m) | ReduceMapTransformExpression::Retain(m) => {
+                m.try_fold(scope)
+            }
+        }
+    }
 }
 
 impl Expression for ReduceMapTransformExpression {
@@ -211,6 +282,24 @@ pub enum MapSelector {
     /// Note: The [`ValueAccessor`] could refer to top-level keys or nested
     /// elements.
     ValueAccessor(ValueAccessor),
+}
+
+impl MapSelector {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            MapSelector::KeyOrKeyPattern(k) => {
+                k.try_resolve_static(scope)?;
+                Ok(())
+            }
+            MapSelector::ValueAccessor(v) => {
+                v.try_fold(scope)?;
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +368,19 @@ impl MapSelectionExpression {
             .push(MapSelector::ValueAccessor(value_accessor));
 
         true
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.target.try_fold(scope)?;
+
+        for s in &mut self.selectors {
+            s.try_fold(scope)?;
+        }
+
+        Ok(())
     }
 }
 

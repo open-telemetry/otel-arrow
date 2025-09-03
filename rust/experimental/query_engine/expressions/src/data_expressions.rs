@@ -1,9 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{
-    Expression, LogicalExpression, QueryLocation, SummaryDataExpression, TransformExpression,
-};
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataExpression {
@@ -15,6 +13,19 @@ pub enum DataExpression {
 
     /// Transform data expression.
     Transform(TransformExpression),
+}
+
+impl DataExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            DataExpression::Discard(d) => d.try_fold(scope),
+            DataExpression::Summary(s) => s.try_fold(scope),
+            DataExpression::Transform(t) => t.try_fold(scope),
+        }
+    }
 }
 
 impl Expression for DataExpression {
@@ -57,6 +68,22 @@ impl DiscardDataExpression {
 
     pub fn get_predicate(&self) -> Option<&LogicalExpression> {
         self.predicate.as_ref()
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        if let Some(p) = &mut self.predicate
+            && let Some(b) = p.try_resolve_static(scope)?
+            && b
+        {
+            // Note: If predicate evaluates to static true we can clear it as
+            // everything will be discarded by default.
+            self.predicate = None
+        }
+
+        Ok(())
     }
 }
 
