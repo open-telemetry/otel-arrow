@@ -4,39 +4,7 @@
 //! Implementation of the pipeline data that is passed between pipeline components.
 //!
 //! Internally, the data can be represented in the following formats:
-//! - OTLP Bytes - contain the OTLP se    /// Number of items
-    fn num_items(&self) -> usize {
-        match self {
-            Self::ExportLogsRequest(bytes) => {
-                let logs_data_view = RawLogsData::new(bytes);
-                logs_data_view
-                    .resources()
-                    .map(|resource_logs| {
-                        resource_logs
-                            .scopes()
-                            .map(|scope_logs| scope_logs.log_records().count())
-                            .sum::<usize>()
-                    })
-                    .sum()
-            }
-            Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTraceData::new(bytes);
-                traces_data_view
-                    .resources()
-                    .map(|resource_spans| {
-                        resource_spans
-                            .scopes()
-                            .map(|scope_spans| scope_spans.spans().count())
-                            .sum::<usize>()
-                    })
-                    .sum()
-            }
-            Self::ExportMetricsRequest(bytes) => {
-                // Metrics view is not implemented yet
-                panic!("ToDo")
-            }
-        }
-    }sages serialized as protobuf
+//! - OTLP Bytes - contain the OTLP service request messages serialized as protobuf
 //! - OTAP Arrow Bytes - the data is contained in `BatchArrowRecords` type which
 //!   contains the Arrow batches for each payload, serialized as Arrow IPC. This type is
 //!   what we'd receive from the OTAP GRPC service.
@@ -284,7 +252,7 @@ impl OtapPdataHelpers for OtapArrowRecords {
                     .map_or(0, |batch| batch.num_rows())
             }
             Self::Traces(_) => {
-                self
+		self
                     .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
                     .map_or(0, |batch| batch.num_rows())
             }
@@ -310,27 +278,11 @@ impl OtapPdataHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes);
-                logs_data_view
-                    .resources()
-                    .map(|resource_logs| {
-                        resource_logs
-                            .scopes()
-                            .map(|scope_logs| scope_logs.log_records().count())
-                            .sum::<usize>()
-                    })
-                    .sum()
+                // todo @@@
             }
             Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTraceData::new(bytes);
-                traces_data_view
-                    .resources()
-                    .map(|resource_spans| {
-                        resource_spans
-                            .scopes()
-                            .map(|scope_spans| scope_spans.spans().count())
-                            .sum::<usize>()
-                    })
-                    .sum()
+                let traces_data_view = RawTracesData::new(bytes);
+                // todo @@@
             }
             Self::ExportMetricsRequest(bytes) => {
                 // Metrics view is not implemented yet
@@ -350,15 +302,7 @@ impl OtapPdataHelpers for OtapArrowBytes {
     }
 
     fn num_items(&self) -> usize {
-        // Convert to OtapArrowRecords first, then count items
-        // This follows the same pattern as used in retry_processor tests
-        match self.clone().try_into() {
-            Ok(records) => {
-                let records: OtapArrowRecords = records;
-                records.num_items()
-            }
-            Err(_) => 0, // Return 0 if conversion fails
-        }
+        // @@@
     }
 }
 
