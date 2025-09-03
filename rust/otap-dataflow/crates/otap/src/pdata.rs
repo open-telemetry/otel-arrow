@@ -399,7 +399,7 @@ impl OtapPayloadExt for OtlpProtoBytes {
                     .flat_map(|ss| ss.spans())
                     .count()
             }
-            Self::ExportMetricsRequest(bytes) => {
+            Self::ExportMetricsRequest(_bytes) => {
                 // Metrics view is not implemented yet
                 panic!("ToDo")
             }
