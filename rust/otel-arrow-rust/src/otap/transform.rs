@@ -13,7 +13,6 @@ use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffe
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
-use arrow::error::ArrowError;
 use arrow::row::{RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 
@@ -1468,9 +1467,7 @@ fn take_null_buffer_ranges(
 
 /// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
 /// sort or single column sort
-pub(crate) fn sort_to_indices(
-    sort_columns: &[SortColumn],
-) -> std::result::Result<UInt32Array, ArrowError> {
+pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Result<UInt32Array> {
     if sort_columns.len() == 1 {
         arrow::compute::sort_to_indices(&sort_columns[0].values, sort_columns[0].options, None)
     } else {
