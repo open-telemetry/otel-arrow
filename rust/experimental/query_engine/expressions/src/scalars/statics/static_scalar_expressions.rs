@@ -16,6 +16,9 @@ pub enum StaticScalarExpression {
     /// Resolve a static bool value provided directly in a query.
     Boolean(BooleanScalarExpression),
 
+    /// Resolve a static value provided by a constant directly in a query.
+    Constant(CopyConstantScalarExpression),
+
     /// Resolve a static DateTime value provided directly in a query.
     DateTime(DateTimeScalarExpression),
 
@@ -42,32 +45,29 @@ pub enum StaticScalarExpression {
 }
 
 impl StaticScalarExpression {
-    pub(crate) fn try_fold(&self) -> Option<StaticScalarExpression> {
+    pub(crate) fn foldable(&self) -> bool {
         // Note: The goal here is to diferentiate which statics can be
         // folded/copied in the expression tree and which ones should always be
         // referenced.
         match self {
-            StaticScalarExpression::Array(_) => None,
-            StaticScalarExpression::Boolean(b) => Some(StaticScalarExpression::Boolean(b.clone())),
-            StaticScalarExpression::DateTime(d) => {
-                Some(StaticScalarExpression::DateTime(d.clone()))
-            }
-            StaticScalarExpression::Double(d) => Some(StaticScalarExpression::Double(d.clone())),
-            StaticScalarExpression::Integer(i) => Some(StaticScalarExpression::Integer(i.clone())),
-            StaticScalarExpression::Map(_) => None,
-            StaticScalarExpression::Null(n) => Some(StaticScalarExpression::Null(n.clone())),
-            StaticScalarExpression::Regex(_) => None,
-            StaticScalarExpression::String(s) => {
-                let value = &s.value;
-                if value.len() <= 32 {
-                    Some(StaticScalarExpression::String(s.clone()))
-                } else {
-                    None
-                }
-            }
-            StaticScalarExpression::TimeSpan(t) => {
-                Some(StaticScalarExpression::TimeSpan(t.clone()))
-            }
+            StaticScalarExpression::Array(_) => false,
+            StaticScalarExpression::Boolean(_) => true,
+            StaticScalarExpression::Constant(_) => true,
+            StaticScalarExpression::DateTime(_) => true,
+            StaticScalarExpression::Double(_) => true,
+            StaticScalarExpression::Integer(_) => true,
+            StaticScalarExpression::Map(_) => false,
+            StaticScalarExpression::Null(_) => true,
+            StaticScalarExpression::Regex(_) => false,
+            StaticScalarExpression::String(s) => s.value.len() <= 32,
+            StaticScalarExpression::TimeSpan(_) => true,
+        }
+    }
+
+    pub(crate) fn try_fold(&self) -> Option<StaticScalarExpression> {
+        match self.foldable() {
+            true => Some(self.clone()),
+            false => None,
         }
     }
 
@@ -147,6 +147,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => a.get_query_location(),
             StaticScalarExpression::Boolean(b) => b.get_query_location(),
+            StaticScalarExpression::Constant(c) => c.get_query_location(),
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
@@ -162,6 +163,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(_) => "StaticScalar(Array)",
             StaticScalarExpression::Boolean(_) => "StaticScalar(Boolean)",
+            StaticScalarExpression::Constant(_) => "StaticScalar(Constant)",
             StaticScalarExpression::DateTime(_) => "StaticScalar(DateTime)",
             StaticScalarExpression::Double(_) => "StaticScalar(Double)",
             StaticScalarExpression::Integer(_) => "StaticScalar(Integer)",
@@ -179,6 +181,7 @@ impl AsStaticValue for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
+            StaticScalarExpression::Constant(c) => c.get_value().to_static_value(),
             StaticScalarExpression::DateTime(d) => StaticValue::DateTime(d),
             StaticScalarExpression::Double(d) => StaticValue::Double(d),
             StaticScalarExpression::Integer(i) => StaticValue::Integer(i),
@@ -219,6 +222,50 @@ impl Expression for BooleanScalarExpression {
 impl BooleanValue for BooleanScalarExpression {
     fn get_value(&self) -> bool {
         self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyConstantScalarExpression {
+    query_location: QueryLocation,
+    constant_id: usize,
+    value: Box<StaticScalarExpression>,
+}
+
+impl CopyConstantScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        constant_id: usize,
+        value: StaticScalarExpression,
+    ) -> CopyConstantScalarExpression {
+        // Note: It doesn't make sense for a constant to point to another
+        // constant so we validate this but if it does happen for some reason it
+        // shouldn't cause any problems.
+        debug_assert!(!matches!(value, StaticScalarExpression::Constant(_)));
+
+        Self {
+            query_location,
+            constant_id,
+            value: value.into(),
+        }
+    }
+
+    pub fn get_constant_id(&self) -> usize {
+        self.constant_id
+    }
+
+    pub fn get_value(&self) -> &StaticScalarExpression {
+        &self.value
+    }
+}
+
+impl Expression for CopyConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CopyConstantScalarExpression"
     }
 }
 

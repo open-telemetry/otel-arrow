@@ -155,7 +155,7 @@ impl CombineScalarExpression {
                 (values, len)
             }
             Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v)))
-            | Some(ResolvedStaticScalarExpression::FoldedConstant(
+            | Some(ResolvedStaticScalarExpression::FoldEligibleReference(
                 StaticScalarExpression::Array(v),
             )) => {
                 let value_expressions = v.get_values();

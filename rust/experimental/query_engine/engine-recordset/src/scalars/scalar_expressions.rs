@@ -125,56 +125,31 @@ where
 
             Ok(ResolvedValue::Value(value))
         }
-        ScalarExpression::Constant(c) => match c {
-            ConstantScalarExpression::Reference(r) => {
-                let constant_id = r.get_constant_id();
+        ScalarExpression::Constant(c) => {
+            let constant_id = c.get_constant_id();
 
-                let constant = execution_context
-                    .get_pipeline()
-                    .get_constant(constant_id)
-                    .unwrap_or_else(|| {
-                        panic!("Constant for id '{constant_id}' was not found on pipeline")
-                    });
+            let constant = execution_context
+                .get_pipeline()
+                .get_constant(constant_id)
+                .unwrap_or_else(|| {
+                    panic!("Constant for id '{constant_id}' was not found on pipeline")
+                });
 
-                let value = constant.to_value();
+            let value = constant.to_value();
 
-                if execution_context
-                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
-                {
-                    let (line, column) =
-                        constant.get_query_location().get_line_and_column_numbers();
-                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                            RecordSetEngineDiagnosticLevel::Verbose,
-                            scalar_expression,
-                            format!("Resolved constant with id '{constant_id}' on line {line} at column {column} as: {value}"),
-                        ));
-                }
-
-                Ok(ResolvedValue::Value(value))
+            if execution_context
+                .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
+            {
+                let (line, column) = constant.get_query_location().get_line_and_column_numbers();
+                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        format!("Resolved constant with id '{constant_id}' on line {line} at column {column} as: {value}"),
+                    ));
             }
-            ConstantScalarExpression::Copy(c) => {
-                let constant_id = c.get_constant_id();
 
-                let constant_copy = c.get_value();
-
-                let value = constant_copy.to_value();
-
-                if execution_context
-                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
-                {
-                    let (line, column) = constant_copy
-                        .get_query_location()
-                        .get_line_and_column_numbers();
-                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                            RecordSetEngineDiagnosticLevel::Verbose,
-                            scalar_expression,
-                            format!("Resolved constant with id '{constant_id}' from copy of value on line {line} at column {column} as: {value}"),
-                        ));
-                }
-
-                Ok(ResolvedValue::Value(value))
-            }
-        },
+            Ok(ResolvedValue::Value(value))
+        }
         ScalarExpression::Collection(c) => {
             execute_collection_scalar_expression(execution_context, c)
         }
@@ -866,28 +841,12 @@ mod tests {
         };
 
         run_test(
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::Integer,
-                    0,
-                ),
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::Integer,
+                0,
             )),
             Value::Integer(&IntegerValueStorage::new(18)),
-        );
-
-        run_test(
-            ScalarExpression::Constant(ConstantScalarExpression::Copy(
-                CopyConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    1,
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        99,
-                    )),
-                ),
-            )),
-            Value::Integer(&IntegerValueStorage::new(99)),
         );
     }
 

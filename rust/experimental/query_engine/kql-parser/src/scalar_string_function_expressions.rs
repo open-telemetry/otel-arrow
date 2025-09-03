@@ -489,12 +489,29 @@ mod tests {
             }
         };
 
+        // Note: This whole expression is folded into a static array.
         run_test_success(
-            "parse_json('\"hello\"')",
+            "parse_json('[]')",
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+        );
+
+        run_test_success(
+            "parse_json(source.Attributes['json'])",
             ScalarExpression::Parse(ParseScalarExpression::Json(ParseJsonScalarExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "\"hello\""),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "json"),
+                        )),
+                    ]),
                 )),
             ))),
         );
