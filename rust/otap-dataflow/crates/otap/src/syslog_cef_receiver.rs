@@ -19,8 +19,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-mod arrow_records_encoder;
-mod parser;
+pub mod arrow_records_encoder;
+pub mod parser;
 
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn::otel::syslog_cef::receiver";
