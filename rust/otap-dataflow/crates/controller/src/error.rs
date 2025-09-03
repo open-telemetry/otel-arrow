@@ -47,9 +47,7 @@ pub enum Error {
     CoreDetectionUnavailable,
 
     /// Invalid or out-of-bounds requested CPU core ID range.
-    #[error(
-        "Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}"
-    )]
+    #[error("Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}")]
     InvalidCoreRange {
         /// Start of the requested range (inclusive).
         start: usize,

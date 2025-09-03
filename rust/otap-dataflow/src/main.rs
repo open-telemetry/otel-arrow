@@ -6,12 +6,12 @@
 use clap::Parser;
 use mimalloc_rust::*;
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_config::pipeline_group::CoreIdRange;
 use otap_df_config::pipeline_group::Quota;
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
-use otap_df_config::pipeline_group::CoreIdRange;
 
 #[global_allocator]
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
@@ -87,10 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(r) = &quota.core_id_range {
-        println!(
-            "Starting pipeline on core ID range [{}-{}]",
-            r.start, r.end
-        );
+        println!("Starting pipeline on core ID range [{}-{}]", r.start, r.end);
     } else {
         println!("Starting pipeline with {} cores", args.num_cores);
     }

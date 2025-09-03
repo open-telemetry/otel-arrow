@@ -17,7 +17,9 @@
 //! - TODO: Monitoring
 //! - TODO: Support pipeline groups
 
+use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
+use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
     PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
@@ -30,8 +32,6 @@ use otap_df_engine::control::{
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
-use core_affinity::CoreId;
-use crate::error::Error;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -81,7 +81,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Get available CPU cores for pinning
         let requested_cores = Self::select_cores_for_quota(
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
-            quota
+            quota,
         )?;
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
@@ -178,7 +178,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Returns the list of CPU core IDs to use based on the given quota.
-    fn select_cores_for_quota(mut available_core_ids: Vec<CoreId>, quota: Quota) -> Result<Vec<CoreId>, Error> {
+    fn select_cores_for_quota(
+        mut available_core_ids: Vec<CoreId>,
+        quota: Quota,
+    ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
         let Some(range) = quota.core_id_range else {
@@ -262,8 +265,14 @@ mod tests {
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
-            CoreId { id: 0 }, CoreId { id: 1 }, CoreId { id: 2 }, CoreId { id: 3 },
-            CoreId { id: 4 }, CoreId { id: 5 }, CoreId { id: 6 }, CoreId { id: 7 },
+            CoreId { id: 0 },
+            CoreId { id: 1 },
+            CoreId { id: 2 },
+            CoreId { id: 3 },
+            CoreId { id: 4 },
+            CoreId { id: 5 },
+            CoreId { id: 6 },
+            CoreId { id: 7 },
         ]
     }
 
@@ -290,9 +299,14 @@ mod tests {
             core_id_range: None,
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
         assert_eq!(result.len(), 4);
-        let expected_ids: Vec<usize> = available_core_ids.into_iter().take(4).map(|c| c.id).collect();
+        let expected_ids: Vec<usize> = available_core_ids
+            .into_iter()
+            .take(4)
+            .map(|c| c.id)
+            .collect();
         assert_eq!(to_ids(&result), expected_ids);
     }
 
@@ -350,7 +364,9 @@ mod tests {
         let available_core_ids = available_core_ids();
         let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
         match err {
-            Error::InvalidCoreRange { start: s, end: e, .. } => {
+            Error::InvalidCoreRange {
+                start: s, end: e, ..
+            } => {
                 assert_eq!(s, start);
                 assert_eq!(e, end);
             }
