@@ -253,21 +253,55 @@ impl<PData> ControlSenders<PData> {
     /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
     /// if any sends failed.
     pub async fn shutdown_receivers(&self, reason: String) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        self.shutdown_nodes(Some(NodeType::Receiver), reason).await
+    }
+
+    /// Broadcast a shutdown control message to all nodes in the pipeline. This is usually not the
+    /// preferred way to shut down a pipeline, as it does not allow for graceful draining. Use
+    /// `shutdown_receivers` instead to first shut down receivers and let the rest of the
+    /// pipeline drain.
+    ///
+    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
+    /// if any sends failed.
+    pub async fn shutdown_all(&self, reason: String) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        self.shutdown_nodes(None, reason).await
+    }
+
+    /// Internal helper method to broadcast shutdown messages to nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type_filter` - If `Some(node_type)`, only send to nodes of that type.
+    ///                        If `None`, send to all nodes.
+    /// * `reason` - The reason for the shutdown.
+    ///
+    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
+    /// if any sends failed.
+    async fn shutdown_nodes(
+        &self,
+        node_type_filter: Option<NodeType>,
+        reason: String
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
         let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
 
         for typed_sender in self.senders.values() {
-            if typed_sender.node_type == NodeType::Receiver {
-                let shutdown_msg = NodeControlMsg::Shutdown {
-                    deadline: Default::default(),
-                    reason: reason.clone()
-                };
-
-                if let Err(error) = typed_sender.sender.send(shutdown_msg).await {
-                    errors.push(TypedError::NodeControlMsgSendError {
-                        node: typed_sender.node_id.clone(),
-                        error,
-                    });
+            // Apply filter if specified
+            if let Some(filter_type) = node_type_filter {
+                if typed_sender.node_type != filter_type {
+                    continue;
                 }
+            }
+
+            let shutdown_msg = NodeControlMsg::Shutdown {
+                deadline: Default::default(),
+                reason: reason.clone()
+            };
+
+            if let Err(error) = typed_sender.sender.send(shutdown_msg).await {
+                errors.push(TypedError::NodeControlMsgSendError {
+                    node: typed_sender.node_id.clone(),
+                    error,
+                });
             }
         }
 
@@ -276,64 +310,5 @@ impl<PData> ControlSenders<PData> {
         } else {
             Err(errors)
         }
-    }
-
-    /// Tries to send a control message to all nodes of the specified type.
-    ///
-    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
-    /// if any sends failed.
-    fn try_send_to_node_type(
-        &self,
-        node_type: NodeType,
-        msg: NodeControlMsg<PData>,
-    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> where PData: Clone {
-        let errors: Vec<TypedError<NodeControlMsg<PData>>> = self
-            .senders
-            .values()
-            .filter(|typed_sender| typed_sender.node_type == node_type)
-            .filter_map(|typed_sender| {
-                typed_sender.sender.try_send(msg.clone()).err().map(|error| {
-                    TypedError::NodeControlMsgSendError {
-                        node: typed_sender.node_id.clone(),
-                        error,
-                    }
-                })
-            })
-            .collect();
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
-    }
-
-    /// Tries to send a control message to all receiver nodes.
-    #[inline]
-    pub fn try_send_to_receivers(
-        &self,
-        msg: NodeControlMsg<PData>,
-    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> where PData: Clone {
-        self.try_send_to_node_type(NodeType::Receiver, msg)
-    }
-
-    /// Tries to send a control message to all processor nodes.
-    #[inline]
-    pub fn try_send_to_processors(
-        &self,
-        msg: NodeControlMsg<PData>,
-    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> where PData: Clone
-    {
-        self.try_send_to_node_type(NodeType::Processor, msg)
-    }
-
-    /// Tries to send a control message to all exporter nodes.
-    #[inline]
-    pub fn try_send_to_exporters(
-        &self,
-        msg: NodeControlMsg<PData>,
-    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> where PData: Clone
-    {
-        self.try_send_to_node_type(NodeType::Exporter, msg)
     }
 }
