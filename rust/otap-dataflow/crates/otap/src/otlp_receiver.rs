@@ -102,35 +102,40 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     ) -> Result<(), Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        let listener_stream = TcpListenerStream::new(listener);
 
-        loop {
-            let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-            let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-            let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
+        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
+        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
 
-            if let Some(ref compression) = self.config.compression_method {
-                let encoding = compression.map_to_compression_encoding();
+        if let Some(ref compression) = self.config.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-                logs_service_server = logs_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                metrics_service_server = metrics_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-            }
+            logs_service_server = logs_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            metrics_service_server = metrics_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            trace_service_server = trace_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+        }
 
-            tokio::select! {
-                biased;
+        let server = Server::builder()
+            .add_service(logs_service_server)
+            .add_service(metrics_service_server)
+            .add_service(trace_service_server);
 
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    match ctrl_msg {
+        tokio::select! {
+            biased;
+
+            // Process internal events
+            ctrl_msg_result = async {
+                loop {
+                    match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
-                            break;
+                            return Ok(());
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Report current receiver metrics.
@@ -144,18 +149,18 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         }
                     }
                 }
-                result = Server::builder()
-                    .add_service(logs_service_server)
-                    .add_service(metrics_service_server)
-                    .add_service(trace_service_server)
-                    .serve_with_incoming(&mut listener_stream) => {
-                        if let Err(error) = result {
-                            return Err(Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                error: error.to_string()
-                            })
-                        }
-                    }
+            } => {
+                return ctrl_msg_result;
+            },
+
+            // Run server
+            result = server.serve_with_incoming(listener_stream) => {
+                if let Err(error) = result {
+                    return Err(Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        error: error.to_string()
+                    });
+                }
             }
         }
 
