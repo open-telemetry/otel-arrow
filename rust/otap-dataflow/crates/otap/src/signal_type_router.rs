@@ -22,7 +22,6 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
@@ -100,12 +99,12 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_signal_type_router(
     node: NodeId,
-    config: &Value,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     // Deserialize the (currently empty) router configuration
-    let router_config: SignalTypeRouterConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let router_config: SignalTypeRouterConfig = serde_json::from_value(node_config.config.clone())
+        .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
         })?;
 
@@ -130,9 +129,9 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
     name: SIGNAL_TYPE_ROUTER_URN,
     create: |_pipeline: PipelineContext,
              node: NodeId,
-             config: &Value,
+             node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig| {
-        create_signal_type_router(node, config, proc_cfg)
+        create_signal_type_router(node, node_config, proc_cfg)
     },
 };
 
@@ -152,9 +151,11 @@ mod tests {
     fn test_factory_creation_ok() {
         let config = json!({});
         let processor_config = ProcessorConfig::new("test_router");
+        let mut node_config = NodeUserConfig::new_processor_config(SIGNAL_TYPE_ROUTER_URN);
+        node_config.config = config;
         let result = create_signal_type_router(
             test_node(processor_config.name.clone()),
-            &config,
+            Arc::new(node_config),
             &processor_config,
         );
         assert!(result.is_ok());
@@ -165,9 +166,11 @@ mod tests {
         // An invalid type (e.g., number instead of object) should error
         let config = json!(42);
         let processor_config = ProcessorConfig::new("test_router");
+        let mut node_config = NodeUserConfig::new_processor_config(SIGNAL_TYPE_ROUTER_URN);
+        node_config.config = config;
         let result = create_signal_type_router(
             test_node(processor_config.name.clone()),
-            &config,
+            Arc::new(node_config),
             &processor_config,
         );
         assert!(result.is_err());

@@ -106,8 +106,11 @@ pub enum PipelineControlMsg {
         /// Identifier of the node for which the telemetry timer is being canceled.
         node_id: usize,
     },
-    /// Requests shutdown of the node request manager.
-    Shutdown,
+    /// Requests shutdown of the pipeline.
+    Shutdown {
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
 }
 
 /// Trait for nodes that can receive and process control messages from the pipeline engine.
