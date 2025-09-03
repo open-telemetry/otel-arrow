@@ -211,6 +211,7 @@ mod tests {
                             QueryLocation::new_fake(),
                             ValueType::Boolean,
                             0,
+                            ValueAccessor::new(),
                         )),
                         false,
                     )),
