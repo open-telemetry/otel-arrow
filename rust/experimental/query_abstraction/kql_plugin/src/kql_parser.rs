@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use pest_derive::Parser;
 
 #[derive(Parser)]
@@ -144,11 +147,13 @@ mod tests {
     fn test_query() {
         assert!(KqlParser::parse(Rule::query, "my_table").is_ok());
         assert!(KqlParser::parse(Rule::query, "my_table | where x == 42").is_ok());
-        assert!(KqlParser::parse(
-            Rule::query,
-            r#"my_table | extend y = "hello" | where y != "world""#
-        )
-        .is_ok());
+        assert!(
+            KqlParser::parse(
+                Rule::query,
+                r#"my_table | extend y = "hello" | where y != "world""#
+            )
+            .is_ok()
+        );
         assert!(KqlParser::parse(Rule::query, "my_table | where x = 42").is_err());
         assert!(KqlParser::parse(Rule::query, "my_table | extend x == 42").is_err());
         assert!(KqlParser::parse(Rule::query, "my_table | extend x = 42 | where x == 42").is_ok());

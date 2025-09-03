@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package traces_test
 
@@ -27,18 +18,18 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	tracesarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
-	tracesotlp "github.com/open-telemetry/otel-arrow/pkg/otel/traces/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	tracesarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/arrow"
+	tracesotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
@@ -54,7 +45,7 @@ var ProducerStats = stats.NewProducerStats()
 func TestTracesEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(
 		entropy,
@@ -70,7 +61,7 @@ func TestTracesEncodingDecoding(t *testing.T) {
 func TestRandomTracesEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(
 		entropy,
@@ -270,7 +261,7 @@ func TestCustom2TracesEncodingDecoding(t *testing.T) {
 func TestInvalidTracesDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
@@ -330,7 +321,7 @@ func MultiRoundOfCheckEncodeMessUpDecode(
 	t *testing.T,
 	expectedRequest ptraceotlp.ExportRequest,
 ) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		CheckEncodeMessUpDecode(t, expectedRequest, rng)

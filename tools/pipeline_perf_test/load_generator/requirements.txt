@@ -1,7 +1,4 @@
-docker
-psutil
-requests
-kubernetes
-pyyaml
-grpcio
-opentelemetry-proto
+Flask==3.1.2
+grpcio==1.74.0
+opentelemetry-proto==1.36.0
+pydantic==2.11.7

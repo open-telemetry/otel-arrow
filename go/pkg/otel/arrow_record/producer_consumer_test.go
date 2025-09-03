@@ -1,23 +1,13 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package arrow_record
 
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"testing"
 	"time"
 
@@ -28,10 +18,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/protobuf/proto"
 
-	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
+	arrowpb "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
 )
 
 // Fuzz-tests the consumer on a sequence of two OTLP protobuf inputs.
@@ -41,7 +31,7 @@ import (
 func FuzzConsumerTraces(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	for i := 0; i < numSeeds; i++ {
 		func() {
@@ -100,7 +90,7 @@ func FuzzConsumerTraces(f *testing.F) {
 func FuzzProducerTraces2(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	for i := 0; i < numSeeds; i++ {
 		dg := datagen.NewTracesGenerator(
@@ -154,7 +144,7 @@ func FuzzProducerTraces2(f *testing.F) {
 func FuzzProducerTraces1(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	dg := datagen.NewTracesGenerator(
 		ent,
@@ -198,7 +188,7 @@ func FuzzProducerTraces1(f *testing.F) {
 }
 
 func TestProducerConsumerTraces(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 
@@ -271,7 +261,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 
@@ -325,7 +315,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 }
 
 func TestProducerConsumerMetrics(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 

@@ -1,14 +1,15 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP data plane configuration.
 //!
 //! Data Model:
 //! - data plane
-//!   - tenants
+//!   - pipeline groups
 //!     - pipelines
 //!       - nodes
 //!
-//! A data plane is a collection of tenants, where each tenant can have multiple pipelines.
+//! A data plane is a collection of pipeline groups, where each group can have multiple pipelines.
 //! A pipeline is a collection of nodes interconnected in a directed acyclic graph (DAG).
 
 use std::borrow::Cow;
@@ -17,10 +18,10 @@ pub mod error;
 pub mod experimental;
 pub mod node;
 pub mod pipeline;
-pub mod tenant;
+pub mod pipeline_group;
 
-/// The id of a tenant.
-pub type TenantId = Cow<'static, str>;
+/// The id of a pipeline group.
+pub type PipelineGroupId = Cow<'static, str>;
 
 /// The id of a pipeline.
 pub type PipelineId = Cow<'static, str>;

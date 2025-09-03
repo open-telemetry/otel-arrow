@@ -1,7 +1,12 @@
 [package]
 name = "cli"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 kql_plugin = { version = "0.1.0", path = "../kql_plugin" }

@@ -1,0 +1,208 @@
+name: Push Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to tag and publish (e.g., 0.40.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run mode (just show what would happen)'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  push-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
+
+      - name: Validate inputs
+        run: |
+          # Validate version format
+          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must be in format X.Y.Z (e.g., 0.40.0)"
+            exit 1
+          fi
+
+      - name: Verify release preparation
+        run: |
+          # Check if the version is already in CHANGELOG.md
+          if ! grep -q "## \[${{ inputs.version }}\]" CHANGELOG.md; then
+            echo "Error: Version ${{ inputs.version }} not found in CHANGELOG.md"
+            echo "Make sure you have run the 'Prepare Release' workflow and merged the PR first"
+            exit 1
+          fi
+
+          # Check if repository is clean
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Error: Repository has uncommitted changes"
+            git status
+            exit 1
+          fi
+
+      - name: Get last released version
+        id: last_version
+        run: |
+          # Get the latest tag
+          LAST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tags found"
+            LAST_VERSION="0.0.0"
+          else
+            LAST_VERSION=${LAST_TAG#v}
+          fi
+          echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
+          echo "Last released version: $LAST_VERSION"
+          echo "New version: ${{ inputs.version }}"
+
+      - name: Validate version increment
+        run: |
+          LAST_VERSION="${{ steps.last_version.outputs.last_version }}"
+          NEW_VERSION="${{ inputs.version }}"
+
+          # Simple version comparison (assumes semantic versioning)
+          if [ "$LAST_VERSION" != "0.0.0" ]; then
+            if ! printf '%s\n%s\n' "$LAST_VERSION" "$NEW_VERSION" | sort -V -C; then
+              echo "Error: New version $NEW_VERSION is not greater than last version $LAST_VERSION"
+              exit 1
+            fi
+          fi
+
+      - name: Check if tag already exists
+        run: |
+          if git tag --list | grep -q "^v${{ inputs.version }}$"; then
+            echo "Error: Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Extract changelog content for this release
+        id: changelog
+        run: |
+          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/release_content.txt --normalize
+
+      - name: Dry run - Show planned changes
+        if: inputs.dry_run
+        run: |
+          echo "=== DRY RUN MODE - No changes will be made ==="
+          echo ""
+          echo "Planned operations:"
+          echo "- Version to tag: v${{ inputs.version }}"
+          echo "- Last version: v${{ steps.last_version.outputs.last_version }}"
+          echo "--------------------------------"
+          echo "Git tags that would be created:"
+          echo "  - v${{ inputs.version }} (main release tag)"
+          echo "  - go/v${{ inputs.version }} (Go module tag)"
+          echo "  - collector/cmd/otelarrowcol/v${{ inputs.version }} (collector module tag)"
+          echo "--------------------------------"
+          echo "GitHub release that would be created:"
+          echo "  - Title: Release v${{ inputs.version }}"
+          echo "  - Tag: v${{ inputs.version }}"
+          echo "  - Release notes from CHANGELOG.md"
+          echo "--------------------------------"
+          echo "Release content preview:"
+          cat /tmp/release_content.txt
+
+      - name: Create GitHub App token
+        if: '!inputs.dry_run'
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.1
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Create git tags
+        if: '!inputs.dry_run'
+        run: |
+          # Configure git
+          git config user.name otelbot
+          git config user.email 197425009+otelbot@users.noreply.github.com
+
+          # Create main release tag
+          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+
+          # Create Go module tags
+          git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
+          git tag -a "collector/cmd/otelarrowcol/v${{ inputs.version }}" -m "Release collector/cmd/otelarrowcol/v${{ inputs.version }}"
+
+          echo "Created tags:"
+          git tag --list "v${{ inputs.version }}"
+          git tag --list "*v${{ inputs.version }}"
+
+      - name: Push git tags
+        if: '!inputs.dry_run'
+        run: |
+          # Push all tags for this version
+          git push origin "v${{ inputs.version }}"
+          git push origin "go/v${{ inputs.version }}"
+          git push origin "collector/cmd/otelarrowcol/v${{ inputs.version }}"
+
+          echo "Pushed tags:"
+          echo "- v${{ inputs.version }}"
+          echo "- go/v${{ inputs.version }}"
+          echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
+
+      - name: Create GitHub release
+        if: '!inputs.dry_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Read changelog content into a variable
+          RELEASE_CONTENT=$(cat /tmp/release_content.txt)
+
+          # Create release body content
+          cat > /tmp/release_body.md << EOF
+          ## What's Changed
+
+          ${RELEASE_CONTENT}
+
+          **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
+
+          ## Go Modules
+
+          This release includes the following Go modules:
+          - github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
+          - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
+          EOF
+
+          # Create the GitHub release using GitHub CLI
+          gh release create "v${{ inputs.version }}" \
+            --title "Release v${{ inputs.version }}" \
+            --notes-file /tmp/release_body.md \
+            --draft \
+            --latest
+
+      - name: Summary
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo ":heavy_check_mark: Dry run completed successfully"
+            echo "No changes were made to the repository"
+            echo "Review the planned changes above and run again without dry-run when ready"
+          else
+            echo ":heavy_check_mark: Release published successfully"
+            echo ""
+            echo "Release details:"
+            echo "- Version: v${{ inputs.version }}"
+            echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${{ inputs.version }}"
+            echo ""
+            echo "Git tags created:"
+            echo "- v${{ inputs.version }}"
+            echo "- go/v${{ inputs.version }}"
+            echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
+            echo ""
+            echo "Go modules are now available:"
+            echo "- go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
+            echo "- go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
+          fi

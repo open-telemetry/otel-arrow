@@ -19,6 +19,7 @@
 )]
 
 #[path = "."]
+#[rustfmt::skip]
 pub mod opentelemetry {
     #[path = "."]
     pub mod trace {

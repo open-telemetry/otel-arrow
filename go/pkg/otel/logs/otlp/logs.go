@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package otlp
 
@@ -19,11 +10,11 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	arrowutils "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 const None = -1
@@ -142,14 +133,14 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
-		if len(traceID) != 16 {
+		if traceID != nil && len(traceID) != 16 {
 			return logs, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"row": row, "traceID": traceID})
 		}
 		spanID, err := arrowutils.FixedSizeBinaryFromRecord(record, logRecordIDs.SpanID, row)
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
-		if len(spanID) != 8 {
+		if spanID != nil && len(spanID) != 8 {
 			return logs, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"row": row, "spanID": spanID})
 		}
 

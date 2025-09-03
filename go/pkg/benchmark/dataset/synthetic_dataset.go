@@ -1,21 +1,11 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package dataset
 
 import (
-	"math/rand"
 	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -23,8 +13,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/otlp"
 )
 
 type MetricsDataset interface {
@@ -61,8 +51,7 @@ type FakeMetricsDataset struct {
 }
 
 func NewFakeMetricsDataset(size int) *FakeMetricsDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeMetricsDataset{len: size, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
@@ -83,8 +72,7 @@ type FakeLogsDataset struct {
 }
 
 func NewFakeLogsDataset(size int) *FakeLogsDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeLogsDataset{len: size, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
@@ -113,8 +101,7 @@ type FakeTraceDataset struct {
 }
 
 func NewFakeTraceDataset(size int) *FakeTraceDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeTraceDataset{len: size, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 

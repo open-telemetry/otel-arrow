@@ -31,10 +31,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, TYPE_CHECKING
 
+from ..telemetry.framework_event import FrameworkEvent
 from .base import BaseContext
-from .test_contexts import TestStepContext
 
 if TYPE_CHECKING:
+    from .framework_element_contexts import StepContext
     from ..component.component import Component
 
 
@@ -78,8 +79,25 @@ class ComponentHookContext(BaseContext):
     Holds state for a component hook execution.
     """
 
-    parent_ctx: Optional["TestStepContext"] = None
+    parent_ctx: Optional["StepContext"] = None
     phase: Optional["HookableComponentPhase"] = None
+
+    def __post_init__(self):
+        """
+        Performs additional initialization after object creation.
+        """
+        super().__post_init__()
+        self.start_event_type = FrameworkEvent.HOOK_START
+        self.end_event_type = FrameworkEvent.HOOK_END
+        if self.parent_ctx:
+            merged_metadata = {**self.parent_ctx.metadata, **self.metadata}
+            if self.parent_ctx.step and self.parent_ctx.step.component:
+                merged_metadata["test.ctx.component"] = (
+                    self.parent_ctx.step.component.name
+                )
+            self.metadata = merged_metadata
+        self.metadata["test.ctx.phase"] = self.phase.value
+        self.span_name = f"Run Component Hook: {self.name}"
 
     def get_step_component(self) -> Optional["Component"]:
         """Fetches the component instance on which this hook is firing.
@@ -88,6 +106,6 @@ class ComponentHookContext(BaseContext):
         """
         if self.parent_ctx is None:
             raise RuntimeError(
-                "LifecycleHookContext.parent_ctx must be set to access the step component."
+                "ComponentHookContext.parent_ctx must be set to access the step component."
             )
         return self.parent_ctx.step.component

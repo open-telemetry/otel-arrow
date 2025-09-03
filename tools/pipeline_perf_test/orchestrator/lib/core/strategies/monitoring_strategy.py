@@ -13,19 +13,21 @@ Classes:
     MonitoringStrategy (ABC): Abstract base class for all monitoring strategies.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from ..context.framework_element_contexts import StepContext, ScenarioContext
+from .base import BaseStrategyConfig, BaseStrategy
 
-from ..component.component import Component
-from ..context.test_contexts import TestStepContext, TestExecutionContext
+if TYPE_CHECKING:
+    from ..component.component import Component
 
 
-class MonitoringStrategyConfig(BaseModel):
+class MonitoringStrategyConfig(BaseStrategyConfig):
     """Base model for Monitoring Strategy config, passed to strategy init."""
 
 
-class MonitoringStrategy(ABC):
+class MonitoringStrategy(BaseStrategy):
     """
     Abstract base class for monitoring strategies.
 
@@ -44,7 +46,7 @@ class MonitoringStrategy(ABC):
         """All monitoring strategies must be initialized with a config object."""
 
     @abstractmethod
-    def start(self, component: Component, ctx: TestStepContext):
+    def start(self, component: "Component", ctx: StepContext):
         """
         Start the monitoring process.
 
@@ -55,7 +57,7 @@ class MonitoringStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: Component, ctx: TestStepContext):
+    def stop(self, component: "Component", ctx: StepContext):
         """
         Stop the monitoring process.
 
@@ -66,7 +68,7 @@ class MonitoringStrategy(ABC):
         """
 
     @abstractmethod
-    def collect(self, component: Component, ctx: TestExecutionContext) -> dict:
+    def collect(self, component: "Component", ctx: ScenarioContext) -> dict:
         """
         Collect and return monitoring data.
 
