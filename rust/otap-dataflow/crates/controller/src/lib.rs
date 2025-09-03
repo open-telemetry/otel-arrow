@@ -79,7 +79,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
-        let requested_cores = Self::compute_requested_cores(
+        let requested_cores = Self::select_cores_for_quota(
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
             quota
         )?;
@@ -178,53 +178,49 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Returns the list of CPU core IDs to use based on the given quota.
-    fn compute_requested_cores(all_core_ids: Vec<CoreId>, quota: Quota) -> Result<Vec<CoreId>, Error> {
-        // If a specific core ID range is requested, select matching cores, otherwise derive by count
-        let requested_cores = if let Some(range) = quota.core_id_range.as_ref() {
-            let mut available_ids: Vec<_> = all_core_ids.clone().into_iter().collect();
-            available_ids.sort_by_key(|c| c.id);
-            if range.start > range.end {
-                return Err(Error::InvalidCoreRange {
-                    start: range.start,
-                    end: range.end,
-                    message: "Start of range is greater than end".to_owned(),
-                    available: available_ids.iter().map(|c| c.id).collect(),
-                });
-            }
-            let selected: Vec<_> = available_ids
-                .into_iter()
-                .filter(|c| c.id >= range.start && c.id <= range.end)
-                .collect();
-            if selected.is_empty() {
-                return Err(Error::InvalidCoreRange {
-                    start: range.start,
-                    end: range.end,
-                    message: "No available cores in the specified range".to_owned(),
-                    available: core_affinity::get_core_ids()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|c| c.id)
-                        .collect(),
-                });
-            }
-            selected
-        } else {
-            // Determine the number of CPU cores available and requested
-            // If quota.num_cores is 0, use all available cores
-            // If quota.num_cores is greater than available cores, use the minimum
-            // If quota.num_cores is less than available cores, use the requested number
-            let num_cpu_cores = all_core_ids.len();
-            let num_requested_cores = if quota.num_cores == 0 {
-                num_cpu_cores
-            } else {
-                quota.num_cores.min(num_cpu_cores)
-            };
+    fn select_cores_for_quota(mut available_core_ids: Vec<CoreId>, quota: Quota) -> Result<Vec<CoreId>, Error> {
+        available_core_ids.sort_by_key(|c| c.id);
 
-            let mut available_ids: Vec<_> = all_core_ids.into_iter().collect();
-            available_ids.sort_by_key(|c| c.id);
-            available_ids.into_iter().take(num_requested_cores).collect()
+        let Some(range) = quota.core_id_range else {
+            // Use num_cores logic: 0 means all cores, otherwise cap at available
+            let count = if quota.num_cores == 0 {
+                available_core_ids.len()
+            } else {
+                quota.num_cores.min(available_core_ids.len())
+            };
+            return Ok(available_core_ids.into_iter().take(count).collect());
         };
-        Ok(requested_cores)
+
+        // Validate range
+        if range.start > range.end {
+            return Err(Error::InvalidCoreRange {
+                start: range.start,
+                end: range.end,
+                message: "Start of range is greater than end".to_owned(),
+                available: available_core_ids.iter().map(|c| c.id).collect(),
+            });
+        }
+
+        // Filter cores in range
+        let selected: Vec<_> = available_core_ids
+            .into_iter()
+            .filter(|c| c.id >= range.start && c.id <= range.end)
+            .collect();
+
+        if selected.is_empty() {
+            return Err(Error::InvalidCoreRange {
+                start: range.start,
+                end: range.end,
+                message: "No available cores in the specified range".to_owned(),
+                available: core_affinity::get_core_ids()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| c.id)
+                    .collect(),
+            });
+        }
+
+        Ok(selected)
     }
 
     /// Runs a single pipeline in the current thread.
@@ -283,7 +279,7 @@ mod tests {
         };
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
-        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 
@@ -294,7 +290,7 @@ mod tests {
             core_id_range: None,
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::compute_requested_cores(available_core_ids.clone(), quota).unwrap();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
         assert_eq!(result.len(), 4);
         let expected_ids: Vec<usize> = available_core_ids.into_iter().take(4).map(|c| c.id).collect();
         assert_eq!(to_ids(&result), expected_ids);
@@ -311,7 +307,7 @@ mod tests {
                 end: first_id,
             }),
         };
-        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), vec![first_id]);
     }
 
@@ -322,7 +318,7 @@ mod tests {
             core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 5 }),
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
     }
 
@@ -333,7 +329,7 @@ mod tests {
             core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 1 }),
         };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap_err();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
         match err {
             Error::InvalidCoreRange { start, end, .. } => {
                 assert_eq!(start, 2);
@@ -352,7 +348,7 @@ mod tests {
             core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start, end }),
         };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::compute_requested_cores(available_core_ids, quota).unwrap_err();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
         match err {
             Error::InvalidCoreRange { start: s, end: e, .. } => {
                 assert_eq!(s, start);
