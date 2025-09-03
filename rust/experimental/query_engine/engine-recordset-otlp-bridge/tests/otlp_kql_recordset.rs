@@ -1,3 +1,7 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 use data_engine_recordset_otlp_bridge::*;
@@ -101,11 +105,12 @@ fn test_summarize_count_only() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.summaries.len(), 1);
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
     assert_eq!(results.included_records.len(), 0);
     assert_eq!(results.dropped_records.len(), 2);
 
-    let summary = results.summaries.first().unwrap();
+    let summary = results.summaries.included_summaries.first().unwrap();
 
     assert_eq!(
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -154,11 +159,12 @@ fn test_summarize_count_and_group_by() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.summaries.len(), 2);
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
     assert_eq!(results.included_records.len(), 0);
     assert_eq!(results.dropped_records.len(), 3);
 
-    let mut summaries = results.summaries;
+    let mut summaries = results.summaries.included_summaries;
     summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
 
     assert_summary(
@@ -200,6 +206,153 @@ fn test_summarize_count_and_group_by() {
         } else {
             panic!()
         }
+    }
+}
+
+#[test]
+fn test_summarize_count_and_group_by_with_bin() {
+    let mut request =
+        ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 10, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 11, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 26, 10, 0, 0).unwrap().into(),
+                    )),
+            ),
+        );
+
+    let query = "source | summarize Count = count() by Timestamp=bin(Timestamp, 1d)";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let mut summaries = results.summaries.included_summaries;
+    summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+    assert_summary(
+        &summaries[0],
+        "c30d4945f0fe3cc96f677d1b25f280643af086c573bc78fe3972defb8814d0f2",
+        Utc.with_ymd_and_hms(2025, 8, 25, 0, 0, 0).unwrap().into(),
+        2,
+    );
+
+    assert_summary(
+        &summaries[1],
+        "d282417f6a5af85ecc1f2490e7f58f519185139d6d6814d1209ec0ae0a94a639",
+        Utc.with_ymd_and_hms(2025, 8, 26, 0, 0, 0).unwrap().into(),
+        1,
+    );
+
+    fn assert_summary(
+        summary: &RecordSetEngineSummary,
+        sumary_id: &str,
+        timestamp: DateTime<FixedOffset>,
+        count: usize,
+    ) {
+        assert_eq!(sumary_id, summary.summary_id);
+
+        assert_eq!(summary.group_by_values.len(), 1);
+
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("Timestamp", key.as_ref());
+
+        assert_eq!(
+            OwnedValue::DateTime(DateTimeValueStorage::new(timestamp)).to_value(),
+            value.to_value()
+        );
+
+        assert_eq!(summary.aggregation_values.len(), 1);
+
+        let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+        assert_eq!("Count", key.as_ref());
+
+        if let SummaryAggregation::Count(v) = value {
+            assert_eq!(count, *v);
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[test]
+fn test_summarize_with_pipeline() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::IntValue(IntegerValueStorage::new(1)),
+                ))),
+        ),
+    );
+
+    let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 1);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let summary = results.summaries.included_summaries.first().unwrap();
+
+    assert_eq!(
+        "2e05f69051ddb184b5e05ab16d5a36273f972b1a540889697cf27585110cae26",
+        summary.summary_id
+    );
+
+    assert_eq!(summary.group_by_values.len(), 1);
+    assert_eq!(summary.aggregation_values.len(), 1);
+
+    if let Some(map) = &summary.map {
+        assert_eq!(
+            Some(OwnedValue::Integer(IntegerValueStorage::new(2)).to_value()),
+            map.get("Count").map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(OwnedValue::Null.to_value()),
+            map.get("Body").map(|v| v.to_value())
+        );
+
+        match (
+            map.get("ProcessedTime").map(|v| v.to_value()),
+            map.get("BatchTime").map(|v| v.to_value()),
+        ) {
+            (Some(Value::DateTime(p)), Some(Value::DateTime(b))) => {
+                assert!(p.get_value() >= b.get_value());
+            }
+            _ => panic!(),
+        }
+    } else {
+        panic!()
     }
 }
 
@@ -316,4 +469,143 @@ fn test_replace_string_function() {
             .to_string()
         )
     );
+}
+
+#[test]
+fn test_substring_function() {
+    let run_test = |statement: &str, expected: &str| {
+        let log = LogRecord::new().with_attribute(
+            "greeting",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello world".into(),
+            ))),
+        );
+
+        let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+        );
+
+        let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(
+            format!("source | extend e = {statement}").as_str(),
+        )
+        .unwrap();
+
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
+
+        let results = process_records(&pipeline, &engine, &mut request);
+
+        assert_eq!(results.included_records.len(), 1);
+        assert_eq!(results.dropped_records.len(), 0);
+
+        let log = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(
+            expected,
+            log.attributes.get("e").unwrap().to_value().to_string()
+        );
+    };
+
+    run_test("substring(Attributes['greeting'], 6)", "world");
+    run_test("substring(Attributes['greeting'], 0, 5)", "hello");
+}
+
+#[test]
+fn test_coalesce_function() {
+    let run_test = |statement: &str, expected: &str| {
+        let log = LogRecord::new()
+            .with_attribute("null_key1", AnyValue::Null)
+            .with_attribute(
+                "string_key1",
+                AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                    "hello world".into(),
+                ))),
+            );
+
+        let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+        );
+
+        let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(
+            format!("source | extend e = {statement}").as_str(),
+        )
+        .unwrap();
+
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
+
+        let results = process_records(&pipeline, &engine, &mut request);
+
+        assert_eq!(results.included_records.len(), 1);
+        assert_eq!(results.dropped_records.len(), 0);
+
+        let log = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(
+            expected,
+            log.attributes.get("e").unwrap().to_value().to_string()
+        );
+    };
+
+    run_test("coalesce('hello', 'world')", "hello");
+    run_test("coalesce(Attributes['null_key1'], 'world')", "world");
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['null_key1'], 'world')",
+        "world",
+    );
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['null_key1'], Attributes['null_key1'])",
+        "null",
+    );
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['string_key1'])",
+        "hello world",
+    );
+    run_test("coalesce(tolong('invalid'), 18)", "18");
+}
+
+#[test]
+fn test_now_global_variable() {
+    let log = LogRecord::new();
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "let batch_start_time = now();\nsource\n | extend batch_start = batch_start_time, record_start = now()";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+
+    assert_eq!(attributes.len(), 2);
+
+    let batch_start = attributes.get("batch_start").unwrap();
+    let record_start = attributes.get("record_start").unwrap();
+
+    match (
+        batch_start.to_value().convert_to_datetime(),
+        record_start.to_value().convert_to_datetime(),
+    ) {
+        (Some(batch_start), Some(record_start)) => {
+            assert!(batch_start <= record_start);
+        }
+        _ => panic!(),
+    }
 }

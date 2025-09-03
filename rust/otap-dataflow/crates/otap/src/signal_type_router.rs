@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Signal type router processor for OTAP pipelines.
@@ -14,12 +15,13 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
@@ -58,7 +60,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_ctrl) => {
                 // No specific control handling required currently.
@@ -77,10 +79,17 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
                 // ToDo [LQ] send_message_to should returns a dedicated error when the port is not found so we can avoid to call the `connected.iter().any(...)`.
                 if has_port {
-                    effect_handler.send_message_to(desired_port, data).await
+                    effect_handler
+                        .send_message_to(desired_port, data)
+                        .await
+                        // Note: is there a nicer way to write the following?
+                        .map_err(|e| e.into())
                 } else {
                     // No matching named port: fall back to engine default behavior
-                    effect_handler.send_message(data).await
+                    effect_handler
+                        .send_message(data)
+                        .await
+                        .map_err(|e| e.into())
                 }
             }
         }
@@ -89,12 +98,13 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_signal_type_router(
-    config: &Value,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     // Deserialize the (currently empty) router configuration
-    let router_config: SignalTypeRouterConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let router_config: SignalTypeRouterConfig = serde_json::from_value(node_config.config.clone())
+        .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
         })?;
 
@@ -106,6 +116,7 @@ pub fn create_signal_type_router(
 
     Ok(ProcessorWrapper::local(
         router,
+        node,
         user_config,
         processor_config,
     ))
@@ -116,15 +127,18 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |config: &Value, proc_cfg: &ProcessorConfig| {
-        create_signal_type_router(config, proc_cfg)
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig| {
+        create_signal_type_router(node, node_config, proc_cfg)
     },
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::{processor::TestRuntime, test_node};
     use serde_json::json;
 
     #[test]
@@ -137,7 +151,13 @@ mod tests {
     fn test_factory_creation_ok() {
         let config = json!({});
         let processor_config = ProcessorConfig::new("test_router");
-        let result = create_signal_type_router(&config, &processor_config);
+        let mut node_config = NodeUserConfig::new_processor_config(SIGNAL_TYPE_ROUTER_URN);
+        node_config.config = config;
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            Arc::new(node_config),
+            &processor_config,
+        );
         assert!(result.is_ok());
     }
 
@@ -146,7 +166,13 @@ mod tests {
         // An invalid type (e.g., number instead of object) should error
         let config = json!(42);
         let processor_config = ProcessorConfig::new("test_router");
-        let result = create_signal_type_router(&config, &processor_config);
+        let mut node_config = NodeUserConfig::new_processor_config(SIGNAL_TYPE_ROUTER_URN);
+        node_config.config = config;
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            Arc::new(node_config),
+            &processor_config,
+        );
         assert!(result.is_err());
     }
 
@@ -159,6 +185,7 @@ mod tests {
         let user_cfg = Arc::new(NodeUserConfig::new_processor_config("sig_router_test"));
         let wrapper = ProcessorWrapper::local(
             SignalTypeRouter::new(SignalTypeRouterConfig::default()),
+            test_node(test_runtime.config().name.clone()),
             user_cfg,
             test_runtime.config(),
         );

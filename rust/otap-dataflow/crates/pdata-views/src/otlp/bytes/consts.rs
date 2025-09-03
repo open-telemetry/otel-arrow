@@ -70,4 +70,49 @@ pub mod field_num {
         pub const RESOURCE_ATTRIBUTES: u64 = 1;
         pub const RESOURCE_DROPPED_ATTRIBUTES_COUNT: u64 = 2;
     }
+
+    #[allow(missing_docs)]
+    pub mod traces {
+        pub const TRACES_DATA_RESOURCE_SPANS: u64 = 1;
+
+        pub const RESOURCE_SPANS_RESOURCE: u64 = 1;
+        pub const RESOURCE_SPANS_SCOPE_SPANS: u64 = 2;
+        pub const RESOURCE_SPANS_SCHEMA_URL: u64 = 3;
+
+        pub const SCOPE_SPANS_SCOPE: u64 = 1;
+        pub const SCOPE_SPANS_SPANS: u64 = 2;
+        pub const SCOPE_SPANS_SCHEMA_URL: u64 = 3;
+
+        pub const SPAN_TRACE_ID: u64 = 1;
+        pub const SPAN_SPAN_ID: u64 = 2;
+        pub const SPAN_TRACE_STATE: u64 = 3;
+        pub const SPAN_PARENT_SPAN_ID: u64 = 4;
+        pub const SPAN_NAME: u64 = 5;
+        pub const SPAN_KIND: u64 = 6;
+        pub const SPAN_START_TIME_UNIX_NANO: u64 = 7;
+        pub const SPAN_END_TIME_UNIX_NANO: u64 = 8;
+        pub const SPAN_ATTRIBUTES: u64 = 9;
+        pub const SPAN_DROPPED_ATTRIBUTES_COUNT: u64 = 10;
+        pub const SPAN_EVENTS: u64 = 11;
+        pub const SPAN_DROPPED_EVENTS_COUNT: u64 = 12;
+        pub const SPAN_LINKS: u64 = 13;
+        pub const SPAN_DROPPED_LINKS_COUNT: u64 = 14;
+        pub const SPAN_STATUS: u64 = 15;
+        pub const SPAN_FLAGS: u64 = 16;
+
+        pub const SPAN_EVENT_TIME_UNIX_NANO: u64 = 1;
+        pub const SPAN_EVENT_NAME: u64 = 2;
+        pub const SPAN_EVENT_ATTRIBUTES: u64 = 3;
+        pub const SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS: u64 = 4;
+
+        pub const SPAN_LINK_TRACE_ID: u64 = 1;
+        pub const SPAN_LINK_SPAN_ID: u64 = 2;
+        pub const SPAN_LINK_TRACE_STATE: u64 = 3;
+        pub const SPAN_LINK_ATTRIBUTES: u64 = 4;
+        pub const SPAN_LINK_DROPPED_ATTRIBUTES_COUNT: u64 = 5;
+        pub const SPAN_LINK_FLAGS: u64 = 6;
+
+        pub const SPAN_STATUS_MESSAGE: u64 = 2;
+        pub const SPAN_STATUS_CODE: u64 = 3;
+    }
 }

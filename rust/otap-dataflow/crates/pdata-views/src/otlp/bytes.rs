@@ -8,3 +8,4 @@ pub mod consts;
 pub mod decode;
 pub mod logs;
 pub mod resource;
+pub mod traces;

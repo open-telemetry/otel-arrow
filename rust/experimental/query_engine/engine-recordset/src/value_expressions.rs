@@ -1,31 +1,11 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{cell::RefMut, ops::Deref, vec::Drain};
 
 use data_engine_expressions::*;
 
 use crate::{execution_context::*, resolved_value_mut::*, scalars::*, *};
-
-pub fn execute_immutable_value_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    immutable_value_expression: &'a ImmutableValueExpression,
-) -> Result<ResolvedValue<'c>, ExpressionError>
-where
-    'a: 'c,
-    'b: 'c,
-{
-    match immutable_value_expression {
-        ImmutableValueExpression::Scalar(scalar_expression) => {
-            let value = execute_scalar_expression(execution_context, scalar_expression)?;
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                immutable_value_expression,
-                || format!("Evaluated as: '{value}'"),
-            );
-
-            Ok(value)
-        }
-    }
-}
 
 pub fn execute_mutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
@@ -37,16 +17,22 @@ where
 {
     match mutable_value_expression {
         MutableValueExpression::Source(s) => {
-            let mut selectors = capture_selector_values_for_mutable_write(
-                execution_context,
-                mutable_value_expression,
-                s.get_value_accessor().get_selectors(),
-            )?;
+            let value = if let Some(record) = execution_context.get_record() {
+                let mut selectors = capture_selector_values_for_mutable_write(
+                    execution_context,
+                    mutable_value_expression,
+                    s.get_value_accessor().get_selectors(),
+                )?;
 
-            let record = execution_context.get_record().borrow_mut();
-
-            let value =
-                select_from_borrowed_root_map(execution_context, s, record, selectors.drain(..))?;
+                select_from_borrowed_root_map(
+                    execution_context,
+                    s,
+                    record.borrow_mut(),
+                    selectors.drain(..),
+                )?
+            } else {
+                None
+            };
 
             log_mutable_value_expression_evaluated(
                 execution_context,
@@ -64,7 +50,7 @@ where
             )?;
 
             if selectors.is_empty() {
-                let variables = execution_context.get_variables().borrow_mut();
+                let variables = execution_context.get_variables().get_local_variables_mut();
 
                 return Ok(Some(ResolvedValueMut::MapKey {
                     map: variables,
@@ -73,7 +59,7 @@ where
             }
 
             let variable = RefMut::filter_map(
-                execution_context.get_variables().borrow_mut(),
+                execution_context.get_variables().get_local_variables_mut(),
                 |vars| match vars.get_mut(v.get_name().get_value()) {
                     ValueMutGetResult::Found(v) => Some(v),
                     _ => None,
@@ -118,7 +104,7 @@ where
 fn capture_selector_values_for_mutable_write<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
-    selectors: &'a Vec<ScalarExpression>,
+    selectors: &'a [ScalarExpression],
 ) -> Result<Vec<(&'a ScalarExpression, ResolvedValue<'c>)>, ExpressionError>
 where
     'a: 'c,
@@ -415,31 +401,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_execute_immutable_value_expression() {
-        let run_test = |immutable_value_expression, expected_value: Value| {
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let value =
-                execute_immutable_value_expression(&execution_context, &immutable_value_expression)
-                    .unwrap();
-
-            assert_eq!(expected_value, value.to_value());
-        };
-
-        run_test(
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
-            Value::String(&StringValueStorage::new("hello world".into())),
-        );
-    }
-
-    #[test]
     fn test_execute_source_mutable_value_expression() {
         let record = TestRecord::new()
             .with_key_value(
@@ -582,7 +543,7 @@ mod tests {
             let execution_context = test.create_execution_context();
 
             {
-                let mut variables = execution_context.get_variables().borrow_mut();
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
 
                 variables.set(
                     "key1",

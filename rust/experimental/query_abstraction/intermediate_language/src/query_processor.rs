@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::grammar_objects::*;
 use std::error::Error;
 use std::fmt;

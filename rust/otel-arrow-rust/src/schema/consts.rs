@@ -1,14 +1,5 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 pub const ID: &str = "id";
 pub const PARENT_ID: &str = "parent_id";
@@ -88,7 +79,14 @@ pub mod metadata {
     pub const COLUMN_ENCODING: &str = "encoding";
 
     pub mod encodings {
+        /// delta encoding
+        pub const DELTA: &str = "delta";
+
         /// plain encoding - e.g. the values in the array are not encoded
         pub const PLAIN: &str = "plain";
+
+        /// quasi-delta encoding - in this encoding scheme subsequent runs of matching columns
+        /// will have the parent_id field delta encoded.
+        pub const QUASI_DELTA: &str = "quasidelta";
     }
 }

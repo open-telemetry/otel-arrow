@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{cell::RefCell, collections::HashMap};
 
 use data_engine_expressions::*;
@@ -6,20 +9,20 @@ use sha2::{Digest, Sha256};
 use crate::{execution_context::ExecutionContext, *};
 
 #[derive(Debug)]
-pub(crate) struct Summaries {
+pub(crate) struct Summaries<'a> {
     cardinality_limit: usize,
-    pub values: RefCell<HashMap<String, Summary>>,
+    pub values: RefCell<HashMap<String, Summary<'a>>>,
 }
 
-impl Summaries {
-    pub fn new(cardinality_limit: usize) -> Summaries {
+impl<'a> Summaries<'a> {
+    pub fn new(cardinality_limit: usize) -> Summaries<'a> {
         Self {
             cardinality_limit,
             values: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn create_or_update_summary<'a, T: Record>(
+    pub fn create_or_update_summary<T: Record>(
         &self,
         execution_context: &ExecutionContext<'a, '_, '_, T>,
         summary_data_expression: &'a SummaryDataExpression,
@@ -35,11 +38,7 @@ impl Summaries {
         let summary_data = values.get_mut(&summary_id);
 
         if let Some(summary) = summary_data {
-            summary.update(
-                execution_context,
-                summary_data_expression,
-                aggregation_values,
-            );
+            summary.update(execution_context, aggregation_values);
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -60,6 +59,7 @@ impl Summaries {
         }
 
         let summary = Summary::new(
+            summary_data_expression,
             Vec::from_iter(group_by_values.drain(..).map(|(k, v)| (k, v.into()))),
             HashMap::from_iter(aggregation_values.drain().map(|(k, v)| (k, v.into()))),
         );
@@ -77,26 +77,28 @@ impl Summaries {
 }
 
 #[derive(Debug)]
-pub(crate) struct Summary {
+pub(crate) struct Summary<'a> {
+    pub summary_data_expression: &'a SummaryDataExpression,
     pub group_by_values: Vec<(Box<str>, OwnedValue)>,
     pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
 }
 
-impl Summary {
+impl<'a> Summary<'a> {
     pub fn new(
+        summary_data_expression: &'a SummaryDataExpression,
         group_by_values: Vec<(Box<str>, OwnedValue)>,
         aggregation_values: HashMap<Box<str>, SummaryAggregation>,
-    ) -> Summary {
+    ) -> Summary<'a> {
         Self {
+            summary_data_expression,
             group_by_values,
             aggregation_values,
         }
     }
 
-    pub(crate) fn update<'a, T: Record>(
+    pub(crate) fn update<T: Record>(
         &mut self,
         execution_context: &ExecutionContext<'a, '_, '_, T>,
-        summary_data_expression: &'a SummaryDataExpression,
         aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         for (key, aggregation) in aggregation_values {
@@ -129,7 +131,7 @@ impl Summary {
                     if let SummaryAggregationUpdate::Maximum(v) = aggregation {
                         let right_value = v.to_value();
                         match Value::compare_values(
-                            summary_data_expression.get_query_location(),
+                            self.summary_data_expression.get_query_location(),
                             &max.to_value(),
                             &right_value,
                         ) {
@@ -141,7 +143,7 @@ impl Summary {
                             Err(_) => {
                                 execution_context.add_diagnostic_if_enabled(
                                     RecordSetEngineDiagnosticLevel::Warn,
-                                    summary_data_expression,
+                                    self.summary_data_expression,
                                     || format!("Max aggregation cannot compare values of '{:?}' and '{:?}' types", max.get_value_type(), right_value.get_value_type()));
                             }
                         }
@@ -153,7 +155,7 @@ impl Summary {
                     if let SummaryAggregationUpdate::Minimum(v) = aggregation {
                         let right_value = v.to_value();
                         match Value::compare_values(
-                            summary_data_expression.get_query_location(),
+                            self.summary_data_expression.get_query_location(),
                             &min.to_value(),
                             &right_value,
                         ) {
@@ -165,7 +167,7 @@ impl Summary {
                             Err(_) => {
                                 execution_context.add_diagnostic_if_enabled(
                                     RecordSetEngineDiagnosticLevel::Warn,
-                                    summary_data_expression,
+                                    self.summary_data_expression,
                                     || format!("Min aggregation cannot compare values of '{:?}' and '{:?}' types", min.get_value_type(), right_value.get_value_type()));
                             }
                         }
@@ -187,7 +189,7 @@ impl Summary {
         }
     }
 
-    pub(crate) fn generate_id(group_by_values: &Vec<(Box<str>, ResolvedValue)>) -> String {
+    pub(crate) fn generate_id(group_by_values: &[(Box<str>, ResolvedValue)]) -> String {
         let mut hasher = Sha256::new();
 
         for (key, value) in group_by_values {
@@ -222,6 +224,48 @@ impl Summary {
         let bytes = &hash[..];
 
         hex::encode(bytes)
+    }
+
+    pub fn as_map(&self) -> MapValueStorage<OwnedValue> {
+        let mut values =
+            HashMap::with_capacity(self.group_by_values.len() + self.aggregation_values.len());
+
+        for (key, value) in &self.group_by_values {
+            values.insert(key.clone(), value.clone());
+        }
+
+        for (key, value) in &self.aggregation_values {
+            match value {
+                SummaryAggregation::Average { count, sum } => {
+                    let avg = sum.to_double() / *count as f64;
+
+                    values.insert(
+                        key.clone(),
+                        OwnedValue::Double(DoubleValueStorage::new(avg)),
+                    );
+                }
+                SummaryAggregation::Count(v) => {
+                    values.insert(
+                        key.clone(),
+                        OwnedValue::Integer(IntegerValueStorage::new(*v as i64)),
+                    );
+                }
+                SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
+                    values.insert(key.clone(), v.clone());
+                }
+                SummaryAggregation::Sum(v) => {
+                    let v = match v {
+                        SummaryValue::Double(d) => OwnedValue::Double(DoubleValueStorage::new(*d)),
+                        SummaryValue::Integer(i) => {
+                            OwnedValue::Integer(IntegerValueStorage::new(*i))
+                        }
+                    };
+                    values.insert(key.clone(), v);
+                }
+            }
+        }
+
+        MapValueStorage::new(values)
     }
 }
 

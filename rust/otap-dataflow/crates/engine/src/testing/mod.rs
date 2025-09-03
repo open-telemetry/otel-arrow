@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Common testing utilities for engine components.
@@ -21,8 +22,11 @@ use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 pub mod exporter;
+pub mod node;
 pub mod processor;
 pub mod receiver;
+
+pub use node::{test_node, test_nodes};
 
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]
@@ -57,7 +61,7 @@ impl CtrlMsgCounters {
     }
 
     /// Handles incoming control messages and increments the appropriate counter.
-    pub fn update_with(&self, msg: &NodeControlMsg) {
+    pub fn update_with<PData>(&self, msg: &NodeControlMsg<PData>) {
         match msg {
             NodeControlMsg::TimerTick { .. } => self.increment_timer_tick(),
             NodeControlMsg::Config { .. } => self.increment_config(),

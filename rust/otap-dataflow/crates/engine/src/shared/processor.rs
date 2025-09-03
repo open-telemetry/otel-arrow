@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Set of traits and structures used to implement processors.
@@ -31,11 +32,12 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::message::Message;
+use crate::node::NodeId;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -77,7 +79,7 @@ pub trait Processor<PData> {
         &mut self,
         msg: Message<PData>,
         effect_handler: &mut EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A `Send` implementation of the EffectHandler.
@@ -137,34 +139,40 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ProcessorError`] if the message could not be routed to a port.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
-            None => Err(Error::ProcessorError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
-            }),
+            })),
         }
     }
 
     /// Sends a message to a specific named out port.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
-            None => Err(Error::ProcessorError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.processor_id()
                 ),
-            }),
+            })),
         }
     }
 
@@ -183,7 +191,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
     }
 

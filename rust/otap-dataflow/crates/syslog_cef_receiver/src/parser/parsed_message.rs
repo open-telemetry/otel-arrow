@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::parser::{cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message};
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
@@ -34,7 +34,7 @@ const CEF_SEVERITY: &str = "cef.severity";
 
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ParsedSyslogMessage<'a> {
+pub enum ParsedSyslogMessage<'a> {
     /// RFC 5424 formatted message
     Rfc5424(Rfc5424Message<'a>),
     /// RFC 3164 formatted message

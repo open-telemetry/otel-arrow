@@ -1,12 +1,12 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Common foundation of all effect handlers.
 
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use crate::node::NodeId;
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
-use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -50,9 +50,9 @@ impl EffectHandlerCore {
     pub(crate) async fn info(&self, message: &str) {
         use tokio::io::{AsyncWriteExt, stdout};
         let mut out = stdout();
-        let formatted_message = format!("{message}\n");
         // Ignore write errors as they're typically not recoverable for stdout
-        let _ = out.write_all(formatted_message.as_bytes()).await;
+        let _ = out.write_all(message.as_bytes()).await;
+        let _ = out.write_all(b"\n").await;
         let _ = out.flush().await;
     }
 
@@ -65,15 +65,14 @@ impl EffectHandlerCore {
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
     /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
-    pub(crate) fn tcp_listener<PData>(
+    pub(crate) fn tcp_listener(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
-    ) -> Result<TcpListener, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
+        receiver_id: NodeId,
+    ) -> Result<TcpListener, Error> {
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 
@@ -114,15 +113,14 @@ impl EffectHandlerCore {
     ///
     /// ToDo: return a std::net::UdpSocket instead of a tokio::net::UdpSocket to avoid leaking our current dependency on Tokio.
     #[allow(dead_code)]
-    pub(crate) fn udp_socket<PData>(
+    pub(crate) fn udp_socket(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
-    ) -> Result<UdpSocket, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
+        receiver_id: NodeId,
+    ) -> Result<UdpSocket, Error> {
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 
@@ -154,21 +152,50 @@ impl EffectHandlerCore {
     /// Returns a handle that can be used to cancel the timer.
     ///
     /// Current limitation: The timer can only be started once per node.
-    pub async fn start_periodic_timer<PData>(
+    pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
-                node_id: self.node_id.clone(),
+                node_id: self.node_id.index,
                 duration,
             })
             .await
-            .map_err(Error::PipelineControlMsgError)?;
+            // Drop the SendError
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })?;
 
         Ok(TimerCancelHandle {
+            node_id: self.node_id.index,
+            pipeline_ctrl_msg_sender,
+        })
+    }
+
+    /// Starts a cancellable periodic telemetry collection timer that emits CollectTelemetry on the control channel.
+    /// Returns a handle that can be used to cancel the telemetry timer.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        let pipeline_ctrl_msg_sender = self
+            .pipeline_ctrl_msg_sender
+            .clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::StartTelemetryTimer {
+                node_id: self.node_id.index,
+                duration,
+            })
+            .await
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })?;
+
+        Ok(TelemetryTimerCancelHandle {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
@@ -177,7 +204,7 @@ impl EffectHandlerCore {
 
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
-    node_id: NodeId,
+    node_id: usize,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 
@@ -187,6 +214,23 @@ impl TimerCancelHandle {
         self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTimer {
                 node_id: self.node_id,
+            })
+            .await
+    }
+}
+
+/// Handle to cancel a running telemetry timer.
+pub struct TelemetryTimerCancelHandle {
+    node_id: NodeId,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+}
+
+impl TelemetryTimerCancelHandle {
+    /// Cancels the telemetry collection timer.
+    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
+        self.pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::CancelTelemetryTimer {
+                node_id: self.node_id.index,
             })
             .await
     }

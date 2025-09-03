@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use chrono::Utc;
 use otel_arrow_rust::{
@@ -12,15 +12,23 @@ use otap_df_otap::encoder::error::Result;
 
 use crate::parser::parsed_message::ParsedSyslogMessage;
 
-pub(crate) struct ArrowRecordsBuilder {
+/// Builder for creating Arrow record batches from parsed syslog messages.
+pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
     log_attrs: AttributesRecordBatchBuilder<u16>,
 }
 
+impl Default for ArrowRecordsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArrowRecordsBuilder {
+    /// Creates a new `ArrowRecordsBuilder` instance.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
@@ -34,7 +42,8 @@ impl ArrowRecordsBuilder {
         self.curr_log_id
     }
 
-    pub(crate) fn append_syslog(&mut self, syslog_message: ParsedSyslogMessage<'_>) {
+    /// Appends a parsed syslog message to the builder.
+    pub fn append_syslog(&mut self, syslog_message: ParsedSyslogMessage<'_>) {
         self.logs
             .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64));
 
@@ -56,7 +65,8 @@ impl ArrowRecordsBuilder {
         self.curr_log_id += 1;
     }
 
-    pub(crate) fn build(mut self) -> Result<OtapArrowRecords> {
+    /// Builds the Arrow record batches from the accumulated syslog messages.
+    pub fn build(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
         // All the logs belong to the same resource and scope

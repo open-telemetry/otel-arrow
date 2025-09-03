@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Errors for the controller crate.
@@ -15,6 +16,14 @@ pub enum Error {
         errors: Vec<otap_df_config::error::Error>,
     },
 
+    /// An error originating from the admin module.
+    #[error("Admin module error: {0}")]
+    AdminError(#[from] otap_df_admin::error::Error),
+
+    /// Telemetry system error.
+    #[error("Telemetry error: {0}")]
+    TelemetryError(#[from] otap_df_telemetry::error::Error),
+
     /// Pipeline runtime error.
     #[error("Pipeline runtime error: {source}")]
     PipelineRuntimeError {
@@ -23,11 +32,31 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
     },
 
-    /// Internal controller error (not recoverable).
-    #[error("Internal controller error: {message}")]
-    InternalError {
-        /// Error message describing the thread issue.
+    /// Failed to spawn an OS thread.
+    #[error("Failed to spawn thread '{thread_name}': {source}")]
+    ThreadSpawnError {
+        /// Name of the thread we attempted to spawn.
+        thread_name: String,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Failed to enumerate available CPU cores on this platform.
+    #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
+    CoreDetectionUnavailable,
+
+    /// Invalid or out-of-bounds requested CPU core ID range.
+    #[error("Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}")]
+    InvalidCoreRange {
+        /// Start of the requested range (inclusive).
+        start: usize,
+        /// End of the requested range (inclusive).
+        end: usize,
+        /// Error message.
         message: String,
+        /// The available CPU core IDs detected on this system.
+        available: Vec<usize>,
     },
 
     /// Core affinity error.
@@ -41,12 +70,27 @@ pub enum Error {
         message: String,
     },
 
-    /// Thread panic error.
-    #[error("Thread {thread_id} panicked: {message}")]
+    /// Thread panic error with numeric thread identifier.
+    #[error(
+        "Thread {thread_name}(thread_id: {thread_id}, core_id: {core_id}) panicked: {panic_message}"
+    )]
     ThreadPanic {
+        /// The thread name that panicked.
+        thread_name: String,
         /// The thread ID that panicked.
         thread_id: usize,
+        /// The core ID where the thread was running.
+        core_id: usize,
         /// Panic message.
-        message: String,
+        panic_message: String,
+    },
+
+    /// Thread panic error identified by thread name.
+    #[error("Thread '{thread_name}' panicked: {panic_message}")]
+    ThreadJoinPanic {
+        /// The thread name that panicked.
+        thread_name: String,
+        /// Panic message.
+        panic_message: String,
     },
 }

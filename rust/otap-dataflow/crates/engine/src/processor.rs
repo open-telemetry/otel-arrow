@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Processor wrapper used to provide a unified interface to the pipeline engine that abstracts over
@@ -12,13 +13,13 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{MessageChannel, Receiver, Sender};
-use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
+use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{NodeId, PortName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -30,6 +31,8 @@ use std::sync::Arc;
 pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
+        /// Index node identifier.
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -37,16 +40,18 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg>,
+        control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: LocalReceiver<NodeControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<LocalReceiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// A processor with a `Send` implementation.
     Shared {
+        /// Index node identifier.
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -54,9 +59,9 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg>,
+        control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: SharedReceiver<NodeControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
@@ -94,6 +99,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -105,6 +111,7 @@ impl<PData> ProcessorWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ProcessorWrapper::Local {
+            node_id,
             user_config,
             runtime_config,
             processor: Box::new(processor),
@@ -118,6 +125,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn shared<P>(
         processor: P,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -129,6 +137,7 @@ impl<PData> ProcessorWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ProcessorWrapper::Shared {
+            node_id,
             user_config,
             runtime_config,
             processor: Box::new(processor),
@@ -141,11 +150,11 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Prepare the processor runtime components without starting the processing loop.
     /// This allows external control over the message processing loop.
-    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error<PData>> {
+    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
+                node_id,
                 processor,
-                runtime_config,
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
@@ -154,17 +163,14 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 let message_channel = MessageChannel::new(
                     Receiver::Local(control_receiver),
-                    Receiver::Local(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
+                    pdata_receiver.ok_or_else(|| Error::ProcessorError {
+                        processor: node_id.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
-                    })?),
+                    })?,
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = local::EffectHandler::new(
-                    runtime_config.name.clone(),
-                    pdata_senders,
-                    default_port,
-                );
+                let effect_handler =
+                    local::EffectHandler::new(node_id, pdata_senders, default_port);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -172,8 +178,8 @@ impl<PData> ProcessorWrapper<PData> {
                 })
             }
             ProcessorWrapper::Shared {
+                node_id,
                 processor,
-                runtime_config,
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
@@ -183,16 +189,13 @@ impl<PData> ProcessorWrapper<PData> {
                 let message_channel = MessageChannel::new(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
+                        processor: node_id.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = shared::EffectHandler::new(
-                    runtime_config.name.clone(),
-                    pdata_senders,
-                    default_port,
-                );
+                let effect_handler =
+                    shared::EffectHandler::new(node_id, pdata_senders, default_port);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -203,10 +206,7 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
         let runtime = self.prepare_runtime().await?;
 
         match runtime {
@@ -242,7 +242,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ProcessorWrapper::Local { pdata_receiver, .. } => {
-                Receiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
                 Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
@@ -252,11 +252,18 @@ impl<PData> ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node for ProcessorWrapper<PData> {
+impl<PData> Node<PData> for ProcessorWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ProcessorWrapper::Local { .. } => false,
             ProcessorWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn node_id(&self) -> NodeId {
+        match self {
+            ProcessorWrapper::Local { node_id, .. } => node_id.clone(),
+            ProcessorWrapper::Shared { node_id, .. } => node_id.clone(),
         }
     }
 
@@ -274,7 +281,10 @@ impl<PData> Node for ProcessorWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ProcessorWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -283,14 +293,9 @@ impl<PData> Node for ProcessorWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable for ProcessorWrapper<PData> {
-    /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
-        self.control_sender().send(msg).await
-    }
-
+impl<PData> Controllable<PData> for ProcessorWrapper<PData> {
     /// Returns the control message sender for the processor.
-    fn control_sender(&self) -> Sender<NodeControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ProcessorWrapper::Shared { control_sender, .. } => {
@@ -306,7 +311,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
         node_id: NodeId,
         port: PortName,
         sender: Sender<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, sender) {
             (ProcessorWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
                 let _ = pdata_senders.insert(port, sender);
@@ -333,9 +338,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
         &mut self,
         node_id: NodeId,
         receiver: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, receiver) {
-            (ProcessorWrapper::Local { pdata_receiver, .. }, Receiver::Local(receiver)) => {
+            (ProcessorWrapper::Local { pdata_receiver, .. }, receiver) => {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
@@ -343,13 +348,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
-            (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                error: "Expected a local sender for PData".to_owned(),
-            }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
-                error: "Expected a shared sender for PData".to_owned(),
+                error: "Expected a shared receiver for PData".to_owned(),
             }),
         }
     }
@@ -364,7 +365,7 @@ mod tests {
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
-    use crate::testing::{CtrlMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
@@ -392,7 +393,7 @@ mod tests {
             &mut self,
             msg: Message<TestMsg>,
             effect_handler: &mut local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
@@ -423,7 +424,7 @@ mod tests {
             &mut self,
             msg: Message<TestMsg>,
             effect_handler: &mut shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
@@ -504,6 +505,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::local(
             TestProcessor::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );
@@ -520,6 +522,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::shared(
             TestProcessor::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );

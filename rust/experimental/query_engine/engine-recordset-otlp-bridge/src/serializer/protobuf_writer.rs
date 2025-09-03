@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::{serializer::*, *};

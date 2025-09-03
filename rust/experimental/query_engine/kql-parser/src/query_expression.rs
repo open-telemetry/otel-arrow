@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::Parser;
@@ -64,12 +67,29 @@ pub(crate) fn parse_query(
                         if let MutableValueExpression::Variable(v) = s.get_destination() {
                             let name = v.get_name().get_value();
 
-                            if let ImmutableValueExpression::Scalar(ScalarExpression::Static(s)) =
-                                s.get_source()
-                            {
-                                state.push_constant(name, s.clone());
-                                validated = true;
+                            let mut scalar = s.get_source().clone();
+
+                            if let ScalarExpression::Static(s) = scalar {
+                                state.push_constant(name, s)
+                            } else {
+                                match scalar.try_resolve_static(
+                                    &state.get_pipeline().get_resolution_scope(),
+                                ) {
+                                    Ok(Some(ResolvedStaticScalarExpression::Computed(s))) => {
+                                        state.push_constant(name, s)
+                                    }
+                                    Ok(Some(
+                                        ResolvedStaticScalarExpression::FoldEligibleReference(s),
+                                    )) => state.push_constant(name, s.clone()),
+                                    Ok(None)
+                                    | Ok(Some(ResolvedStaticScalarExpression::Reference(_))) => {
+                                        state.push_global_variable(name, scalar);
+                                    }
+                                    Err(e) => errors.push((&e).into()),
+                                }
                             }
+
+                            validated = true;
                         }
                     }
 
@@ -148,17 +168,70 @@ mod tests {
         );
 
         run_test_success(
+            "let a = 1; let b = a; let c = b;",
+            PipelineExpressionBuilder::new("let a = 1; let b = a; let c = b;")
+                .with_constants(vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                ])
+                .build()
+                .unwrap(),
+        );
+
+        // Note: The let statement becomes an unreferenced folded constant so
+        // the whole expression essentially becomes a no-op.
+        run_test_success(
+            "let var1 = (-toint('1') * -1);",
+            PipelineExpressionBuilder::new("let var1 = (-toint('1') * -1);")
+                .with_constants(vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )])
+                .build()
+                .unwrap(),
+        );
+
+        // Note: var1 becomes a global variable because "now()" cannot be known
+        // statically.
+        run_test_success(
+            "let var1 = now();",
+            PipelineExpressionBuilder::new("let var1 = now();")
+                .with_global_variables(vec![(
+                    "var1",
+                    ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                        NowScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                )])
+                .build()
+                .unwrap(),
+        );
+
+        run_test_success(
             "i | extend a = 1",
             PipelineExpressionBuilder::new("i | extend a = 1")
                 .with_constants(vec![])
                 .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
                     SetTransformExpression::new(
                         QueryLocation::new_fake(),
-                        ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                1,
-                            )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                         )),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -195,14 +268,10 @@ mod tests {
             .with_expressions(vec![
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Constant(
-                        ConstantScalarExpression::Reference(
-                            ReferenceConstantScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueType::Integer,
-                                0,
-                            ),
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::Integer,
+                        0,
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -216,11 +285,8 @@ mod tests {
                 ))),
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -231,12 +297,10 @@ mod tests {
                                     "attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueType::String,
-                                    1,
-                                ),
+                            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::String,
+                                1,
                             )),
                         ]),
                     )),
@@ -253,11 +317,8 @@ mod tests {
                     DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    1,
-                                )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
@@ -273,11 +334,8 @@ mod tests {
                     DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    2,
-                                )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),

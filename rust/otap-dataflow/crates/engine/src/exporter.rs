@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Exporter wrapper used to provide a unified interface to the pipeline engine that abstracts over
@@ -13,12 +14,11 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
 use crate::message::{Receiver, Sender};
-use crate::node::{Node, NodeWithPDataReceiver};
+use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
-use otap_df_config::NodeId;
 use otap_df_config::node::NodeUserConfig;
 use std::sync::Arc;
 
@@ -29,6 +29,8 @@ use std::sync::Arc;
 pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
+        /// Index identifier for the node.
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -36,14 +38,16 @@ pub enum ExporterWrapper<PData> {
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg>,
+        control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<LocalReceiver<NodeControlMsg>>,
+        control_receiver: Option<LocalReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<Receiver<PData>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
+        /// Index identifier for the node.
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -51,23 +55,18 @@ pub enum ExporterWrapper<PData> {
         /// The effect handler instance for the exporter.
         effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg>,
+        control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<SharedReceiver<NodeControlMsg>>,
+        control_receiver: Option<SharedReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
     },
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable for ExporterWrapper<PData> {
-    /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
-        self.control_sender().send(msg).await
-    }
-
+impl<PData> Controllable<PData> for ExporterWrapper<PData> {
     /// Returns the control message sender for the exporter.
-    fn control_sender(&self) -> Sender<NodeControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
             ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ExporterWrapper::Shared { control_sender, .. } => {
@@ -80,7 +79,12 @@ impl<PData> Controllable for ExporterWrapper<PData> {
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
-    pub fn local<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn local<E>(
+        exporter: E,
+        node_id: NodeId,
+        user_config: Arc<NodeUserConfig>,
+        config: &ExporterConfig,
+    ) -> Self
     where
         E: local::Exporter<PData> + 'static,
     {
@@ -88,8 +92,9 @@ impl<PData> ExporterWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
+            node_id: node_id.clone(),
             user_config,
-            effect_handler: local::EffectHandler::new(config.name.clone()),
+            effect_handler: local::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
@@ -99,7 +104,12 @@ impl<PData> ExporterWrapper<PData> {
 
     /// Creates a new shared `ExporterWrapper` with the given exporter and configuration (Send
     /// implementation).
-    pub fn shared<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn shared<E>(
+        exporter: E,
+        node_id: NodeId,
+        user_config: Arc<NodeUserConfig>,
+        config: &ExporterConfig,
+    ) -> Self
     where
         E: shared::Exporter<PData> + 'static,
     {
@@ -107,8 +117,9 @@ impl<PData> ExporterWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
+            node_id: node_id.clone(),
             user_config,
-            effect_handler: shared::EffectHandler::new(config.name.clone()),
+            effect_handler: shared::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
@@ -117,10 +128,7 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
         match self {
             ExporterWrapper::Local {
                 mut effect_handler,
@@ -170,11 +178,18 @@ impl<PData> ExporterWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node for ExporterWrapper<PData> {
+impl<PData> Node<PData> for ExporterWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ExporterWrapper::Local { .. } => false,
             ExporterWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn node_id(&self) -> NodeId {
+        match self {
+            ExporterWrapper::Local { node_id, .. } => node_id.clone(),
+            ExporterWrapper::Shared { node_id, .. } => node_id.clone(),
         }
     }
 
@@ -192,7 +207,10 @@ impl<PData> Node for ExporterWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         match self {
             ExporterWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ExporterWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -205,7 +223,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
         &mut self,
         node_id: NodeId,
         receiver: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, receiver) {
             (ExporterWrapper::Local { pdata_receiver, .. }, receiver) => {
                 *pdata_receiver = Some(receiver);
@@ -217,7 +235,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
                 exporter: node_id,
-                error: "Expected a shared sender for PData".to_owned(),
+                error: "Expected a shared receiver for PData".to_owned(),
             }),
         }
     }
@@ -234,7 +252,7 @@ mod tests {
     use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
-    use crate::testing::{CtrlMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
@@ -265,7 +283,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -300,7 +318,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -362,9 +380,9 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure<T>() -> impl FnOnce(
+    fn validation_procedure() -> impl FnOnce(
         TestContext<TestMsg>,
-        Result<(), Error<T>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx, _| {
             Box::pin(async move {
@@ -384,6 +402,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );
@@ -400,6 +419,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );
@@ -411,11 +431,11 @@ mod tests {
     }
 
     fn make_chan() -> (
-        mpsc::Sender<NodeControlMsg>,
+        mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
         message::MessageChannel<String>,
     ) {
-        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg>::new(10);
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,

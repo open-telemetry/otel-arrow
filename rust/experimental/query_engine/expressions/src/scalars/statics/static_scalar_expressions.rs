@@ -1,6 +1,9 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use regex::Regex;
 
 use crate::*;
@@ -12,6 +15,9 @@ pub enum StaticScalarExpression {
 
     /// Resolve a static bool value provided directly in a query.
     Boolean(BooleanScalarExpression),
+
+    /// Resolve a static value provided by a constant directly in a query.
+    Constant(CopyConstantScalarExpression),
 
     /// Resolve a static DateTime value provided directly in a query.
     DateTime(DateTimeScalarExpression),
@@ -33,9 +39,38 @@ pub enum StaticScalarExpression {
 
     /// Resolve a static string value provided directly in a query.
     String(StringScalarExpression),
+
+    /// Resolve a static TimeSpan value provided directly in a query.
+    TimeSpan(TimeSpanScalarExpression),
 }
 
 impl StaticScalarExpression {
+    pub(crate) fn foldable(&self) -> bool {
+        // Note: The goal here is to diferentiate which statics can be
+        // folded/copied in the expression tree and which ones should always be
+        // referenced.
+        match self {
+            StaticScalarExpression::Array(_) => false,
+            StaticScalarExpression::Boolean(_) => true,
+            StaticScalarExpression::Constant(_) => true,
+            StaticScalarExpression::DateTime(_) => true,
+            StaticScalarExpression::Double(_) => true,
+            StaticScalarExpression::Integer(_) => true,
+            StaticScalarExpression::Map(_) => false,
+            StaticScalarExpression::Null(_) => true,
+            StaticScalarExpression::Regex(_) => false,
+            StaticScalarExpression::String(s) => s.value.len() <= 32,
+            StaticScalarExpression::TimeSpan(_) => true,
+        }
+    }
+
+    pub(crate) fn try_fold(&self) -> Option<StaticScalarExpression> {
+        match self.foldable() {
+            true => Some(self.clone()),
+            false => None,
+        }
+    }
+
     pub fn from_json(
         query_location: QueryLocation,
         input: &str,
@@ -112,6 +147,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => a.get_query_location(),
             StaticScalarExpression::Boolean(b) => b.get_query_location(),
+            StaticScalarExpression::Constant(c) => c.get_query_location(),
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
@@ -119,6 +155,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Null(n) => n.get_query_location(),
             StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
+            StaticScalarExpression::TimeSpan(t) => t.get_query_location(),
         }
     }
 
@@ -126,6 +163,7 @@ impl Expression for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(_) => "StaticScalar(Array)",
             StaticScalarExpression::Boolean(_) => "StaticScalar(Boolean)",
+            StaticScalarExpression::Constant(_) => "StaticScalar(Constant)",
             StaticScalarExpression::DateTime(_) => "StaticScalar(DateTime)",
             StaticScalarExpression::Double(_) => "StaticScalar(Double)",
             StaticScalarExpression::Integer(_) => "StaticScalar(Integer)",
@@ -133,6 +171,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Null(_) => "StaticScalar(Null)",
             StaticScalarExpression::String(_) => "StaticScalar(String)",
             StaticScalarExpression::Regex(_) => "StaticScalar(Regex)",
+            StaticScalarExpression::TimeSpan(_) => "StaticScalar(TimeSpan)",
         }
     }
 }
@@ -142,6 +181,7 @@ impl AsStaticValue for StaticScalarExpression {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
+            StaticScalarExpression::Constant(c) => c.get_value().to_static_value(),
             StaticScalarExpression::DateTime(d) => StaticValue::DateTime(d),
             StaticScalarExpression::Double(d) => StaticValue::Double(d),
             StaticScalarExpression::Integer(i) => StaticValue::Integer(i),
@@ -149,6 +189,7 @@ impl AsStaticValue for StaticScalarExpression {
             StaticScalarExpression::Null(_) => StaticValue::Null,
             StaticScalarExpression::Regex(r) => StaticValue::Regex(r),
             StaticScalarExpression::String(s) => StaticValue::String(s),
+            StaticScalarExpression::TimeSpan(t) => StaticValue::TimeSpan(t),
         }
     }
 }
@@ -181,6 +222,50 @@ impl Expression for BooleanScalarExpression {
 impl BooleanValue for BooleanScalarExpression {
     fn get_value(&self) -> bool {
         self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyConstantScalarExpression {
+    query_location: QueryLocation,
+    constant_id: usize,
+    value: Box<StaticScalarExpression>,
+}
+
+impl CopyConstantScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        constant_id: usize,
+        value: StaticScalarExpression,
+    ) -> CopyConstantScalarExpression {
+        // Note: It doesn't make sense for a constant to point to another
+        // constant so we validate this but if it does happen for some reason it
+        // shouldn't cause any problems.
+        debug_assert!(!matches!(value, StaticScalarExpression::Constant(_)));
+
+        Self {
+            query_location,
+            constant_id,
+            value: value.into(),
+        }
+    }
+
+    pub fn get_constant_id(&self) -> usize {
+        self.constant_id
+    }
+
+    pub fn get_value(&self) -> &StaticScalarExpression {
+        &self.value
+    }
+}
+
+impl Expression for CopyConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CopyConstantScalarExpression"
     }
 }
 
@@ -370,6 +455,37 @@ impl Expression for StringScalarExpression {
 impl StringValue for StringScalarExpression {
     fn get_value(&self) -> &str {
         &self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimeSpanScalarExpression {
+    query_location: QueryLocation,
+    value: TimeDelta,
+}
+
+impl TimeSpanScalarExpression {
+    pub fn new(query_location: QueryLocation, value: TimeDelta) -> TimeSpanScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+}
+
+impl Expression for TimeSpanScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "TimeSpanScalarExpression"
+    }
+}
+
+impl TimeSpanValue for TimeSpanScalarExpression {
+    fn get_value(&self) -> TimeDelta {
+        self.value
     }
 }
 

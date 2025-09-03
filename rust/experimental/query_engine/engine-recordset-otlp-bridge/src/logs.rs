@@ -1,4 +1,7 @@
-use std::{collections::HashMap, mem, time::SystemTime};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::{collections::HashMap, mem};
 
 use data_engine_expressions::*;
 use data_engine_recordset::*;
@@ -31,16 +34,6 @@ impl RecordSet<LogRecord> for ExportLogsServiceRequest {
 }
 
 impl Record for LogRecord {
-    fn get_timestamp(&self) -> Option<SystemTime> {
-        self.timestamp.as_ref().map(|v| v.get_value().into())
-    }
-
-    fn get_observed_timestamp(&self) -> Option<SystemTime> {
-        self.observed_timestamp
-            .as_ref()
-            .map(|v| v.get_value().into())
-    }
-
     fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel> {
         self.diagnostic_level.clone()
     }

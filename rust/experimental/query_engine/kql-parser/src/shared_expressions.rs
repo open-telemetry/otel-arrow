@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -7,10 +10,10 @@ use crate::{
     scalar_primitive_expressions::parse_accessor_expression,
 };
 
-pub(crate) fn parse_assignment_expression(
+pub(crate) fn parse_source_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
-    state: &ParserState,
-) -> Result<TransformExpression, ParserError> {
+    scope: &dyn ParserScope,
+) -> Result<(QueryLocation, ScalarExpression, SourceScalarExpression), ParserError> {
     let query_location = to_query_location(&assignment_expression_rule);
 
     let mut assignment_rules = assignment_expression_rule.into_inner();
@@ -26,7 +29,7 @@ pub(crate) fn parse_assignment_expression(
         // String("constant1") = [expression] we need to treat the accessor in
         // this case as an assignment on the source
         // Source(MapKey("some_constant1")) = [expression].
-        Rule::accessor_expression => parse_accessor_expression(destination_rule, state, false)?,
+        Rule::accessor_expression => parse_accessor_expression(destination_rule, scope, false)?,
         _ => panic!("Unexpected rule in assignment_expression: {destination_rule}"),
     };
 
@@ -42,14 +45,13 @@ pub(crate) fn parse_assignment_expression(
                 ));
             }
 
-            MutableValueExpression::Source(s)
+            s
         }
-        ScalarExpression::Variable(v) => MutableValueExpression::Variable(v),
         _ => {
             return Err(ParserError::SyntaxError(
                 destination_rule_location,
                 format!(
-                    "'{}' destination accessor must refer to source or a variable to be used in an assignment expression",
+                    "'{}' destination accessor must refer to source to be used in an assignment expression",
                     destination_rule_str.trim()
                 ),
             ));
@@ -59,20 +61,16 @@ pub(crate) fn parse_assignment_expression(
     let source_rule = assignment_rules.next().unwrap();
 
     let scalar = match source_rule.as_rule() {
-        Rule::scalar_expression => parse_scalar_expression(source_rule, state)?,
+        Rule::scalar_expression => parse_scalar_expression(source_rule, scope)?,
         _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
 
-    Ok(TransformExpression::Set(SetTransformExpression::new(
-        query_location,
-        ImmutableValueExpression::Scalar(scalar),
-        destination,
-    )))
+    Ok((query_location, scalar, destination))
 }
 
 pub(crate) fn parse_let_expression(
     let_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError> {
     let query_location = to_query_location(&let_expression_rule);
 
@@ -81,7 +79,7 @@ pub(crate) fn parse_let_expression(
     let identifier_rule = let_rules.next().unwrap();
 
     let name = identifier_rule.as_str().trim();
-    if state.is_well_defined_identifier(name) {
+    if scope.is_well_defined_identifier(name) {
         return Err(ParserError::QueryLanguageDiagnostic {
             location: to_query_location(&identifier_rule).clone(),
             diagnostic_id: "KS201",
@@ -91,11 +89,11 @@ pub(crate) fn parse_let_expression(
 
     let identifier = StringScalarExpression::new(to_query_location(&identifier_rule), name);
 
-    let scalar = parse_scalar_expression(let_rules.next().unwrap(), state)?;
+    let scalar = parse_scalar_expression(let_rules.next().unwrap(), scope)?;
 
     Ok(TransformExpression::Set(SetTransformExpression::new(
         query_location,
-        ImmutableValueExpression::Scalar(scalar),
+        scalar,
         MutableValueExpression::Variable(VariableScalarExpression::new(
             identifier.get_query_location().clone(),
             identifier,
@@ -113,7 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_assignment_expression() {
+    fn test_parse_source_assignment_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
             let mut state = ParserState::new_with_options(
                 input,
@@ -124,9 +122,17 @@ mod tests {
 
             let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
 
-            let expression = parse_assignment_expression(result.next().unwrap(), &state).unwrap();
+            let (query_location, source, destination) =
+                parse_source_assignment_expression(result.next().unwrap(), &state).unwrap();
 
-            assert_eq!(expected, expression);
+            assert_eq!(
+                expected,
+                TransformExpression::Set(SetTransformExpression::new(
+                    query_location,
+                    source,
+                    MutableValueExpression::Source(destination)
+                ))
+            );
         };
 
         let run_test_failure = |input: &str, expected: &str| {
@@ -139,7 +145,8 @@ mod tests {
 
             let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
 
-            let error = parse_assignment_expression(result.next().unwrap(), &state).unwrap_err();
+            let error =
+                parse_source_assignment_expression(result.next().unwrap(), &state).unwrap_err();
 
             if let ParserError::SyntaxError(_, msg) = error {
                 assert_eq!(expected, msg);
@@ -152,11 +159,8 @@ mod tests {
             "new_attribute = 1",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -174,16 +178,17 @@ mod tests {
             "variable = 'hello world'",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hello world",
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
-                MutableValueExpression::Variable(VariableScalarExpression::new(
+                MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
-                    ValueAccessor::new(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "variable",
+                        )),
+                    )]),
                 )),
             )),
         );
@@ -191,11 +196,6 @@ mod tests {
         run_test_failure(
             "source = 1",
             "Cannot write directly to 'source' in an assignment expression use an accessor expression referencing a path on source instead",
-        );
-
-        run_test_failure(
-            "resource.attributes['new_attribute'] = 1",
-            "'resource.attributes['new_attribute']' destination accessor must refer to source or a variable to be used in an assignment expression",
         );
     }
 
@@ -245,11 +245,8 @@ mod tests {
             "let var1 = 1;",
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),

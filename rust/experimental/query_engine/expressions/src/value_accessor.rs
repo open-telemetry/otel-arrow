@@ -1,4 +1,7 @@
-use crate::ScalarExpression;
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use crate::*;
 
 /// Contains the rules used to resolve data from a target
 ///
@@ -33,7 +36,7 @@ impl ValueAccessor {
         !self.selectors.is_empty()
     }
 
-    pub fn get_selectors(&self) -> &Vec<ScalarExpression> {
+    pub fn get_selectors(&self) -> &[ScalarExpression] {
         &self.selectors
     }
 
@@ -51,6 +54,16 @@ impl ValueAccessor {
         }
 
         Some(self.selectors.remove(index))
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        for selector in &mut self.selectors {
+            selector.try_resolve_static(scope)?;
+        }
+        Ok(())
     }
 }
 

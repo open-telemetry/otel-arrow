@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,14 +44,14 @@ impl Expression for TransformExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetTransformExpression {
     query_location: QueryLocation,
-    source: ImmutableValueExpression,
+    source: ScalarExpression,
     destination: MutableValueExpression,
 }
 
 impl SetTransformExpression {
     pub fn new(
         query_location: QueryLocation,
-        source: ImmutableValueExpression,
+        source: ScalarExpression,
         destination: MutableValueExpression,
     ) -> SetTransformExpression {
         Self {
@@ -58,7 +61,7 @@ impl SetTransformExpression {
         }
     }
 
-    pub fn get_source(&self) -> &ImmutableValueExpression {
+    pub fn get_source(&self) -> &ScalarExpression {
         &self.source
     }
 
@@ -158,7 +161,7 @@ impl MapKeyListExpression {
         &self.target
     }
 
-    pub fn get_keys(&self) -> &Vec<ScalarExpression> {
+    pub fn get_keys(&self) -> &[ScalarExpression] {
         &self.keys
     }
 }
@@ -245,7 +248,7 @@ impl MapSelectionExpression {
         &self.target
     }
 
-    pub fn get_selectors(&self) -> &Vec<MapSelector> {
+    pub fn get_selectors(&self) -> &[MapSelector] {
         &self.selectors
     }
 

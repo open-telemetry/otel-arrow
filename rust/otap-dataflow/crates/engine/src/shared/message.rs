@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Abstraction to represent generic shared senders and receivers.
@@ -32,6 +33,20 @@ impl<T> SharedSender<T> {
             SharedSender::MpmcSender(sender) => {
                 sender.send(msg).map_err(|e| SendError::Closed(e.0))
             }
+        }
+    }
+
+    /// Attempts to send a message to the channel without awaiting.
+    pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            SharedSender::MpscSender(sender) => sender.try_send(msg).map_err(|e| match e {
+                tokio::sync::mpsc::error::TrySendError::Full(v) => SendError::Full(v),
+                tokio::sync::mpsc::error::TrySendError::Closed(v) => SendError::Closed(v),
+            }),
+            SharedSender::MpmcSender(sender) => sender.try_send(msg).map_err(|e| match e {
+                flume::TrySendError::Full(v) => SendError::Full(v),
+                flume::TrySendError::Disconnected(v) => SendError::Closed(v),
+            }),
         }
     }
 }

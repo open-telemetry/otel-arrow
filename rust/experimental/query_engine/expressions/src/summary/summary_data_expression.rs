@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
 use crate::*;
@@ -7,6 +10,7 @@ pub struct SummaryDataExpression {
     query_location: QueryLocation,
     group_by_expressions: Vec<(Box<str>, ScalarExpression)>,
     aggregation_expressions: Vec<(Box<str>, AggregationExpression)>,
+    post_expressions: Vec<DataExpression>,
 }
 
 impl SummaryDataExpression {
@@ -25,15 +29,29 @@ impl SummaryDataExpression {
             query_location,
             group_by_expressions,
             aggregation_expressions,
+            post_expressions: Vec::new(),
         }
     }
 
-    pub fn get_group_by_expressions(&self) -> &Vec<(Box<str>, ScalarExpression)> {
+    pub fn with_post_expressions(mut self, expressions: Vec<DataExpression>) -> Self {
+        self.post_expressions = expressions;
+        self
+    }
+
+    pub fn get_group_by_expressions(&self) -> &[(Box<str>, ScalarExpression)] {
         &self.group_by_expressions
     }
 
-    pub fn get_aggregation_expressions(&self) -> &Vec<(Box<str>, AggregationExpression)> {
+    pub fn get_aggregation_expressions(&self) -> &[(Box<str>, AggregationExpression)] {
         &self.aggregation_expressions
+    }
+
+    pub fn get_post_expressions(&self) -> &[DataExpression] {
+        &self.post_expressions
+    }
+
+    pub fn push_post_expression(&mut self, expression: DataExpression) {
+        self.post_expressions.push(expression);
     }
 }
 

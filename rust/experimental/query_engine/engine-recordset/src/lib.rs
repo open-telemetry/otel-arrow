@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 pub(crate) mod engine;
 pub(crate) mod engine_diagnostic;
 pub(crate) mod execution_context;

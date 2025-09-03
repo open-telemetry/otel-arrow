@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Trait and structures used to implement local exporters (!Send).
@@ -32,11 +33,11 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
+use crate::node::NodeId;
 use async_trait::async_trait;
-use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -81,7 +82,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.
@@ -122,8 +123,16 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

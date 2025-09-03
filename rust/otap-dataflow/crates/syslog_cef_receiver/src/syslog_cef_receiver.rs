@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
 use otap_df_engine::control::NodeControlMsg;
@@ -62,9 +62,9 @@ impl SyslogCefReceiver {
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_chan: local::ControlChannel,
+        mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         match self.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.listening_addr)?;
@@ -306,7 +306,10 @@ mod tests {
     use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -318,7 +321,7 @@ mod tests {
     /// Test closure that simulates a typical UDP syslog receiver scenario.
     fn udp_scenario(
         listening_addr: SocketAddr,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // Create a UDP socket to send test data
@@ -355,7 +358,7 @@ mod tests {
     /// Test closure that simulates a TCP syslog receiver scenario.
     fn tcp_scenario(
         listening_addr: SocketAddr,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // Connect to the TCP server
@@ -400,7 +403,7 @@ mod tests {
     /// Test closure that simulates a TCP syslog receiver scenario with incomplete lines.
     fn tcp_incomplete_scenario(
         listening_addr: SocketAddr,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // Connect to the TCP server
@@ -824,6 +827,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -848,7 +852,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
@@ -870,7 +879,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime

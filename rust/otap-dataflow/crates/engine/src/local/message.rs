@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Abstraction to represent generic local senders and receivers.
@@ -29,6 +30,14 @@ impl<T> LocalSender<T> {
         match self {
             LocalSender::MpscSender(sender) => sender.send_async(msg).await,
             LocalSender::MpmcSender(sender) => sender.send_async(msg).await,
+        }
+    }
+
+    /// Attempts to send a message without awaiting.
+    pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            LocalSender::MpscSender(sender) => sender.send(msg),
+            LocalSender::MpmcSender(sender) => sender.send(msg),
         }
     }
 }

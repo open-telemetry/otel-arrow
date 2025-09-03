@@ -18,6 +18,8 @@ testing = []
 [dependencies]
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
@@ -27,6 +29,12 @@ tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+flume = { workspace = true }
 
 socket2 = { version = "0.6.0", features = ["all"] }
-flume = { version = "0.11.1", default-features = false, features = ["async"] }
+
+# Deps for generating a unique per-process identifier
+uuid = { workspace = true, features = ["v7"] }
+once_cell = { workspace = true }
+# Base32 encoding
+data-encoding = "2.9.0"

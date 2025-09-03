@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTLP exporter node
@@ -20,11 +21,13 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -55,9 +58,13 @@ pub struct OTLPExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            OTLPExporter::from_config(&node_config.config)?,
+            OTLPExporter::from_config(pipeline, &node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -77,7 +84,10 @@ impl OTLPExporter {
 
     /// Creates a new OTLPExporter from a configuration object
     #[allow(clippy::result_large_err)]
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -97,7 +107,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         effect_handler
             .info(&format!(
                 "Exporting OTLP traffic to gRPC endpoint: {}",
@@ -228,8 +238,10 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::net::TcpListener;
@@ -278,7 +290,7 @@ mod tests {
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
     ) -> impl FnOnce(
         TestContext<OTLPData>,
-        Result<(), Error<OTLPData>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
@@ -366,6 +378,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTLPExporter::new(grpc_endpoint, None),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
