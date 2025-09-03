@@ -1284,8 +1284,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         }
         for batches in batches.iter_mut() {
             if let Some(rb) = batches[payload_type_index].take() {
-                let rb = try_unify_dictionaries(&rb, &dict_fields)?;
-                let rb = try_unify_structs(&rb, &struct_fields)?;
+                let rb = try_unify_dictionaries(&rb, &mut dict_fields)?;
+                let rb = try_unify_structs(&rb, &mut struct_fields)?;
                 let _ = batches[payload_type_index].replace(rb);
             }
         }
@@ -1360,6 +1360,7 @@ struct UnifiedDictionaryTypeSelector {
     total_batch_size: usize,
     values_arrays: Vec<ArrayRef>,
     smallest_key_type: DataType,
+    selected_type: Option<UnifiedDictionaryType>,
 }
 
 impl UnifiedDictionaryTypeSelector {
@@ -1368,6 +1369,7 @@ impl UnifiedDictionaryTypeSelector {
             total_batch_size: 0,
             values_arrays: Vec::new(),
             smallest_key_type: DataType::UInt16,
+            selected_type: None,
         }
     }
 
@@ -1411,15 +1413,23 @@ impl UnifiedDictionaryTypeSelector {
         Ok(())
     }
 
-    fn select_column_data_type(&self) -> Result<UnifiedDictionaryType> {
+    fn select_column_data_type(&mut self) -> Result<UnifiedDictionaryType> {
+        if let Some(selected_type) = &self.selected_type {
+            return Ok(selected_type.clone());
+        }
+
         // check early termination conditions
         if self.total_batch_size <= u8::MAX as usize {
-            return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+            let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt8);
+            self.selected_type = Some(selected_type.clone());
+            return Ok(selected_type);
         }
 
         if self.smallest_key_type == DataType::UInt16 && self.total_batch_size <= u16::MAX as usize
         {
-            return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+            let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
+            self.selected_type = Some(selected_type.clone());
+            return Ok(selected_type);
         }
 
         // iterate the values until we've either visited them all, or at least enough of them that
@@ -1436,7 +1446,9 @@ impl UnifiedDictionaryTypeSelector {
 
                 // check early termination conditions
                 if dedup.len() > u16::MAX as usize {
-                    return Ok(UnifiedDictionaryType::Native);
+                    let selected_type = UnifiedDictionaryType::Native;
+                    self.selected_type = Some(selected_type.clone());
+                    return Ok(selected_type);
                 }
 
                 total_values_visited += 1;
@@ -1447,24 +1459,31 @@ impl UnifiedDictionaryTypeSelector {
                 if possible_max_cardinality < u16::MAX as usize
                     && self.smallest_key_type == DataType::UInt16
                 {
-                    return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+                    let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
+                    self.selected_type = Some(selected_type.clone());
+                    return Ok(selected_type);
                 }
 
                 if possible_max_cardinality <= u8::MAX as usize {
-                    return Ok(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+                    let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt8);
+                    self.selected_type = Some(selected_type.clone());
+                    return Ok(selected_type);
                 }
             }
         }
 
         // we've now visited all the values, so make the determination of key type based on the
         // total cardinality
-        Ok(if dedup.len() <= u8::MAX as usize {
+        let selected_type = if dedup.len() <= u8::MAX as usize {
             UnifiedDictionaryType::Dictionary(self.smallest_key_type.clone())
         } else if dedup.len() <= u16::MAX as usize {
             UnifiedDictionaryType::Dictionary(DataType::UInt16)
         } else {
             UnifiedDictionaryType::Native
-        })
+        };
+        self.selected_type = Some(selected_type.clone());
+
+        Ok(selected_type)
     }
 }
 
@@ -1586,13 +1605,13 @@ fn try_visit_dictionary_values(
 
 fn try_unify_dictionaries(
     record_batch: &RecordBatch,
-    dictionary_fields: &BTreeMap<String, UnifiedDictionaryTypeSelector>,
+    dictionary_fields: &mut BTreeMap<String, UnifiedDictionaryTypeSelector>,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema_ref();
     let mut columns = record_batch.columns().to_vec();
     let mut fields = schema.fields.to_vec();
 
-    for (field_name, dict_type_selector) in dictionary_fields.iter() {
+    for (field_name, dict_type_selector) in dictionary_fields.iter_mut() {
         if let Ok(field_index) = schema.index_of(field_name) {
             let column = &columns[field_index];
             let values_type = match column.data_type() {
@@ -1705,7 +1724,7 @@ fn try_visit_struct_dictionary_values(
 
 fn try_unify_structs(
     record_batch: &RecordBatch,
-    all_struct_fields_defs: &BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
+    all_struct_fields_defs: &mut BTreeMap<String, (Field, BTreeMap<String, StructFieldToUnify>)>,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema_ref();
     let mut rb_fields = schema.fields.to_vec();
@@ -1772,7 +1791,7 @@ fn try_unify_structs(
 
 fn try_unify_struct_fields(
     current_array: &StructArray,
-    desired_fields: &BTreeMap<String, StructFieldToUnify>,
+    desired_fields: &mut BTreeMap<String, StructFieldToUnify>,
 ) -> Result<StructArray> {
     let mut new_fields = Vec::with_capacity(desired_fields.len());
     let mut new_columns = Vec::with_capacity(desired_fields.len());
@@ -1780,7 +1799,7 @@ fn try_unify_struct_fields(
     let curr_fields = current_array.fields();
     for (field_name, desired_struct_field) in desired_fields {
         // determine the correct data type for the column
-        let data_type = match &desired_struct_field.dictionary {
+        let data_type = match &mut desired_struct_field.dictionary {
             // if it's a dictionary column, use the key selector + the values type
             // to compute the type
             Some(dict_key_selector) => {
