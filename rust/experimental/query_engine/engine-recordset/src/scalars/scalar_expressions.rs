@@ -135,7 +135,16 @@ where
                     panic!("Constant for id '{constant_id}' was not found on pipeline")
                 });
 
-            let value = constant.to_value();
+            let value_accessor = c.get_value_accessor();
+
+            let value = match value_accessor.has_selectors() {
+                true => {
+                    let mut selectors = value_accessor.get_selectors().iter();
+
+                    select_from_value(execution_context, constant.to_value(), &mut selectors)?
+                }
+                false => ResolvedValue::Value(constant.to_value()),
+            };
 
             if execution_context
                 .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
@@ -148,7 +157,7 @@ where
                     ));
             }
 
-            Ok(ResolvedValue::Value(value))
+            Ok(value)
         }
         ScalarExpression::Collection(c) => {
             execute_collection_scalar_expression(execution_context, c)
@@ -828,6 +837,16 @@ mod tests {
                 .with_constants(vec![StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
                 )])
+                .with_constants(vec![StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                ))])
                 .build()
                 .unwrap();
 
@@ -845,8 +864,24 @@ mod tests {
                 QueryLocation::new_fake(),
                 ValueType::Integer,
                 0,
+                ValueAccessor::new(),
             )),
             Value::Integer(&IntegerValueStorage::new(18)),
+        );
+
+        run_test(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                1,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                )]),
+            )),
+            Value::String(&StringValueStorage::new("value1".into())),
         );
     }
 
