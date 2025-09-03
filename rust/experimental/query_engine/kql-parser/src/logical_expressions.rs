@@ -556,12 +556,10 @@ mod tests {
                         )),
                     )]),
                 )),
-                ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                    ReferenceConstantScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueType::Regex,
-                        0,
-                    ),
+                ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueType::Regex,
+                    0,
                 )),
             )),
         );
