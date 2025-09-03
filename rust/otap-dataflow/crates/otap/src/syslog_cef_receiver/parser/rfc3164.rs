@@ -4,7 +4,7 @@
 /// RFC 3164 message structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rfc3164Message<'a> {
-    pub(super) priority: crate::parser::Priority,
+    pub(super) priority: crate::syslog_cef_receiver::parser::Priority,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
     pub(super) tag: Option<&'a [u8]>,
@@ -14,8 +14,10 @@ pub struct Rfc3164Message<'a> {
 }
 
 /// Parse an RFC 3164 syslog message
-pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, crate::parser::ParseError> {
-    let (priority, mut remaining) = crate::parser::parse_priority(input)?;
+pub fn parse_rfc3164(
+    input: &[u8],
+) -> Result<Rfc3164Message<'_>, crate::syslog_cef_receiver::parser::ParseError> {
+    let (priority, mut remaining) = crate::syslog_cef_receiver::parser::parse_priority(input)?;
 
     // Parse timestamp (optional)
     let (timestamp, rest) = if remaining.len() >= 15 {
@@ -80,7 +82,7 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, crate::parser::
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::*;
+    use crate::syslog_cef_receiver::parser::*;
 
     #[test]
     fn test_rfc3164_parsing() {

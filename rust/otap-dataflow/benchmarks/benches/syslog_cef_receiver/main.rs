@@ -6,11 +6,11 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_syslog_cef::arrow_records_encoder::ArrowRecordsBuilder;
-use otap_df_syslog_cef::parser::cef::parse_cef;
-use otap_df_syslog_cef::parser::parsed_message::ParsedSyslogMessage;
-use otap_df_syslog_cef::parser::rfc3164::parse_rfc3164;
-use otap_df_syslog_cef::parser::rfc5424::parse_rfc5424;
+use otap_df_otap::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
+use otap_df_otap::syslog_cef_receiver::parser::cef::parse_cef;
+use otap_df_otap::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+use otap_df_otap::syslog_cef_receiver::parser::rfc3164::parse_rfc3164;
+use otap_df_otap::syslog_cef_receiver::parser::rfc5424::parse_rfc5424;
 use std::hint::black_box;
 
 // Static test messages for benchmarking

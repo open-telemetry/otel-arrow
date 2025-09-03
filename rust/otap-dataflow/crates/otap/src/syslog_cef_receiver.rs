@@ -1,18 +1,31 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use self::arrow_records_encoder::ArrowRecordsBuilder;
+use crate::OTAP_RECEIVER_FACTORIES;
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{error::Error, local::receiver as local};
-use otap_df_otap::pdata::OtapPdata;
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::arrow_records_encoder::ArrowRecordsBuilder;
+/// Arrow records encoder for syslog messages
+pub mod arrow_records_encoder;
+/// Parser module for syslog message parsing
+pub mod parser;
 
-#[allow(dead_code)]
-const SYLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+/// URN for the syslog cef receiver
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn::otel::syslog_cef::receiver";
 
 const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
@@ -57,6 +70,24 @@ impl SyslogCefReceiver {
         }
     }
 }
+
+/// Add the syslog receiver to the receiver factory
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_RECEIVER_FACTORIES)]
+pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: SYSLOG_CEF_RECEIVER_URN,
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
+        Ok(ReceiverWrapper::local(
+            SyslogCefReceiver::from_config(&node_config.config),
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
+};
 
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
@@ -125,7 +156,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 } else {
                                                                     &line_bytes[..]
                                                                 };
-                                                                if let Ok(parsed_message) = crate::parser::parse(message_bytes) {
+                                                                if let Ok(parsed_message) = parser::parse(message_bytes) {
                                                                     arrow_records_builder.append_syslog(parsed_message);
                                                                 }
                                                             }
@@ -153,7 +184,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 &line_bytes[..]
                                                             };
 
-                                                            let parsed_message = match crate::parser::parse(message_to_parse) {
+                                                            let parsed_message = match parser::parse(message_to_parse) {
                                                                 Ok(parsed) => parsed,
                                                                 Err(_e) => {
                                                                     // ToDo: Handle parsing error (log, emit metrics, etc.)
@@ -251,7 +282,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 Ok((n, _peer_addr)) => {
                                     // ToDo: Validate the received data before processing
                                     // ToDo: Consider logging or using peer_addr for security/auditing
-                                    let parsed_message = match crate::parser::parse(&buf[..n]) {
+                                    let parsed_message = match parser::parse(&buf[..n]) {
                                         Ok(parsed) => parsed,
                                         Err(_e) => {
                                             // ToDo: Handle parsing error (log, emit metrics, etc.)
@@ -824,7 +855,7 @@ mod tests {
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our UDP receiver
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
             test_node(test_runtime.config().name.clone()),
@@ -851,7 +882,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
@@ -878,7 +909,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
