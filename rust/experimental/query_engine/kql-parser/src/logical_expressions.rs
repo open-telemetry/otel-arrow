@@ -560,6 +560,7 @@ mod tests {
                     QueryLocation::new_fake(),
                     ValueType::Regex,
                     0,
+                    ValueAccessor::new(),
                 )),
             )),
         );
