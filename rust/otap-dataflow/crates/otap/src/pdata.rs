@@ -191,6 +191,25 @@ impl OtapPdata {
     pub fn is_empty(&self) -> bool {
         self.payload.is_empty()
     }
+
+    /// Removes the payload from this request, leaving an empty request.
+    #[must_use]
+    pub fn take_payload(&mut self) -> OtapPayload {
+        self.payload.take_payload()
+    }
+
+    /// Drops the payload from this request, leaving an empty request.
+    pub fn drop_payload(&mut self) {
+        _ = self.payload.take_payload();
+    }
+
+    /// Returns the number of items of the primary signal (spans, data
+    /// points, log records). For testing, consumes.
+    #[cfg(test)]
+    #[must_use]
+    pub fn num_items(self) -> usize {
+        self.payload.num_items()
+    }
 }
 
 impl OtapPayload {
@@ -215,6 +234,16 @@ impl OtapPayload {
         }
     }
 
+    /// Removes the payload from this request, leaving an empty request.
+    #[must_use]
+    pub fn take_payload(&mut self) -> Self {
+        match self {
+            Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
+            Self::OtapArrowBytes(value) => Self::OtapArrowBytes(value.take_payload()),
+            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
+        }
+    }
+
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
     #[cfg(test)]
@@ -231,11 +260,11 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-trait OtapPdataHelpers: Clone + Into<OtapPayload> {
+pub trait OtapPayloadExt: Clone + Into<OtapPayload> {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 
-    /// Number of items
+    /// Number of items. For testing, consumes the object. ToDo.
     #[cfg(test)]
     fn num_items(self) -> usize;
 
@@ -244,9 +273,12 @@ trait OtapPdataHelpers: Clone + Into<OtapPayload> {
 
     /// Make an empty clone (preserve signal type).
     fn clone_empty(&self) -> Self;
+
+    /// Takes the payload, leaving an empty payload behind.
+    fn take_payload(&mut self) -> Self;
 }
 
-impl OtapPdataHelpers for OtapArrowRecords {
+impl OtapPayloadExt for OtapArrowRecords {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::Logs(_) => SignalType::Logs,
@@ -260,6 +292,14 @@ impl OtapPdataHelpers for OtapArrowRecords {
             Self::Logs(_) => Self::Logs(Default::default()),
             Self::Metrics(_) => Self::Metrics(Default::default()),
             Self::Traces(_) => Self::Traces(Default::default()),
+        }
+    }
+
+    fn take_payload(&mut self) -> Self {
+        match self {
+            Self::Logs(value) => Self::Logs(std::mem::take(value)),
+            Self::Metrics(value) => Self::Metrics(std::mem::take(value)),
+            Self::Traces(value) => Self::Traces(std::mem::take(value)),
         }
     }
 
@@ -301,7 +341,7 @@ impl OtapPdataHelpers for OtapArrowRecords {
     }
 }
 
-impl OtapPdataHelpers for OtlpProtoBytes {
+impl OtapPayloadExt for OtlpProtoBytes {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::ExportLogsRequest(_) => SignalType::Logs,
@@ -326,12 +366,19 @@ impl OtapPdataHelpers for OtlpProtoBytes {
         }
     }
 
-    /// Number of items
+    fn take_payload(&mut self) -> Self {
+        match self {
+            Self::ExportLogsRequest(value) => Self::ExportLogsRequest(std::mem::take(value)),
+            Self::ExportMetricsRequest(value) => Self::ExportMetricsRequest(std::mem::take(value)),
+            Self::ExportTracesRequest(value) => Self::ExportTracesRequest(std::mem::take(value)),
+        }
+    }
+
     #[cfg(test)]
     fn num_items(self) -> usize {
         match self {
             Self::ExportLogsRequest(bytes) => {
-                let logs_data_view = RawLogsData::new(bytes);
+                let logs_data_view = RawLogsData::new(&bytes);
                 use otap_df_pdata_views::views::logs::{
                     LogsDataView, ResourceLogsView, ScopeLogsView,
                 };
@@ -342,7 +389,7 @@ impl OtapPdataHelpers for OtlpProtoBytes {
                     .count()
             }
             Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTraceData::new(bytes);
+                let traces_data_view = RawTraceData::new(&bytes);
                 use otap_df_pdata_views::views::trace::{
                     ResourceSpansView, ScopeSpansView, TracesView,
                 };
@@ -360,7 +407,7 @@ impl OtapPdataHelpers for OtlpProtoBytes {
     }
 }
 
-impl OtapPdataHelpers for OtapArrowBytes {
+impl OtapPayloadExt for OtapArrowBytes {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::ArrowLogs(_) => SignalType::Logs,
@@ -383,6 +430,14 @@ impl OtapPdataHelpers for OtapArrowBytes {
             Self::ArrowLogs(data) => data.arrow_payloads.is_empty(),
             Self::ArrowMetrics(data) => data.arrow_payloads.is_empty(),
             Self::ArrowTraces(data) => data.arrow_payloads.is_empty(),
+        }
+    }
+
+    fn take_payload(&mut self) -> Self {
+        match self {
+            Self::ArrowLogs(value) => Self::ArrowLogs(std::mem::take(value)),
+            Self::ArrowMetrics(value) => Self::ArrowMetrics(std::mem::take(value)),
+            Self::ArrowTraces(value) => Self::ArrowTraces(std::mem::take(value)),
         }
     }
 
@@ -416,7 +471,7 @@ impl OtapPdata {
 
     /// Constructs a request holder for returning a retryable request by
     /// cloning the request payload in its (potentially modified) state.
-    pub fn new_reply<T: OtapPdataHelpers>(context: Context, payload: &T) -> Self {
+    pub fn new_reply<T: OtapPayloadExt>(context: Context, payload: &T) -> Self {
         let has_reply = context.has_reply_state();
         Self {
             context: context,
@@ -429,29 +484,19 @@ impl OtapPdata {
     }
 
     /// The return destination of the reply.
-    pub fn return_node_id(&self) -> usize {
-        self.context.as_ref().expect("has context").reply_node_id()
-    }
-
-    /// To form a Nack message, this is the potentially-cloned payload.
-    pub fn take_reply_payload(&mut self) -> Option<OtapPayload> {
-        self.payload.take()
+    pub fn return_node_id(&self) -> Option<usize> {
+        self.context.return_node_id()
     }
 
     /// Removes the current element on stack, drops the node_id
     /// (because it has arrived) and returns the state.
-    pub fn pop_stack(&self) -> ReplyState {
+    pub fn pop_stack(&mut self) -> ReplyState {
         self.context.stack.pop().expect("has_reply").state
-    }
-
-    /// To send the request, take it.
-    pub fn take_request_payload(&mut self) -> OtapPayload {
-        self.payload.take().expect("called once")
     }
 
     /// Take the context.
     pub fn take_context(&mut self) -> Context {
-        self.context.take().expect("called once")
+        std::mem::take(&mut self.context)
     }
 
     /// Mutate the context.
@@ -688,34 +733,34 @@ mod test {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata: OtapPdata = otap_batch.into();
+        let pdata: OtapPayload = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata: OtapPdata = otlp_bytes.into();
+        let pdata: OtapPayload = otlp_bytes.into();
 
         // test can go OtlpProtoBytes -> OTAPData
-        let otap_data: OtapArrowBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
         assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
-        let pdata: OtapPdata = otap_data.into();
+        let pdata: OtapPayload = otap_data.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata: OtapPdata = otlp_bytes.into();
+        let pdata: OtapPayload = otlp_bytes.into();
 
         // test can go otap_batch -> OTAPData
-        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
-        let pdata: OtapPdata = otap_batch.into();
-        let otap_data: OtapArrowBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let pdata: OtapPayload = otap_batch.into();
+        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
         assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
-        let pdata: OtapPdata = otap_data.into();
+        let pdata: OtapPayload = otap_data.into();
 
-        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
     }
 
@@ -726,14 +771,14 @@ mod test {
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata: OtapPdata = otap_batch.into();
+        let pdata: OtapPayload = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -746,14 +791,14 @@ mod test {
     fn roundtrip_otlp_otap_traces(otlp_service_req: ExportTraceServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata: OtapPdata = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
 
         // test can go OtlpBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
-        let pdata: OtapPdata = otap_batch.into();
+        let pdata: OtapPayload = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
             OtlpProtoBytes::ExportTracesRequest(bytes) => bytes,
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -1048,18 +1093,11 @@ mod test {
         assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
 
         // Test signal_type for OtapPdata variants
-        let pdata_logs = OtapPdata::OtlpBytes {
-            context: Default::default(),
-            value: OtlpProtoBytes::ExportLogsRequest(vec![]),
-        };
-        let pdata_metrics = OtapPdata::OtapArrowRecords {
-            context: Default::default(),
-            value: OtapArrowRecords::Metrics(Default::default()),
-        };
-        let pdata_traces = OtapPdata::OtapArrowBytes {
-            context: Default::default(),
-            value: OtapArrowBytes::ArrowTraces(Default::default()),
-        };
+        let pdata_logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
+        let pdata_metrics =
+            OtapPayload::OtapArrowRecords(OtapArrowRecords::Metrics(Default::default()));
+        let pdata_traces =
+            OtapPayload::OtapArrowBytes(OtapArrowBytes::ArrowTraces(Default::default()));
 
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);

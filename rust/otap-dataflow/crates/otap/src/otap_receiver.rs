@@ -289,8 +289,7 @@ mod tests {
                             .await
                             .expect("Timed out waiting for message")
                             .expect("No message received")
-                            .split_into()
-                            .take_request_payload()
+                            .take_payload()
                             .try_into()
                             .expect("Could convert pdata to OTAPData");
 
@@ -305,8 +304,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .split_into()
-                        .take_request_payload()
+                        .take_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -322,8 +320,7 @@ mod tests {
                             .await
                             .expect("Timed out waiting for message")
                             .expect("No message received")
-                            .split_into()
-                            .take_request_payload()
+                            .take_payload()
                             .try_into()
                             .expect("Could convert pdata to OTAPData");
 

@@ -102,25 +102,26 @@ impl OTAPExporter {
         mut reply: OtapPdata,
         status: Option<BatchStatus>,
     ) -> Result<(), Error> {
-        effect_handler
-            .reply(reply.return_node_id(), {
-                let (code, message) = status
-                    .map(|batch| (batch.status_code, batch.status_message))
-                    .unwrap_or_else(|| (tonic::Code::Internal as i32, "no reply status".into()));
+        let (code, message) = status
+            .map(|batch| (batch.status_code, batch.status_message))
+            .unwrap_or_else(|| (tonic::Code::Internal as i32, "no reply status".into()));
 
-                if code == (tonic::Code::Ok as i32) {
-                    _ = reply.take_reply_payload();
-                    AckOrNack::Ack(AckMsg::new(Box::new(reply), None))
-                } else {
-                    AckOrNack::Nack(NackMsg::new(
-                        Box::new(reply),
-                        message,
-                        code_is_permanent(code),
-                        Some(code),
-                    ))
-                }
-            })
-            .await
+        if let Some(return_to) = reply.return_node_id() {
+            let acknack = if code == (tonic::Code::Ok as i32) {
+                _ = reply.take_payload();
+                AckOrNack::Ack(AckMsg::new(reply, None))
+            } else {
+                AckOrNack::Nack(NackMsg::new(
+                    reply,
+                    message,
+                    code_is_permanent(code),
+                    Some(code),
+                ))
+            };
+
+            effect_handler.reply(return_to, acknack).await?
+        }
+        Ok(())
     }
 
     async fn grpc_status(
@@ -129,18 +130,21 @@ impl OTAPExporter {
         reply: OtapPdata,
         status: Status,
     ) -> Result<(), Error> {
-        effect_handler
-            .reply(
-                reply.return_node_id(),
-                AckOrNack::Nack(NackMsg::new(
-                    Box::new(reply),
-                    status.message().to_string(),
-                    // Since this is a stsream failure...
-                    false,
-                    Some(status.code() as i32),
-                )),
-            )
-            .await
+        if let Some(return_to) = reply.return_node_id() {
+            effect_handler
+                .reply(
+                    return_to,
+                    AckOrNack::Nack(NackMsg::new(
+                        reply,
+                        status.message().to_string(),
+                        // Since this is a stsream failure...
+                        false,
+                        Some(status.code() as i32),
+                    )),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     async fn respond_for(
@@ -227,7 +231,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     // desired form, enabling efficient retry. We
                     // would prefer to let Tonic borrow the request
                     // instead of clone. TODO later, not sure how.
-                    let payload = message.take_request_payload();
+                    let payload = message.take_payload();
                     let requested: OtapArrowBytes = payload.try_into()?;
                     let save_reply = OtapPdata::new_reply(message.take_context(), &requested);
 
@@ -373,7 +377,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_request_payload()
+                        .take_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -389,7 +393,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_request_payload()
+                        .take_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
@@ -401,7 +405,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_request_payload()
+                        .take_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 

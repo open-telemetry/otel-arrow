@@ -184,7 +184,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_) => Ok(()),
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 // Fast path: no actions to apply
                 if self.transform.rename.is_none() && self.transform.delete.is_none() {
                     return effect_handler
@@ -194,8 +194,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let mut records: OtapArrowRecords =
-                    pdata.split_into().take_request_payload().try_into()?;
+                let mut records: OtapArrowRecords = pdata.take_payload().try_into()?;
 
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
@@ -441,18 +440,18 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 // capture output
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").take_payload();
 
                 // Convert output to OTLP bytes for easy assertions
-                let otlp_bytes: OtlpProtoBytes =
-                    first.try_into().map(|(_, v)| v).expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),

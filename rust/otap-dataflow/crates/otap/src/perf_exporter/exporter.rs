@@ -127,9 +127,8 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(pdata) => {
-                    let rbatch: Result<OtapArrowBytes, _> =
-                        pdata.split_into().take_request_payload().try_into();
+                Message::PData(mut pdata) => {
+                    let rbatch: Result<OtapArrowBytes, _> = pdata.take_payload().try_into();
 
                     let batch = match rbatch {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,

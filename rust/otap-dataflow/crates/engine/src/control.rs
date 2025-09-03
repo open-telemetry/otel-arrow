@@ -22,8 +22,11 @@ pub struct AckMsg<PData> {
 
 impl<PData> AckMsg<PData> {
     /// Create a new Ack message
-    pub fn new(context: Box<PData>, rejected: Option<(i64, String)>) -> Self {
-        Self { context, rejected }
+    pub fn new(context: PData, rejected: Option<(i64, String)>) -> Self {
+        Self {
+            context: Box::new(context),
+            rejected,
+        }
     }
 }
 
@@ -45,9 +48,9 @@ pub struct NackMsg<PData> {
 
 impl<PData> NackMsg<PData> {
     /// Create a new Nack.
-    pub fn new(request: Box<PData>, reason: String, permanent: bool, code: Option<i32>) -> Self {
+    pub fn new(request: PData, reason: String, permanent: bool, code: Option<i32>) -> Self {
         Self {
-            request,
+            request: Box::new(request),
             reason,
             permanent,
             code,

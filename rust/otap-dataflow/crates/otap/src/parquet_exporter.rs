@@ -174,7 +174,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(mut pdata) => {
-                    let payload = pdata.take_request_payload();
+                    let payload = pdata.take_payload();
                     let requested: OtapArrowRecords = payload.try_into()?;
                     // TODO some kind of guard for reply
                     let save_reply = OtapPdata::new_reply(pdata.take_context(), &requested);
@@ -371,7 +371,8 @@ mod test {
                             }),
                         })
                     }
-                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3);
+                    let pdata3 =
+                        fixtures::create_single_logs_pdata_with_attrs(attrs3).take_payload();
                     let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
@@ -399,7 +400,9 @@ mod test {
                         ArrowPayloadType::LogAttrs,
                         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
                     );
-                    ctx.send_pdata(otap_batch.into()).await.unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
+                        .await
+                        .unwrap();
 
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
@@ -679,7 +682,7 @@ mod test {
             );
             pdata_tx.send(otap_batch).await.unwrap();
 
-            let otap_batch2 = OtapPdata::new_default(
+            let mut otap_batch2: OtapArrowRecords = OtapPdata::new_default(
                 OtapArrowBytes::ArrowLogs(fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         num_rows: 1,
@@ -687,12 +690,10 @@ mod test {
                     },
                 ))
                 .into(),
-            );
-            let mut otap_batch2: OtapArrowRecords = otap_batch2
-                .split_into()
-                .take_request_payload()
-                .try_into()
-                .unwrap();
+            )
+            .take_payload()
+            .try_into()
+            .unwrap();
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
@@ -925,7 +926,7 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 
@@ -986,7 +987,7 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 

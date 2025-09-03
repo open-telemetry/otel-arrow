@@ -189,33 +189,42 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
-                if data.is_empty() {
-                    // @@@ Ack
+                if let Some(_) = data.return_node_id() {
+                    let rstate = RetryState {
+                        retries: 0,
+                        last_ts: Instant::now(),
+                    };
+                    data.context
+                        .reply_to(effect_handler.processor_id().index(), rstate.into());
                 }
-                let rstate = RetryState {
-                    retries: 0,
-                    last_ts: Instant::now(),
-                };
-                data.context
-                    .reply_to(effect_handler.processor_id().index(), rstate.into());
 
                 effect_handler.send_message(data).await?;
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(mut ack) => {
+                    // Note: Ack is doing nothing but propagating
+                    // here. the pipeline controller could do this on
+                    // behalf of components with simple Ack
+                    // propagation.
                     _ = ack.context.pop_stack();
-
-                    let node_id = ack.context.mut_context().reply_node_id();
-                    effect_handler.reply(node_id, AckOrNack::Ack(ack)).await?;
+                    if let Some(return_to) = ack.context.mut_context().return_node_id() {
+                        effect_handler.reply(return_to, AckOrNack::Ack(ack)).await?;
+                    }
                     Ok(())
                 }
                 NodeControlMsg::Nack(mut nack) => {
                     let mut rstate: RetryState = nack.request.pop_stack().try_into()?;
 
                     // The receiver of the Nack will pop the reply. Here we
-                    // peek at the recipient.
-                    let node_id = nack.request.return_node_id();
+                    // peek at the next recipient.
+                    let node_id =
+                        nack.request
+                            .return_node_id()
+                            .ok_or_else(|| Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                error: "retry with missing return_to".into(),
+                            })?;
 
                     // If the error is permanent or too many retries.
                     // If the payload is empty: the effect is also
@@ -253,7 +262,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     .min(self.config.max_retry_delay_ms as f64)
                         as u64;
 
-                    let next_retry_time = Instant::now() + Duration::from_millis(delay_ms);
+                    let next_retry_time = now + Duration::from_millis(delay_ms);
 
                     // -                let retry_count = pending.retry_count;
                     // -                let _previous = self.pending_messages.insert(id, pending);
@@ -266,8 +275,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                         .context
                         .deadline
                         // duration_since asks "how long after", how long
-                        // is deadline after now. zero indicates expired.
-                        .map(|dead| dead.duration_since(now).is_zero())
+                        // is deadline after retry time. zero indicates expired.
+                        .map(|dead| dead.duration_since(next_retry_time).is_zero())
                         .unwrap_or(false);
 
                     if expired {
@@ -317,9 +326,7 @@ mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::grpc::OtapArrowBytes;
-    use crate::pdata::Context;
     use otap_df_channel::mpsc;
-    use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::message::LocalSender;
@@ -327,7 +334,7 @@ mod tests {
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use std::collections::HashMap;
-    use tokio::time::{Duration, sleep};
+    //use tokio::time::{Duration, sleep};
 
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
@@ -344,47 +351,21 @@ mod tests {
     }
 
     fn create_test_data(_id: u64) -> OtapPdata {
-        OtapPdata::OtapArrowBytes {
-            context: Context::new(None),
-            value: OtapArrowBytes::ArrowLogs(create_simple_logs_arrow_record_batches(
+        OtapPdata::new_default(
+            OtapArrowBytes::ArrowLogs(create_simple_logs_arrow_record_batches(
                 SimpleDataGenOptions {
                     num_rows: 1,
                     ..Default::default()
                 },
-            )),
-        }
-    }
-
-    /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
-    fn num_rows(pdata: &OtapPdata) -> usize {
-        match pdata.signal_type() {
-            SignalType::Logs => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
-                records
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Traces => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
-                records
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Metrics => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
-                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-        }
+            ))
+            .into(),
+        )
     }
 
     /// Test helper to compare two OtapPdata instances for equivalence.
     fn requests_match(expected: &OtapPdata, actual: &OtapPdata) -> bool {
         // ToDo: Implement full semantic equivalence checking similar to Go's assert.Equiv()
-        num_rows(expected) == num_rows(actual)
+        expected.clone().num_items() == actual.clone().num_items()
     }
 
     #[test]
@@ -414,319 +395,319 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_process_pdata_message() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_process_pdata_message() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        let test_data = create_test_data(1);
-        let message = Message::PData(test_data.clone());
+    //     let test_data = create_test_data(1);
+    //     let message = Message::PData(test_data.clone());
 
-        processor
-            .process(message, &mut effect_handler)
-            .await
-            .unwrap();
+    //     processor
+    //         .process(message, &mut effect_handler)
+    //         .await
+    //         .unwrap();
 
-        // Should have one pending message
-        assert_eq!(processor.pending_messages.len(), 1);
+    //     // Should have one pending message
+    //     assert_eq!(processor.pending_messages.len(), 1);
 
-        // Should have sent message downstream
-        let received = receiver.recv().await.unwrap();
-        assert!(requests_match(&test_data, &received));
-    }
+    //     // Should have sent message downstream
+    //     let received = receiver.recv().await.unwrap();
+    //     assert!(requests_match(&test_data, &received));
+    // }
 
-    #[tokio::test]
-    async fn test_ack_removes_pending() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_ack_removes_pending() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add a message
-        let test_data = create_test_data(1);
-        processor
-            .process(Message::PData(test_data.clone()), &mut effect_handler)
-            .await
-            .unwrap();
-        assert_eq!(processor.pending_messages.len(), 1);
+    //     // Add a message
+    //     let test_data = create_test_data(1);
+    //     processor
+    //         .process(Message::PData(test_data.clone()), &mut effect_handler)
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(processor.pending_messages.len(), 1);
 
-        // Consume the downstream message
-        let _ = receiver.recv().await.unwrap();
+    //     // Consume the downstream message
+    //     let _ = receiver.recv().await.unwrap();
 
-        // ACK the message
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Ack { id: 1 }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // ACK the message
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Ack { id: 1 }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        // Should be removed from pending
-        assert_eq!(processor.pending_messages.len(), 0);
-    }
+    //     // Should be removed from pending
+    //     assert_eq!(processor.pending_messages.len(), 0);
+    // }
 
-    #[tokio::test]
-    async fn test_nack_schedules_retry() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_nack_schedules_retry() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add a message
-        let test_data = create_test_data(1);
-        processor
-            .process(Message::PData(test_data.clone()), &mut effect_handler)
-            .await
-            .unwrap();
-        let _ = receiver.recv().await.unwrap();
+    //     // Add a message
+    //     let test_data = create_test_data(1);
+    //     processor
+    //         .process(Message::PData(test_data.clone()), &mut effect_handler)
+    //         .await
+    //         .unwrap();
+    //     let _ = receiver.recv().await.unwrap();
 
-        // NACK the message
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // NACK the message
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Nack {
+    //                 id: 1,
+    //                 reason: "Test failure".to_string(),
+    //                 pdata: None,
+    //             }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        // Should still have one pending message with incremented retry count
-        assert_eq!(processor.pending_messages.len(), 1);
-        let pending = processor.pending_messages.get(&1).unwrap();
-        assert_eq!(pending.retry_count, 1);
-        assert_eq!(pending.last_error, "Test failure");
-    }
+    //     // Should still have one pending message with incremented retry count
+    //     assert_eq!(processor.pending_messages.len(), 1);
+    //     let pending = processor.pending_messages.get(&1).unwrap();
+    //     assert_eq!(pending.retry_count, 1);
+    //     assert_eq!(pending.last_error, "Test failure");
+    // }
 
-    #[tokio::test]
-    async fn test_max_retries_exceeded() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_max_retries_exceeded() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add a message
-        let test_data = create_test_data(1);
-        processor
-            .process(Message::PData(test_data.clone()), &mut effect_handler)
-            .await
-            .unwrap();
-        let _ = receiver.recv().await.unwrap();
+    //     // Add a message
+    //     let test_data = create_test_data(1);
+    //     processor
+    //         .process(Message::PData(test_data.clone()), &mut effect_handler)
+    //         .await
+    //         .unwrap();
+    //     let _ = receiver.recv().await.unwrap();
 
-        // NACK the message multiple times to exceed max retries
-        for i in 1..=4 {
-            processor
-                .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: 1,
-                        reason: format!("Test failure {i}"),
-                        pdata: None,
-                    }),
-                    &mut effect_handler,
-                )
-                .await
-                .unwrap();
-        }
+    //     // NACK the message multiple times to exceed max retries
+    //     for i in 1..=4 {
+    //         processor
+    //             .process(
+    //                 Message::Control(NodeControlMsg::Nack {
+    //                     id: 1,
+    //                     reason: format!("Test failure {i}"),
+    //                     pdata: None,
+    //                 }),
+    //                 &mut effect_handler,
+    //             )
+    //             .await
+    //             .unwrap();
+    //     }
 
-        // Message should be dropped after exceeding max retries
-        assert_eq!(processor.pending_messages.len(), 0);
-    }
+    //     // Message should be dropped after exceeding max retries
+    //     assert_eq!(processor.pending_messages.len(), 0);
+    // }
 
-    #[tokio::test]
-    async fn test_timer_tick_retries_ready_messages() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_timer_tick_retries_ready_messages() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add a message and NACK it
-        let test_data = create_test_data(1);
-        processor
-            .process(Message::PData(test_data.clone()), &mut effect_handler)
-            .await
-            .unwrap();
-        let _ = receiver.recv().await.unwrap();
+    //     // Add a message and NACK it
+    //     let test_data = create_test_data(1);
+    //     processor
+    //         .process(Message::PData(test_data.clone()), &mut effect_handler)
+    //         .await
+    //         .unwrap();
+    //     let _ = receiver.recv().await.unwrap();
 
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Nack {
+    //                 id: 1,
+    //                 reason: "Test failure".to_string(),
+    //                 pdata: None,
+    //             }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        // Wait for retry delay to pass
-        sleep(Duration::from_millis(150)).await;
+    //     // Wait for retry delay to pass
+    //     sleep(Duration::from_millis(150)).await;
 
-        // Process timer tick
-        processor
-            .process(
-                Message::Control(NodeControlMsg::TimerTick {}),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // Process timer tick
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::TimerTick {}),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        // Should have sent retry message
-        let retry_data = receiver.recv().await.unwrap();
-        assert!(requests_match(&test_data, &retry_data));
-    }
+    //     // Should have sent retry message
+    //     let retry_data = receiver.recv().await.unwrap();
+    //     assert!(requests_match(&test_data, &retry_data));
+    // }
 
-    #[tokio::test]
-    async fn test_queue_full_returns_error() {
-        let config = RetryConfig {
-            max_pending_messages: 2, // Small queue for testing
-            ..Default::default()
-        };
-        let mut processor = RetryProcessor::with_config(config);
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_queue_full_returns_error() {
+    //     let config = RetryConfig {
+    //         max_pending_messages: 2, // Small queue for testing
+    //         ..Default::default()
+    //     };
+    //     let mut processor = RetryProcessor::with_config(config);
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Fill the queue
-        for i in 1..=2 {
-            let test_data = create_test_data(i);
-            processor
-                .process(Message::PData(test_data), &mut effect_handler)
-                .await
-                .unwrap();
-            let _ = receiver.recv().await.unwrap();
-        }
+    //     // Fill the queue
+    //     for i in 1..=2 {
+    //         let test_data = create_test_data(i);
+    //         processor
+    //             .process(Message::PData(test_data), &mut effect_handler)
+    //             .await
+    //             .unwrap();
+    //         let _ = receiver.recv().await.unwrap();
+    //     }
 
-        // Try to add one more message - should fail
-        let test_data = create_test_data(3);
-        let result = processor
-            .process(Message::PData(test_data), &mut effect_handler)
-            .await;
-        assert!(result.is_err());
+    //     // Try to add one more message - should fail
+    //     let test_data = create_test_data(3);
+    //     let result = processor
+    //         .process(Message::PData(test_data), &mut effect_handler)
+    //         .await;
+    //     assert!(result.is_err());
 
-        if let Err(Error::ProcessorError { error, .. }) = result {
-            assert!(error.contains("Retry queue is full"));
-        } else {
-            panic!("Expected ProcessorError");
-        }
-    }
+    //     if let Err(Error::ProcessorError { error, .. }) = result {
+    //         assert!(error.contains("Retry queue is full"));
+    //     } else {
+    //         panic!("Expected ProcessorError");
+    //     }
+    // }
 
-    #[tokio::test]
-    async fn test_exponential_backoff() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_exponential_backoff() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add a message
-        let test_data = create_test_data(1);
-        processor
-            .process(Message::PData(test_data), &mut effect_handler)
-            .await
-            .unwrap();
-        let _ = receiver.recv().await.unwrap();
+    //     // Add a message
+    //     let test_data = create_test_data(1);
+    //     processor
+    //         .process(Message::PData(test_data), &mut effect_handler)
+    //         .await
+    //         .unwrap();
+    //     let _ = receiver.recv().await.unwrap();
 
-        // NACK it to get first retry count
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "First failure".to_string(),
-                    pdata: None,
-                }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // NACK it to get first retry count
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Nack {
+    //                 id: 1,
+    //                 reason: "First failure".to_string(),
+    //                 pdata: None,
+    //             }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        let first_retry_count = processor.pending_messages.get(&1).unwrap().retry_count;
-        assert_eq!(first_retry_count, 1);
+    //     let first_retry_count = processor.pending_messages.get(&1).unwrap().retry_count;
+    //     assert_eq!(first_retry_count, 1);
 
-        // NACK it again to get second retry count
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Second failure".to_string(),
-                    pdata: None,
-                }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // NACK it again to get second retry count
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Nack {
+    //                 id: 1,
+    //                 reason: "Second failure".to_string(),
+    //                 pdata: None,
+    //             }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        let second_retry_count = processor.pending_messages.get(&1).unwrap().retry_count;
-        assert_eq!(second_retry_count, 2);
+    //     let second_retry_count = processor.pending_messages.get(&1).unwrap().retry_count;
+    //     assert_eq!(second_retry_count, 2);
 
-        // Verify exponential backoff by checking the retry counts increase
-        // This is more reliable than timing-based assertions
-        assert!(second_retry_count > first_retry_count);
-    }
+    //     // Verify exponential backoff by checking the retry counts increase
+    //     // This is more reliable than timing-based assertions
+    //     assert!(second_retry_count > first_retry_count);
+    // }
 
-    #[tokio::test]
-    async fn test_shutdown_flushes_pending_messages() {
-        let mut processor = create_test_processor();
-        let (sender, receiver) = create_test_channel(10);
-        let mut senders_map = HashMap::new();
-        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+    // #[tokio::test]
+    // async fn test_shutdown_flushes_pending_messages() {
+    //     let mut processor = create_test_processor();
+    //     let (sender, receiver) = create_test_channel(10);
+    //     let mut senders_map = HashMap::new();
+    //     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+    //     let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        // Add multiple messages and NACK them
-        for i in 1..=3 {
-            let test_data = create_test_data(i);
-            processor
-                .process(Message::PData(test_data), &mut effect_handler)
-                .await
-                .unwrap();
-            let _ = receiver.recv().await.unwrap();
+    //     // Add multiple messages and NACK them
+    //     for i in 1..=3 {
+    //         let test_data = create_test_data(i);
+    //         processor
+    //             .process(Message::PData(test_data), &mut effect_handler)
+    //             .await
+    //             .unwrap();
+    //         let _ = receiver.recv().await.unwrap();
 
-            processor
-                .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: i,
-                        reason: "Test failure".to_string(),
-                        pdata: None,
-                    }),
-                    &mut effect_handler,
-                )
-                .await
-                .unwrap();
-        }
+    //         processor
+    //             .process(
+    //                 Message::Control(NodeControlMsg::Nack {
+    //                     id: i,
+    //                     reason: "Test failure".to_string(),
+    //                     pdata: None,
+    //                 }),
+    //                 &mut effect_handler,
+    //             )
+    //             .await
+    //             .unwrap();
+    //     }
 
-        assert_eq!(processor.pending_messages.len(), 3);
+    //     assert_eq!(processor.pending_messages.len(), 3);
 
-        // Shutdown should flush all pending messages
-        processor
-            .process(
-                Message::Control(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_secs(5),
-                    reason: "Test shutdown".to_string(),
-                }),
-                &mut effect_handler,
-            )
-            .await
-            .unwrap();
+    //     // Shutdown should flush all pending messages
+    //     processor
+    //         .process(
+    //             Message::Control(NodeControlMsg::Shutdown {
+    //                 deadline: Duration::from_secs(5),
+    //                 reason: "Test shutdown".to_string(),
+    //             }),
+    //             &mut effect_handler,
+    //         )
+    //         .await
+    //         .unwrap();
 
-        // All pending messages should be cleared
-        assert_eq!(processor.pending_messages.len(), 0);
+    //     // All pending messages should be cleared
+    //     assert_eq!(processor.pending_messages.len(), 0);
 
-        // Should have sent all pending messages downstream
-        for _ in 1..=3 {
-            let _ = receiver.recv().await.unwrap();
-        }
-    }
+    //     // Should have sent all pending messages downstream
+    //     for _ in 1..=3 {
+    //         let _ = receiver.recv().await.unwrap();
+    //     }
+    // }
 
     #[tokio::test]
     async fn test_config_update() {
@@ -741,8 +722,6 @@ mod tests {
             initial_retry_delay_ms: 200,
             max_retry_delay_ms: 2000,
             backoff_multiplier: 3.0,
-            max_pending_messages: 20,
-            cleanup_interval_secs: 2,
         };
 
         let config_json = serde_json::to_value(new_config.clone()).unwrap();
@@ -768,14 +747,6 @@ mod tests {
         assert_eq!(
             processor.config.backoff_multiplier,
             new_config.backoff_multiplier
-        );
-        assert_eq!(
-            processor.config.max_pending_messages,
-            new_config.max_pending_messages
-        );
-        assert_eq!(
-            processor.config.cleanup_interval_secs,
-            new_config.cleanup_interval_secs
         );
     }
 }

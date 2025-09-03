@@ -68,8 +68,8 @@ impl Context {
     }
 
     /// Indicates the return destination by node_id index.
-    pub(crate) fn reply_node_id(&self) -> usize {
-        self.stack.last().expect("has_reply_state").node_id
+    pub(crate) fn return_node_id(&self) -> Option<usize> {
+        self.stack.last().map(|r| r.node_id)
     }
 }
 

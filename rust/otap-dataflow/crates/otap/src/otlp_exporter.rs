@@ -88,13 +88,16 @@ impl OTLPExporter {
         rejected: i64,
         message: String,
     ) -> Result<(), Error> {
-        _ = reply.take_reply_payload();
-        effect_handler
-            .reply(
-                reply.return_node_id(),
-                AckOrNack::Ack(AckMsg::new(Box::new(reply), Some((rejected, message)))),
-            )
-            .await
+        reply.drop_payload();
+        if let Some(return_to) = reply.return_node_id() {
+            effect_handler
+                .reply(
+                    return_to,
+                    AckOrNack::Ack(AckMsg::new(reply, Some((rejected, message)))),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     async fn ok(
@@ -102,13 +105,13 @@ impl OTLPExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         mut reply: OtapPdata,
     ) -> Result<(), Error> {
-        _ = reply.take_reply_payload();
-        effect_handler
-            .reply(
-                reply.return_node_id(),
-                AckOrNack::Ack(AckMsg::new(Box::new(reply), None)),
-            )
-            .await
+        reply.drop_payload();
+        if let Some(return_to) = reply.return_node_id() {
+            effect_handler
+                .reply(return_to, AckOrNack::Ack(AckMsg::new(reply, None)))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn grpc_status(
@@ -117,17 +120,20 @@ impl OTLPExporter {
         reply: OtapPdata,
         status: Status,
     ) -> Result<(), Error> {
-        effect_handler
-            .reply(
-                reply.return_node_id(),
-                AckOrNack::Nack(NackMsg::new(
-                    Box::new(reply),
-                    status.message().to_string(),
-                    code_is_permanent(status.code() as i32),
-                    Some(status.code() as i32),
-                )),
-            )
-            .await
+        if let Some(return_to) = reply.return_node_id() {
+            effect_handler
+                .reply(
+                    return_to,
+                    AckOrNack::Nack(NackMsg::new(
+                        reply,
+                        status.message().to_string(),
+                        code_is_permanent(status.code() as i32),
+                        Some(status.code() as i32),
+                    )),
+                )
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -229,7 +235,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // desired form, enabling efficient retry. We
                     // would prefer to let Tonic borrow the request
                     // instead of clone. TODO later, not sure how.
-                    let payload = data.take_request_payload();
+                    let payload = data.take_payload();
                     let requested: OtlpProtoBytes = payload.try_into()?;
                     let save_reply = OtapPdata::new_reply(data.take_context(), &requested);
 

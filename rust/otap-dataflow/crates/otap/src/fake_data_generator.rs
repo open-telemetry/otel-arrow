@@ -410,10 +410,10 @@ mod tests {
     const MAX_BATCH: usize = 30;
 
     impl From<OtapPdata> for OTLPSignal {
-        fn from(value: OtapPdata) -> Self {
+        fn from(mut value: OtapPdata) -> Self {
             let otlp_bytes: OtlpProtoBytes = value
+                .take_payload()
                 .try_into()
-                .map(|(_, v)| v)
                 .expect("can convert signal to otlp bytes");
             match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(bytes) => {

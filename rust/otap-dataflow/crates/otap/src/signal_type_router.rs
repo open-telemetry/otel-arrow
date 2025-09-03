@@ -199,7 +199,7 @@ mod tests {
                 use crate::grpc::OtapArrowBytes;
                 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
                 let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
-                ctx.process(Message::data_msg(data.into()))
+                ctx.process(Message::data_msg(OtapPdata::new_default(data.into())))
                     .await
                     .expect("data processing failed");
                 let forwarded = ctx.drain_pdata().await;
