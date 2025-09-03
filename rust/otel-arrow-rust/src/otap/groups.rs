@@ -29,6 +29,7 @@ use crate::{
         DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore,
         POSITION_LOOKUP, Traces, batch_length, child_payload_types,
         error::{self, Result},
+        transform::sort_to_indices,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::consts,
@@ -791,7 +792,7 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
         .column_with_name(consts::PARENT_ID)
         .map(|pair| pair.0);
 
-    use arrow::compute::{SortColumn, SortOptions, lexsort_to_indices, take};
+    use arrow::compute::{SortColumn, SortOptions, take};
     let options = Some(SortOptions {
         descending: false,
         nulls_first: true, // We rely on this heavily later on!
@@ -800,7 +801,6 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
     let sort_columns: SmallVec<[SortColumn; 2]> =
         match (how, parent_id_column_index, id_column_index) {
             (SortByParentIdAndId, Some(parent_id), Some(id)) => {
-                // FIXME: use row format for faster multicolumn sorts right here
                 let parent_id_values = columns[parent_id].clone();
                 let id_values = columns[id].clone();
                 smallvec::smallvec![
@@ -824,7 +824,9 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
             _ => unreachable!(),
         };
 
-    let indices = lexsort_to_indices(&sort_columns, None).context(error::BatchingSnafu)?;
+    // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported
+    // by either row converter or arrow's sort kernel, both of which should be OK for Id columns.
+    let indices = sort_to_indices(&sort_columns).expect("can sort IDs");
     let input_was_already_sorted = indices.values().is_sorted();
     let columns = if input_was_already_sorted {
         // Don't bother with take if the input was already sorted as we need.

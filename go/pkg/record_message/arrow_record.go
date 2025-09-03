@@ -47,7 +47,6 @@ func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 // NewLogsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
 // logs.
 func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
-	record.Schema()
 	return &RecordMessage{
 		schemaID:    schemaID,
 		payloadType: v1.ArrowPayloadType_LOGS,
