@@ -1261,9 +1261,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
         // this will be used to initialize the dictionary key selector. There are certain
         // optimizations that can be made when choosing the correct key sizes using this value
-        let total_batch_size = batches
-            .iter()
-            .filter_map(|batches| batches[payload_type_index].as_ref())
+        let total_batch_size = select(batches, payload_type_index)
             .map(|rb| rb.num_rows())
             .sum();
 
