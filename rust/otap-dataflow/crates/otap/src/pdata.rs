@@ -92,6 +92,8 @@
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::trace::{ResourceSpansView, ScopeSpansView, TracesView};
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use otel_arrow_rust::{Consumer, Producer};
@@ -209,13 +211,14 @@ impl OtapPayload {
     /// empty request.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.num_items() == 0
+        self.payload.is_empty()
     }
 
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
+    #[cfg(test)]
     #[must_use]
-    pub fn num_items(&self) -> usize {
+    pub fn num_items(self) -> usize {
         match self {
             Self::OtlpBytes(value) => value.num_items(),
             Self::OtapArrowBytes(value) => value.num_items(),
@@ -227,12 +230,15 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-trait OtapPdataHelpers {
+trait OtapPdataHelpers: Clone + Into<OtapPayload> {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 
     /// Number of items
-    fn num_items(&self) -> usize;
+    #[cfg(test)]
+    fn num_items(self) -> usize;
+
+    pub fn is_empty(&self) -> bool;
 }
 
 impl OtapPdataHelpers for OtapArrowRecords {
@@ -244,7 +250,12 @@ impl OtapPdataHelpers for OtapArrowRecords {
         }
     }
 
-    fn num_items(&self) -> usize {
+    pub fn is_empty(&self) -> bool {
+        // @@@
+    }
+
+    #[cfg(test)]
+    fn num_items(self) -> usize {
         match self {
             Self::Logs(_) => {
                 self
@@ -273,16 +284,29 @@ impl OtapPdataHelpers for OtlpProtoBytes {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        // @@@
+    }
+
     /// Number of items
-    fn num_items(&self) -> usize {
+    #[cfg(test)]
+    fn num_items(self) -> usize {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes);
-                // todo @@@
+                logs_data_view
+                    .resources()
+                    .flat_map(|rl| rl.scopes())
+                    .flat_map(|sl| sl.log_records())
+                    .count()
             }
             Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTracesData::new(bytes);
-                // todo @@@
+                let traces_data_view = RawTraceData::new(bytes);
+                traces_data_view
+                    .resources()
+                    .flat_map(|rs| rs.scopes())
+                    .flat_map(|ss| ss.spans())
+                    .count()
             }
             Self::ExportMetricsRequest(bytes) => {
                 // Metrics view is not implemented yet
@@ -301,8 +325,19 @@ impl OtapPdataHelpers for OtapArrowBytes {
         }
     }
 
-    fn num_items(&self) -> usize {
+    pub fn is_empty(&self) -> bool {
         // @@@
+    }
+
+    #[cfg(test)]
+    fn num_items(self) -> usize {
+        match self.try_into() {
+            Ok(records) => {
+                let records: OtapArrowRecords = records;
+                records.num_items()
+            }
+            Err(_) => 0,
+        }
     }
 }
 
@@ -324,19 +359,19 @@ impl OtapPdata {
 
     /// Constructs a request holder for returning a retryable request by
     /// cloning the request payload in its (potentially modified) state.
-    pub fn new_reply<T: Clone + Into<OtapPayload>>(context: Context, payload: &T) -> Self {
-        // if !context.has_reply_state() {
-        //     Self {
-        //         context: context,
-        //         payload: OtapPayload::Empty,
-        //     }
-        // } else {
-        //     let payload = payload.clone();
-        //     Self {
-        //         context: context,
-        //         payload: payload.into(),
-        //     }
-        // }
+    pub fn new_reply<T: OtapPdataHelpers>(context: Context, payload: &T) -> Self {
+        if !context.has_reply_state() {
+            Self {
+                context: context,
+                payload: payload.empty_copy(),
+            }
+        } else {
+            let payload = payload.clone();
+            Self {
+                context: context,
+                payload: payload.into(),
+            }
+        }
     }
 
     /// The return destination of the reply.
