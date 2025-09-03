@@ -17,6 +17,7 @@ use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, Str},
     resource::ResourceView,
 };
+use otel_arrow_rust::schema::{SpanId, TraceId};
 
 /// View for top level LogsData
 pub trait LogsDataView {
@@ -144,12 +145,12 @@ pub trait LogRecordView {
     /// Access the trace ID. Should return None if the underlying trace ID is missing, or if the
     /// backend representation of the trace ID is invalid. Invalid trace IDs include all-0s or a
     /// trace ID of incorrect length (length != 16)
-    fn trace_id(&self) -> Option<&[u8]>;
+    fn trace_id(&self) -> Option<&TraceId>;
 
     /// Access the span ID. Should return None if the underlying span ID is missing or if the
     /// backend representation of the span ID is invalid. Invalid span IDs include all-0s or a
     /// span ID or incorrect length (length != 8)
-    fn span_id(&self) -> Option<&[u8]>;
+    fn span_id(&self) -> Option<&SpanId>;
 
     // TODO event_name https://github.com/open-telemetry/otel-arrow/issues/422
 }

@@ -427,20 +427,13 @@ pub(crate) fn parse_accessor_expression(
             if let Some((constant_id, value_type)) =
                 scope.get_constant(root_accessor_identity.get_value())
             {
-                if value_accessor.has_selectors() {
-                    // Note: It is not currently supported to access into a constant.
-                    // This is because statics are currently simple things like string,
-                    // bool, double, float, datetime. If it becomes possible to have a
-                    // static map or array this should be supported.
-                    panic!("Accessor into a constant value encountered")
-                }
-
                 return Ok(ScalarExpression::Constant(
-                    ConstantScalarExpression::Reference(ReferenceConstantScalarExpression::new(
+                    ReferenceConstantScalarExpression::new(
                         query_location,
                         value_type,
                         constant_id,
-                    )),
+                        value_accessor,
+                    ),
                 ));
             }
         }
@@ -1604,23 +1597,21 @@ mod tests {
 
         run_test_success(
             "const_str",
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::String,
-                    3,
-                ),
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                3,
+                ValueAccessor::new(),
             )),
         );
 
         run_test_success(
             "const_int",
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::Integer,
-                    0,
-                ),
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::Integer,
+                0,
+                ValueAccessor::new(),
             )),
         );
 
@@ -1631,19 +1622,17 @@ mod tests {
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::String,
-                            3,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::String,
+                        3,
+                        ValueAccessor::new(),
                     )),
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::Integer,
-                            0,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::Integer,
+                        0,
+                        ValueAccessor::new(),
                     )),
                 ]),
             )),
@@ -1657,8 +1646,8 @@ mod tests {
                 ValueAccessor::new_with_selectors(vec![ScalarExpression::Conditional(
                     ConditionalScalarExpression::new(
                         QueryLocation::new_fake(),
-                        LogicalExpression::Scalar(ScalarExpression::Constant(
-                            ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 2,
                                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -1670,7 +1659,7 @@ mod tests {
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                         )),
-                        ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                        ScalarExpression::Static(StaticScalarExpression::Constant(
                             CopyConstantScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 3,
@@ -1752,12 +1741,11 @@ mod tests {
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
                     )),
-                    ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                        ReferenceConstantScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueType::String,
-                            0,
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::String,
+                        0,
+                        ValueAccessor::new(),
                     )),
                 ]),
             )),

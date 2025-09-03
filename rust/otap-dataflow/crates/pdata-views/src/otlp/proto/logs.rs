@@ -7,8 +7,11 @@
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogsData, ResourceLogs, ScopeLogs,
 };
+use otel_arrow_rust::schema::{SpanId, TraceId};
 
-use crate::otlp::proto::common::{KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue};
+use crate::otlp::proto::common::{
+    KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
+};
 use crate::otlp::proto::resource::ObjResource;
 use crate::otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps};
 use crate::views::common::Str;
@@ -206,28 +209,12 @@ impl LogRecordView for ObjLogRecord<'_> {
     }
 
     #[inline]
-    fn trace_id(&self) -> Option<&[u8]> {
-        if is_valid_trace_id(&self.inner.trace_id) {
-            Some(self.inner.trace_id.as_slice())
-        } else {
-            None
-        }
+    fn trace_id(&self) -> Option<&TraceId> {
+        parse_trace_id(&self.inner.trace_id)
     }
 
     #[inline]
-    fn span_id(&self) -> Option<&[u8]> {
-        if is_valid_span_id(&self.inner.span_id) {
-            Some(self.inner.span_id.as_slice())
-        } else {
-            None
-        }
+    fn span_id(&self) -> Option<&SpanId> {
+        parse_span_id(&self.inner.span_id)
     }
-}
-
-fn is_valid_trace_id(buf: &[u8]) -> bool {
-    buf.len() == 16 && buf != [0; 16]
-}
-
-fn is_valid_span_id(buf: &[u8]) -> bool {
-    buf.len() == 8 && buf != [0; 8]
 }

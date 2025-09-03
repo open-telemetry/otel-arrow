@@ -7,29 +7,6 @@ use data_engine_expressions::*;
 
 use crate::{execution_context::*, resolved_value_mut::*, scalars::*, *};
 
-pub fn execute_immutable_value_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    immutable_value_expression: &'a ImmutableValueExpression,
-) -> Result<ResolvedValue<'c>, ExpressionError>
-where
-    'a: 'c,
-    'b: 'c,
-{
-    match immutable_value_expression {
-        ImmutableValueExpression::Scalar(scalar_expression) => {
-            let value = execute_scalar_expression(execution_context, scalar_expression)?;
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                immutable_value_expression,
-                || format!("Evaluated as: '{value}'"),
-            );
-
-            Ok(value)
-        }
-    }
-}
-
 pub fn execute_mutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
@@ -422,31 +399,6 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-
-    #[test]
-    fn test_execute_immutable_value_expression() {
-        let run_test = |immutable_value_expression, expected_value: Value| {
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let value =
-                execute_immutable_value_expression(&execution_context, &immutable_value_expression)
-                    .unwrap();
-
-            assert_eq!(expected_value, value.to_value());
-        };
-
-        run_test(
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            )),
-            Value::String(&StringValueStorage::new("hello world".into())),
-        );
-    }
 
     #[test]
     fn test_execute_source_mutable_value_expression() {

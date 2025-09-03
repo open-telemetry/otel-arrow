@@ -3,6 +3,9 @@
 
 use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScalarExpression, *};
 
+pub type ScalarStaticResolutionResult<'a> =
+    Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
     /// Resolve a value from an immutable record attached to a query.
@@ -17,7 +20,7 @@ pub enum ScalarExpression {
     Attached(AttachedScalarExpression),
 
     /// A constant static value defined in a collection on [`PipelineExpression`].
-    Constant(ConstantScalarExpression),
+    Constant(ReferenceConstantScalarExpression),
 
     /// Returns one of many inner scalar expressions based on multiple logical conditions.
     Case(CaseScalarExpression),
@@ -82,7 +85,7 @@ impl ScalarExpression {
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
-            ScalarExpression::Constant(c) => Ok(Some(c.get_value_type())),
+            ScalarExpression::Constant(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Collection(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
@@ -102,24 +105,71 @@ impl ScalarExpression {
         &'a mut self,
         scope: &PipelineResolutionScope<'a>,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+        if let ScalarExpression::Static(s) = self {
+            return Ok(Some(if s.foldable() {
+                ResolvedStaticScalarExpression::FoldEligibleReference(s)
+            } else {
+                ResolvedStaticScalarExpression::Reference(s)
+            }));
+        }
+
+        let computed = {
+            // Note: The unsafe re-borrow here is to work around false positives
+            // in the current iteration of the rust borrow checker:
+            // https://rust-lang.github.io/rfcs/2094-nll.html#problem-case-3-conditional-control-flow-across-functions.
+            // There is a nightly new version of the borrow checker known as
+            // Polonius (https://github.com/rust-lang/polonius) which is able to
+            // correctly reason out the safety of this pattern and release the
+            // borrow when the "return"s fire. This unsafe should be removable
+            // if/when Polonius is released stable and the borrow checker
+            // becomes smarter.
+            let scalar = unsafe { &mut *(self as *mut ScalarExpression) };
+
+            match scalar.try_resolve_static_inner(scope)? {
+                None => return Ok(None),
+                Some(ResolvedStaticScalarExpression::Computed(c)) => c,
+                Some(ResolvedStaticScalarExpression::FoldEligibleReference(r)) => r.clone(),
+                Some(r) => return Ok(Some(r)),
+            }
+        };
+
+        // Note: We replace the scalar with the computed value so that the
+        // result gets folded into the expression tree.
+        *self = ScalarExpression::Static(computed);
+
+        if let ScalarExpression::Static(s) = self {
+            return Ok(Some(match s.foldable() {
+                true => ResolvedStaticScalarExpression::FoldEligibleReference(s),
+                false => ResolvedStaticScalarExpression::Reference(s),
+            }));
+        }
+
+        unreachable!()
+    }
+
+    fn try_resolve_static_inner<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
             ScalarExpression::Source(s) => {
-                s.accessor.try_fold(scope)?;
+                s.try_fold(scope)?;
                 Ok(None)
             }
             ScalarExpression::Attached(a) => {
-                a.accessor.try_fold(scope)?;
+                a.try_fold(scope)?;
                 Ok(None)
             }
             ScalarExpression::Variable(v) => {
-                v.accessor.try_fold(scope)?;
+                v.try_fold(scope)?;
                 Ok(None)
             }
-            ScalarExpression::Static(s) => match s.try_fold() {
-                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(v))),
-                None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
-            },
-            ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
+            ScalarExpression::Static(_) => {
+                // Note: Static resolution should be handled before the call to
+                // try_resolve_static_inner.
+                unreachable!()
+            }
+            ScalarExpression::Constant(c) => c.try_resolve_static(scope),
             ScalarExpression::Collection(c) => c.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
                 Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(
@@ -178,7 +228,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
             ScalarExpression::Case(_) => "ScalarExpression(Case)",
-            ScalarExpression::Constant(c) => c.get_name(),
+            ScalarExpression::Constant(_) => "ScalarExpression(Constant)",
             ScalarExpression::Convert(c) => c.get_name(),
             ScalarExpression::Length(_) => "ScalarExpression(Length)",
             ScalarExpression::Slice(_) => "ScalarExpression(Slice)",
@@ -227,6 +277,13 @@ impl SourceScalarExpression {
     pub fn get_value_type(&self) -> Option<ValueType> {
         self.value_type.clone()
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
+    }
 }
 
 impl Expression for SourceScalarExpression {
@@ -265,6 +322,13 @@ impl AttachedScalarExpression {
 
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
     }
 }
 
@@ -305,6 +369,13 @@ impl VariableScalarExpression {
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
+    }
 }
 
 impl Expression for VariableScalarExpression {
@@ -318,100 +389,11 @@ impl Expression for VariableScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConstantScalarExpression {
-    /// A constant which is retrieved via a lookup to the collection maintained
-    /// on [`PipelineExpression`].
-    Reference(ReferenceConstantScalarExpression),
-
-    /// A constant which has been copied from the collection maintained on
-    /// [`PipelineExpression`] into a local expression.
-    Copy(CopyConstantScalarExpression),
-}
-
-impl ConstantScalarExpression {
-    pub(crate) fn get_value_type(&self) -> ValueType {
-        match self {
-            ConstantScalarExpression::Reference(r) => r.get_value_type(),
-            ConstantScalarExpression::Copy(c) => c.get_value().get_value_type(),
-        }
-    }
-
-    pub fn to_value<'a, 'b, 'c>(&'a self, pipeline: &'b PipelineExpression) -> Value<'c>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        match self {
-            ConstantScalarExpression::Reference(r) => {
-                let constant_id = r.get_constant_id();
-
-                pipeline
-                    .get_constant(constant_id)
-                    .unwrap_or_else(|| {
-                        panic!("Constant for id '{constant_id}' was not found on pipeline")
-                    })
-                    .to_value()
-            }
-            ConstantScalarExpression::Copy(c) => c.value.to_value(),
-        }
-    }
-
-    pub(crate) fn resolve_static<'a>(
-        &'a mut self,
-        scope: &PipelineResolutionScope<'a>,
-    ) -> ResolvedStaticScalarExpression<'a> {
-        match self {
-            ConstantScalarExpression::Reference(r) => {
-                let constant_id = r.get_constant_id();
-
-                let value = scope.get_constant(constant_id).unwrap_or_else(|| {
-                    panic!("Constant for id '{constant_id}' was not found on pipeline")
-                });
-
-                match value.try_fold() {
-                    Some(v) => {
-                        // Note: If we get a folded static we convert the
-                        // constant expression to a copy instead of a reference.
-                        // The effect this has is for small constants a copy is
-                        // made in the tree to bypass a lookup at runtime.
-                        *self = ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
-                            self.get_query_location().clone(),
-                            constant_id,
-                            v.clone(),
-                        ));
-                        ResolvedStaticScalarExpression::FoldedConstant(value)
-                    }
-                    None => ResolvedStaticScalarExpression::Reference(value),
-                }
-            }
-            ConstantScalarExpression::Copy(c) => {
-                ResolvedStaticScalarExpression::FoldedConstant(&c.value)
-            }
-        }
-    }
-}
-
-impl Expression for ConstantScalarExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        match self {
-            ConstantScalarExpression::Reference(r) => r.get_query_location(),
-            ConstantScalarExpression::Copy(c) => c.get_query_location(),
-        }
-    }
-
-    fn get_name(&self) -> &'static str {
-        match self {
-            ConstantScalarExpression::Reference(_) => "ConstantScalar(Reference)",
-            ConstantScalarExpression::Copy(_) => "ConstantScalar(Copy)",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct ReferenceConstantScalarExpression {
     query_location: QueryLocation,
     value_type: ValueType,
     constant_id: usize,
+    accessor: ValueAccessor,
 }
 
 impl ReferenceConstantScalarExpression {
@@ -419,11 +401,13 @@ impl ReferenceConstantScalarExpression {
         query_location: QueryLocation,
         value_type: ValueType,
         constant_id: usize,
+        accessor: ValueAccessor,
     ) -> ReferenceConstantScalarExpression {
         Self {
             query_location,
             value_type,
             constant_id,
+            accessor,
         }
     }
 
@@ -434,6 +418,71 @@ impl ReferenceConstantScalarExpression {
     pub fn get_constant_id(&self) -> usize {
         self.constant_id
     }
+
+    pub fn get_value_accessor(&self) -> &ValueAccessor {
+        &self.accessor
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if !self.accessor.has_selectors() {
+            Ok(Some(self.get_value_type()))
+        } else if let Some(v) = self.try_resolve_static(scope)? {
+            Ok(Some(v.get_value_type()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+        let constant_id = self.get_constant_id();
+
+        let root = scope
+            .get_constant(constant_id)
+            .unwrap_or_else(|| panic!("Constant for id '{constant_id}' was not found on pipeline"));
+
+        match self.accessor.try_resolve_static(root, scope)? {
+            None => Ok(None),
+            Some(value) => {
+                if let StaticScalarExpression::Constant(c) = value {
+                    // Note: Special case for nested reference of constants. Take let a
+                    // = 1; let b = a; let c = b; Without special handling we would do
+                    // let a = 1; let b = copied(0, 1); let c = copied(1, copied(0, 1));
+                    // But we unpack the inner copy so we get let a = 1; let b =
+                    // copied(0, 1); let c = copied(1, 1);
+                    return Ok(Some(ResolvedStaticScalarExpression::Computed(
+                        StaticScalarExpression::Constant(CopyConstantScalarExpression::new(
+                            self.query_location.clone(),
+                            constant_id,
+                            c.get_value().clone(),
+                        )),
+                    )));
+                }
+
+                Ok(Some(match value.foldable() {
+                    true => {
+                        // Note: If we get a folded static we convert the
+                        // constant expression to a copy instead of a reference.
+                        // The effect this has is for small constants a copy is
+                        // made in the tree to bypass a lookup at runtime.
+                        ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Constant(
+                            CopyConstantScalarExpression::new(
+                                self.query_location.clone(),
+                                constant_id,
+                                value.clone(),
+                            ),
+                        ))
+                    }
+                    false => ResolvedStaticScalarExpression::Reference(value),
+                }))
+            }
+        }
+    }
 }
 
 impl Expression for ReferenceConstantScalarExpression {
@@ -443,45 +492,6 @@ impl Expression for ReferenceConstantScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ReferenceConstantScalarExpression"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CopyConstantScalarExpression {
-    query_location: QueryLocation,
-    constant_id: usize,
-    value: StaticScalarExpression,
-}
-
-impl CopyConstantScalarExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        constant_id: usize,
-        value: StaticScalarExpression,
-    ) -> CopyConstantScalarExpression {
-        Self {
-            query_location,
-            constant_id,
-            value,
-        }
-    }
-
-    pub fn get_constant_id(&self) -> usize {
-        self.constant_id
-    }
-
-    pub fn get_value(&self) -> &StaticScalarExpression {
-        &self.value
-    }
-}
-
-impl Expression for CopyConstantScalarExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
-
-    fn get_name(&self) -> &'static str {
-        "CopyConstantScalarExpression"
     }
 }
 
@@ -1120,28 +1130,13 @@ mod tests {
         );
 
         run_test_success(
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::String,
-                    0,
-                ),
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                0,
+                ValueAccessor::new(),
             )),
             Some(ValueType::String),
-        );
-
-        run_test_success(
-            ScalarExpression::Constant(ConstantScalarExpression::Copy(
-                CopyConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    0,
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
-                ),
-            )),
-            Some(ValueType::Integer),
         );
     }
 
@@ -1373,12 +1368,41 @@ mod tests {
                 pipeline.push_constant(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 ));
+                pipeline.push_constant(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![],
+                )));
+                pipeline.push_constant(StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                )));
+                pipeline.push_constant(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                        StaticScalarExpression::Array(ArrayScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![],
+                        )),
+                    ],
+                )));
 
                 let actual = expression
                     .try_resolve_static(&pipeline.get_resolution_scope())
                     .unwrap();
 
-                assert_eq!(expected, actual.map(|v| v.as_ref().clone()))
+                assert_eq!(expected, actual.map(|v| v.as_ref().clone()));
+
+                println!("{:?}", expression);
             };
 
         run_test_success(
@@ -1453,22 +1477,15 @@ mod tests {
             )),
         );
 
+        // Note: Reference to constant string gets folded into a static in this test.
         run_test_success(
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::String,
-                    0,
-                ),
-            )),
-            Some(StaticScalarExpression::String(StringScalarExpression::new(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
-            ))),
-        );
-
-        run_test_success(
-            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                ValueType::String,
+                0,
+                ValueAccessor::new(),
+            )),
+            Some(StaticScalarExpression::Constant(
                 CopyConstantScalarExpression::new(
                     QueryLocation::new_fake(),
                     0,
@@ -1478,9 +1495,88 @@ mod tests {
                     )),
                 ),
             )),
-            Some(StaticScalarExpression::String(StringScalarExpression::new(
+        );
+
+        // Note: Reference to constant array does not get folded into a static in this test.
+        run_test_success(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
+                ValueType::String,
+                1,
+                ValueAccessor::new(),
+            )),
+            Some(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+        );
+
+        // Note: Reference to constant string inside map gets folded into a static in this test.
+        run_test_success(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                2,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                )]),
+            )),
+            Some(StaticScalarExpression::Constant(
+                CopyConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    2,
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "value1",
+                    )),
+                ),
+            )),
+        );
+
+        // Note: Reference to constant string inside array gets folded into a static in this test.
+        run_test_success(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                3,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                    )),
+                )]),
+            )),
+            Some(StaticScalarExpression::Constant(
+                CopyConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    3,
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "value1",
+                    )),
+                ),
+            )),
+        );
+
+        // Note: Reference to constant array inside array does not get folded into a static in this test.
+        run_test_success(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                3,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                )]),
+            )),
+            Some(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
             ))),
         );
     }
