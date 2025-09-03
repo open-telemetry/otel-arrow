@@ -1508,25 +1508,23 @@ fn access_array_bytes(array: &ArrayRef, index: usize) -> Result<Option<&[u8]>> {
         DataType::Int64 => visit_prim_arm!(Int64Type, array, index),
         DataType::Float32 => visit_prim_arm!(Float32Type, array, index),
         DataType::Float64 => visit_prim_arm!(Float64Type, array, index),
-        value_type => {
-            return Err(error::UnsupportedDictionaryValueTypeSnafu {
-                expect_oneof: vec![
-                    DataType::Binary,
-                    DataType::Utf8,
-                    DataType::FixedSizeBinary(16),
-                    DataType::FixedSizeBinary(8),
-                    DataType::UInt16,
-                    DataType::UInt32,
-                    DataType::UInt64,
-                    DataType::Int32,
-                    DataType::Int64,
-                    DataType::Float32,
-                    DataType::Float64,
-                ],
-                actual: value_type.clone(),
-            }
-            .build());
+        value_type => Err(error::UnsupportedDictionaryValueTypeSnafu {
+            expect_oneof: vec![
+                DataType::Binary,
+                DataType::Utf8,
+                DataType::FixedSizeBinary(16),
+                DataType::FixedSizeBinary(8),
+                DataType::UInt16,
+                DataType::UInt32,
+                DataType::UInt64,
+                DataType::Int32,
+                DataType::Int64,
+                DataType::Float32,
+                DataType::Float64,
+            ],
+            actual: value_type.clone(),
         }
+        .build()),
     }
 }
 
@@ -1652,7 +1650,7 @@ fn try_discover_structs(
                 if all_this_struct_fields.get(struct_field.name()).is_none() {
                     let dict_key_selector =
                         matches!(struct_field.data_type(), DataType::Dictionary(_, _))
-                            .then(|| UnifiedDictionaryTypeSelector::new());
+                            .then(UnifiedDictionaryTypeSelector::new);
 
                     _ = all_this_struct_fields.insert(
                         struct_field.name().clone(),
