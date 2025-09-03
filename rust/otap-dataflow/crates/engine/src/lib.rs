@@ -22,7 +22,6 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
-use serde_json::Value;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -92,7 +91,7 @@ pub struct ProcessorFactory<PData> {
     pub create: fn(
         pipeline: PipelineContext,
         node: NodeId,
-        config: &Value,
+        node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
 }
@@ -512,7 +511,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             create(
                 pipeline_ctx,
                 node_id,
-                &node_config.config,
+                node_config.clone(),
                 &processor_config,
             )
             .map_err(|e| Error::ConfigError(Box::new(e)))?,

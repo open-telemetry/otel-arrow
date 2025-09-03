@@ -40,6 +40,7 @@ pub struct WriterOptions {
     ///
     /// Note that files may actually be buffered for slightly longer than this value. For more
     /// details see [`Self::flush_age_check_interval`]
+    #[serde(default)]
     #[serde(with = "humantime_serde")]
     pub flush_when_older_than: Option<Duration>,
 }

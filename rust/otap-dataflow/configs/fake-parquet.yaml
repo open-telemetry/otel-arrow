@@ -1,0 +1,29 @@
+settings:
+  default_control_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator"
+    out_ports:
+      out_port:
+        destinations:
+        - exporter
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_batch_size: 1000
+        signals_per_second: 30
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:parquet:exporter"
+    config:
+      base_uri: /tmp
+      partitioning_strategies:
+      - schema_metadata: ["_part_id"]
+      writer_options:
+        flush_when_older_than: 10s
+
