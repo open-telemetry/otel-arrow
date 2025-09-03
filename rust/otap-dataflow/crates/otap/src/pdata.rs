@@ -179,6 +179,33 @@ pub struct OtapPdata {
 /* -------- Signal type -------- */
 
 impl OtapPdata {
+    /// Construct new OtapData from context and payload.
+    pub fn new(context: Context, payload: OtapPayload) -> Self {
+        Self { context, payload }
+    }
+
+    /// Construct new OtapData with payload using default context.
+    pub fn new_default(payload: OtapPayload) -> Self {
+        Self {
+            context: Context::default(),
+            payload,
+        }
+    }
+
+    /// Constructs a request holder for returning a retryable request by
+    /// cloning the request payload in its (potentially modified) state.
+    pub fn new_reply<T: OtapPayloadExt>(context: Context, payload: &T) -> Self {
+        let has_reply = context.has_reply_state();
+        Self {
+            context: context,
+            payload: if !has_reply {
+                payload.clone_empty().into()
+            } else {
+                payload.clone().into()
+            },
+        }
+    }
+
     /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
@@ -209,6 +236,27 @@ impl OtapPdata {
     #[must_use]
     pub fn num_items(self) -> usize {
         self.payload.num_items()
+    }
+
+    /// The return destination of the reply.
+    pub fn return_node_id(&self) -> Option<usize> {
+        self.context.return_node_id()
+    }
+
+    /// Removes the current element on stack, drops the node_id
+    /// (because it has arrived) and returns the state.
+    pub fn pop_stack(&mut self) -> ReplyState {
+        self.context.stack.pop().expect("has_reply").state
+    }
+
+    /// Take the context.
+    pub fn take_context(&mut self) -> Context {
+        std::mem::take(&mut self.context)
+    }
+
+    /// Mutate the context.
+    pub fn mut_context(&mut self) -> &mut Context {
+        &mut self.context
     }
 }
 
@@ -384,7 +432,11 @@ impl OtapPayloadExt for OtlpProtoBytes {
                 };
                 logs_data_view
                     .resources()
-                    .map(|rl| rl.scopes().map(|sl| sl.log_records().count()).sum::<usize>())
+                    .map(|rl| {
+                        rl.scopes()
+                            .map(|sl| sl.log_records().count())
+                            .sum::<usize>()
+                    })
                     .sum()
             }
             Self::ExportTracesRequest(bytes) => {
@@ -452,56 +504,6 @@ impl OtapPayloadExt for OtapArrowBytes {
 }
 
 /* -------- Conversion implementations -------- */
-
-impl OtapPdata {
-    /// Construct new OtapData from context and payload.
-    pub fn new(context: Context, payload: OtapPayload) -> Self {
-        Self { context, payload }
-    }
-
-    /// Construct new OtapData with payload using default context.
-    pub fn new_default(payload: OtapPayload) -> Self {
-        Self {
-            context: Context::default(),
-            payload,
-        }
-    }
-
-    /// Constructs a request holder for returning a retryable request by
-    /// cloning the request payload in its (potentially modified) state.
-    pub fn new_reply<T: OtapPayloadExt>(context: Context, payload: &T) -> Self {
-        let has_reply = context.has_reply_state();
-        Self {
-            context: context,
-            payload: if !has_reply {
-                payload.clone_empty().into()
-            } else {
-                payload.clone().into()
-            },
-        }
-    }
-
-    /// The return destination of the reply.
-    pub fn return_node_id(&self) -> Option<usize> {
-        self.context.return_node_id()
-    }
-
-    /// Removes the current element on stack, drops the node_id
-    /// (because it has arrived) and returns the state.
-    pub fn pop_stack(&mut self) -> ReplyState {
-        self.context.stack.pop().expect("has_reply").state
-    }
-
-    /// Take the context.
-    pub fn take_context(&mut self) -> Context {
-        std::mem::take(&mut self.context)
-    }
-
-    /// Mutate the context.
-    pub fn mut_context(&mut self) -> &mut Context {
-        &mut self.context
-    }
-}
 
 impl From<OtapArrowRecords> for OtapPayload {
     fn from(value: OtapArrowRecords) -> Self {
