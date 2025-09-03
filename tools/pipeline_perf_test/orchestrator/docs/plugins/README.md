@@ -47,6 +47,10 @@ This directory contains auto-generated documentation for all plugin registries.
 | `raise_exception` | `raise_exception` | `lib.impl.strategies.hooks.raise_exception` | `RaiseExceptionHook` | `RaiseExceptionConfig` | Hook strategy that raises an exception |
 | `record_event` | `record_event` | `lib.impl.strategies.hooks.record_event` | `RecordEventHook` | `RecordEventConfig` | Hook strategy that records an event to the context's current span |
 | `run_command` | `run_command` | `lib.impl.strategies.hooks.run_command` | `RunCommandHook` | `RunCommandConfig` | Hook strategy that runs a specified shell command |
+| `send_http_request` | `send_http_request` | `lib.impl.strategies.hooks.send_http_request` | `SendHttpRequestHook` | `SendHttpRequestConfig` | Hook strategy that sends an HTTP request to a configured endpoint |
+| `ready_check_http` | `ready_check_http` | `lib.impl.strategies.hooks.ready_check_http` | `ReadyCheckHttpHook` | `ReadyCheckHttpConfig` | Hook strategy that performs a readiness check against an HTTP(S) endpoint |
+| `render_template` | `render_template` | `lib.impl.strategies.hooks.render_template` | `RenderTemplateHook` | `RenderTemplateConfig` | Hook strategy that renders a Jinja2 template using provided variables |
+| `ensure_process` | `ensure_process` | `lib.impl.strategies.hooks.process.ensure_process` | `EnsureProcess` | `EnsureProcessConfig` | Hook strategy to ensure component specified is running and hasn't crashed after start |
 
 ## Plugin Summary: `step_actions`
 
@@ -56,6 +60,7 @@ This directory contains auto-generated documentation for all plugin registries.
 | `multi_component_action` | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |
 | `update_component_strategy` | `update_component_strategy` | `lib.impl.actions.update_component_strategy` | `UpdateComponentStrategyAction` | `UpdateComponentStrategyConfig` | Step action that applies updates to a strategy configuration of a managed component |
+| `no_op` | `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` | `NoOpActionConfig` | Step action that does nothing when execute is called |
 
 ## Plugin Summary: `report_formatters`
 
