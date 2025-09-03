@@ -26,6 +26,9 @@ pub mod otlp_exporter;
 // Retry processor that is aware of the OTAP PData/context.
 pub mod retry_processor;
 
+/// Receiver that reads in syslog data
+pub mod syslog_cef_receiver;
+
 /// Generated protobuf files
 pub mod proto;
 
