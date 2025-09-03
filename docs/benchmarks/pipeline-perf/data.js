@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1756912603138,
+  "lastUpdate": 1756913241850,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "e0cec67830ab137f475a8a5627279ddc0c7a9a42",
-          "message": "[query-engine] Optimize KQL project parsing (#632)\n\n## Changes\n\n* KQL `project` parsing will now decide to use `RemoveMapKeys` over\n`ReduceMap` if the query is only referencing statically known top-level\nkeys",
-          "timestamp": "2025-06-20T22:56:28Z",
-          "tree_id": "6abb3d41bbc62cadbd77957574032b41ebf280df",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/e0cec67830ab137f475a8a5627279ddc0c7a9a42"
-        },
-        "date": 1750461081358,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 471166.6666666667,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 14135000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 14135000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.47,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.82,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 139.02,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 174.37,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 443500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13305000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13305000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.34,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.8,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 113.13,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 137.01,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 194.4,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "8164192+clhain@users.noreply.github.com",
+            "name": "clhain",
+            "username": "clhain"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c0daed0738ef6d2e3fd6bacc91d0d4af65b9563f",
+          "message": "[PerfTest] - add new hooks for df_engine as a loadgen/backend (#1050)\n\nThis PR adds new hook strategies to the framework in support of using\nthe dataflow engine as a load-generator and backend receiver, and other\ntest suite development QOL fixes:\n\n| Type | Plugin Name | Module | Class | Config Class | Description |\n|------|-------------|--------|-------|--------------|-------------|\n| `send_http_request` | `send_http_request` |\n`lib.impl.strategies.hooks.send_http_request` | `SendHttpRequestHook` |\n`SendHttpRequestConfig` | Hook strategy that sends an HTTP request to a\nconfigured endpoint |\n| `ready_check_http` | `ready_check_http` |\n`lib.impl.strategies.hooks.ready_check_http` | `ReadyCheckHttpHook` |\n`ReadyCheckHttpConfig` | Hook strategy that performs a readiness check\nagainst an HTTP(S) endpoint |\n| `render_template` | `render_template` |\n`lib.impl.strategies.hooks.render_template` | `RenderTemplateHook` |\n`RenderTemplateConfig` | Hook strategy that renders a Jinja2 template\nusing provided variables |\n| `ensure_process` | `ensure_process` |\n`lib.impl.strategies.hooks.process.ensure_process` | `EnsureProcess` |\n`EnsureProcessConfig` | Hook strategy to ensure component specified is\nrunning and hasn't crashed after start |\n| `no_op` | `no_op` | `lib.impl.actions.no_op_action` | `NoOpAction` |\n`NoOpActionConfig` | Step action that does nothing when execute is\ncalled |\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2025-09-03T15:13:27Z",
+          "tree_id": "afc091179b04d6ab48bb83ef52a2695de8b81cbf",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c0daed0738ef6d2e3fd6bacc91d0d4af65b9563f"
+        },
+        "date": 1756913239917,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 738333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22150000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22150000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.57,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.57,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 133.62,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 153.34,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 740166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22205000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22205000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.73,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.7,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 165.08,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 194.61,
             "unit": "MiB"
           }
         ]
