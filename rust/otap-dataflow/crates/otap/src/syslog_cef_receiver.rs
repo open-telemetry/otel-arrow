@@ -19,7 +19,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+/// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
+/// Parser module for syslog message parsing
 pub mod parser;
 
 /// URN for the syslog cef receiver
