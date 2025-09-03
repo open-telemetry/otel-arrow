@@ -1,0 +1,8 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"

@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Test utilities for receivers.
@@ -6,9 +7,15 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+};
 use crate::error::Error;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::{Receiver, Sender};
+use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
 use serde_json::Value;
@@ -19,9 +26,9 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
-pub struct TestContext {
+pub struct TestContext<PData> {
     /// Sender for control messages
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -36,17 +43,20 @@ pub struct SendValidateContext<PData> {
     counters: CtrlMsgCounters,
 }
 
-impl TestContext {
+impl<PData> TestContext<PData> {
     /// Sends a timer tick control message.
     ///
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_timer_tick(&self) -> Result<(), Error> {
         self.control_sender
-            .send(ControlMsg::TimerTick {})
+            .send(NodeControlMsg::TimerTick {})
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sends a config control message.
@@ -54,11 +64,14 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_config(&self, config: Value) -> Result<(), Error> {
         self.control_sender
-            .send(ControlMsg::Config { config })
+            .send(NodeControlMsg::Config { config })
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sends a shutdown control message.
@@ -66,18 +79,17 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(
-        &self,
-        deadline: Duration,
-        reason: &str,
-    ) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_shutdown(&self, deadline: Duration, reason: &str) -> Result<(), Error> {
         self.control_sender
-            .send(ControlMsg::Shutdown {
+            .send(NodeControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
     }
 
     /// Sleeps for the specified duration.
@@ -101,7 +113,7 @@ impl<PData> NotSendValidateContext<PData> {
 
 impl<PData> SendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
-    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
+    pub async fn recv(&mut self) -> Result<PData, Error> {
         self.pdata_receiver
             .recv()
             .await
@@ -141,7 +153,7 @@ pub struct TestPhase<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
 }
@@ -162,6 +174,11 @@ pub struct ValidationPhase<PData> {
 
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
+
+    // ToDo implement support for pipeline control messages in a future PR.
+    #[allow(unused_variables)]
+    #[allow(dead_code)]
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -213,13 +230,47 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
-        F: FnOnce(TestContext) -> Fut + 'static,
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let pdata_receiver = self.receiver.take_pdata_receiver();
+        let (node_id, pdata_sender, pdata_receiver) = match &self.receiver {
+            ReceiverWrapper::Local {
+                node_id,
+                runtime_config,
+                ..
+            } => {
+                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(
+                    runtime_config.output_pdata_channel.capacity,
+                );
+                (
+                    node_id.clone(),
+                    Sender::Local(LocalSender::MpscSender(sender)),
+                    Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
+                )
+            }
+            ReceiverWrapper::Shared {
+                node_id,
+                runtime_config,
+                ..
+            } => {
+                let (sender, receiver) =
+                    tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
+                (
+                    node_id.clone(),
+                    Sender::Shared(SharedSender::MpscSender(sender)),
+                    Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
+                )
+            }
+        };
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+
+        self.receiver
+            .set_pdata_sender(node_id, "".into(), pdata_sender)
+            .expect("Failed to set pdata sender");
+
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start()
+                .start(pipeline_ctrl_msg_tx)
                 .await
                 .expect("Receiver event loop failed");
         });
@@ -237,6 +288,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }

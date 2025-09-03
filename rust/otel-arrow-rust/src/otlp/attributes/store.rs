@@ -1,14 +1,5 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use super::cbor;
 use crate::arrays::{
@@ -19,7 +10,7 @@ use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-use crate::schema::consts;
+use crate::schema::{consts, is_parent_id_plain_encoded};
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
@@ -96,7 +87,9 @@ where
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
 
-        let mut parent_id_decoder = T::new_decoder();
+        let parent_ids_plain_encoded = is_parent_id_plain_encoded(rb);
+
+        let mut transport_optimized_parent_id_decoder = T::new_decoder();
 
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
@@ -145,11 +138,17 @@ where
                     parent_id_arr,
                 )?;
 
-            let parent_id = parent_id_decoder.decode(
-                parent_id_arr.value_at_or_default(idx).into(),
-                &key,
-                &value,
-            );
+            let maybe_tx_optimized_encoded_parent_id =
+                parent_id_arr.value_at_or_default(idx).into();
+            let parent_id = if parent_ids_plain_encoded {
+                maybe_tx_optimized_encoded_parent_id
+            } else {
+                transport_optimized_parent_id_decoder.decode(
+                    maybe_tx_optimized_encoded_parent_id,
+                    &key,
+                    &value,
+                )
+            };
             let attributes = store.attribute_by_ids.entry(parent_id).or_default();
             //todo: support assigning ArrayValue and KvListValue by deep copy as in https://github.com/open-telemetry/opentelemetry-collector/blob/fbf6d103eea79e72ff6b2cc3a2a18fc98a836281/pdata/pcommon/value.go#L323
             *attributes.find_or_append(&key) = Some(AnyValue { value: Some(value) });

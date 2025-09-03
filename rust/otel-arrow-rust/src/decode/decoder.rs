@@ -1,23 +1,16 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
-use crate::otap::{OtapBatch, from_record_messages};
+use crate::otap::{OtapArrowRecords, from_record_messages};
 use crate::otlp::logs::logs_from;
 use crate::otlp::metrics::metrics_from;
+use crate::otlp::traces::traces_from;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
@@ -31,7 +24,7 @@ pub struct StreamConsumer {
 }
 
 impl StreamConsumer {
-    fn new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> error::Result<Self> {
+    fn try_new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> error::Result<Self> {
         let data = Cursor::new(initial_bytes);
         let stream_reader =
             StreamReader::try_new(data.clone(), None).context(error::BuildStreamReaderSnafu)?;
@@ -50,7 +43,7 @@ impl StreamConsumer {
     }
 }
 
-/// Consumer consumes OTAP `BatchArrowRecords` and converts them into OTLP messages.
+/// Consumer consumes OTAP `BatchArrowRecords` and can convert them into OTLP messages.
 #[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
@@ -85,7 +78,7 @@ impl Consumer {
                     self.stream_consumers = new_stream_consumer;
                     self.stream_consumers
                         .entry(schema_id.clone())
-                        .or_insert(StreamConsumer::new(payload_type, record)?)
+                        .or_insert(StreamConsumer::try_new(payload_type, record)?)
                 }
                 Some(s) => {
                     // stream consumer exists for given schema id, just reset the bytes.
@@ -120,7 +113,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapBatch::Metrics(from_record_messages(record_messages));
+                let otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages));
                 metrics_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
@@ -140,8 +133,26 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
+                let otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
                 logs_from(otap_batch)
+            }
+            main_record_type => error::UnsupportedPayloadTypeSnafu {
+                actual: main_record_type,
+            }
+            .fail(),
+        }
+    }
+
+    /// Consumes record batches in [BatchArrowRecords] to [ExportTraceServiceRequest].
+    pub fn consume_traces_batches(
+        &mut self,
+        records: &mut BatchArrowRecords,
+    ) -> error::Result<ExportTraceServiceRequest> {
+        match get_main_payload_type(records)? {
+            ArrowPayloadType::Spans => {
+                let record_messages = self.consume_bar(records)?;
+                let otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages));
+                traces_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

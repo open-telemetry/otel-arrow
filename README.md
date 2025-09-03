@@ -4,6 +4,7 @@
 [![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10684/badge)](https://www.bestpractices.dev/projects/10684)
 [![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=7u3gFLH54G)](https://codecov.io/gh/open-telemetry/otel-arrow)
 
 The [OpenTelemetry with Apache
@@ -235,6 +236,33 @@ The meeting is open for all to join. We invite everyone to join our meeting,
 regardless of your experience level. Whether you're a seasoned OpenTelemetry
 developer, just starting your journey, or simply curious about the work we do,
 you're more than welcome to participate!
+
+### Maintainers
+
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+
+For more information about the maintainer role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#maintainer).
+
+### Approvers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#approver).
+
+### Emeritus Approvers
+
+- [Alex Boten](https://github.com/codeboten)
+- [Moh Osman](https://github.com/moh-osman3)
+
+### Thanks to all of our contributors
+
+[![OpenTelemetry-Arrow
+contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
 
 ## References
 

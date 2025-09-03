@@ -26,7 +26,7 @@ The organization mirrors the structure of the crates in `crates/`:
 > which include extra criterion flags (e.g. --no-plot --output-format bencher).
 > If, moving these out at some point - additional scripting may be required.
 > More detail:
-> [here](https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options)
+> [in the Criterion docs](https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options)
 
 ### Adding New Benchmarks
 

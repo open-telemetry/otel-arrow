@@ -1,0 +1,350 @@
+name: Test Dataflow Engine With OTLP Logs
+# Components are the individual systems, services, or tools that are involved in your test environment
+components:
+  # Components are named and specify how they are configured, deployed, executed, and monitored.
+  load-generator:
+    # A deployment strategy describes how the component is created and destroyed.
+    deployment:
+      process:
+        command: python ./load_generator/loadgen.py --serve
+        environment:
+          - OTLP_ENDPOINT=localhost:4317
+    # An execution strategy describes start / stop logic to apply to the component.
+    execution:
+      # The pipeline_perf_loadgen strategy calls the start/stop api endpoint on the load-generator
+      # with the specified parameters.
+      pipeline_perf_loadgen:
+        threads: 1
+        target_rate: 100000
+        batch_size: 1000
+    # A monitoring strategy describes how the component should be monitored.
+    monitoring:
+      # The process_component monitoring strategy uses the psutil lib to monitoring container cpu, memory, network.
+      process_component: {}
+      # The prometheus monitoring strategy calls the specified endpoint periodically to record metrics.
+      prometheus:
+        endpoint: http://localhost:5001/metrics
+  otel-collector:
+    deployment:
+      process:
+        # Path to your otel collector binary
+        command: /tmp/otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
+    monitoring:
+      # The process_component monitoring strategy uses the psutil lib to monitoring container cpu, memory, network.
+      process_component: {}
+  dataflow-engine:
+    deployment:
+      process:
+        command: ../../rust/otap-dataflow/target/release/df_engine --pipeline ../../rust/otap-dataflow/configs/otlp-otlp.yaml
+    monitoring:
+      process_component: {}
+  backend-service:
+    deployment:
+      process:
+        command: python ./backend/backend.py
+        environment:
+          - GRPC_PORT=1235
+    monitoring:
+      process_component: {}
+      prometheus:
+        endpoint: http://localhost:5000/prom_metrics
+
+# The "tests" section describes 1 or more tests to execute when the suite is run.
+tests:
+    # Tests are named, and contain "steps" and "hooks" (optional) which describe the execution flow.
+  - name: Test OTLP Logs - Dataflow Engine
+    # Each step describes an "action" and hooks (optional)
+    steps:
+      - name: Deploy Load and Backend
+        action:
+          multi_component_action:
+            phase: deploy
+            targets:
+              - load-generator
+              - backend-service
+      # Backend service must be up and running or we see connections fail on some runs.
+      - name: Wait For Backend
+        action:
+          wait:
+            delay_seconds: 3
+      - name: Deploy Engine
+        action:
+          multi_component_action:
+            phase: deploy
+            targets:
+              - dataflow-engine
+      - name: Monitor All
+        action:
+          multi_component_action:
+            phase: start_monitoring
+            targets:
+              - load-generator
+              - backend-service
+              - dataflow-engine
+      - name: Wait For Processes
+        action:
+          # The "wait" action pauses for the specified time before continuing.
+          wait:
+            delay_seconds: 5
+      - name: Start Load Generator
+        action:
+          # The component_action invokes the specified phase on 1 component, here starting the load from
+          # the load-generator component using it's execution strategy.
+          component_action:
+            phase: start
+            target: load-generator
+      - name: Wait For Stability
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Observe Load
+        action:
+          wait:
+            delay_seconds: 10
+        # Hooks are applied before/after step (or test or suite) logic to further customize
+        # execution flow as needed.
+        hooks:
+          # These hooks are used to mark start/end of the observation window where we expect
+          # the test to be in a "steady state".
+          run:
+            pre:
+                # The record_event hook emits a custom span event before the test step runs
+                # with the name "observation_start" and other metadata attributes applied
+                # by the framework (test name, suite name, step name, etc)
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+      - name: Stop Load Generator
+        action:
+          component_action:
+            phase: stop
+            target: load-generator
+      - name: Wait For Drain
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Stop Monitoring All
+        action:
+          multi_component_action:
+            phase: stop_monitoring
+            targets:
+              - load-generator
+              - backend-service
+              - dataflow-engine
+      - name: Destroy All
+        action:
+          multi_component_action:
+            phase: destroy
+            targets:
+              - load-generator
+              - backend-service
+              - dataflow-engine
+
+  - name: Test OTLP Logs - Otel Collector
+    # Each step describes an "action" and hooks (optional)
+    steps:
+      - name: Deploy All
+        action:
+          # The multi_component_action invokes the specified phase on 1 or more components, here deploying
+          # all components using their deployment strategy configs.
+          multi_component_action:
+            phase: deploy
+            targets:
+              - load-generator
+              - backend-service
+              - otel-collector
+      - name: Monitor All
+        action:
+          multi_component_action:
+            phase: start_monitoring
+            targets:
+              - load-generator
+              - backend-service
+              - otel-collector
+      - name: Wait For Processes
+        action:
+          # The "wait" action pauses for the specified time before continuing.
+          wait:
+            delay_seconds: 5
+      - name: Start Load Generator
+        action:
+          # The component_action invokes the specified phase on 1 component, here starting the load from
+          # the load-generator component using it's execution strategy.
+          component_action:
+            phase: start
+            target: load-generator
+      - name: Wait For Stability
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Observe Load
+        action:
+          wait:
+            delay_seconds: 10
+        # Hooks are applied before/after step (or test or suite) logic to further customize
+        # execution flow as needed.
+        hooks:
+          # These hooks are used to mark start/end of the observation window where we expect
+          # the test to be in a "steady state".
+          run:
+            pre:
+                # The record_event hook emits a custom span event before the test step runs
+                # with the name "observation_start" and other metadata attributes applied
+                # by the framework (test name, suite name, step name, etc)
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+      - name: Stop Load Generator
+        action:
+          component_action:
+            phase: stop
+            target: load-generator
+      - name: Wait For Drain
+        action:
+          wait:
+            delay_seconds: 5
+      - name: Stop Monitoring All
+        action:
+          multi_component_action:
+            phase: stop_monitoring
+            targets:
+              - load-generator
+              - backend-service
+              - otel-collector
+      - name: Destroy All
+        action:
+          multi_component_action:
+            phase: destroy
+            targets:
+              - load-generator
+              - backend-service
+              - otel-collector
+
+# Test Suite Hooks (Before / After All Tests)
+hooks:
+  run:
+    pre:
+      # Build the dataflow-engine prior to all test execution.
+      - run_command:
+          command: cd ../../rust/otap-dataflow && cargo build --all-targets --release
+    post:
+        # This report type collects e.g. logs sent / lost / rate /etc.
+        # We declare it once for each test by adjusting
+        # the start and stop event window.
+      - pipeline_perf_report:
+          name: Perf - Dataflow Engine
+          system_under_test: dataflow-engine
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+          # Start and end events to set report window.
+          between_events:
+            # We use the test start/end events instead of a narrower window to make sure
+            # we get readings from all components before load starts sending.
+            start:
+              name: test_framework.test_start
+              attributes:
+                test.name: Test OTLP Logs - Dataflow Engine
+            end:
+              name: test_framework.test_end
+              attributes:
+                test.name: Test OTLP Logs - Dataflow Engine
+      - pipeline_perf_report:
+          name: Perf - Otel Collector
+          system_under_test: dataflow-engine
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+          # Start and end events to set report window.
+          between_events:
+            # We use the test start/end events instead of a narrower window to make sure
+            # we get readings from all components before load starts sending.
+            start:
+              name: test_framework.test_start
+              attributes:
+                test.name: Test OTLP Logs - Otel Collector
+            end:
+              name: test_framework.test_end
+              attributes:
+                test.name: Test OTLP Logs - Otel Collector
+        # The process report gathers cpu / memory values for the specified components.
+        # Again we declare 1 for each test.
+      - process_report:
+          name: Process - Dataflow Engine
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+          # Only report on the specified components here (or leave empty for all)
+          components:
+            - load-generator
+            - dataflow-engine
+            - backend-service
+          # Start and end events to set report window.
+          between_events:
+            # We use the custom start/end events here because we're measuring 'gauge' values.
+            # We're ok missing initial readings (where it's warming up), and only want the
+            # cpu/memory measurements "at stable load".
+            start:
+              name: observation_start
+              attributes:
+                test.name: Test OTLP Logs - Dataflow Engine
+            end:
+              name: observation_stop
+              attributes:
+                test.name: Test OTLP Logs - Dataflow Engine
+
+      - process_report:
+          name: Process - OTEL Collector
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+          # Only report on the specified components here (or leave empty for all)
+          components:
+            - load-generator
+            - otel-collector
+            - backend-service
+          # Start and end events to set report window.
+          between_events:
+            # We use the custom start/end events here because we're measuring 'gauge' values.
+            # We're ok missing initial readings (where it's warming up), and only want the
+            # cpu/memory measurements "at stable load".
+            start:
+              name: observation_start
+              attributes:
+                test.name: Test OTLP Logs - Otel Collector
+            end:
+              name: observation_stop
+              attributes:
+                test.name: Test OTLP Logs - Otel Collector
+      - comparison_report:
+          name: Compare Process
+          reports:
+            - Process - Dataflow Engine
+            - Process - OTEL Collector
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}
+      - comparison_report:
+          name: Compare Otel Collector
+          reports:
+            - Perf - Dataflow Engine
+            - Perf - Otel Collector
+          output:
+            - format:
+                template: {}
+              destination:
+                console: {}

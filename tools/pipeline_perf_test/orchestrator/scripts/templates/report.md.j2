@@ -1,0 +1,81 @@
+# Report Plugin: {{ type_name }}
+
+**Class**: `{{ class_path }}`
+
+{%- if config_class %}
+
+**Config Class**: `{{ config_class }}`
+{%- endif %}
+
+{%- if supported_contexts %}
+
+**Supported Contexts:**
+{% for ctx in supported_contexts %}
+- {{ ctx }}
+{%- endfor %}
+{%- endif %}
+
+{%- if installs_hooks %}
+
+**Installs Default Hooks:**
+{% for hook in installs_hooks %}
+- {{ hook }}
+{%- endfor %}
+{%- endif %}
+
+{%- if cli_flags %}
+
+**CLI Flags:**
+{% for group_name, flags in cli_flags.items() %}
+**{{ group_name }}:**
+
+| Flag | Description | Default | Required |
+|------|-------------|---------|----------|
+{%- for f in flags %}
+| `{{ f.flag }}` | {{ f.help }} | {{ f.default or "-" }} | {{ "Y" if f.required else "-" }} |
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+
+**Description:**
+
+```python
+"""
+{{ docstring }}
+"""
+```
+
+{%- if notes %}
+
+**Notes:**
+
+{{ notes | wrap80 }}
+{%- endif %}
+
+**Example YAML:**
+
+```yaml
+{{ example_yaml }}
+```
+
+## Supported Aggregations
+
+{%- if supported_aggregations %}
+
+- {{ supported_aggregations | join('\n- ') }}
+{%- else %}
+
+*None.*
+{%- endif %}
+
+## Sample Outputs
+
+{%- for name, output in sample_outputs.items() %}
+
+### {{ name }}
+
+```markdown
+{{ output.strip() }}
+```
+{%- endfor %}
+

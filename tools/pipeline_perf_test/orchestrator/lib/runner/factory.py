@@ -23,16 +23,23 @@ This module centralizes framework object construction to promote modularity, reu
 and consistency across the system.
 """
 
+import argparse
+
 from enum import Enum
 from typing import Type
+
+from ..cli.telemetry import git_info
+
+from ..core.telemetry.telemetry_runtime import TelemetryRuntime
+
 from ..core.context.component_hook_context import HookableComponentPhase
-from ..core.test_framework import (
-    TestSuite,
-    TestDefinition,
-    TestStep,
-    TestFrameworkElement,
+from ..core.framework import (
+    Suite,
+    Scenario,
+    Step,
+    FrameworkElement,
 )
-from ..core.context.test_element_hook_context import HookableTestPhase
+from ..core.context.framework_element_hook_context import HookableTestPhase
 from ..impl.component.managed_component import (
     ManagedComponent,
     ManagedComponentConfiguration,
@@ -40,17 +47,16 @@ from ..impl.component.managed_component import (
 from ..impl.strategies.monitoring.composite_monitoring_strategy import (
     CompositeMonitoringStrategy,
 )
-
-from .schema.test_config import (
-    TestSuiteConfig,
-    TestDefinitionConfig,
-    TestStepConfig,
+from ..impl.strategies.hooks.docker.build_docker_image import (
+    BuildDockerImagesConfig,
+    BuildDockerImages,
 )
 
-# Trigger all the default strategy / action registrations
-# pylint: disable=unused-import
-from ..impl import strategies  # Do not remove
-from ..impl import actions  # Do not remove
+from .schema.framework_element_config import (
+    SuiteConfig,
+    ScenarioConfig,
+    StepConfig,
+)
 
 
 def get_hookable_phase(enum_cls: Type[Enum], base_phase: str, timing: str) -> Enum:
@@ -73,13 +79,8 @@ def get_hookable_phase(enum_cls: Type[Enum], base_phase: str, timing: str) -> En
 
 
 def register_hooks_from_config(
-    target: TestFrameworkElement | ManagedComponent,
-    config: (
-        ManagedComponentConfiguration
-        | TestSuiteConfig
-        | TestDefinitionConfig
-        | TestStepConfig
-    ),
+    target: FrameworkElement | ManagedComponent,
+    config: ManagedComponentConfiguration | SuiteConfig | ScenarioConfig | StepConfig,
     enum_cls: Type[Enum],
 ):
     """
@@ -165,7 +166,7 @@ def build_managed_component(
     return component
 
 
-def build_test_step(config: TestStepConfig) -> TestStep:
+def build_test_step(config: StepConfig) -> Step:
     """
     Constructs a TestStep instance from its configuration.
 
@@ -181,12 +182,12 @@ def build_test_step(config: TestStepConfig) -> TestStep:
     Returns:
         TestStep: A fully initialized and hook-registered test step instance.
     """
-    ts = TestStep(name=config.name, action=config.action.build_element())
+    ts = Step(name=config.name, action=config.action.build_element())
     register_hooks_from_config(ts, config, HookableTestPhase)
     return ts
 
 
-def build_test_definition(config: TestDefinitionConfig) -> TestDefinition:
+def build_test_definition(config: ScenarioConfig) -> Scenario:
     """
     Constructs a TestDefinition instance from its configuration.
 
@@ -208,18 +209,14 @@ def build_test_definition(config: TestDefinitionConfig) -> TestDefinition:
         TestDefinition: A fully constructed and hook-registered test definition.
     """
     steps = [build_test_step(s) for s in config.steps or []]
-    reporting_strategies = []
-    for _, strat in config.reporting.items():
-        reporting_strategies.append(strat.build_element())
-
-    td = TestDefinition(
-        name=config.name, steps=steps, reporting_strategies=reporting_strategies
-    )
+    td = Scenario(name=config.name, steps=steps)
     register_hooks_from_config(td, config, HookableTestPhase)
     return td
 
 
-def build_test_suite(config: TestSuiteConfig) -> TestSuite:
+def build_test_suite(
+    config: SuiteConfig, telemetry_runtime: TelemetryRuntime, args: argparse.Namespace
+) -> Suite:
     """
     Constructs a TestSuite instance from its configuration.
 
@@ -250,6 +247,17 @@ def build_test_suite(config: TestSuiteConfig) -> TestSuite:
     for test_def in config.tests:
         tests.append(build_test_definition(test_def))
 
-    ts = TestSuite(components=components, tests=tests)
+    ts = Suite(
+        name=config.name,
+        components=components,
+        tests=tests,
+        telemetry_runtime=telemetry_runtime,
+    )
+    ts.get_or_create_runtime("args", lambda: args)
+    ts.context.metadata = ts.context.merge_ctx_metadata(**git_info)
+
+    # TODO: Strategies need a way to install to FrameworkElement Phases directly
+    ts.add_hook(HookableTestPhase.PRE_RUN, BuildDockerImages(BuildDockerImagesConfig()))
+
     register_hooks_from_config(ts, config, HookableTestPhase)
     return ts

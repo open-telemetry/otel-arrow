@@ -1,16 +1,7 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package arrow_record
 
@@ -29,20 +20,20 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
-	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	config "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	logsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/logs/arrow"
-	metricsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
-	pstats "github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	tracesarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	colarspb "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/config"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	config "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	logsarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/arrow"
+	metricsarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/metrics/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
+	pstats "github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	tracesarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // This file implements a generic producer API used to encode BatchArrowRecords messages from

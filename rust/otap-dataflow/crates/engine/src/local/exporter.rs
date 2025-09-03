@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Trait and structures used to implement local exporters (!Send).
@@ -32,12 +33,14 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
+use crate::node::NodeId;
 use async_trait::async_trait;
-use std::borrow::Cow;
 use std::marker::PhantomData;
+use std::time::Duration;
+
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
 pub trait Exporter<PData> {
@@ -79,34 +82,57 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
-
-    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
-    /// will consume.
+    pub(crate) core: EffectHandlerCore,
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
         }
     }
 
-    /// Returns the name of the exporter associated with this handler.
+    /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn exporter_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for exporters to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error> {
+        self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

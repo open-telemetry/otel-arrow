@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Set of traits and structures used to implement receivers.
@@ -31,13 +32,17 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::effect_handler::EffectHandlerCore;
-use crate::error::Error;
-use crate::message::ControlMsg;
+use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::error::{Error, TypedError};
+use crate::node::NodeId;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
-use otap_df_channel::error::{RecvError, SendError};
-use std::borrow::Cow;
+use otap_df_channel::error::RecvError;
+use otap_df_config::PortName;
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// A trait for ingress receivers (Send definition).
@@ -49,23 +54,23 @@ pub trait Receiver<PData> {
     /// Similar to local::receiver::Receiver::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
-        ctrl_chan: ControlChannel,
+        ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A channel for receiving control messages (in a Send environment).
 ///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannel {
-    rx: tokio::sync::mpsc::Receiver<ControlMsg>,
+pub struct ControlChannel<PData> {
+    rx: SharedReceiver<NodeControlMsg<PData>>,
 }
 
-impl ControlChannel {
+impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: tokio::sync::mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
         Self { rx }
     }
 
@@ -74,8 +79,8 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await.ok_or(RecvError::Closed)
+    pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
+        self.rx.recv().await
     }
 }
 
@@ -85,7 +90,10 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, SharedSender<PData>>,
+    /// Cached default sender for fast access in the hot path
+    default_sender: Option<SharedSender<PData>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -96,35 +104,83 @@ impl<PData> EffectHandler<PData> {
     /// when it uses components that are `Send`.
     #[must_use]
     pub fn new(
-        receiver_name: Cow<'static, str>,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id);
+        core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+
+        // Determine and cache the default sender
+        let default_sender = if let Some(ref port) = default_port {
+            msg_senders.get(port).cloned()
+        } else if msg_senders.len() == 1 {
+            msg_senders.values().next().cloned()
+        } else {
+            None
+        };
+
         EffectHandler {
-            core: EffectHandlerCore {
-                node_name: receiver_name,
-            },
-            msg_sender,
+            core,
+            msg_senders,
+            default_sender,
         }
     }
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Returns the list of connected out ports for this receiver.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
-                Error::ChannelSendError(SendError::Full(pdata))
-            })
+    /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
+    #[inline]
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        match &self.default_sender {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
+                receiver: self.receiver_id(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
+            })),
+        }
+    }
+
+    /// Sends a message to a specific named out port.
+    #[inline]
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        match self.msg_senders.get(&port_name) {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
+                receiver: self.receiver_id(),
+                error: format!(
+                    "Unknown out port '{port_name}' for node {}",
+                    self.receiver_id()
+                ),
+            })),
+        }
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -134,8 +190,27 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
-    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
+    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error> {
+        self.core.tcp_listener(addr, self.receiver_id())
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for receivers to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

@@ -11,9 +11,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
-use otel_arrow_rust::otlp::attributes::{
-    decoder::materialize_parent_id, store::AttributeValueType,
-};
+use otel_arrow_rust::otap::transform::materialize_parent_id_for_attributes;
+use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::schema::consts;
 
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {
@@ -95,16 +94,16 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
 }
 
 fn bench_materialize_parent_ids(c: &mut Criterion) {
-    let mut group = c.benchmark_group("materialize_parent_ids");
+    let mut group = c.benchmark_group("materialize_parent_ids_for_attributes");
 
     for size in [0, 128, 1536, 8092] {
         let input = create_bench_batch(size);
         let _ = group.bench_with_input(
-            BenchmarkId::new("materialize_parent_ids", size),
+            BenchmarkId::new("materialize_parent_ids_for_attributes", size),
             &input,
             |b, input| {
                 b.iter(|| {
-                    let _ = materialize_parent_id::<u16>(input)
+                    let _ = materialize_parent_id_for_attributes::<u16>(input)
                         .expect("function should not error here");
                 });
             },

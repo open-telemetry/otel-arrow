@@ -82,8 +82,7 @@ impl<T: Send + 'static> TestReceiver<T> {
         // Forward the received request to the test channel
         if let Err(err) = self.request_tx.send(request_inner).await {
             return Err(tonic::Status::internal(format!(
-                "Failed to send {} data to test channel: {}",
-                service_name, err
+                "Failed to send {service_name} data to test channel: {err}"
             )));
         }
 
