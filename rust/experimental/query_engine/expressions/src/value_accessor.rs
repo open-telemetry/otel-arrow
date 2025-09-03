@@ -60,13 +60,8 @@ impl ValueAccessor {
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
-        let selectors = &mut self.selectors;
-        for selector in selectors {
-            if let Some(ResolvedStaticScalarExpression::Computed(s)) =
-                selector.try_resolve_static(scope)?
-            {
-                *selector = ScalarExpression::Static(s);
-            }
+        for selector in &mut self.selectors {
+            selector.try_resolve_static(scope)?;
         }
         Ok(())
     }

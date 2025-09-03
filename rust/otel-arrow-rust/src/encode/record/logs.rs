@@ -21,7 +21,7 @@ use crate::{
         dictionary::DictionaryOptions,
     },
     otlp::attributes::store::AttributeValueType,
-    schema::{FieldExt, consts},
+    schema::{FieldExt, SpanId, TraceId, consts},
 };
 
 /// Record batch builder for logs
@@ -188,7 +188,7 @@ impl LogsRecordBatchBuilder {
     }
 
     /// append a value to the `trace_id` array
-    pub fn append_trace_id(&mut self, val: Option<&[u8]>) -> Result<(), ArrowError> {
+    pub fn append_trace_id(&mut self, val: Option<&TraceId>) -> Result<(), ArrowError> {
         if let Some(val) = val {
             self.trace_id.append_slice(val)
         } else {
@@ -198,7 +198,7 @@ impl LogsRecordBatchBuilder {
     }
 
     /// append a value to the `span_id` array
-    pub fn append_span_id(&mut self, val: Option<&[u8]>) -> Result<(), ArrowError> {
+    pub fn append_span_id(&mut self, val: Option<&SpanId>) -> Result<(), ArrowError> {
         if let Some(val) = val {
             self.span_id.append_slice(val)
         } else {

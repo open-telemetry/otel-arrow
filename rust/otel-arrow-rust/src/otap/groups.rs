@@ -340,7 +340,7 @@ fn generic_split<const N: usize>(
 // This is a recursive helper function; the depth of recursion is bounded by parent-child
 // relationships described in `child_payload_types` so we won't blow the stack.
 fn generic_split_helper<const N: usize>(
-    input: &[Option<RecordBatch>; N],
+    input: &mut [Option<RecordBatch>; N],
     payload: ArrowPayloadType,
     primary_payload: ArrowPayloadType,
     parent_ids: &IDSeqs,
@@ -351,12 +351,12 @@ fn generic_split_helper<const N: usize>(
     assert_ne!(payload, primary_payload);
 
     let payload_offset = POSITION_LOOKUP[payload as usize];
-    if let Some(table) = input[payload_offset].as_ref() {
+    if let Some(table) = std::mem::take(&mut input[payload_offset]) {
         // `table` is a parent table with some children!
         let child_payloads = child_payload_types(payload);
 
         // Let's split it...
-        let split_table_parts = parent_ids.split_child_record_batch(table)?;
+        let split_table_parts = parent_ids.split_child_record_batch(&table)?;
         assert_eq!(split_table_parts.len(), output.len());
 
         // ...and then recursively call ourself to do the same with our children
@@ -377,7 +377,7 @@ fn generic_split_helper<const N: usize>(
 
         // ...and stash the result in `output`
         for (i, split_table) in split_table_parts.into_iter().enumerate() {
-            output[i][payload_offset] = Some(split_table);
+            output[i][payload_offset] = split_table;
         }
     }
 
@@ -508,15 +508,17 @@ impl IDSeqs {
         ranges.into()
     }
 
-    fn from_split_cols(inputs: &[RecordBatch]) -> Result<Self> {
+    fn from_split_cols(inputs: &[Option<RecordBatch>]) -> Result<Self> {
         let column_name = consts::ID;
         let lengths = inputs
             .iter()
+            .flatten()
             .map(|input| input.num_rows())
             .collect::<Vec<_>>();
 
         let ids: Result<Vec<_>> = inputs
             .iter()
+            .flatten()
             .map(|rb| IDColumn::extract(rb, column_name))
             .collect();
         let ids = ids?;
@@ -552,7 +554,7 @@ impl IDSeqs {
         Ok(Self::from_col(ids, &lengths))
     }
 
-    fn split_child_record_batch(&self, input: &RecordBatch) -> Result<Vec<RecordBatch>> {
+    fn split_child_record_batch(&self, input: &RecordBatch) -> Result<Vec<Option<RecordBatch>>> {
         let id = IDColumn::extract(input, consts::PARENT_ID)?;
         Ok(match (self, id) {
             (IDSeqs::RangeU16(id_ranges), IDColumn::U16(parent_ids)) => {
@@ -571,7 +573,7 @@ impl IDSeqs {
         id_ranges: &[Option<RangeInclusive<T::Native>>],
         parent_ids: &PrimitiveArray<T>,
         input: &RecordBatch,
-    ) -> Vec<RecordBatch>
+    ) -> Vec<Option<RecordBatch>>
     where
         T: ArrowPrimitiveType,
         T::Native: ArrowNativeTypeOp + From<u16> + Copy + PartialEq + Eq + Add<Output = T::Native>,
@@ -590,19 +592,22 @@ impl IDSeqs {
 
             // the first index where id >= start
             let first_index = slice.partition_point(|id| id < range.start());
+            if first_index >= slice.len() {
+                // range doesn't show up in table
+                result.push(None);
+                continue;
+            }
+
             // the last index where id <= end
             let last_index = slice
                 .partition_point(|&id| id < *range.end() + one)
                 .checked_sub(1)
                 .unwrap_or(first_index);
+
             result.push(
-                if range.contains(&slice[first_index]) && range.contains(&slice[last_index]) {
-                    input.slice(first_index, 1 + (last_index - first_index))
-                } else {
-                    // it is possible that this id range doesn't show up in this table at all!
-                    RecordBatch::new_empty(input.schema())
-                    // FIXME: this should be None and method should return Option
-                },
+                // slice record batch if the  id range doesn't show up in this table
+                (range.contains(&slice[first_index]) && range.contains(&slice[last_index]))
+                    .then(|| input.slice(first_index, 1 + (last_index - first_index))),
             );
         }
 
@@ -2038,7 +2043,9 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1, 1])),
+                // create a parent ID range here where not all values of the parent's ID are
+                // present to test the range is successfully handled when splitting child
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1, 2])),
             ],
         )
         .unwrap();
@@ -2050,6 +2057,8 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2])),
+                // create a range where all the ID values are only present in one split to test
+                // that the other ranges will not contain a record batch for this payload type
                 Arc::new(UInt16Array::from_iter_values(vec![3, 3, 3])),
             ],
         )
@@ -2064,12 +2073,44 @@ mod test {
     }
 
     #[test]
-    #[ignore = "this test currently does not pass"]
     fn test_simple_split_traces() {
-        let [_, _, traces] = RecordsGroup::split_by_type(vec![make_traces()]);
-        let _original_traces = traces.clone();
-        let _split = traces.split(NonZeroU64::new(2).unwrap()).unwrap();
-        todo!("add assertions")
+        let input = make_traces();
+        let [_, _, traces] = RecordsGroup::split_by_type(vec![make_traces().clone()]);
+        let split = traces.split(NonZeroU64::new(2).unwrap()).unwrap();
+
+        let otap_batches = match split {
+            RecordsGroup::Traces(batches) => batches,
+            _ => {
+                panic!("split returned wrong type of record group. Expecting traces")
+            }
+        };
+
+        assert_eq!(otap_batches.len(), 2);
+
+        let input_spans = input.get(ArrowPayloadType::Spans).unwrap();
+        let input_span_links = input.get(ArrowPayloadType::SpanLinks).unwrap();
+        let input_span_events = input.get(ArrowPayloadType::SpanEvents).unwrap();
+
+        let batch0 = OtapArrowRecords::Traces(Traces {
+            batches: otap_batches[0].clone(),
+        });
+        let batch0_spans = batch0.get(ArrowPayloadType::Spans).unwrap();
+        assert_eq!(batch0_spans, &input_spans.slice(0, 2));
+        let batch0_span_links = batch0.get(ArrowPayloadType::SpanLinks).unwrap();
+        assert_eq!(batch0_span_links, &input_span_links.slice(0, 3));
+        let batch0_span_events = batch0.get(ArrowPayloadType::SpanEvents);
+        assert!(batch0_span_events.is_none());
+
+        let batch1 = OtapArrowRecords::Traces(Traces {
+            batches: otap_batches[1].clone(),
+        });
+        let batch1_spans = batch1.get(ArrowPayloadType::Spans).unwrap();
+        assert_eq!(batch1_spans, &input_spans.slice(2, 2));
+        let batch1_span_links = batch1.get(ArrowPayloadType::SpanLinks).unwrap();
+        assert_eq!(batch1_span_links, &input_span_links.slice(3, 1));
+        let batch1_span_events = batch1.get(ArrowPayloadType::SpanEvents).unwrap();
+        // batch 1 events only contained parent IDs from the second spans batch:
+        assert_eq!(batch1_span_events, input_span_events);
     }
 
     fn make_metrics() -> OtapArrowRecords {

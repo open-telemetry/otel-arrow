@@ -622,12 +622,10 @@ mod tests {
         pipeline_builder.push_expression(DataExpression::Transform(TransformExpression::Set(
             SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                    VariableScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
-                        ValueAccessor::new(),
-                    ),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                    ValueAccessor::new(),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -780,11 +778,9 @@ mod tests {
             ),
             DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Null(NullScalarExpression::new(
-                        QueryLocation::new_fake(),
-                    )),
-                )),
+                ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                    QueryLocation::new_fake(),
+                ))),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
                     ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(

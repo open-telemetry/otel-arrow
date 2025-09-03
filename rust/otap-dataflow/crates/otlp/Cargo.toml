@@ -19,6 +19,8 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine", features = ["testing"] }
 otap-df-channel = { path = "../channel" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
 weaver_forge.workspace = true
 weaver_common.workspace = true
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}

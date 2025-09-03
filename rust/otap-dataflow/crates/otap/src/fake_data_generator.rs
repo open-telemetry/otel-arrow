@@ -21,6 +21,8 @@ use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal};
 use otap_df_otlp::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
+use otap_df_otlp::fake_signal_receiver::metrics::FakeSignalReceiverMetrics;
+use otap_df_telemetry::metrics::MetricSet;
 use prost::{EncodeError, Message};
 use serde_json::Value;
 use std::sync::Arc;
@@ -34,6 +36,8 @@ pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generato
 pub struct FakeGeneratorReceiver {
     /// Configuration for the fake data generator
     config: Config,
+    /// Metrics for the fake data generator
+    metrics: MetricSet<FakeSignalReceiverMetrics>,
 }
 
 /// Declares the fake data generator as a local receiver factory
@@ -44,12 +48,12 @@ pub struct FakeGeneratorReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
-    create: |_pipeline: PipelineContext,
+    create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
-            FakeGeneratorReceiver::from_config(&node_config.config)?,
+            FakeGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -60,18 +64,24 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactor
 impl FakeGeneratorReceiver {
     /// creates a new FakeSignalReceiver
     #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<FakeSignalReceiverMetrics>();
+        Self { config, metrics }
     }
 
     /// Creates a new fake data generator from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
-        Ok(FakeGeneratorReceiver { config })
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
+        Ok(FakeGeneratorReceiver::new(
+            pipeline_ctx,
+            serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
+        ))
     }
 }
 
@@ -79,7 +89,7 @@ impl FakeGeneratorReceiver {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
@@ -99,6 +109,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let max_batch_size = traffic_config.get_max_batch_size();
         let mut signal_count: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
+
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         loop {
             let wait_till = Instant::now() + one_second_duration;
             tokio::select! {
@@ -106,6 +121,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
+                        Ok(NodeControlMsg::CollectTelemetry {
+                            mut metrics_reporter,
+                        }) => {
+                            _ = metrics_reporter.report(&mut self.metrics);
+                        }
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
@@ -123,6 +143,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     // if signals per second is set then we should rate limit
                     match signal_status {
                         Ok(_) => {
+                            self.metrics.logs_produced.add(log_count as u64);
+                            self.metrics.metrics_produced.add(metric_count as u64);
+                            self.metrics.spans_produced.add(trace_count as u64);
                             if signals_per_second.is_some() {
                                 // check if need to sleep
                                 let remaining_time = wait_till - Instant::now();
@@ -383,12 +406,14 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
     use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, TrafficConfig};
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
@@ -624,9 +649,13 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(config),
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -700,9 +729,13 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(config),
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver"),
             node_config,
             test_runtime.config(),
@@ -772,9 +805,13 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(config),
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver"),
             node_config,
             test_runtime.config(),
