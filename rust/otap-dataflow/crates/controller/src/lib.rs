@@ -22,7 +22,9 @@ use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
-    PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
+    PipelineGroupId, PipelineId,
+    pipeline::PipelineConfig,
+    pipeline_group::{CoreAllocation, Quota},
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -177,53 +179,56 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Ok(())
     }
 
-    /// Returns the list of CPU core IDs to use based on the given quota.
+    /// Selects which CPU cores to use based on the given quota configuration.
     fn select_cores_for_quota(
         mut available_core_ids: Vec<CoreId>,
         quota: Quota,
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
-        let Some(range) = quota.core_id_range else {
-            // Use num_cores logic: 0 means all cores, otherwise cap at available
-            let count = if quota.num_cores == 0 {
-                available_core_ids.len()
-            } else {
-                quota.num_cores.min(available_core_ids.len())
-            };
-            return Ok(available_core_ids.into_iter().take(count).collect());
-        };
+        match quota.core_allocation {
+            CoreAllocation::AllCores => Ok(available_core_ids),
+            CoreAllocation::CoreCount { count } => {
+                let count = if count == 0 {
+                    available_core_ids.len()
+                } else {
+                    count.min(available_core_ids.len())
+                };
+                Ok(available_core_ids.into_iter().take(count).collect())
+            }
+            CoreAllocation::CoreRange { start, end } => {
+                // Validate range
+                if start > end {
+                    return Err(Error::InvalidCoreRange {
+                        start,
+                        end,
+                        message: "Start of range is greater than end".to_owned(),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    });
+                }
 
-        // Validate range
-        if range.start > range.end {
-            return Err(Error::InvalidCoreRange {
-                start: range.start,
-                end: range.end,
-                message: "Start of range is greater than end".to_owned(),
-                available: available_core_ids.iter().map(|c| c.id).collect(),
-            });
+                // Filter cores in range
+                let selected: Vec<_> = available_core_ids
+                    .into_iter()
+                    .filter(|c| c.id >= start && c.id <= end)
+                    .collect();
+
+                if selected.is_empty() {
+                    return Err(Error::InvalidCoreRange {
+                        start,
+                        end,
+                        message: "No available cores in the specified range".to_owned(),
+                        available: core_affinity::get_core_ids()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|c| c.id)
+                            .collect(),
+                    });
+                }
+
+                Ok(selected)
+            }
         }
-
-        // Filter cores in range
-        let selected: Vec<_> = available_core_ids
-            .into_iter()
-            .filter(|c| c.id >= range.start && c.id <= range.end)
-            .collect();
-
-        if selected.is_empty() {
-            return Err(Error::InvalidCoreRange {
-                start: range.start,
-                end: range.end,
-                message: "No available cores in the specified range".to_owned(),
-                available: core_affinity::get_core_ids()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|c| c.id)
-                    .collect(),
-            });
-        }
-
-        Ok(selected)
     }
 
     /// Runs a single pipeline in the current thread.
@@ -281,10 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn compute_all_cores_by_default() {
+    fn select_all_cores_by_default() {
         let quota = Quota {
-            num_cores: 0,
-            core_id_range: None,
+            core_allocation: CoreAllocation::AllCores,
         };
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
@@ -293,10 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn compute_limited_by_num_cores() {
+    fn select_limited_by_num_cores() {
         let quota = Quota {
-            num_cores: 4,
-            core_id_range: None,
+            core_allocation: CoreAllocation::CoreCount { count: 4 },
         };
         let available_core_ids = available_core_ids();
         let result =
@@ -311,25 +314,23 @@ mod tests {
     }
 
     #[test]
-    fn compute_with_valid_single_core_range() {
+    fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
         let quota = Quota {
-            num_cores: 0,
-            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange {
+            core_allocation: CoreAllocation::CoreRange {
                 start: first_id,
                 end: first_id,
-            }),
+            },
         };
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), vec![first_id]);
     }
 
     #[test]
-    fn compute_with_valid_multi_core_range() {
+    fn select_with_valid_multi_core_range() {
         let quota = Quota {
-            num_cores: 0,
-            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 5 }),
+            core_allocation: CoreAllocation::CoreRange { start: 2, end: 5 },
         };
         let available_core_ids = available_core_ids();
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
@@ -337,10 +338,9 @@ mod tests {
     }
 
     #[test]
-    fn compute_with_inverted_range_errors() {
+    fn select_with_inverted_range_errors() {
         let quota = Quota {
-            num_cores: 0,
-            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start: 2, end: 1 }),
+            core_allocation: CoreAllocation::CoreRange { start: 2, end: 1 },
         };
         let available_core_ids = available_core_ids();
         let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
@@ -354,12 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn compute_with_out_of_bounds_range_errors() {
+    fn select_with_out_of_bounds_range_errors() {
         let start = 100;
         let end = 110;
         let quota = Quota {
-            num_cores: 0,
-            core_id_range: Some(otap_df_config::pipeline_group::CoreIdRange { start, end }),
+            core_allocation: CoreAllocation::CoreRange { start, end },
         };
         let available_core_ids = available_core_ids();
         let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
@@ -372,5 +371,16 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn select_with_zero_count_uses_all_cores() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreCount { count: 0 },
+        };
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 }

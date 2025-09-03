@@ -76,27 +76,34 @@ impl Default for PipelineGroupConfig {
 /// Pipeline group quota configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct Quota {
-    /// Number of CPU cores to use for this pipeline group.
-    /// If set to 0, it will use all available cores.
-    /// If set to a value greater than 0, it will use that many cores.
-    #[serde(default = "default_num_cores")]
-    pub num_cores: usize,
-
-    /// Optional inclusive range of CPU core IDs to pin threads to, e.g., start..=end.
-    /// When specified, this takes precedence over `num_cores`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub core_id_range: Option<CoreIdRange>,
+    /// CPU core allocation strategy for this pipeline group.
+    #[serde(default)]
+    pub core_allocation: CoreAllocation,
 }
 
-/// Inclusive CPU core ID range.
+/// Defines how CPU cores should be allocated for pipeline execution.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CoreIdRange {
-    /// Start core ID (inclusive).
-    pub start: usize,
-    /// End core ID (inclusive). Must be >= start.
-    pub end: usize,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CoreAllocation {
+    /// Use all available CPU cores.
+    AllCores,
+    /// Use a specific number of CPU cores (starting from core 0).
+    /// If the requested number exceeds available cores, use all available cores.
+    CoreCount {
+        /// Number of cores to use. If 0, uses all available cores.
+        count: usize,
+    },
+    /// Use a specific range of CPU core IDs (inclusive).
+    CoreRange {
+        /// Start core ID (inclusive).
+        start: usize,
+        /// End core ID (inclusive).
+        end: usize,
+    },
 }
 
-fn default_num_cores() -> usize {
-    0 // Default to using all available cores
+impl Default for CoreAllocation {
+    fn default() -> Self {
+        Self::AllCores
+    }
 }
