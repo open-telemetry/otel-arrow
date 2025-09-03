@@ -384,9 +384,8 @@ impl OtapPayloadExt for OtlpProtoBytes {
                 };
                 logs_data_view
                     .resources()
-                    .flat_map(|rl| rl.scopes())
-                    .flat_map(|sl| sl.log_records())
-                    .count()
+                    .map(|rl| rl.scopes().map(|sl| sl.log_records().count()).sum::<usize>())
+                    .sum()
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(&bytes);
@@ -395,9 +394,8 @@ impl OtapPayloadExt for OtlpProtoBytes {
                 };
                 traces_data_view
                     .resources()
-                    .flat_map(|rs| rs.scopes())
-                    .flat_map(|ss| ss.spans())
-                    .count()
+                    .map(|rs| rs.scopes().map(|ss| ss.spans().count()).sum::<usize>())
+                    .sum()
             }
             Self::ExportMetricsRequest(_bytes) => {
                 // Metrics view is not implemented yet
