@@ -89,18 +89,15 @@
 //!                                                                           
 //! ```
 
+use crate::encoder::encode_spans_otap_batch;
+use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
-use otap_df_pdata_views::views::trace::{ResourceSpansView, ScopeSpansView, TracesView};
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use otel_arrow_rust::{Consumer, Producer};
 use prost::{EncodeError, Message};
-
-use crate::encoder::encode_spans_otap_batch;
-use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
 pub use super::context::{Context, Register, ReplyState, ReplyTo};
 
@@ -211,7 +208,11 @@ impl OtapPayload {
     /// empty request.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.payload.is_empty()
+        match self {
+            Self::OtlpBytes(value) => value.is_empty(),
+            Self::OtapArrowBytes(value) => value.is_empty(),
+            Self::OtapArrowRecords(value) => value.is_empty(),
+        }
     }
 
     /// Returns the number of items of the primary signal (spans, data
@@ -238,7 +239,11 @@ trait OtapPdataHelpers: Clone + Into<OtapPayload> {
     #[cfg(test)]
     fn num_items(self) -> usize;
 
-    pub fn is_empty(&self) -> bool;
+    /// Return true if there is no data.
+    fn is_empty(&self) -> bool;
+
+    /// Make an empty clone (preserve signal type).
+    fn clone_empty(&self) -> Self;
 }
 
 impl OtapPdataHelpers for OtapArrowRecords {
@@ -250,8 +255,29 @@ impl OtapPdataHelpers for OtapArrowRecords {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        // @@@
+    fn clone_empty(&self) -> Self {
+        match self {
+            Self::Logs(_) => Self::Logs(Default::default()),
+            Self::Metrics(_) => Self::Metrics(Default::default()),
+            Self::Traces(_) => Self::Traces(Default::default()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Logs(_) => {
+                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
+                    .map_or(true, |batch| batch.num_rows() == 0)
+            }
+            Self::Traces(_) => {
+                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
+                    .map_or(true, |batch| batch.num_rows() == 0)
+            }
+            Self::Metrics(_) => {
+                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
+                    .map_or(true, |batch| batch.num_rows() == 0)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -284,8 +310,20 @@ impl OtapPdataHelpers for OtlpProtoBytes {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        // @@@
+    fn clone_empty(&self) -> Self {
+        match self {
+            Self::ExportLogsRequest(_) => Self::ExportLogsRequest(Vec::new()),
+            Self::ExportMetricsRequest(_) => Self::ExportMetricsRequest(Vec::new()),
+            Self::ExportTracesRequest(_) => Self::ExportTracesRequest(Vec::new()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::ExportLogsRequest(bytes) => bytes.is_empty(),
+            Self::ExportMetricsRequest(bytes) => bytes.is_empty(),
+            Self::ExportTracesRequest(bytes) => bytes.is_empty(),
+        }
     }
 
     /// Number of items
@@ -294,6 +332,9 @@ impl OtapPdataHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes);
+                use otap_df_pdata_views::views::logs::{
+                    LogsDataView, ResourceLogsView, ScopeLogsView,
+                };
                 logs_data_view
                     .resources()
                     .flat_map(|rl| rl.scopes())
@@ -302,6 +343,9 @@ impl OtapPdataHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes);
+                use otap_df_pdata_views::views::trace::{
+                    ResourceSpansView, ScopeSpansView, TracesView,
+                };
                 traces_data_view
                     .resources()
                     .flat_map(|rs| rs.scopes())
@@ -325,8 +369,21 @@ impl OtapPdataHelpers for OtapArrowBytes {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        // @@@
+    fn clone_empty(&self) -> Self {
+        use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+        match self {
+            Self::ArrowLogs(_) => Self::ArrowLogs(BatchArrowRecords::default()),
+            Self::ArrowMetrics(_) => Self::ArrowMetrics(BatchArrowRecords::default()),
+            Self::ArrowTraces(_) => Self::ArrowTraces(BatchArrowRecords::default()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::ArrowLogs(data) => data.arrow_payloads.is_empty(),
+            Self::ArrowMetrics(data) => data.arrow_payloads.is_empty(),
+            Self::ArrowTraces(data) => data.arrow_payloads.is_empty(),
+        }
     }
 
     #[cfg(test)]
@@ -360,17 +417,14 @@ impl OtapPdata {
     /// Constructs a request holder for returning a retryable request by
     /// cloning the request payload in its (potentially modified) state.
     pub fn new_reply<T: OtapPdataHelpers>(context: Context, payload: &T) -> Self {
-        if !context.has_reply_state() {
-            Self {
-                context: context,
-                payload: payload.empty_copy(),
-            }
-        } else {
-            let payload = payload.clone();
-            Self {
-                context: context,
-                payload: payload.into(),
-            }
+        let has_reply = context.has_reply_state();
+        Self {
+            context: context,
+            payload: if !has_reply {
+                payload.clone_empty().into()
+            } else {
+                payload.clone().into()
+            },
         }
     }
 
