@@ -25,7 +25,7 @@
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource    
 //! };
-//! # use otap_df_otap::{pdata::{OtapPdata, OtlpProtoBytes}, grpc::OtapArrowBytes};
+//! # use otap_df_otap::{pdata::{OtapPdata, OtapPayload, OtlpProtoBytes}, grpc::OtapArrowBytes};
 //! # use prost::Message;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
 //!    ResourceLogs::build(Resource::default())
@@ -43,14 +43,15 @@
 //! let mut buf = Vec::new();
 //! otlp_service_req.encode(&mut buf).unwrap();
 //!
-//! let otap_pdata = OtapPdata::from(OtlpProtoBytes::ExportLogsRequest(buf));
+//! // Create a new OtapPdata with default context
+//! let mut pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(buf).into());
 //!
-//! // convert to Otap Arrow Records
-//! let otap_arrow_records: OtapArrowRecords = otap_pdata.try_into().unwrap();
+//! // Take the payload, convert to Otap Arrow Records
+//! let otap_arrow_records: OtapArrowRecords = pdata.take_payload().try_into().unwrap();
 //!
 //! // convert to OTAP Arrow Bytes
-//! let otap_pdata: OtapPdata = otap_arrow_records.into();
-//! let otap_arrow_bytes: OtapArrowBytes = otap_pdata.try_into().unwrap();
+//! let mut pdata = OtapPdata::new_default(otap_arrow_records.into());
+//! let otap_arrow_bytes: OtapArrowBytes = pdata.take_payload().try_into().unwrap();
 //! ```
 //!
 //! Internally, conversions are happening using various utility functions:
