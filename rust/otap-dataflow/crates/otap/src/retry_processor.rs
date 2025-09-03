@@ -69,7 +69,7 @@ use otap_df_engine::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
@@ -189,6 +189,9 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
+                if data.is_empty() {
+                    // @@@ Ack
+                }
                 let rstate = RetryState {
                     retries: 0,
                     last_ts: Instant::now(),
@@ -201,37 +204,70 @@ impl Processor<OtapPdata> for RetryProcessor {
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(mut ack) => {
-                    _ = ack.context.reply_to.pop().expect("has_rsvp");
-                    let node_id = ack.context.reply_node_id();
+                    _ = ack.context.pop_stack();
+
+                    let node_id = ack.context.mut_context().reply_node_id();
                     effect_handler.reply(node_id, AckOrNack::Ack(ack)).await?;
                     Ok(())
                 }
                 NodeControlMsg::Nack(mut nack) => {
-                    let mut rstate: RetryState = nack
-                        .context
-                        .reply_to
-                        .pop()
-                        .expect("has_reply")
-                        .state
-                        .try_into()?;
+                    let mut rstate: RetryState = nack.request.pop_stack().try_into()?;
 
-                    let node_id = nack.context.reply_node_id();
+                    // The receiver of the Nack will pop the reply. Here we
+                    // peek at the recipient.
+                    let node_id = nack.request.return_node_id();
 
-                    if rstate.retries >= self.config.max_retries || nack.payload.is_none() {
+                    // If the error is permanent or too many retries.
+                    // If the payload is empty: the effect is also
+                    // permanent, as by intentionaly failing to return
+                    // the data.
+                    if nack.permanent
+                        || rstate.retries >= self.config.max_retries
+                        || nack.request.is_empty()
+                    {
+                        // TODO: new Nack messages explaining what/why, instead of direct
+                        // propagation as above?
                         effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
                         return Ok(());
                     }
+
+                    // Increment the retry count (for the powi() below)
+                    rstate.retries += 1;
+
                     // TODO: new Nack messages explaining what/why, instead of direct
-                    // propagation as below?
-                    //
-                    // TODO: compute sleep; the check below should
-                    // really test whether we expire before the
-                    // backoff.
+                    // propagation as above?
+                    // -            pending.last_error = reason;
+                    //                log::error!(
+                    //                    "Message {} exceeded max retries ({}), dropping. Last error: {}",
+                    //                    id,
+                    //                    self.config.max_retries,
+                    //                    pending.last_error
+                    //                 );
+
+                    let now = Instant::now();
+                    let delay_ms = (self.config.initial_retry_delay_ms as f64
+                        * self
+                            .config
+                            .backoff_multiplier
+                            .powi(rstate.retries as i32 - 1))
+                    .min(self.config.max_retry_delay_ms as f64)
+                        as u64;
+
+                    let next_retry_time = Instant::now() + Duration::from_millis(delay_ms);
+
+                    // -                let retry_count = pending.retry_count;
+                    // -                let _previous = self.pending_messages.insert(id, pending);
+                    // -                log::debug!("Scheduled message {id} for retry attempt {retry_count}");
+                    // -            } else {
+                    // -                let delay_ms = (self.config.initial_retry_delay_ms as f64
 
                     let expired = nack
+                        .request
                         .context
                         .deadline
-                        .map(|dead| Instant::now().duration_since(dead).is_zero())
+                        // duration_since asks "how long after", how long
+                        // is deadline after now. zero indicates expired.
+                        .map(|dead| dead.duration_since(now).is_zero())
                         .unwrap_or(false);
 
                     if expired {
@@ -239,18 +275,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                         return Ok(());
                     }
 
-                    // Increment the retry count
-                    rstate.retries += 1;
-
-                    nack.context
+                    nack.request
+                        .mut_context()
                         .reply_to(effect_handler.processor_id().index(), rstate.into());
 
-                    effect_handler
-                        .send_message(OtapPdata::new(
-                            nack.context,
-                            *nack.payload.expect("checked"),
-                        ))
-                        .await?;
+                    effect_handler.send_message(*nack.request).await?;
 
                     Ok(())
                 }

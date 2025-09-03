@@ -30,8 +30,8 @@ impl<PData> AckMsg<PData> {
 /// The NACK
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
-    /// Reply-to information.
-    pub context: Box<PData>,
+    /// Failed request.
+    pub request: Box<PData>,
 
     /// Human-readable reason for the NACK.
     pub reason: String,
@@ -45,9 +45,9 @@ pub struct NackMsg<PData> {
 
 impl<PData> NackMsg<PData> {
     /// Create a new Nack.
-    pub fn new(context: Box<PData>, reason: String, permanent: bool, code: Option<i32>) -> Self {
+    pub fn new(request: Box<PData>, reason: String, permanent: bool, code: Option<i32>) -> Self {
         Self {
-            context,
+            request,
             reason,
             permanent,
             code,

@@ -20,7 +20,7 @@
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::{OtapPdata, OtapRequest};
+use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
@@ -173,12 +173,11 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     };
                 }
 
-                Message::PData(pdata) => {
-                    let mut request: OtapRequest = pdata.split_into();
-                    let payload = request.take_request_payload();
+                Message::PData(mut pdata) => {
+                    let payload = pdata.take_request_payload();
                     let requested: OtapArrowRecords = payload.try_into()?;
                     // TODO some kind of guard for reply
-                    let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
+                    let save_reply = OtapPdata::new_reply(pdata.take_context(), &requested);
                     _ = save_reply;
 
                     let mut otap_batch = requested;

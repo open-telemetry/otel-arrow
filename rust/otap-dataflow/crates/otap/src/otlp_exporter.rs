@@ -6,7 +6,7 @@ use crate::grpc::{
     code_is_permanent,
     otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient},
 };
-use crate::pdata::{OtapPdata, OtapRequest, OtlpProtoBytes};
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -84,15 +84,15 @@ impl OTLPExporter {
     async fn partial_success(
         self: &Box<Self>,
         effect_handler: &EffectHandler<OtapPdata>,
-        mut reply: OtapRequest,
+        mut reply: OtapPdata,
         rejected: i64,
         message: String,
     ) -> Result<(), Error> {
-        // retry payload drops here
+        _ = reply.take_reply_payload();
         effect_handler
             .reply(
                 reply.return_node_id(),
-                AckOrNack::Ack(AckMsg::new(reply.take_context(), Some((rejected, message)))),
+                AckOrNack::Ack(AckMsg::new(Box::new(reply), Some((rejected, message)))),
             )
             .await
     }
@@ -100,13 +100,13 @@ impl OTLPExporter {
     async fn ok(
         self: &Box<Self>,
         effect_handler: &EffectHandler<OtapPdata>,
-        mut reply: OtapRequest,
+        mut reply: OtapPdata,
     ) -> Result<(), Error> {
+        _ = reply.take_reply_payload();
         effect_handler
             .reply(
                 reply.return_node_id(),
-                // retry payload drops here
-                AckOrNack::Ack(AckMsg::new(reply.take_context(), None)),
+                AckOrNack::Ack(AckMsg::new(Box::new(reply), None)),
             )
             .await
     }
@@ -114,18 +114,17 @@ impl OTLPExporter {
     async fn grpc_status(
         self: &Box<Self>,
         effect_handler: &EffectHandler<OtapPdata>,
-        mut reply: OtapRequest,
+        reply: OtapPdata,
         status: Status,
     ) -> Result<(), Error> {
         effect_handler
             .reply(
                 reply.return_node_id(),
                 AckOrNack::Nack(NackMsg::new(
-                    reply.take_context(),
+                    Box::new(reply),
                     status.message().to_string(),
                     code_is_permanent(status.code() as i32),
                     Some(status.code() as i32),
-                    reply.take_reply_payload(),
                 )),
             )
             .await
@@ -225,15 +224,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 }) => {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
-                Message::PData(data) => {
+                Message::PData(mut data) => {
                     // Note the following clones the payload in the
                     // desired form, enabling efficient retry. We
                     // would prefer to let Tonic borrow the request
                     // instead of clone. TODO later, not sure how.
-                    let mut request: OtapRequest = data.split_into();
-                    let payload = request.take_request_payload();
+                    let payload = data.take_request_payload();
                     let requested: OtlpProtoBytes = payload.try_into()?;
-                    let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
+                    let save_reply = OtapPdata::new_reply(data.take_context(), &requested);
 
                     match requested {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {

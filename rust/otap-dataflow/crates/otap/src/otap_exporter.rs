@@ -9,7 +9,7 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::{OtapArrowBytes, code_is_permanent};
-use crate::pdata::{OtapPdata, OtapRequest};
+use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -99,55 +99,45 @@ impl OTAPExporter {
     async fn batch_status(
         self: &Box<Self>,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        mut reply: OtapRequest,
+        mut reply: OtapPdata,
         status: Option<BatchStatus>,
     ) -> Result<(), Error> {
         effect_handler
-            .reply(
-                reply.return_node_id(),
-                status
-                    .map(|batch| {
-                        if batch.status_code == (tonic::Code::Ok as i32) {
-                            AckOrNack::Ack(AckMsg::new(reply.take_context(), None))
-                        } else {
-                            AckOrNack::Nack(NackMsg::new(
-                                reply.take_context(),
-                                batch.status_message,
-                                code_is_permanent(batch.status_code),
-                                Some(batch.status_code),
-                                reply.take_reply_payload(),
-                            ))
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        AckOrNack::Nack(NackMsg::new(
-                            reply.take_context(),
-                            "no reply".into(),
-                            false,
-                            None,
-                            reply.take_reply_payload(),
-                        ))
-                    }),
-            )
+            .reply(reply.return_node_id(), {
+                let (code, message) = status
+                    .map(|batch| (batch.status_code, batch.status_message))
+                    .unwrap_or_else(|| (tonic::Code::Internal as i32, "no reply status".into()));
+
+                if code == (tonic::Code::Ok as i32) {
+                    _ = reply.take_reply_payload();
+                    AckOrNack::Ack(AckMsg::new(Box::new(reply), None))
+                } else {
+                    AckOrNack::Nack(NackMsg::new(
+                        Box::new(reply),
+                        message,
+                        code_is_permanent(code),
+                        Some(code),
+                    ))
+                }
+            })
             .await
     }
 
     async fn grpc_status(
         self: &Box<Self>,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        mut reply: OtapRequest,
+        reply: OtapPdata,
         status: Status,
     ) -> Result<(), Error> {
         effect_handler
             .reply(
                 reply.return_node_id(),
                 AckOrNack::Nack(NackMsg::new(
-                    reply.take_context(),
+                    Box::new(reply),
                     status.message().to_string(),
                     // Since this is a stsream failure...
                     false,
                     Some(status.code() as i32),
-                    reply.take_reply_payload(),
                 )),
             )
             .await
@@ -156,7 +146,7 @@ impl OTAPExporter {
     async fn respond_for(
         self: &Box<Self>,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        reply: OtapRequest,
+        reply: OtapPdata,
         resp: Result<tonic::Response<tonic::codec::Streaming<BatchStatus>>, Status>,
     ) -> Result<(), Error> {
         match resp {
@@ -232,15 +222,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     break;
                 }
                 //send data
-                Message::PData(message) => {
+                Message::PData(mut message) => {
                     // Note the following clones the payload in the
                     // desired form, enabling efficient retry. We
                     // would prefer to let Tonic borrow the request
                     // instead of clone. TODO later, not sure how.
-                    let mut request: OtapRequest = message.split_into();
-                    let payload = request.take_request_payload();
+                    let payload = message.take_request_payload();
                     let requested: OtapArrowBytes = payload.try_into()?;
-                    let save_reply = OtapRequest::new_reply(request.take_context(), &requested);
+                    let save_reply = OtapPdata::new_reply(message.take_context(), &requested);
 
                     match requested {
                         // match on OTAPData type and use the respective client to send message
@@ -384,7 +373,6 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .split_into()
                         .take_request_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
@@ -401,7 +389,6 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .split_into()
                         .take_request_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
@@ -414,7 +401,6 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .split_into()
                         .take_request_payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");

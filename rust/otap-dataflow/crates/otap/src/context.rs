@@ -41,8 +41,11 @@ pub struct ReplyTo {
 /// Caution: clone with care.
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    pub(crate) deadline: Option<Instant>,
-    pub(crate) reply_to: Vec<ReplyTo>,
+    /// deadline is a PLACEHOLDER
+    pub deadline: Option<Instant>,
+
+    /// stack encapsulates the pipeline callstack.
+    pub stack: Vec<ReplyTo>,
 }
 
 impl Context {
@@ -50,23 +53,23 @@ impl Context {
     pub fn todo() -> Self {
         Self {
             deadline: None,
-            reply_to: Vec::new(),
+            stack: Vec::new(),
         }
     }
 
     /// Returns true if there is a caller waiting for a reply.
     pub fn has_reply_state(&self) -> bool {
-        !self.reply_to.is_empty()
+        !self.stack.is_empty()
     }
 
     /// Pushes new reply-to state.
     pub(crate) fn reply_to(&mut self, node_id: usize, state: ReplyState) {
-        self.reply_to.push(ReplyTo { node_id, state });
+        self.stack.push(ReplyTo { node_id, state });
     }
 
     /// Indicates the return destination by node_id index.
     pub(crate) fn reply_node_id(&self) -> usize {
-        self.reply_to.last().expect("has_reply_state").node_id
+        self.stack.last().expect("has_reply_state").node_id
     }
 }
 
