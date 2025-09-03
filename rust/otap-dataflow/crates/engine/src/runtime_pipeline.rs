@@ -107,14 +107,14 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             );
         }
         for processor in self.processors {
-            control_senders.register(processor.node_id(), NodeType::Exporter, processor.control_sender());
+            control_senders.register(processor.node_id(), NodeType::Processor, processor.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
             );
         }
         for receiver in self.receivers {
-            control_senders.register(receiver.node_id(), NodeType::Exporter, receiver.control_sender());
+            control_senders.register(receiver.node_id(), NodeType::Receiver, receiver.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),

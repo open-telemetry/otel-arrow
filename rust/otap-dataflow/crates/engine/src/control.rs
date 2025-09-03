@@ -256,8 +256,7 @@ impl<PData> ControlSenders<PData> {
         let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
 
         for typed_sender in self.senders.values() {
-            //if typed_sender.node_type == NodeType::Receiver {
-                println!("Sending shutdown to receiver node {}", typed_sender.node_id.index);
+            if typed_sender.node_type == NodeType::Receiver {
                 let shutdown_msg = NodeControlMsg::Shutdown {
                     deadline: Default::default(),
                     reason: reason.clone()
@@ -269,10 +268,9 @@ impl<PData> ControlSenders<PData> {
                         error,
                     });
                 }
-            //}
+            }
         }
 
-        println!("#errors: {}", errors.len());
         if errors.is_empty() {
             Ok(())
         } else {
