@@ -69,7 +69,6 @@ use otap_df_engine::{
     processor::ProcessorWrapper,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -142,14 +141,15 @@ pub struct RetryProcessor {
 pub fn create_retry_processor(
     _pipeline_ctx: PipelineContext,
     node: NodeId,
-    config: &Value,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     // Deserialize the (currently empty) router configuration
-    let config: RetryConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
+        ConfigError::InvalidUserConfig {
             error: format!("Failed to parse retry configuration: {e}"),
-        })?;
+        }
+    })?;
 
     // Create the router processor
     let router = RetryProcessor::with_config(config);
@@ -457,11 +457,12 @@ mod tests {
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
+        let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
+        node_config.config = config;
         let result = create_retry_processor(
             pipeline_ctx,
             test_node(processor_config.name.clone()),
-            &config,
+            Arc::new(node_config),
             &processor_config,
         );
         assert!(result.is_ok());

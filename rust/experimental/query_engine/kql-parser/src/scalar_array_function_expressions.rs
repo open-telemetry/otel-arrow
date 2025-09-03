@@ -85,6 +85,7 @@ mod tests {
             }
         };
 
+        // Note: Inner json expression gets folded into a static array.
         run_test_success(
             "array_concat(parse_json('[]'))",
             ScalarExpression::Collection(CollectionScalarExpression::Concat(
@@ -93,16 +94,8 @@ mod tests {
                     ScalarExpression::Collection(CollectionScalarExpression::List(
                         ListScalarExpression::new(
                             QueryLocation::new_fake(),
-                            vec![ScalarExpression::Parse(ParseScalarExpression::Json(
-                                ParseJsonScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "[]",
-                                        ),
-                                    )),
-                                ),
+                            vec![ScalarExpression::Static(StaticScalarExpression::Array(
+                                ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
                             ))],
                         ),
                     )),
@@ -110,6 +103,7 @@ mod tests {
             )),
         );
 
+        // Note: Inner json expressions get folded into a static arrays.
         run_test_success(
             "array_concat(parse_json('[]'), parse_json('[]'))",
             ScalarExpression::Collection(CollectionScalarExpression::Concat(
@@ -119,27 +113,11 @@ mod tests {
                         ListScalarExpression::new(
                             QueryLocation::new_fake(),
                             vec![
-                                ScalarExpression::Parse(ParseScalarExpression::Json(
-                                    ParseJsonScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "[]",
-                                            ),
-                                        )),
-                                    ),
+                                ScalarExpression::Static(StaticScalarExpression::Array(
+                                    ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
                                 )),
-                                ScalarExpression::Parse(ParseScalarExpression::Json(
-                                    ParseJsonScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "[]",
-                                            ),
-                                        )),
-                                    ),
+                                ScalarExpression::Static(StaticScalarExpression::Array(
+                                    ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
                                 )),
                             ],
                         ),

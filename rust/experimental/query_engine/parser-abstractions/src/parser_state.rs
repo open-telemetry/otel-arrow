@@ -193,8 +193,7 @@ pub trait ParserScope {
     ) -> Option<&'a StaticScalarExpression> {
         match scalar {
             ScalarExpression::Static(v) => Some(v),
-            ScalarExpression::Constant(ConstantScalarExpression::Copy(v)) => Some(v.get_value()),
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(v)) => Some(
+            ScalarExpression::Constant(v) => Some(
                 self.get_pipeline()
                     .get_constant(v.get_constant_id())
                     .expect("Constant not found"),
