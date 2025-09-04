@@ -12,17 +12,22 @@
 //!
 
 use crate::pdata::OtapPdata;
+use arrow::{
+    array::{RecordBatch, UInt16Array},
+    datatypes::{DataType, Field, Schema},
+};
 use otel_arrow_rust::{
     Consumer,
-    otap::{OtapArrowRecords, from_record_messages},
+    otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages},
     proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::ArrowLogsService,
         arrow_metrics_service_server::ArrowMetricsService,
         arrow_traces_service_server::ArrowTracesService,
     },
+    schema::consts,
 };
-use std::pin::Pin;
+use std::{pin::Pin, sync::Arc};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -198,18 +203,31 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 
 /// creates a basic batch arrow record to use for testing
 #[must_use]
-pub fn create_batch_arrow_record(
-    batch_id: i64,
-    payload_type: ArrowPayloadType,
-) -> BatchArrowRecords {
-    let arrow_payload = ArrowPayload {
-        schema_id: "0".to_string(),
-        r#type: payload_type as i32,
-        record: vec![0],
+pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapArrowRecords {
+    let record_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            consts::ID,
+            DataType::UInt16,
+            true,
+        )])),
+        vec![Arc::new(UInt16Array::from_iter_values(vec![
+            batch_id as u16,
+        ]))],
+    )
+    .unwrap();
+
+    let mut otap_batch = match payload_type {
+        ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
+        ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+            OtapArrowRecords::Metrics(Metrics::default())
+        }
+        _ => {
+            panic!("unexpected payload_type")
+        }
     };
-    BatchArrowRecords {
-        batch_id,
-        arrow_payloads: vec![arrow_payload],
-        headers: vec![0],
-    }
+
+    otap_batch.set(payload_type, record_batch);
+
+    otap_batch
 }

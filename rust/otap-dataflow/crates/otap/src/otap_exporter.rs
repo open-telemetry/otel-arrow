@@ -270,8 +270,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 #[cfg(test)]
 mod tests {
     use crate::mock::{
-        ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
-        create_batch_arrow_record,
+        ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
@@ -287,8 +286,7 @@ mod tests {
     };
     use otap_df_otlp::compression::CompressionMethod;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::Consumer;
-    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
+    use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -313,39 +311,19 @@ mod tests {
     -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
-                let mut consumer = Consumer::default();
-
                 // Send a data message
-                let mut metric_message = consumer
-                    .consume_bar(&mut create_batch_arrow_record(
-                        METRIC_BATCH_ID,
-                        ArrowPayloadType::MultivariateMetrics,
-                    ))
-                    .unwrap();
                 let metric_message =
-                    OtapArrowRecords::Metrics(from_record_messages(metric_message));
+                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
                 ctx.send_pdata(metric_message.into())
                     .await
                     .expect("Failed to send metric message");
 
-                let log_message = consumer
-                    .consume_bar(&mut create_batch_arrow_record(
-                        LOG_BATCH_ID,
-                        ArrowPayloadType::Logs,
-                    ))
-                    .unwrap();
-                let log_message = OtapArrowRecords::Logs(from_record_messages(log_message));
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 ctx.send_pdata(log_message.into())
                     .await
                     .expect("Failed to send log message");
 
-                let trace_message = consumer
-                    .consume_bar(&mut create_batch_arrow_record(
-                        TRACE_BATCH_ID,
-                        ArrowPayloadType::Spans,
-                    ))
-                    .unwrap();
-                let trace_message = OtapArrowRecords::Traces(from_record_messages(trace_message));
+                let trace_message = create_otap_batch(TRACE_BATCH_ID, ArrowPayloadType::Spans);
                 ctx.send_pdata(trace_message.into())
                     .await
                     .expect("Failed to send trace message");
@@ -379,10 +357,8 @@ mod tests {
                         .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
-                let _expected_metrics_message = create_batch_arrow_record(
-                    METRIC_BATCH_ID,
-                    ArrowPayloadType::MultivariateMetrics,
-                );
+                let _expected_metrics_message =
+                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
                 let logs_received: OtapArrowRecords =
@@ -393,7 +369,7 @@ mod tests {
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
-                    create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                    create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
                 let traces_received: OtapArrowRecords =
@@ -405,7 +381,7 @@ mod tests {
                         .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =
-                    create_batch_arrow_record(TRACE_BATCH_ID, ArrowPayloadType::Spans);
+                    create_otap_batch(TRACE_BATCH_ID, ArrowPayloadType::Spans);
                 assert!(matches!(traces_received, _expected_trace_message));
             })
         }

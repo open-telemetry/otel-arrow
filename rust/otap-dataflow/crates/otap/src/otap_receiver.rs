@@ -187,7 +187,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::mock::create_batch_arrow_record;
+    use crate::mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
     use async_stream::stream;
@@ -197,6 +197,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otel_arrow_rust::Producer;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
@@ -223,11 +224,14 @@ mod tests {
                     ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Metrics Service Client");
+
                 #[allow(tail_expr_drop_order)]
                 let metrics_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
-                        yield metrics_records;
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let bar = producer.produce_bar(&mut metrics_records).unwrap();
+                        yield bar
                     }
                 };
                 let _metrics_response = arrow_metrics_client
@@ -240,9 +244,11 @@ mod tests {
                     .expect("Failed to connect to server from Logs Service Client");
                 #[allow(tail_expr_drop_order)]
                 let logs_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
-                        yield logs_records;
+                        let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
                     }
                 };
                 let _logs_response = arrow_logs_client
@@ -256,9 +262,11 @@ mod tests {
                         .expect("Failed to connect to server from Trace Service Client");
                 #[allow(tail_expr_drop_order)]
                 let traces_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
-                        yield traces_records;
+                        let mut traces_records = create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                        let bar = producer.produce_bar(&mut traces_records).unwrap();
+                        yield bar;
                     }
                 };
                 let _traces_response = arrow_traces_client
@@ -298,7 +306,7 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
                     assert!(matches!(metrics_received, _expected_metrics_message));
                 }
 
@@ -313,7 +321,7 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_logs_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
+                        create_otap_batch(batch_id, ArrowPayloadType::Logs);
                     assert!(matches!(logs_received, _expected_logs_message));
                 }
 
@@ -328,7 +336,7 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_traces_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
+                        create_otap_batch(batch_id, ArrowPayloadType::Spans);
                     assert!(matches!(traces_received, _expected_traces_message));
                 }
             })
