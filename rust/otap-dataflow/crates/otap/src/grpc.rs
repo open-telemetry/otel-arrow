@@ -12,10 +12,14 @@
 //!
 
 use otap_df_engine::shared::receiver as shared;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-    BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
-    arrow_metrics_service_server::ArrowMetricsService,
-    arrow_traces_service_server::ArrowTracesService,
+use otel_arrow_rust::{
+    Consumer,
+    otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
+    proto::opentelemetry::arrow::v1::{
+        BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
+        arrow_metrics_service_server::ArrowMetricsService,
+        arrow_traces_service_server::ArrowTracesService,
+    },
 };
 use std::pin::Pin;
 use tokio_stream::Stream;
@@ -95,12 +99,20 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         // write to the channel
         // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
         _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OtapArrowBytes::ArrowLogs, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data::<Logs, _>(
+                    OtapArrowRecords::Logs,
+                    &mut consumer,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
@@ -129,11 +141,14 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
 
         // write to the channel
         _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(
-                    OtapArrowBytes::ArrowMetrics,
+                if accept_data::<Metrics, _>(
+                    OtapArrowRecords::Metrics,
+                    &mut consumer,
                     batch,
                     &effect_handler_clone,
                     &tx,
@@ -168,11 +183,14 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 
         // write to the channel
         _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(
-                    OtapArrowBytes::ArrowTraces,
+                if accept_data::<Traces, _>(
+                    OtapArrowRecords::Traces,
+                    &mut consumer,
                     batch,
                     &effect_handler_clone,
                     &tx,
@@ -190,18 +208,24 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
     }
 }
 
-/// handles sending the data down the pipeline via effect_handler and generating the approriate response
-async fn accept_data<OTAPDataType>(
-    otap_data: OTAPDataType,
-    batch: BatchArrowRecords,
+/// handles sending the data down the pipeline via effect_handler and generating the appropriate response
+async fn accept_data<T: OtapBatchStore, F>(
+    otap_batch: F,
+    consumer: &mut Consumer,
+    mut batch: BatchArrowRecords,
     effect_handler: &shared::EffectHandler<OtapPdata>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
 where
-    OTAPDataType: Fn(BatchArrowRecords) -> OtapArrowBytes,
+    F: Fn(T) -> OtapArrowRecords,
 {
     let batch_id = batch.batch_id;
-    let status_result = match effect_handler.send_message(otap_data(batch).into()).await {
+    let batch = consumer.consume_bar(&mut batch).map_err(|e| {
+        log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
+    })?;
+    let batch = from_record_messages::<T>(batch);
+
+    let status_result = match effect_handler.send_message(otap_batch(batch).into()).await {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };
