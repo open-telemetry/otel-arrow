@@ -738,9 +738,7 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let mut consumer = Consumer::default();
-
-            let logs_data = consumer
+            let logs_data = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         // a pretty big batch
@@ -753,7 +751,7 @@ mod test {
             let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
             pdata_tx.send(otap_batch).await.unwrap();
 
-            let logs_data = consumer
+            let logs_data = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         num_rows: 1,

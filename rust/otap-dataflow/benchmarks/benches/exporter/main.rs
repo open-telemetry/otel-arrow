@@ -17,7 +17,6 @@ use otap_df_engine::{
     testing::test_node,
 };
 use otap_df_otap::{
-    grpc::OtapArrowBytes,
     otap_exporter::OTAPExporter,
     pdata::OtapPdata,
     perf_exporter::{config::Config, exporter::PerfExporter},

@@ -288,14 +288,20 @@ mod tests {
                             ..Default::default()
                         });
 
-                    let mut consumer = Consumer::default();
-
-                    let trace_batch_data =
-                        from_record_messages(consumer.consume_bar(&mut traces_batch_data).unwrap());
-                    let logs_batch_data =
-                        from_record_messages(consumer.consume_bar(&mut logs_batch_data).unwrap());
+                    let trace_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut traces_batch_data)
+                            .unwrap(),
+                    );
+                    let logs_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut logs_batch_data)
+                            .unwrap(),
+                    );
                     let metrics_batch_data = from_record_messages(
-                        consumer.consume_bar(&mut metrics_batch_data).unwrap(),
+                        Consumer::default()
+                            .consume_bar(&mut metrics_batch_data)
+                            .unwrap(),
                     );
 
                     // Send a data message
