@@ -167,7 +167,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Wait for all pipeline threads to finish and collect their results
-        let mut results = Vec::with_capacity(threads.len());
+        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
         for (thread_name, thread_id, core_id, handle) in threads {
             let pipeline_key = DeployedPipelineKey {
                 pipeline_group_id: pipeline_group_id.clone(),

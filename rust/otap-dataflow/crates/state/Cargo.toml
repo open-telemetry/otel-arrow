@@ -21,3 +21,4 @@ flume = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
+log = { workspace = true }

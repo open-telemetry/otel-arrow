@@ -22,6 +22,7 @@ pub struct PipelineKey {
 
 impl PipelineKey {
     /// Construct a new PipelineKey from group and pipeline ids.
+    #[must_use]
     pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
             pipeline_group_id,
