@@ -22,13 +22,13 @@ pub struct AttributesProcessorMetrics {
     #[metric(unit = "{op}")]
     pub transform_failed: Counter<u64>,
 
-    /// Total attempted rename operations (approximate: ops per payload domain selected).
-    #[metric(unit = "{op}")]
-    pub attempted_rename_ops: Counter<u64>,
+    /// Total number of attribute entries actually renamed.
+    #[metric(unit = "{attr}")]
+    pub renamed_entries: Counter<u64>,
 
-    /// Total attempted delete operations (approximate: ops per payload domain selected).
-    #[metric(unit = "{op}")]
-    pub attempted_delete_ops: Counter<u64>,
+    /// Total number of attribute entries actually deleted.
+    #[metric(unit = "{attr}")]
+    pub deleted_entries: Counter<u64>,
 
     /// Number of times transforms were applied to signal-level payloads.
     #[metric(unit = "{apply}")]

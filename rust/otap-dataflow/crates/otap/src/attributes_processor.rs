@@ -47,7 +47,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes},
+    transform::{AttributesTransform, transform_attributes_with_stats},
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
@@ -223,20 +223,8 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 let signal = pdata.signal_type();
                 let mut records: OtapArrowRecords = pdata.try_into()?;
 
-                // Determine targeted payloads and approximate attempted op counts
-                let payloads = attrs_payloads(signal, &self.domains);
-                let payload_count = payloads.len();
-                let rename_cnt = self.transform.rename.as_ref().map(|m| m.len()).unwrap_or(0);
-                let delete_cnt = self.transform.delete.as_ref().map(|s| s.len()).unwrap_or(0);
+                // Update domain counters (count once per message when domains are enabled)
                 if let Some(m) = self.metrics.as_mut() {
-                    if rename_cnt > 0 {
-                        m.attempted_rename_ops
-                            .add((rename_cnt * payload_count) as u64);
-                    }
-                    if delete_cnt > 0 {
-                        m.attempted_delete_ops
-                            .add((delete_cnt * payload_count) as u64);
-                    }
                     if self.domains.contains(&ApplyDomain::Signal) {
                         m.domains_signal.inc();
                     }
@@ -247,15 +235,29 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         m.domains_scope.inc();
                     }
                 }
-
-                // Apply transform across selected domains
-                if let Err(e) =
-                    apply_transform(&mut records, signal, &self.transform, &self.domains)
-                {
-                    if let Some(m) = self.metrics.as_mut() {
-                        m.transform_failed.inc();
+                // Apply transform across selected domains and collect exact stats
+                match apply_transform_with_stats(
+                    &mut records,
+                    signal,
+                    &self.transform,
+                    &self.domains,
+                ) {
+                    Ok((deleted_total, renamed_total)) => {
+                        if let Some(m) = self.metrics.as_mut() {
+                            if deleted_total > 0 {
+                                m.deleted_entries.add(deleted_total);
+                            }
+                            if renamed_total > 0 {
+                                m.renamed_entries.add(renamed_total);
+                            }
+                        }
                     }
-                    return Err(e);
+                    Err(e) => {
+                        if let Some(m) = self.metrics.as_mut() {
+                            m.transform_failed.inc();
+                        }
+                        return Err(e);
+                    }
                 }
 
                 let res = effect_handler
@@ -274,26 +276,30 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 }
 
 #[allow(clippy::result_large_err)]
-fn apply_transform(
+fn apply_transform_with_stats(
     records: &mut OtapArrowRecords,
     signal: SignalType,
     transform: &AttributesTransform,
     domains: &HashSet<ApplyDomain>,
-) -> Result<(), EngineError> {
+) -> Result<(u64, u64), EngineError> {
     let payloads = attrs_payloads(signal, domains);
+    let mut deleted_total: u64 = 0;
+    let mut renamed_total: u64 = 0;
 
     // Only apply if we have transforms to apply
     if transform.rename.is_some() || transform.delete.is_some() {
         for payload_ty in payloads {
             if let Some(rb) = records.get(payload_ty).cloned() {
-                let rb = transform_attributes(&rb, transform)
+                let (rb, stats) = transform_attributes_with_stats(&rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
+                deleted_total += stats.deleted_entries;
+                renamed_total += stats.renamed_entries;
                 records.set(payload_ty, rb);
             }
         }
     }
 
-    Ok(())
+    Ok((deleted_total, renamed_total))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -932,12 +938,20 @@ mod telemetry_tests {
                         }),
                         log_records: vec![LogRecord {
                             time_unix_nano: 1,
-                            attributes: vec![KeyValue {
-                                key: "a".to_string(),
-                                value: Some(AnyValue {
-                                    value: Some(AnyVal::StringValue("v".into())),
-                                }),
-                            }],
+                            attributes: vec![
+                                KeyValue {
+                                    key: "a".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(AnyVal::StringValue("v".into())),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "x".to_string(), // ensure at least one deletion occurs
+                                    value: Some(AnyValue {
+                                        value: Some(AnyVal::StringValue("to_delete".into())),
+                                    }),
+                                },
+                            ],
                             severity_number: SeverityNumber::Info as i32,
                             ..Default::default()
                         }],
@@ -988,8 +1002,8 @@ mod telemetry_tests {
                 // Inspect current metrics; fields with non-zero values should be present
                 let mut found_consumed = false;
                 let mut found_forwarded = false;
-                let mut found_attempted_rename = false;
-                let mut found_attempted_delete = false;
+                let mut found_renamed_entries = false;
+                let mut found_deleted_entries = false;
                 let mut found_domain_signal = false;
 
                 registry.visit_current_metrics(|desc, _attrs, iter| {
@@ -998,12 +1012,8 @@ mod telemetry_tests {
                             match (field.name, v) {
                                 ("msgs.consumed", x) if x >= 1 => found_consumed = true,
                                 ("msgs.forwarded", x) if x >= 1 => found_forwarded = true,
-                                ("attempted.rename.ops", x) if x >= 1 => {
-                                    found_attempted_rename = true
-                                }
-                                ("attempted.delete.ops", x) if x >= 1 => {
-                                    found_attempted_delete = true
-                                }
+                                ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
+                                ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
                                 ("domains.signal", x) if x >= 1 => found_domain_signal = true,
                                 _ => {}
                             }
@@ -1013,14 +1023,8 @@ mod telemetry_tests {
 
                 assert!(found_consumed, "msgs.consumed should be >= 1");
                 assert!(found_forwarded, "msgs.forwarded should be >= 1");
-                assert!(
-                    found_attempted_rename,
-                    "attempted.rename.ops should be >= 1"
-                );
-                assert!(
-                    found_attempted_delete,
-                    "attempted.delete.ops should be >= 1"
-                );
+                assert!(found_renamed_entries, "renamed.entries should be >= 1");
+                assert!(found_deleted_entries, "deleted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");
 
                 // Tear down collector by cancelling and awaiting the handle
