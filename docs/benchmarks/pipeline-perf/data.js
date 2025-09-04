@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1756938788343,
+  "lastUpdate": 1757002396482,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "5889955db1b52abd363a8a80db72c5cfddea8177",
-          "message": "[query-engine] Summary support (#895)\n\nRelates to #722\n\n## Changes\n\n* Adds summary support in expressions, recordset engine, & otlp bridge\nwith Count, Min, Max, Sum, & Average aggregations\n\nNote (mostly for @drewrelmas 😄): This PR does not add support for `bin`\nin group-by expressions. The group-by expression(s) on summary allow\n_any_ scalar expression. `bin` is really just a scalar function so I'm\nplanning to do that next as its own thing.",
-          "timestamp": "2025-08-08T19:03:01Z",
-          "tree_id": "19e39595907837f294dd1ae33e97293dfba0bfaf",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/5889955db1b52abd363a8a80db72c5cfddea8177"
-        },
-        "date": 1754680244045,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 738833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22165000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22165000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.65,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.65,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 120.52,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 140.35,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 739833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22195000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22195000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.78,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.82,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 160.09,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 190.47,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 190.3,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8cf67756b110fbbf33c930b35c0bbc1336feadf",
+          "message": "Endpoints to expose the current overall state of the pipelines and to stop pipelines (#1033)\n\nThis PR provides additional visibility into the current state of the\nsystem and pipelines. It is now also possible to stop pipelines through\na shutdown endpoint.\n\nList of admin endpoints added in this PR:\n- Get the status of the specified pipeline: GET\n/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status\n- Get the status of all the pipeline groups: GET /pipeline-groups/status\n- Shutdown all pipeline groups: POST /pipeline-groups/shutdown\n\nHeartbeat events are not yet implemented and will be added in a future\nPR.\n\nBackground context: This PR is the first step of the implementation of\nthe reconciler concept.\nA global observed state is now kept up to date by monitoring the changes\nmade to/by the pipelines (and groups).\nIn future PRs, a desired state will be submitted to a reconciler in\norder to update the current configuration/execution of the pipelines.\nThe ultimate goal is to support live reconfigurations and provide full\nobservability of the pipelines' state.",
+          "timestamp": "2025-09-04T15:58:48Z",
+          "tree_id": "12331ac70781e156ef23de22c44664bdede4a7f9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b8cf67756b110fbbf33c930b35c0bbc1336feadf"
+        },
+        "date": 1757002393431,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 734500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22035000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22035000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 123.85,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 155.14,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 739666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22190000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22190000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.63,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.58,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 156.09,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 181.84,
             "unit": "MiB"
           }
         ]
