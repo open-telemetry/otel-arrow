@@ -13,6 +13,10 @@
 | `raise_exception` | `lib.impl.strategies.hooks.raise_exception` | `RaiseExceptionHook` | `RaiseExceptionConfig` | Hook strategy that raises an exception |
 | `record_event` | `lib.impl.strategies.hooks.record_event` | `RecordEventHook` | `RecordEventConfig` | Hook strategy that records an event to the context's current span |
 | `run_command` | `lib.impl.strategies.hooks.run_command` | `RunCommandHook` | `RunCommandConfig` | Hook strategy that runs a specified shell command |
+| `send_http_request` | `lib.impl.strategies.hooks.send_http_request` | `SendHttpRequestHook` | `SendHttpRequestConfig` | Hook strategy that sends an HTTP request to a configured endpoint |
+| `ready_check_http` | `lib.impl.strategies.hooks.ready_check_http` | `ReadyCheckHttpHook` | `ReadyCheckHttpConfig` | Hook strategy that performs a readiness check against an HTTP(S) endpoint |
+| `render_template` | `lib.impl.strategies.hooks.render_template` | `RenderTemplateHook` | `RenderTemplateConfig` | Hook strategy that renders a Jinja2 template using provided variables |
+| `ensure_process` | `lib.impl.strategies.hooks.process.ensure_process` | `EnsureProcess` | `EnsureProcessConfig` | Hook strategy to ensure component specified is running and hasn't crashed after start |
 
 ---
 
@@ -469,4 +473,197 @@ tests:
             pre:
               - run_command:
                   command: python somefile.py
+```
+
+## `send_http_request`
+
+**Class**: `lib.impl.strategies.hooks.send_http_request.SendHttpRequestHook`
+
+**Config Class**: `lib.impl.strategies.hooks.send_http_request.SendHttpRequestConfig`
+
+**Supported Contexts:**
+
+- FrameworkElementHookContext
+- ComponentHookContext
+
+**Description:**
+
+```python
+"""
+Hook strategy that sends an HTTP request to a configured endpoint.
+
+This class performs an HTTP operation using the provided configuration when invoked.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+tests:
+  - name: Notify external system
+    steps:
+      - name: Post to webhook before step
+        action:
+          wait:
+            delay_seconds: 5
+        hooks:
+          run:
+            pre:
+              - send_http_request:
+                  url: https://example.com/webhook
+                  method: POST
+                  headers:
+                    Content-Type: application/json
+                    Authorization: Bearer abc123
+                  payload:
+                    event: start
+                    step: initialize
+```
+
+## `ready_check_http`
+
+**Class**: `lib.impl.strategies.hooks.ready_check_http.ReadyCheckHttpHook`
+
+**Config Class**: `lib.impl.strategies.hooks.ready_check_http.ReadyCheckHttpConfig`
+
+**Supported Contexts:**
+
+- FrameworkElementHookContext
+- ComponentHookContext
+
+**Description:**
+
+```python
+"""
+Hook strategy that performs a readiness check against an HTTP(S) endpoint.
+
+This hook repeatedly sends an HTTP request to a target endpoint to verify its availability.
+The readiness check passes if all configured conditions are met, such as:
+- Expected HTTP status code
+- Presence of a specific field/value in the JSON body
+- Presence of a text substring in the response body
+
+It is useful for polling service health endpoints before executing test steps or deployments.
+
+Configuration is inherited from SendHttpRequestConfig and extended in ReadyCheckHttpConfig.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+tests:
+  - name: Wait for service readiness
+    steps:
+      - name: Ensure API is ready
+        hooks:
+          run:
+            pre:
+              - ready_check_http:
+                  url: https://api.example.com/health
+                  method: GET
+                  payload: {}
+                  headers: {}
+                  expected_status: 200
+                  expected_json_field: status
+                  expected_json_value: ready
+                  max_retries: 5
+                  retry_interval: 2
+```
+
+## `render_template`
+
+**Class**: `lib.impl.strategies.hooks.render_template.RenderTemplateHook`
+
+**Config Class**: `lib.impl.strategies.hooks.render_template.RenderTemplateConfig`
+
+**Supported Contexts:**
+
+- FrameworkElementHookContext
+- ComponentHookContext
+
+**Description:**
+
+```python
+"""
+Hook strategy that renders a Jinja2 template using provided variables.
+
+This class is responsible for loading the template file, rendering it with
+the given variables, and saving the result to the output file.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+tests:
+  - name: Test Config Generator
+    steps:
+      - name: Setup with Template
+        action:
+          noop: {}
+        hooks:
+          run:
+            pre:
+              - render_template:
+                  template_path: templates/config.j2
+                  output_path: /tmp/generated_config.yaml
+                  variables:
+                    env: staging
+                    retries: "5"
+```
+
+## `ensure_process`
+
+**Class**: `lib.impl.strategies.hooks.process.ensure_process.EnsureProcess`
+
+**Config Class**: `lib.impl.strategies.hooks.process.ensure_process.EnsureProcessConfig`
+
+**Supported Contexts:**
+
+- ComponentHookContext
+
+**Description:**
+
+```python
+"""
+Hook strategy to ensure component specified is running and hasn't crashed after start.
+
+This hook checks the host process table for the id registered during deployment.
+
+Behavior:
+    - Retrieves the process ID from the component's runtime.
+    - Polls the os with psutil for the current status.
+    - If no container ID is found, the hook fails immediately.
+
+Hook status:
+    - SUCCESS if all specified component processes are running
+    - FAILURE if any specified component process is not running
+
+Raises:
+    RuntimeError: If no process ID is available in the component's runtime or the process isn't running.
+
+Typical usage:
+    - As a post-deploy hook to ensure the process didn't crash immediately.
+    - To coordinate pipeline steps based on process readiness.
+"""
+```
+
+**Notes:**
+
+This hook is automatically installed by the process deployment strategy and
+doesn't need to be added explicitly
+
+**Example YAML:**
+
+```yaml
+components:
+  otel-collector:
+    deployment:
+      process: ...
+    hooks:
+        deploy:
+            post:
+            - ensure_process:
+                delay: 1
 ```
