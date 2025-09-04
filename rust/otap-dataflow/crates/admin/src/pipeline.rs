@@ -16,17 +16,19 @@
 //!
 //! ToDo Alternative -> avoid verb-y subpaths and support PATCH /.../pipelines/{pipelineId} with a body like {"status":"stopped"}. Use 409 if already stopping/stopped.
 
+use crate::AppState;
 use axum::extract::{Path, State};
-use axum::{Json, Router};
 use axum::http::StatusCode;
+use axum::{Json, Router};
 use otap_df_state::PipelineKey;
 use otap_df_state::store::PipelineStatus;
-use crate::AppState;
 
 /// All the routes for pipelines.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status", axum::routing::get(show_status))
+    Router::new().route(
+        "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
+        axum::routing::get(show_status),
+    )
 }
 
 pub async fn show_status(
@@ -34,6 +36,6 @@ pub async fn show_status(
     State(state): State<AppState>,
 ) -> Result<Json<Option<PipelineStatus>>, StatusCode> {
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
-    let pipeline_status = state.observed_store.pipeline_status(&key);
+    let pipeline_status = state.observed_state_store.pipeline_status(&key);
     Ok(Json(pipeline_status))
 }

@@ -3,10 +3,10 @@
 
 //! Configuration of the observed store.
 
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
-/// Configuration for the observed store system.
+/// Configuration for the observed state store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// The size of the reporting channel.

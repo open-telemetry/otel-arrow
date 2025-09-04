@@ -4,9 +4,9 @@
 //! HTTP server for exposing admin endpoints.
 
 pub mod error;
+mod pipeline;
 mod pipeline_group;
 mod telemetry;
-mod pipeline;
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -23,8 +23,13 @@ use otap_df_telemetry::registry::MetricsRegistryHandle;
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
 struct AppState {
-    observed_store: ObservedStateHandle,
+    /// The observed state store for querying the current state of the entire system.
+    observed_state_store: ObservedStateHandle,
+
+    /// The metrics registry for querying current metrics.
     metrics_registry: MetricsRegistryHandle,
+
+    /// The control message senders for controlling pipelines.
     ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
 }
 
@@ -37,7 +42,7 @@ pub async fn run(
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState {
-        observed_store,
+        observed_state_store: observed_store,
         metrics_registry,
         ctrl_msg_senders,
     };

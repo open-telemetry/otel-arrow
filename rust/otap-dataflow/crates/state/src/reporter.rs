@@ -25,7 +25,10 @@ impl ObservedEventReporter {
     /// Note: This method does not return an error if sending the event to the reporting channel
     /// fails, as this is not sufficient reason to interrupt the normal flow of the system under
     /// observation. However, an error message is logged to the standard error output.
-    #[allow(clippy::print_stderr, reason = "Use `eprintln!` while waiting for a decision on a framework for debugging/tracing.")]
+    #[allow(
+        clippy::print_stderr,
+        reason = "Use `eprintln!` while waiting for a decision on a framework for debugging/tracing."
+    )]
     pub fn report(&self, event: ObservedEvent) {
         match self.sender.send_timeout(event, self.timeout) {
             Err(flume::SendTimeoutError::Timeout(event)) => {

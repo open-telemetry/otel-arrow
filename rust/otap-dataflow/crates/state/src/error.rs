@@ -10,14 +10,16 @@ use crate::store::ObservedEvent;
 pub enum Error {
     /// The observed event channel was already closed.
     #[error("Failed to send observed event because the channel was closed: {event:?}")]
-    ChannelClosed{
+    ChannelClosed {
         /// The event that failed to be sent.
         event: ObservedEvent,
     },
-    
+
     /// The observed event channel was full and the event could not be sent in time.
-    #[error("Failed to send observed event because the channel was full and the event could not be sent in time: {event:?}")]
-    ChannelTimeout{
+    #[error(
+        "Failed to send observed event because the channel was full and the event could not be sent in time: {event:?}"
+    )]
+    ChannelTimeout {
         /// The event that failed to be sent.
         event: ObservedEvent,
     },

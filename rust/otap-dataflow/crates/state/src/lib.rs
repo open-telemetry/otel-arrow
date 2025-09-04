@@ -6,10 +6,10 @@
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 
-pub mod store;
-pub mod reporter;
-pub mod error;
 mod config;
+pub mod error;
+pub mod reporter;
+pub mod store;
 
 type CoreId = usize;
 
@@ -23,7 +23,10 @@ pub struct PipelineKey {
 impl PipelineKey {
     /// Construct a new PipelineKey from group and pipeline ids.
     pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
-        Self { pipeline_group_id, pipeline_id }
+        Self {
+            pipeline_group_id,
+            pipeline_id,
+        }
     }
 }
 

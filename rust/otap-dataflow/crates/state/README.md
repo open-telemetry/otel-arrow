@@ -2,6 +2,6 @@
 
 Status: **Work-In-Progress**
 
-# Observed State Store
+## Observed State Store
 
 TBD

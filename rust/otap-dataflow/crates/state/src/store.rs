@@ -3,16 +3,16 @@
 
 //! Set of structs defining an event-driven observed state store.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-use otap_df_config::{PipelineGroupId, PipelineId};
-use serde::{Serialize, Serializer};
-use tokio_util::sync::CancellationToken;
-use crate::{CoreId, DeployedPipelineKey, PipelineKey};
 use crate::config::Config;
 use crate::error::Error;
 use crate::reporter::ObservedEventReporter;
+use crate::{CoreId, DeployedPipelineKey, PipelineKey};
+use otap_df_config::{PipelineGroupId, PipelineId};
+use serde::{Serialize, Serializer};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use tokio_util::sync::CancellationToken;
 
 /// High-level lifecycle of a pipeline as seen by the controller.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
@@ -117,22 +117,26 @@ impl Default for ObservedStateStore {
 
 impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
+    #[must_use]
     pub fn new(config: Config) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
             config,
-            sender, receiver,
+            sender,
+            receiver,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Returns a reporter that can be used to send observed events to this store.
+    #[must_use]
     pub fn reporter(&self) -> ObservedEventReporter {
-        ObservedEventReporter::new(self.config.reporting_timeout,            self.sender.clone()        )
+        ObservedEventReporter::new(self.config.reporting_timeout, self.sender.clone())
     }
 
     /// Returns a handle that can be used to read the current observed state.
+    #[must_use]
     pub fn handle(&self) -> ObservedStateHandle {
         ObservedStateHandle {
             pipelines: self.pipelines.clone(),
@@ -142,34 +146,51 @@ impl ObservedStateStore {
     /// Reports a new observed event in the store.
     fn report(&self, observed_event: ObservedEvent) {
         match observed_event {
-            ObservedEvent::PipelinePhase { key, core_id, phase } => {
+            ObservedEvent::PipelinePhase {
+                key,
+                core_id,
+                phase,
+            } => {
                 let mut pipelines = self.pipelines.lock().unwrap(); // todo report error
-                let pipeline_status = pipelines
-                    .entry(key.clone())
-                    .or_insert_with(|| PipelineStatus { phase: PipelinePhase::Pending, per_core: HashMap::new() });
-                let core_status = pipeline_status.per_core
-                    .entry(core_id)
-                    .or_insert_with(|| CoreStatus {
-                    phase: PipelinePhase::Pending,
-                    last_beat: SystemTime::now(),
-                });
+                let pipeline_status =
+                    pipelines
+                        .entry(key.clone())
+                        .or_insert_with(|| PipelineStatus {
+                            phase: PipelinePhase::Pending,
+                            per_core: HashMap::new(),
+                        });
+                let core_status =
+                    pipeline_status
+                        .per_core
+                        .entry(core_id)
+                        .or_insert_with(|| CoreStatus {
+                            phase: PipelinePhase::Pending,
+                            last_beat: SystemTime::now(),
+                        });
                 core_status.phase = phase;
                 core_status.last_beat = SystemTime::now();
 
                 // Update the overall phase based on the new core status
-                pipeline_status.phase = aggregate_pipeline_phase(pipeline_status.per_core.values().map(|c| c.phase));
+                pipeline_status.phase =
+                    aggregate_pipeline_phase(pipeline_status.per_core.values().map(|c| c.phase));
             }
             ObservedEvent::Heartbeat { key, core_id } => {
                 let mut pipelines = self.pipelines.lock().unwrap(); // todo report error
-                let pipeline_status = pipelines
-                    .entry(key.clone())
-                    .or_insert_with(|| PipelineStatus { phase: PipelinePhase::Pending, per_core: HashMap::new() });
-                let core_status = pipeline_status.per_core
-                    .entry(core_id)
-                    .or_insert_with(|| CoreStatus {
-                        phase: PipelinePhase::Pending,
-                        last_beat: SystemTime::now(),
-                    });
+                let pipeline_status =
+                    pipelines
+                        .entry(key.clone())
+                        .or_insert_with(|| PipelineStatus {
+                            phase: PipelinePhase::Pending,
+                            per_core: HashMap::new(),
+                        });
+                let core_status =
+                    pipeline_status
+                        .per_core
+                        .entry(core_id)
+                        .or_insert_with(|| CoreStatus {
+                            phase: PipelinePhase::Pending,
+                            last_beat: SystemTime::now(),
+                        });
                 core_status.last_beat = SystemTime::now();
             }
         }
@@ -222,32 +243,62 @@ impl ObservedEvent {
 
     /// Creates a new `PipelinePhase::Pending` event.
     pub fn pipeline_pending(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Pending)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Pending,
+        )
     }
 
     /// Creates a new `PipelinePhase::Running` event.
     pub fn pipeline_running(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Running)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Running,
+        )
     }
 
     /// Creates a new `PipelinePhase::Draining` event.
     pub fn pipeline_draining(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Draining)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Draining,
+        )
     }
 
     /// Creates a new `PipelinePhase::Stopped` event.
     pub fn pipeline_stopped(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Stopped)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Stopped,
+        )
     }
 
     /// Creates a new `PipelinePhase::Failed` event.
     pub fn pipeline_failed(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Failed)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Failed,
+        )
     }
 
     /// Creates a new `PipelinePhase::Unknown` event.
     pub fn pipeline_unknown(pipeline_key: DeployedPipelineKey) -> Self {
-        Self::pipeline_phase_event(pipeline_key.pipeline_group_id, pipeline_key.pipeline_id, pipeline_key.core_id, PipelinePhase::Unknown)
+        Self::pipeline_phase_event(
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            PipelinePhase::Unknown,
+        )
     }
 
     /// Creates a new `Heartbeat` event.
@@ -276,7 +327,7 @@ impl ObservedEvent {
 /// - Stopped (only if all cores are Stopped)
 /// - Pending (if any core is Pending and none above matched)
 /// - Unknown (if any core is Unknown and none above matched, or if there are no cores)
-/// 
+///
 /// Examples:
 /// - `[Running, Running]` => Running (all running)
 /// - `[Running, Stopped]` => Running (some cores still working)
@@ -304,23 +355,60 @@ where
     for p in phases {
         saw_any = true;
         match p {
-            Failed => { any_failed = true;  all_running = false; all_stopped = false; }
-            Draining => { any_draining = true; all_running = false; all_stopped = false; }
-            Running => { any_running = true; all_stopped = false; }
-            Pending => { any_pending = true; all_running = false; all_stopped = false; }
-            Stopped => { all_running = false; }
-            Unknown => { any_unknown = true; all_running = false; all_stopped = false; }
+            Failed => {
+                any_failed = true;
+                all_running = false;
+                all_stopped = false;
+            }
+            Draining => {
+                any_draining = true;
+                all_running = false;
+                all_stopped = false;
+            }
+            Running => {
+                any_running = true;
+                all_stopped = false;
+            }
+            Pending => {
+                any_pending = true;
+                all_running = false;
+                all_stopped = false;
+            }
+            Stopped => {
+                all_running = false;
+            }
+            Unknown => {
+                any_unknown = true;
+                all_running = false;
+                all_stopped = false;
+            }
         }
     }
 
-    if !saw_any { return Unknown; }
-    if any_failed { return Failed; }
-    if any_draining { return Draining; }
-    if all_running { return Running; }
-    if any_running { return Running; }
-    if all_stopped { return Stopped; }
-    if any_pending { return Pending; }
-    if any_unknown { return Unknown; }
+    if !saw_any {
+        return Unknown;
+    }
+    if any_failed {
+        return Failed;
+    }
+    if any_draining {
+        return Draining;
+    }
+    if all_running {
+        return Running;
+    }
+    if any_running {
+        return Running;
+    }
+    if all_stopped {
+        return Stopped;
+    }
+    if any_pending {
+        return Pending;
+    }
+    if any_unknown {
+        return Unknown;
+    }
     Unknown
 }
 
@@ -328,13 +416,16 @@ where
 mod tests {
     #[cfg(test)]
     mod tests {
-        use crate::store::{aggregate_pipeline_phase, PipelinePhase};
         use crate::store::PipelinePhase::*;
+        use crate::store::{PipelinePhase, aggregate_pipeline_phase};
 
         #[test]
         fn aggregate_pipeline_phase_basics() {
             // empty => Unknown
-            assert_eq!(aggregate_pipeline_phase(Vec::<PipelinePhase>::new()), Unknown);
+            assert_eq!(
+                aggregate_pipeline_phase(Vec::<PipelinePhase>::new()),
+                Unknown
+            );
 
             // all running => Running
             assert_eq!(aggregate_pipeline_phase([Running, Running]), Running);
@@ -346,7 +437,10 @@ mod tests {
             assert_eq!(aggregate_pipeline_phase([Draining, Running]), Draining);
 
             // any failed dominates everything => Failed
-            assert_eq!(aggregate_pipeline_phase([Failed, Running, Draining]), Failed);
+            assert_eq!(
+                aggregate_pipeline_phase([Failed, Running, Draining]),
+                Failed
+            );
 
             // all stopped => Stopped
             assert_eq!(aggregate_pipeline_phase([Stopped, Stopped]), Stopped);
@@ -358,8 +452,10 @@ mod tests {
             assert_eq!(aggregate_pipeline_phase([Unknown, Stopped]), Unknown);
 
             // unknown + pending + stopped => Pending wins over Unknown
-            assert_eq!(aggregate_pipeline_phase([Unknown, Pending, Stopped]), Pending);
+            assert_eq!(
+                aggregate_pipeline_phase([Unknown, Pending, Stopped]),
+                Pending
+            );
         }
     }
-
 }

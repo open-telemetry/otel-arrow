@@ -23,7 +23,7 @@ pub enum Error {
     /// Observed state module error.
     #[error("Observed state error: {0}")]
     ObservedStateError(#[from] otap_df_state::error::Error),
-    
+
     /// Telemetry system error.
     #[error("Telemetry error: {0}")]
     TelemetryError(#[from] otap_df_telemetry::error::Error),
