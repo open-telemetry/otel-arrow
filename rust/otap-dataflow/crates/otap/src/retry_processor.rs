@@ -253,16 +253,6 @@ impl Processor<OtapPdata> for RetryProcessor {
                     // Increment the retry count (for the powi() below)
                     rstate.retries += 1;
 
-                    // TODO: new Nack messages explaining what/why, instead of direct
-                    // propagation as above?
-                    // -            pending.last_error = reason;
-                    //                log::error!(
-                    //                    "Message {} exceeded max retries ({}), dropping. Last error: {}",
-                    //                    id,
-                    //                    self.config.max_retries,
-                    //                    pending.last_error
-                    //                 );
-
                     let now = Instant::now();
                     let delay_ms = (self.config.initial_retry_delay_ms as f64
                         * self
@@ -273,12 +263,6 @@ impl Processor<OtapPdata> for RetryProcessor {
                         as u64;
 
                     let next_retry_time = now + Duration::from_millis(delay_ms);
-
-                    // -                let retry_count = pending.retry_count;
-                    // -                let _previous = self.pending_messages.insert(id, pending);
-                    // -                log::debug!("Scheduled message {id} for retry attempt {retry_count}");
-                    // -            } else {
-                    // -                let delay_ms = (self.config.initial_retry_delay_ms as f64
 
                     let expired = nack
                         .request
@@ -293,6 +277,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                         effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
                         return Ok(());
                     }
+
+                    // TODO: Here we need to insert a delay. The EffectHandler
+                    // supports this possibility, but we have to the pipeline controller
+                    // does not directly support a way to delay that passes the PData.
+                    log::debug!("Scheduled message for retry attempt {}", rstate.retries);
 
                     nack.request
                         .mut_context()
