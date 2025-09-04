@@ -26,7 +26,7 @@ impl CollectionScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             CollectionScalarExpression::Concat(_) => {
                 // Note: Arrays don't get folded so there isn't a static
@@ -133,31 +133,14 @@ impl CombineScalarExpression {
     pub(crate) fn try_resolve_string_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        let (mut values, len) = match self.values_expression.try_resolve_static(scope)? {
-            Some(ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Array(v))) => {
-                let value_expressions = v.get_values();
-
-                let mut len = 0;
-                let mut values = Vec::with_capacity(value_expressions.len());
-
-                for expression in value_expressions {
-                    let s = StringScalarExpression::new(
-                        expression.get_query_location().clone(),
-                        expression.to_value().to_string().as_str(),
-                    );
-
-                    len += s.get_value().len();
-
-                    values.push(s);
-                }
-
-                (values, len)
-            }
-            Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v)))
-            | Some(ResolvedStaticScalarExpression::FoldEligibleReference(
-                StaticScalarExpression::Array(v),
-            )) => {
+    ) -> ScalarStaticResolutionResult<'_> {
+        let (mut values, len) = match self
+            .values_expression
+            .try_resolve_static(scope)?
+            .as_ref()
+            .map(|v| v.as_ref())
+        {
+            Some(StaticScalarExpression::Array(v)) => {
                 let value_expressions = v.get_values();
 
                 let mut len = 0;
@@ -249,11 +232,17 @@ impl ListScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let mut values = Vec::new();
 
-        for v in &mut self.value_expressions {
-            match v.try_resolve_static(scope)?.and_then(|v| v.try_fold()) {
+        let expressions: Vec<ScalarStaticResolutionResult> = self
+            .value_expressions
+            .iter_mut()
+            .map(|v| v.try_resolve_static(scope))
+            .collect();
+
+        for v in expressions {
+            match v?.and_then(|v| v.try_fold()) {
                 Some(v) => {
                     values.push(v);
                 }
@@ -307,8 +296,15 @@ mod tests {
     #[test]
     fn test_try_resolve_static() {
         let run_test_success =
-            |mut expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
-                let mut pipeline: PipelineExpression = Default::default();
+            |mut expression: ScalarExpression,
+             expected_resolved: Option<StaticScalarExpression>,
+             expected_state: Option<ScalarExpression>| {
+                let mut pipeline = PipelineExpressionBuilder::new("")
+                    .with_constants(vec![StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )])
+                    .build()
+                    .unwrap();
 
                 pipeline.push_constant(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
@@ -318,7 +314,11 @@ mod tests {
                     .try_resolve_static(&pipeline.get_resolution_scope())
                     .unwrap();
 
-                assert_eq!(expected, actual.map(|v| v.as_ref().clone()))
+                assert_eq!(expected_resolved, actual.map(|v| v.as_ref().clone()));
+
+                if let Some(s) = expected_state {
+                    assert_eq!(s, expression);
+                }
             };
 
         run_test_success(
@@ -348,6 +348,49 @@ mod tests {
                     )),
                 ],
             ))),
+            None,
+        );
+
+        run_test_success(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::String,
+                            0,
+                            ValueAccessor::new(),
+                        )),
+                    ],
+                ),
+            )),
+            None,
+            Some(ScalarExpression::Collection(
+                CollectionScalarExpression::List(ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Constant(
+                            CopyConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                0,
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
+                            ),
+                        )),
+                    ],
+                )),
+            )),
         );
     }
 

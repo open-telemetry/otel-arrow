@@ -158,7 +158,7 @@ impl ChainLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         if let Some(b) = self.first_expression.try_resolve_static(scope)? {
             let mut result = b;
 
@@ -255,7 +255,7 @@ impl EqualToLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -321,7 +321,7 @@ impl GreaterThanLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -382,7 +382,7 @@ impl GreaterThanOrEqualToLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -436,7 +436,7 @@ impl NotLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
             Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -498,7 +498,7 @@ impl ContainsLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = &self.query_location;
 
         let haystack = self.haystack.try_resolve_static(scope)?;
@@ -566,7 +566,7 @@ impl MatchesLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = &self.query_location;
 
         let haystack = self.haystack.try_resolve_static(scope)?;
