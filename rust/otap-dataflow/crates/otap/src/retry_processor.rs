@@ -372,7 +372,6 @@ impl Default for RetryProcessor {
 mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use crate::grpc::OtapArrowBytes;
     use otap_df_channel::mpsc;
     use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;
@@ -380,6 +379,8 @@ mod tests {
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use serde_json::json;
     use tokio::time::{Duration, sleep};
 
@@ -400,34 +401,35 @@ mod tests {
     }
 
     fn create_test_data(_id: u64) -> OtapPdata {
-        OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(
-            create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                num_rows: 1,
-                ..Default::default()
-            }),
-        ))
+        let mut consumer = Consumer::default();
+        let otap_data = consumer
+            .consume_bar(&mut create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows: 1,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        OtapArrowRecords::Logs(from_record_messages(otap_data)).into()
     }
 
     /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
     fn num_rows(pdata: &OtapPdata) -> usize {
         match pdata.signal_type() {
             SignalType::Logs => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                let records: OtapArrowRecords = pdata.clone().try_into().unwrap();
                 records
                     .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
                     .map_or(0, |batch| batch.num_rows())
             }
             SignalType::Traces => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                let records: OtapArrowRecords = pdata.clone().try_into().unwrap();
                 records
                     .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
                     .map_or(0, |batch| batch.num_rows())
             }
             SignalType::Metrics => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                let records: OtapArrowRecords = pdata.clone().try_into().unwrap();
                 records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
                     .map_or(0, |batch| batch.num_rows())
             }
