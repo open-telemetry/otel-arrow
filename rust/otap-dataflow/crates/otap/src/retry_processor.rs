@@ -70,6 +70,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tonic::Code;
 
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
@@ -230,12 +231,21 @@ impl Processor<OtapPdata> for RetryProcessor {
                     // If the payload is empty: the effect is also
                     // permanent, as by intentionaly failing to return
                     // the data.
-                    if nack.permanent
-                        || rstate.retries >= self.config.max_retries
-                        || nack.request.is_empty()
-                    {
-                        // TODO: new Nack messages explaining what/why, instead of direct
-                        // propagation as above?
+                    let has_failed = if nack.permanent {
+                        nack.reason = format!("cannot retry permanent: {}", nack.reason);
+                        true
+                    } else if rstate.retries >= self.config.max_retries {
+                        nack.reason = format!("max retries reached: {}", nack.reason);
+                        true
+                    } else if nack.request.is_empty() {
+                        nack.reason = format!("retry internal error: {}", nack.reason);
+                        nack.permanent = true;
+                        nack.code = Some(Code::Internal as i32);
+                        true
+                    } else {
+                        false
+                    };
+                    if has_failed {
                         effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
                         return Ok(());
                     }
