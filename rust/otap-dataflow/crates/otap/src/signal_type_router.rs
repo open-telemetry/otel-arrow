@@ -139,6 +139,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
 mod tests {
     use super::*;
     use otap_df_engine::testing::{processor::TestRuntime, test_node};
+    use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
     use serde_json::json;
 
     #[test]
@@ -199,9 +200,7 @@ mod tests {
                 assert!(ctx.drain_pdata().await.is_empty());
 
                 // Data message is forwarded
-                use crate::grpc::OtapArrowBytes;
-                use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-                let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
+                let data = OtapArrowRecords::Logs(Logs::default());
                 ctx.process(Message::data_msg(data.into()))
                     .await
                     .expect("data processing failed");
