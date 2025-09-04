@@ -257,7 +257,6 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 
 #[cfg(test)]
 mod test {
-    use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
 
     use super::*;
@@ -285,6 +284,8 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otel_arrow_rust::schema::consts;
@@ -300,14 +301,17 @@ mod test {
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                let otap_batch = OtapArrowBytes::ArrowLogs(
-                    fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                        num_rows,
-                        ..Default::default()
-                    }),
-                );
+                let mut consumer = Consumer::default();
+                let otap_batch = consumer
+                    .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                        SimpleDataGenOptions {
+                            num_rows,
+                            ..Default::default()
+                        },
+                    ))
+                    .unwrap();
 
-                ctx.send_pdata(otap_batch.into())
+                ctx.send_pdata(OtapArrowRecords::Logs(from_record_messages(otap_batch)).into())
                     .await
                     .expect("Failed to send  logs message");
 
@@ -734,24 +738,28 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    // a pretty big batch
-                    num_rows: 48,
-                    ..Default::default()
-                }),
-            )
-            .into();
+            let logs_data = Consumer::default()
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        // a pretty big batch
+                        num_rows: 48,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
             pdata_tx.send(otap_batch).await.unwrap();
 
-            let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    num_rows: 1,
-                    ..Default::default()
-                }),
-            )
-            .into();
-            let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
+            let logs_data = Consumer::default()
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows: 1,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data));
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
@@ -882,12 +890,17 @@ mod test {
 
             // have the parquet writer queue a batch to be written
             let num_rows = 5;
-            let otap_batch = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    num_rows,
-                    ..Default::default()
-                }),
-            );
+
+            let mut consumer = Consumer::default();
+            let otap_batch = consumer
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
             pdata_tx.send(otap_batch.into()).await.unwrap();
 
             // wait some time but not as long as the old age threshold, then send a timer tick
@@ -967,13 +980,18 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowTraces(
-            fixtures::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                traces_options: Some(Default::default()),
-                ..Default::default()
-            }),
-        );
+
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_trace_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    traces_options: Some(Default::default()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1028,13 +1046,17 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowMetrics(
-            fixtures::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                metrics_options: Some(Default::default()),
-                ..Default::default()
-            }),
-        );
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_metrics_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    metrics_options: Some(Default::default()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1098,19 +1120,20 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowLogs(
-            fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                with_main_record_attrs: false,
-                with_resource_attrs: false,
-                with_scope_attrs: false,
-                ..Default::default()
-            }),
-        );
-
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    with_main_record_attrs: false,
+                    with_resource_attrs: false,
+                    with_scope_attrs: false,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
         // replace the logs ID column with nulls
-        let pdata: OtapPdata = otap_batch.into();
-        let mut otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let (schema, mut columns, _) = logs.clone().into_parts();
         columns[schema.index_of(consts::ID).unwrap()] = Arc::new(UInt16Array::new_null(num_rows));

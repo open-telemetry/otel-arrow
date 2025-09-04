@@ -17,14 +17,17 @@ use crate::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use otap_df_engine::control::PipelineControlMsg;
+use otap_df_state::store::ObservedStateHandle;
 use serde::Serialize;
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+    Router::new()
+        .route("/pipeline-groups/status", get(show_status))
+        .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
 }
 
 /// Response body.
@@ -33,6 +36,12 @@ struct ShutdownResponse {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     errors: Option<Vec<String>>,
+}
+
+pub async fn show_status(
+    State(state): State<AppState>,
+) -> Result<Json<ObservedStateHandle>, StatusCode> {
+    Ok(Json(state.observed_state_store))
 }
 
 async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
