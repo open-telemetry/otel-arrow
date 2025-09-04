@@ -14,6 +14,7 @@ use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -26,11 +27,13 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
+use otel_arrow_rust::Producer;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -177,9 +180,18 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     let signal_type = pdata.signal_type();
 
                     self.pdata_metrics.inc_consumed(signal_type);
-                    let message: OtapArrowBytes = pdata
+                    let mut message: OtapArrowRecords = pdata
                         .try_into()
                         .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+
+                    let mut producer = Producer::new();
+                    let bar = producer.produce_bar(&mut message).unwrap();
+                    let message = match signal_type {
+                        SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
+                        SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
+                        SignalType::Traces => OtapArrowBytes::ArrowTraces(bar)
+                    };
+
 
                     match message {
                         // match on OTAPData type and use the respective client to send message

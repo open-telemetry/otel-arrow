@@ -133,9 +133,9 @@ impl OtapArrowRecords {
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-trait OtapBatchStore: Sized + Default + Clone {
-    // Internally, implementers should use a bitmask for the types they support.
-    // The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
+pub trait OtapBatchStore: Sized + Default + Clone {
+    /// Internally, implementers should use a bitmask for the types they support.
+    /// The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
 
     /// The number of `RecordBatch`es needed for this kind of telemetry.
@@ -145,7 +145,10 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// should be the size of the number of types it supports, and it should expect
     /// that types to be positioned in the array according to the POSITION_LOOKUP array.
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
+    
+    /// TODO
     fn batches(&self) -> &[Option<RecordBatch>];
+    /// TODO
     fn into_batches(self) -> [Option<RecordBatch>; Metrics::COUNT];
 
     /// Return a list of the allowed payload types associated with this type of batch
@@ -161,6 +164,7 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// relationship whose IDs may be changed during encoding.
     fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
+    /// TODO
     fn new() -> Self {
         Self::default()
     }
@@ -172,12 +176,14 @@ trait OtapBatchStore: Sized + Default + Clone {
         Self::TYPE_MASK & (1 << payload_type as u64) != 0
     }
 
+    /// TODO
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
         if Self::is_valid_type(payload_type) {
             self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = Some(record_batch);
         }
     }
 
+    /// TODO
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
         if !Self::is_valid_type(payload_type) {
             None
@@ -186,6 +192,7 @@ trait OtapBatchStore: Sized + Default + Clone {
         }
     }
 
+    /// TODO
     fn batch_length(&self) -> usize;
 }
 
