@@ -88,7 +88,7 @@ impl ConvertScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
