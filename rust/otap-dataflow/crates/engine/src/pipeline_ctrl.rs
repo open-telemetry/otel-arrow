@@ -11,9 +11,8 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
-use crate::message::Sender;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -120,7 +119,7 @@ pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+    control_senders: ControlSenders<PData>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
@@ -134,7 +133,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+        control_senders: ControlSenders<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
@@ -171,11 +170,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
                         PipelineControlMsg::Shutdown {reason} => {
-                            // For now, broadcast shutdown to all nodes.
-                            // ToDo: refine to only receiver nodes.
-                            for (_, control_sender) in self.control_senders.iter() {
-                                _ = control_sender.send(NodeControlMsg::Shutdown {deadline: Default::default(), reason: reason.clone()}).await;
-                            }
+                            // ToDo don't ignore the returned errors
+                            _ = self.control_senders.shutdown_receivers(reason).await;
                             break;
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
@@ -220,7 +216,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        if let Some(sender) = self.control_senders.get(&node_id) {
+                        if let Some(sender) = self.control_senders.get(node_id) {
                             // Use try_send as a fast path:
                             // - avoids allocating/awaiting a future when the channel has capacity
                             // - keeps the event loop responsive and reduces timer jitter
@@ -281,7 +277,7 @@ mod tests {
     use super::*;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::node::NodeId;
+    use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use std::collections::HashMap;
@@ -307,14 +303,14 @@ mod tests {
         Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
-        let mut control_senders = HashMap::new();
+        let mut control_senders = ControlSenders::new();
         let mut control_receivers = HashMap::new();
 
         // Create mock control senders for test nodes
         let nodes = test_nodes(vec!["node1", "node2", "node3"]);
         for node in &nodes {
             let (sender, receiver) = create_mock_control_sender();
-            let _ = control_senders.insert(node.index, sender);
+            control_senders.register(node.clone(), NodeType::Processor, sender);
             let _ = control_receivers.insert(node.index, receiver);
         }
 
@@ -649,7 +645,7 @@ mod tests {
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_rx,
-                    HashMap::new(),
+                    ControlSenders::new(),
                     metrics_reporter,
                 );
                 let duration = Duration::from_millis(50);
