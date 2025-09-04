@@ -8,7 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
+use tokio_util::sync::CancellationToken;
 use crate::{CoreId, DeployedPipelineKey, PipelineKey};
+use crate::config::Config;
+use crate::error::Error;
+use crate::reporter::ObservedEventReporter;
 
 /// High-level lifecycle of a pipeline as seen by the controller.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +36,7 @@ pub enum PipelinePhase {
 }
 
 /// Types of events that can be observed from a pipeline engine instance.
+#[derive(Debug)]
 pub enum ObservedEvent {
     /// A pipeline phase change event.
     PipelinePhase {
@@ -76,8 +81,23 @@ pub struct PipelineStatus {
 ///
 /// This store is cloneable and thread-safe, allowing multiple threads to record events
 /// concurrently or read the current state.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct ObservedStore {
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservedStateStore {
+    #[serde(skip)]
+    config: Config,
+
+    #[serde(skip)]
+    sender: flume::Sender<ObservedEvent>,
+
+    #[serde(skip)]
+    receiver: flume::Receiver<ObservedEvent>,
+
+    pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
+}
+
+/// A handle to the observed state, suitable for serialization and external consumption.
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservedStateHandle {
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
 
@@ -89,9 +109,38 @@ where
     s.serialize_str(&dt.to_rfc3339())
 }
 
-impl ObservedStore {
-    /// Records a new observed event in the store.
-    pub fn record(&self, observed_event: ObservedEvent) {
+impl Default for ObservedStateStore {
+    fn default() -> Self {
+        Self::new(Config::default())
+    }
+}
+
+impl ObservedStateStore {
+    /// Creates a new `ObservedStateStore` with the given configuration.
+    pub fn new(config: Config) -> Self {
+        let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
+
+        Self {
+            config,
+            sender, receiver,
+            pipelines: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Returns a reporter that can be used to send observed events to this store.
+    pub fn reporter(&self) -> ObservedEventReporter {
+        ObservedEventReporter::new(self.config.reporting_timeout,            self.sender.clone()        )
+    }
+
+    /// Returns a handle that can be used to read the current observed state.
+    pub fn handle(&self) -> ObservedStateHandle {
+        ObservedStateHandle {
+            pipelines: self.pipelines.clone(),
+        }
+    }
+
+    /// Reports a new observed event in the store.
+    fn report(&self, observed_event: ObservedEvent) {
         match observed_event {
             ObservedEvent::PipelinePhase { key, core_id, phase } => {
                 let mut pipelines = self.pipelines.lock().unwrap(); // todo report error
@@ -126,6 +175,25 @@ impl ObservedStore {
         }
     }
 
+    /// Runs the collection loop, receiving observed events and updating the observed store.
+    /// This function runs indefinitely until the channel is closed or the cancellation token is
+    /// triggered.
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
+        tokio::select! {
+            _ = async {
+                // Continuously receive events and report them
+                // Exit the loop if the channel is closed
+                while let Ok(event) = self.receiver.recv_async().await {
+                    self.report(event);
+                }
+            } => { /* Channel closed, exit gracefully */ }
+            _ = cancel.cancelled() => { /* Cancellation requested, exit gracefully */ }
+        }
+        Ok(())
+    }
+}
+
+impl ObservedStateHandle {
     /// Retrieves the current status of a pipeline by its key.
     /// Returns a snapshot clone of the status if present.
     pub fn pipeline_status(&self, pipeline_key: &PipelineKey) -> Option<PipelineStatus> {
@@ -260,8 +328,8 @@ where
 mod tests {
     #[cfg(test)]
     mod tests {
-        use crate::observed_store::{aggregate_pipeline_phase, PipelinePhase};
-        use crate::observed_store::PipelinePhase::*;
+        use crate::store::{aggregate_pipeline_phase, PipelinePhase};
+        use crate::store::PipelinePhase::*;
 
         #[test]
         fn aggregate_pipeline_phase_basics() {

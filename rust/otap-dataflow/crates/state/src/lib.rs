@@ -6,7 +6,10 @@
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 
-pub mod observed_store;
+pub mod store;
+pub mod reporter;
+pub mod error;
+mod config;
 
 type CoreId = usize;
 

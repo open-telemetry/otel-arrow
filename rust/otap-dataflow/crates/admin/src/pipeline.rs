@@ -20,7 +20,7 @@ use axum::extract::{Path, State};
 use axum::{Json, Router};
 use axum::http::StatusCode;
 use otap_df_state::PipelineKey;
-use otap_df_state::observed_store::PipelineStatus;
+use otap_df_state::store::PipelineStatus;
 use crate::AppState;
 
 /// All the routes for pipelines.

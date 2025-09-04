@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use otap_df_engine::control::PipelineControlMsg;
 use serde::Serialize;
-use otap_df_state::observed_store::ObservedStore;
+use otap_df_state::store::ObservedStateHandle;
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
@@ -40,7 +40,7 @@ struct ShutdownResponse {
 
 pub async fn show_status(
     State(state): State<AppState>,
-) -> Result<Json<ObservedStore>, StatusCode> {
+) -> Result<Json<ObservedStateHandle>, StatusCode> {
     Ok(Json(state.observed_store))
 }
 

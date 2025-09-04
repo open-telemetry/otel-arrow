@@ -19,7 +19,6 @@
 
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
-use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
@@ -34,7 +33,8 @@ use std::thread;
 use core_affinity::CoreId;
 use otap_df_engine::control::{pipeline_ctrl_msg_channel, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender};
 use otap_df_state::DeployedPipelineKey;
-use otap_df_state::observed_store::{ObservedEvent, ObservedStore};
+use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_state::store::{ObservedEvent, ObservedStateStore};
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -87,7 +87,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             quota,
         )?;
         let mut threads = Vec::with_capacity(requested_cores.len());
-        let observed_store = ObservedStore::default();
+        let obs_state_store = ObservedStateStore::default();
+        let obs_evt_reporter = obs_state_store.reporter();
+        let obs_state_handle = obs_state_store.handle();
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
         // ToDo Support multiple pipeline groups in the future.
@@ -98,7 +100,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 pipeline_id: pipeline_id.clone(),
                 core_id: core_id.id,
             };
-            observed_store.record(ObservedEvent::pipeline_pending(pipeline_key.clone()));
+            obs_evt_reporter.report(ObservedEvent::pipeline_pending(pipeline_key.clone()));
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
                 pipeline
                     .pipeline_settings()
@@ -117,7 +119,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let metrics_reporter = metrics_reporter.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
-            let observed_store = observed_store.clone();
+            let obs_evt_reporter = obs_evt_reporter.clone();
             let handle = thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
@@ -127,7 +129,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_config,
                         pipeline_factory,
                         pipeline_handle,
-                        observed_store,
+                        obs_evt_reporter,
                         metrics_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
@@ -145,17 +147,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Start the admin HTTP server
-        let observed_store_admin = observed_store.clone();
         let admin_server_handle =
             spawn_thread_local_task("http-admin", move |cancellation_token| {
                 otap_df_admin::run(
                     admin_settings,
-                    observed_store_admin,
+                    obs_state_handle,
                     ctrl_msg_senders,
                     metrics_registry,
                     cancellation_token,
                 )
             })?;
+        
+        // Start the observed state store background task
+        let obs_state_join_handle = spawn_thread_local_task("observed-state-store", move |cancellation_token| {
+            obs_state_store.run(cancellation_token)
+        })?;
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results = Vec::with_capacity(threads.len());
@@ -167,15 +173,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(result)) => {
-                    observed_store.record(ObservedEvent::pipeline_stopped(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_stopped(pipeline_key));
                     results.push(Ok(result));
                 }
                 Ok(Err(e)) => {
-                    observed_store.record(ObservedEvent::pipeline_failed(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
                     results.push(Err(e));
                 }
                 Err(e) => {
-                    observed_store.record(ObservedEvent::pipeline_failed(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
                         thread_name,
@@ -197,6 +203,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
+        obs_state_join_handle.shutdown_and_join()?;
 
         Ok(())
     }
@@ -260,7 +267,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_handle: PipelineContext,
-        observed_store: ObservedStore,
+        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
@@ -281,8 +288,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever(pipeline_key, observed_store, metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
-            .map_err(|e| error::Error::PipelineRuntimeError {
+            .run_forever(pipeline_key, obs_evt_reporter, metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
+            .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
     }

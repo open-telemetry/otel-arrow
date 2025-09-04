@@ -17,3 +17,7 @@ otap-df-config = { path = "../config" }
 
 serde = { workspace = true, features = ["derive"] }
 chrono = { workspace = true }
+flume = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }

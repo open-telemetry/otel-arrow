@@ -18,7 +18,8 @@ use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 use otap_df_state::DeployedPipelineKey;
-use otap_df_state::observed_store::{ObservedEvent, ObservedStore};
+use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_state::store::ObservedEvent;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
@@ -88,7 +89,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub fn run_forever(
         self,
         pipeline_key: DeployedPipelineKey,
-        observed_store: ObservedStore,
+        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
@@ -144,7 +145,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .run_until(async {
                     let mut task_results = Vec::new();
 
-                    observed_store.record(ObservedEvent::pipeline_running(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_running(pipeline_key));
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
