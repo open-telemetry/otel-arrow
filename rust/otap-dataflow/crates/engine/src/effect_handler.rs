@@ -201,6 +201,15 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
+    /// Delay a message: DelayedData will be returned via NodeControlMsg.
+    pub async fn delay_message(
+        &self,
+        data: PData,
+        delay: Duration,
+    ) -> Result<(), TypedError<PData>> {
+        // TODO: Send a DelayedData.
+    }
+
     /// Reply to a request
     pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
         let pipeline_ctrl_msg_sender = self

@@ -206,6 +206,15 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_timer(duration).await
     }
 
+    /// Delay a message: DelayedData will be returned via NodeControlMsg.
+    pub async fn delay_message(
+        &self,
+        data: PData,
+        delay: Duration,
+    ) -> Result<(), TypedError<PData>> {
+        self.core.delay_message(data, delay).await
+    }
+
     /// Reply to a request
     pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
         self.core.reply(node_id, acknack).await

@@ -50,7 +50,7 @@
 //! let processor = RetryProcessor::with_config(config);
 //! ```
 
-use crate::pdata::{OtapPdata, ReplyState};
+use crate::pdata::{OtapPdata, Register, ReplyState};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -160,13 +160,12 @@ impl RetryProcessor {
 
 #[derive(Debug)]
 struct RetryState {
-    retries: usize,   // r0
-    last_ts: Instant, // r1
+    retries: usize, // r0
 }
 
 impl From<RetryState> for ReplyState {
     fn from(value: RetryState) -> Self {
-        Self::new(value.retries.into(), value.last_ts.into())
+        Self::new(value.retries.into(), Register::None)
     }
 }
 
@@ -176,7 +175,6 @@ impl TryFrom<ReplyState> for RetryState {
     fn try_from(value: ReplyState) -> Result<Self, Self::Error> {
         Ok(Self {
             retries: value.r0.try_into()?,
-            last_ts: value.r1.try_into()?,
         })
     }
 }
@@ -191,10 +189,7 @@ impl Processor<OtapPdata> for RetryProcessor {
         match msg {
             Message::PData(mut data) => {
                 if let Some(_) = data.return_node_id() {
-                    let rstate = RetryState {
-                        retries: 0,
-                        last_ts: Instant::now(),
-                    };
+                    let rstate = RetryState { retries: 0 };
                     data.context
                         .reply_to(effect_handler.processor_id().index(), rstate.into());
                 }
@@ -264,6 +259,8 @@ impl Processor<OtapPdata> for RetryProcessor {
 
                     let next_retry_time = now + Duration::from_millis(delay_ms);
 
+                    // Note that the Go component has a "max_elapsed" configuration,
+                    // we don't here.
                     let expired = nack
                         .request
                         .context
@@ -274,14 +271,10 @@ impl Processor<OtapPdata> for RetryProcessor {
                         .unwrap_or(false);
 
                     if expired {
+                        nack.reason = format!("final retry: {}", nack.reason);
                         effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
                         return Ok(());
                     }
-
-                    // TODO: Here we need to insert a delay. The EffectHandler
-                    // supports this possibility, but we have to the pipeline controller
-                    // does not directly support a way to delay that passes the PData.
-                    log::debug!("Scheduled message for retry attempt {}", rstate.retries);
 
                     nack.request
                         .mut_context()
@@ -291,6 +284,7 @@ impl Processor<OtapPdata> for RetryProcessor {
 
                     Ok(())
                 }
+                NodeControlMsg::DelayedData { .. } => {}
                 NodeControlMsg::TimerTick { .. } => {
                     // Nothing
                     Ok(())
@@ -374,8 +368,6 @@ mod tests {
             "initial_retry_delay_ms": 500,
             "max_retry_delay_ms": 15000,
             "backoff_multiplier": 1.5,
-            "max_pending_messages": 5000,
-            "cleanup_interval_secs": 30
         });
         let processor_config = ProcessorConfig::new("test_retry");
 

@@ -95,8 +95,12 @@ pub enum NodeControlMsg<PData> {
     /// (e.g., batch emissions).
     ///
     /// This variant currently carries no additional data.
-    TimerTick {
-        // For future usage
+    TimerTick {},
+
+    /// Data that being returned after it was delayed.
+    DelayedData {
+        /// the data
+        data: Box<PData>,
     },
 
     /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
