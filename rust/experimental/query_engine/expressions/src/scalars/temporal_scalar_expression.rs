@@ -22,7 +22,7 @@ impl TemporalScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         _scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             TemporalScalarExpression::Now(_) => Ok(None),
         }
