@@ -3,7 +3,9 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::{ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender};
+use crate::control::{
+    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
@@ -14,7 +16,6 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedEvent;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -106,21 +107,33 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
         for exporter in self.exporters {
-            control_senders.register(exporter.node_id(), NodeType::Exporter, exporter.control_sender());
+            control_senders.register(
+                exporter.node_id(),
+                NodeType::Exporter,
+                exporter.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
             );
         }
         for processor in self.processors {
-            control_senders.register(processor.node_id(), NodeType::Processor, processor.control_sender());
+            control_senders.register(
+                processor.node_id(),
+                NodeType::Processor,
+                processor.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
             );
         }
         for receiver in self.receivers {
-            control_senders.register(receiver.node_id(), NodeType::Receiver, receiver.control_sender());
+            control_senders.register(
+                receiver.node_id(),
+                NodeType::Receiver,
+                receiver.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
