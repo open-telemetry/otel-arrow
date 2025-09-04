@@ -8,9 +8,9 @@ use otel_arrow_rust::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use otap_df_otap::encoder::error::Result;
+use crate::encoder::error::Result;
 
-use crate::parser::parsed_message::ParsedSyslogMessage;
+use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 
 /// Builder for creating Arrow record batches from parsed syslog messages.
 pub struct ArrowRecordsBuilder {
@@ -131,7 +131,7 @@ impl ArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse;
+    use crate::syslog_cef_receiver::parser::parse;
     use otel_arrow_rust::{
         otlp::logs::logs_from, proto::opentelemetry::common::v1::any_value::Value,
     };

@@ -427,16 +427,13 @@ pub(crate) fn parse_accessor_expression(
             if let Some((constant_id, value_type)) =
                 scope.get_constant(root_accessor_identity.get_value())
             {
-                if value_accessor.has_selectors() {
-                    // Note: It is not currently supported to access into a constant.
-                    // This is because statics are currently simple things like string,
-                    // bool, double, float, datetime. If it becomes possible to have a
-                    // static map or array this should be supported.
-                    panic!("Accessor into a constant value encountered")
-                }
-
                 return Ok(ScalarExpression::Constant(
-                    ReferenceConstantScalarExpression::new(query_location, value_type, constant_id),
+                    ReferenceConstantScalarExpression::new(
+                        query_location,
+                        value_type,
+                        constant_id,
+                        value_accessor,
+                    ),
                 ));
             }
         }
@@ -1604,6 +1601,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ValueType::String,
                 3,
+                ValueAccessor::new(),
             )),
         );
 
@@ -1613,6 +1611,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ValueType::Integer,
                 0,
+                ValueAccessor::new(),
             )),
         );
 
@@ -1627,11 +1626,13 @@ mod tests {
                         QueryLocation::new_fake(),
                         ValueType::String,
                         3,
+                        ValueAccessor::new(),
                     )),
                     ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueType::Integer,
                         0,
+                        ValueAccessor::new(),
                     )),
                 ]),
             )),
@@ -1744,6 +1745,7 @@ mod tests {
                         QueryLocation::new_fake(),
                         ValueType::String,
                         0,
+                        ValueAccessor::new(),
                     )),
                 ]),
             )),

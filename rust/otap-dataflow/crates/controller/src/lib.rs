@@ -31,6 +31,9 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_state::DeployedPipelineKey;
+use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_state::store::{ObservedEvent, ObservedStateStore};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -66,17 +69,26 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         quota: Quota,
         admin_settings: HttpAdminSettings,
     ) -> Result<(), Error> {
-        // Initialize a global metrics system and reporter.
+        // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let obs_state_store = ObservedStateStore::default();
+        let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
+        let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         // Start the metrics aggregation
         let metrics_registry = metrics_system.registry();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 metrics_system.run(cancellation_token)
+            })?;
+
+        // Start the observed state store background task
+        let obs_state_join_handle =
+            spawn_thread_local_task("observed-state-store", move |cancellation_token| {
+                obs_state_store.run(cancellation_token)
             })?;
 
         // Start one thread per requested core
@@ -88,7 +100,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
+        // ToDo [LQ] Support multiple pipeline groups in the future.
+
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id: core_id.id,
+            };
+            obs_evt_reporter.report(ObservedEvent::pipeline_pending(pipeline_key.clone()));
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
                 pipeline
                     .pipeline_settings()
@@ -107,14 +127,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let metrics_reporter = metrics_reporter.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
+            let obs_evt_reporter = obs_evt_reporter.clone();
             let handle = thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
                     Self::run_pipeline_thread(
+                        pipeline_key,
                         core_id,
                         pipeline_config,
                         pipeline_factory,
                         pipeline_handle,
+                        obs_evt_reporter,
                         metrics_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
@@ -136,6 +159,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             spawn_thread_local_task("http-admin", move |cancellation_token| {
                 otap_df_admin::run(
                     admin_settings,
+                    obs_state_handle,
                     ctrl_msg_senders,
                     metrics_registry,
                     cancellation_token,
@@ -143,13 +167,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Wait for all pipeline threads to finish and collect their results
-        let mut results = Vec::with_capacity(threads.len());
+        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
         for (thread_name, thread_id, core_id, handle) in threads {
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id,
+            };
             match handle.join() {
-                Ok(result) => {
-                    results.push(result);
+                Ok(Ok(_)) => {
+                    obs_evt_reporter.report(ObservedEvent::pipeline_stopped(pipeline_key));
+                }
+                Ok(Err(e)) => {
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
+                    // ToDo Report errors as a `condition object` to the pipeline status.
+                    results.push(Err(e));
                 }
                 Err(e) => {
+                    // ToDo Report errors as a `condition object` to the pipeline status.
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
                         thread_name,
@@ -161,20 +197,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        // In this project phase (alpha), we just print the results of the pipelines and park the
-        // main thread indefinitely. This is useful for debugging and demonstration purposes.
-        // We can for example use the shutdown endpoint and still inspect the metrics.
         // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.
-        // ToDo Maintain an internal Global Observed State that will exposed by the admin endpoints and use by a reconciler to orchestrate pipeline updates.
-        #[allow(clippy::dbg_macro)] // Use for demonstration purposes (temp)
-        {
-            dbg!(&results);
-        }
+
+        // In this project phase (alpha), we park the main thread indefinitely. This is useful for
+        // debugging and demonstration purposes. The following admin endpoints can be used to
+        // inspect the observed state and metrics while the pipelines are running.
         thread::park();
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
+        obs_state_join_handle.shutdown_and_join()?;
 
         Ok(())
     }
@@ -233,10 +266,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     /// Runs a single pipeline in the current thread.
     fn run_pipeline_thread(
+        pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_handle: PipelineContext,
+        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
@@ -257,7 +292,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
+            .run_forever(
+                pipeline_key,
+                obs_evt_reporter,
+                metrics_reporter,
+                pipeline_ctrl_msg_tx,
+                pipeline_ctrl_msg_rx,
+            )
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
