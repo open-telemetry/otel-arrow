@@ -383,13 +383,19 @@ fn bench_exporter(c: &mut Criterion) {
 
             let mut consumer = Consumer::default();
             let trace_records = OtapArrowRecords::Traces(from_record_messages(
-                consumer.consume_bar(&mut arrow_traces_batch_data).unwrap(),
+                consumer
+                    .consume_bar(&mut arrow_traces_batch_data)
+                    .expect("can consume BAR"),
             ));
             let log_records = OtapArrowRecords::Logs(from_record_messages(
-                consumer.consume_bar(&mut arrow_logs_batch_data).unwrap(),
+                consumer
+                    .consume_bar(&mut arrow_logs_batch_data)
+                    .expect("can consume BAR"),
             ));
             let metrics_records = OtapArrowRecords::Metrics(from_record_messages(
-                consumer.consume_bar(&mut arrow_metrics_batch_data).unwrap(),
+                consumer
+                    .consume_bar(&mut arrow_metrics_batch_data)
+                    .expect("can consume BAR"),
             ));
 
             otap_signals.push(OtapPdata::from(trace_records));
@@ -450,7 +456,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone().into()).await;
+                        _ = pdata_sender.send(signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
@@ -509,7 +515,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
@@ -573,7 +579,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender
