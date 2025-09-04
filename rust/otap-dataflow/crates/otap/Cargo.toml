@@ -65,3 +65,4 @@ portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
 url.workspace = true
+tokio-util.workspace = true
