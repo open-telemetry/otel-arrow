@@ -269,7 +269,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OtapArrowBytes;
     use crate::mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
         create_batch_arrow_record,

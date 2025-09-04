@@ -187,7 +187,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OtapArrowBytes;
     use crate::mock::create_batch_arrow_record;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;

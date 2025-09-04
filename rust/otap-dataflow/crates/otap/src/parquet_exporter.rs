@@ -257,7 +257,6 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 
 #[cfg(test)]
 mod test {
-    use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
 
     use super::*;

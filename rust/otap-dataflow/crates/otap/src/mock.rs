@@ -11,7 +11,7 @@
 //! ToDo: [LQ] Improve the pipeline test infrastructure to allow testing the tuple `pdata channel -> OTAP Exporter - grpc -> OTAP receiver -> pdata channel`
 //!
 
-use crate::{grpc::OtapArrowBytes, pdata::OtapPdata};
+use crate::pdata::OtapPdata;
 use otel_arrow_rust::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},

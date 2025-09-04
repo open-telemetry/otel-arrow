@@ -372,7 +372,6 @@ impl Default for RetryProcessor {
 mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use crate::grpc::OtapArrowBytes;
     use otap_df_channel::mpsc;
     use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;

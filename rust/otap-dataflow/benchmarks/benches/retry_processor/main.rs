@@ -42,14 +42,9 @@ use otap_df_engine::{
     message::Message,
     testing::test_node,
 };
-use otap_df_otap::grpc::OtapArrowBytes;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
-use otel_arrow_rust::{
-    Consumer,
-    otap::{Logs, OtapArrowRecords},
-    proto::opentelemetry::arrow::v1::BatchArrowRecords,
-};
+use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
 use std::collections::HashMap;
 use std::hint::black_box;
 
