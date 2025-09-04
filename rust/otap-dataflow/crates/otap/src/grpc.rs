@@ -221,8 +221,7 @@ where
 {
     let batch_id = batch.batch_id;
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
-        log::error!("Error decoding OTAP Batch: {:?}. Closing stream", e);
-        ()
+        log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
     })?;
     let batch = from_record_messages::<T>(batch);
 

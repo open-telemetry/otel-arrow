@@ -184,8 +184,16 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         .try_into()
                         .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
+                    // TODO eventually create a producer per stream. We'll do this when we refactor
+                    // this this implementation to not send one message per stream.
                     let mut producer = Producer::new();
-                    let bar = producer.produce_bar(&mut message).unwrap();
+                    let bar =
+                        producer
+                            .produce_bar(&mut message)
+                            .map_err(|e| Error::ExporterError {
+                                exporter: effect_handler.exporter_id(),
+                                error: format!("error encoding OTAP batch: {e:?}"),
+                            })?;
                     let message = match signal_type {
                         SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
                         SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
