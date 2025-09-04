@@ -232,7 +232,7 @@ impl JoinTextScalarExpression {
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> ScalarStaticResolutionResult<'_> {
-        let values = self.values_expression.try_resolve_static(scope);
+        let values = self.values_expression.try_resolve_static(scope)?;
 
         let separator = match self.separator_expression.try_resolve_static(scope)? {
             None => return Ok(None),
@@ -246,7 +246,7 @@ impl JoinTextScalarExpression {
             }
         };
 
-        let (mut values, len) = match values?.as_ref().map(|v| v.as_ref()) {
+        let (mut values, len) = match values.as_ref().map(|v| v.as_ref()) {
             Some(StaticScalarExpression::Array(v)) => {
                 let value_expressions = v.get_values();
 
