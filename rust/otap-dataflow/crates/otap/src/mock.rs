@@ -12,10 +12,15 @@
 //!
 
 use crate::{grpc::OtapArrowBytes, pdata::OtapPdata};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-    arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService,
-    arrow_traces_service_server::ArrowTracesService,
+use otel_arrow_rust::{
+    Consumer,
+    otap::{OtapArrowRecords, from_record_messages},
+    proto::opentelemetry::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        arrow_logs_service_server::ArrowLogsService,
+        arrow_metrics_service_server::ArrowMetricsService,
+        arrow_traces_service_server::ArrowTracesService,
+    },
 };
 use std::pin::Pin;
 use tokio::sync::mpsc::Sender;
@@ -78,14 +83,15 @@ impl ArrowLogsService for ArrowLogsServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+
             // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
+            while let Ok(Some(mut batch)) = input_stream.message().await {
+                let batch_data = consumer.consume_bar(&mut batch).unwrap();
+                let pdata = OtapArrowRecords::Logs(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone
-                    .send(OtapArrowBytes::ArrowLogs(batch).into())
-                    .await
-                {
+                let status_result = match sender_clone.send(pdata.into()).await {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -121,14 +127,15 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+
             // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
+            while let Ok(Some(mut batch)) = input_stream.message().await {
+                let batch_data = consumer.consume_bar(&mut batch).unwrap();
+                let pdata = OtapArrowRecords::Metrics(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone
-                    .send(OtapArrowBytes::ArrowMetrics(batch).into())
-                    .await
-                {
+                let status_result = match sender_clone.send(pdata.into()).await {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -163,14 +170,15 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
+            let mut consume = Consumer::default();
+
             // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
+            while let Ok(Some(mut batch)) = input_stream.message().await {
+                let batch_data = consume.consume_bar(&mut batch).unwrap();
+                let pdata = OtapArrowRecords::Traces(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone
-                    .send(OtapArrowBytes::ArrowTraces(batch).into())
-                    .await
-                {
+                let status_result = match sender_clone.send(pdata.into()).await {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };

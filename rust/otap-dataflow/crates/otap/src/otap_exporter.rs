@@ -27,13 +27,13 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_rust::Producer;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
-use otel_arrow_rust::Producer;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -189,9 +189,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     let message = match signal_type {
                         SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
                         SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
-                        SignalType::Traces => OtapArrowBytes::ArrowTraces(bar)
+                        SignalType::Traces => OtapArrowBytes::ArrowTraces(bar),
                     };
-
 
                     match message {
                         // match on OTAPData type and use the respective client to send message
@@ -281,6 +280,8 @@ mod tests {
     };
     use otap_df_otlp::compression::CompressionMethod;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -305,27 +306,39 @@ mod tests {
     -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
+                let mut consumer = Consumer::default();
+
                 // Send a data message
-                let metric_message = OtapArrowBytes::ArrowMetrics(create_batch_arrow_record(
-                    METRIC_BATCH_ID,
-                    ArrowPayloadType::MultivariateMetrics,
-                ));
+                let mut metric_message = consumer
+                    .consume_bar(&mut create_batch_arrow_record(
+                        METRIC_BATCH_ID,
+                        ArrowPayloadType::MultivariateMetrics,
+                    ))
+                    .unwrap();
+                let metric_message =
+                    OtapArrowRecords::Metrics(from_record_messages(metric_message));
                 ctx.send_pdata(metric_message.into())
                     .await
                     .expect("Failed to send metric message");
 
-                let log_message = OtapArrowBytes::ArrowLogs(create_batch_arrow_record(
-                    LOG_BATCH_ID,
-                    ArrowPayloadType::Logs,
-                ));
+                let log_message = consumer
+                    .consume_bar(&mut create_batch_arrow_record(
+                        LOG_BATCH_ID,
+                        ArrowPayloadType::Logs,
+                    ))
+                    .unwrap();
+                let log_message = OtapArrowRecords::Logs(from_record_messages(log_message));
                 ctx.send_pdata(log_message.into())
                     .await
                     .expect("Failed to send log message");
 
-                let trace_message = OtapArrowBytes::ArrowTraces(create_batch_arrow_record(
-                    TRACE_BATCH_ID,
-                    ArrowPayloadType::Spans,
-                ));
+                let trace_message = consumer
+                    .consume_bar(&mut create_batch_arrow_record(
+                        TRACE_BATCH_ID,
+                        ArrowPayloadType::Spans,
+                    ))
+                    .unwrap();
+                let trace_message = OtapArrowRecords::Traces(from_record_messages(trace_message));
                 ctx.send_pdata(trace_message.into())
                     .await
                     .expect("Failed to send trace message");
@@ -350,7 +363,7 @@ mod tests {
                 assert!(exporter_result.is_ok());
 
                 // check that the message was properly sent from the exporter
-                let metrics_received: OtapArrowBytes =
+                let metrics_received: OtapArrowRecords =
                     timeout(Duration::from_secs(3), receiver.recv())
                         .await
                         .expect("Timed out waiting for message")
@@ -365,7 +378,7 @@ mod tests {
                 );
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
-                let logs_received: OtapArrowBytes =
+                let logs_received: OtapArrowRecords =
                     timeout(Duration::from_secs(3), receiver.recv())
                         .await
                         .expect("Timed out waiting for message")
@@ -376,7 +389,7 @@ mod tests {
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
-                let traces_received: OtapArrowBytes =
+                let traces_received: OtapArrowRecords =
                     timeout(Duration::from_secs(3), receiver.recv())
                         .await
                         .expect("Timed out waiting for message")

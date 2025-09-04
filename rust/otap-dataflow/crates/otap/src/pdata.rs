@@ -80,7 +80,7 @@ use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::trac
 use otel_arrow_rust::{Consumer, Producer};
 use prost::{EncodeError, Message};
 
-use crate::encoder::{encode_spans_otap_batch, encode_logs_otap_batch};
+use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
 /// module contains related to pdata
 pub mod error {
@@ -288,7 +288,6 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
         }
     }
 }
-
 
 #[cfg(test)]
 mod test {

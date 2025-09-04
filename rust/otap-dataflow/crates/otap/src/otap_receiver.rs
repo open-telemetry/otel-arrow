@@ -198,6 +198,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -288,7 +289,7 @@ mod tests {
 
                 // read from the effect handler
                 for batch_id in 0..3 {
-                    let metrics_received: OtapArrowBytes =
+                    let metrics_received: OtapArrowRecords =
                         timeout(Duration::from_secs(3), ctx.recv())
                             .await
                             .expect("Timed out waiting for message")
@@ -303,12 +304,13 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received")
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
+                    let logs_received: OtapArrowRecords =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_logs_message =
@@ -317,7 +319,7 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let traces_received: OtapArrowBytes =
+                    let traces_received: OtapArrowRecords =
                         timeout(Duration::from_secs(3), ctx.recv())
                             .await
                             .expect("Timed out waiting for message")

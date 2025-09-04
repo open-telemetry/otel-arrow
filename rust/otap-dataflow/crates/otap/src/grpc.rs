@@ -12,9 +12,15 @@
 //!
 
 use otap_df_engine::shared::receiver as shared;
-use otel_arrow_rust::{otap::{from_record_messages, Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces}, proto::opentelemetry::arrow::v1::{
-    arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService, arrow_traces_service_server::ArrowTracesService, BatchArrowRecords, BatchStatus, StatusCode
-}, Consumer};
+use otel_arrow_rust::{
+    Consumer,
+    otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
+    proto::opentelemetry::arrow::v1::{
+        BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
+        arrow_metrics_service_server::ArrowMetricsService,
+        arrow_traces_service_server::ArrowTracesService,
+    },
+};
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -98,9 +104,15 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data::<Logs, _>(OtapArrowRecords::Logs, &mut consumer, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data::<Logs, _>(
+                    OtapArrowRecords::Logs,
+                    &mut consumer,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
