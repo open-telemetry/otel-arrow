@@ -14,6 +14,7 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{error::Error, local::receiver as local};
+use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100)
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 enum Protocol {
     /// TCP protocol
@@ -40,34 +41,49 @@ enum Protocol {
     Udp,
 }
 
-/// Syslog CEF receiver that can listen on TCP or UDP
-#[allow(dead_code)]
-struct SyslogCefReceiver {
+/// config for a syslog cef receiver
+#[derive(Debug, Deserialize)]
+struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages
     protocol: Protocol,
+}
+
+impl Config {
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+        Self {
+            listening_addr,
+            protocol,
+        }
+    }
+}
+
+/// Syslog CEF receiver that can listen on TCP or UDP
+#[allow(dead_code)]
+struct SyslogCefReceiver {
+    config: Config,
 }
 
 impl SyslogCefReceiver {
     /// Creates a new SyslogCefReceiver with the specified listening address.
     #[must_use]
     #[allow(dead_code)]
-    fn new(listening_addr: SocketAddr) -> Self {
-        SyslogCefReceiver {
-            listening_addr,
-            protocol: Protocol::Udp,
-        }
+    fn new(config: Config) -> Self {
+        SyslogCefReceiver { config }
     }
 
     /// Creates a new SyslogCefReceiver from a configuration object
-    #[must_use]
     #[allow(dead_code)]
-    fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
-        SyslogCefReceiver {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            protocol: Protocol::Udp,
-        }
+    fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        Ok(SyslogCefReceiver {
+            config: serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
+        })
     }
 }
 
@@ -81,7 +97,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
-            SyslogCefReceiver::from_config(&node_config.config),
+            SyslogCefReceiver::from_config(&node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -96,9 +112,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match self.protocol {
+        match self.config.protocol {
             Protocol::Tcp => {
-                let listener = effect_handler.tcp_listener(self.listening_addr)?;
+                let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
 
                 loop {
                     tokio::select! {
@@ -250,7 +266,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
             Protocol::Udp => {
-                let socket = effect_handler.udp_socket(self.listening_addr)?;
+                let socket = effect_handler.udp_socket(self.config.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
@@ -854,10 +870,11 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Udp);
         // create our UDP receiver
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
-            SyslogCefReceiver::new(listening_addr),
+            SyslogCefReceiver::new(config),
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -878,9 +895,9 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Tcp);
         // create our TCP receiver - we need to modify the receiver to support TCP
-        let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::Tcp;
+        let receiver = SyslogCefReceiver::new(config);
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
@@ -905,9 +922,9 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Tcp);
         // create our TCP receiver
-        let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::Tcp;
+        let receiver = SyslogCefReceiver::new(config);
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
