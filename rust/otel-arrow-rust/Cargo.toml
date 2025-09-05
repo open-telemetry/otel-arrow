@@ -33,9 +33,10 @@ paste = "1.0.15"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
-prost = "0.13"
+prost = "0.14"
 replace_with = "0.1.8"
-tonic = "0.13"
+tonic = "0.14"
+tonic-prost = "0.14"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 itertools = "0.14.0"
 smallvec = { version = "1.15.1", features = ["union"] }
@@ -65,8 +66,8 @@ arrow-schema = "56.0.0"
 pretty_assertions = "1.4.1"
 
 [build-dependencies]
-tonic-build = "0.13"
-prost-build = "0.13"
+tonic-prost-build = "0.14"
+prost-build = "0.14"
 otlp-model = { path = "./src/pdata/otlp/model" }
 
 [lints.rust]
