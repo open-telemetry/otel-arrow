@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
+use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -16,7 +17,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
-use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -177,6 +177,23 @@ mod tests {
     use std::pin::Pin;
     use std::time::Duration;
 
+    use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use crate::proto::opentelemetry::collector::logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+    };
+    use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+    use crate::proto::opentelemetry::collector::metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    };
+    use crate::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use crate::proto::opentelemetry::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -184,23 +201,6 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::{
-        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::trace::v1::{
-        ExportTraceServiceRequest, ExportTraceServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otap_df_otlp::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_otlp::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_otlp::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_otlp::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use tokio::time::timeout;
