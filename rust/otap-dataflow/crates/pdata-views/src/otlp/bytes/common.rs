@@ -16,7 +16,9 @@ use crate::otlp::bytes::consts::field_num::common::{
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
-    field_value_range, from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim, read_varint, to_nonzero_range, FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser
+    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
+    from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
+    read_varint, to_nonzero_range,
 };
 use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 
@@ -63,14 +65,14 @@ impl<'a> RawKeyValue<'a> {
         let (start, end) = match field_value_range(self.buf, wire_types::LEN, next_pos) {
             Some(range) => range,
             // invalid bytes in buffer
-            None => return
+            None => return,
         };
         self.pos.set(end);
 
         let field = tag >> 3;
 
         match field {
-            KEY_VALUE_KEY =>  self.key_range.set(to_nonzero_range(start, end)),
+            KEY_VALUE_KEY => self.key_range.set(to_nonzero_range(start, end)),
             KEY_VALUE_VALUE => self.value_range.set(to_nonzero_range(start, end)),
             _ => {
                 // ignore invalid field
@@ -257,7 +259,8 @@ impl AttributeView for RawKeyValue<'_> {
     #[inline]
     fn key(&self) -> crate::views::common::Str<'_> {
         loop {
-            if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get()) {
+            if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
+            {
                 let slice = &self.buf[start..end];
                 match std::str::from_utf8(slice).ok() {
                     Some(str) => return str,
@@ -278,7 +281,9 @@ impl AttributeView for RawKeyValue<'_> {
     #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
         loop {
-            if let Some((start, end )) = from_option_nonzero_range_to_primitive(self.value_range.get()) {
+            if let Some((start, end)) =
+                from_option_nonzero_range_to_primitive(self.value_range.get())
+            {
                 let slice = &self.buf[start..end];
                 return Some(RawAnyValue {
                     buf: slice,
@@ -291,7 +296,7 @@ impl AttributeView for RawKeyValue<'_> {
                 self.advance();
             }
         }
-        
+
         None
     }
 }
