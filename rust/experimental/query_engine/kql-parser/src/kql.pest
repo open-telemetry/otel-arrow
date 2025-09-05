@@ -84,25 +84,19 @@ null_literal = {
     ("long(" ~ "null" ~ ")") |
     ("real(" ~ "null" ~ ")") |
     ("double(" ~ "null" ~ ")") |
-    ("timespan(" ~ "null" ~ ")")
+    ("timespan(" ~ "null" ~ ")") |
+    ("regex(" ~ "null" ~ ")")
 }
-datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
-
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 identifier_or_pattern_literal = ${
     (("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }
-
-// Expressions
-accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
-accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
-accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
-
-boolean_expression = _{ true_literal | false_literal }
-real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
-datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
-time_units = @{
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
+time_literal = {
+    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+}
+time_units_literal = @{
     "day" ~ "s"?
     | "hour" ~ "s"?
     | "microsecond" ~ "s"?
@@ -116,13 +110,31 @@ time_units = @{
     | "m"
     | "s"
 }
-time_literal = {
-    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
-}
+
+// Expressions
+accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
+accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
+accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
+
+real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
+datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
 time_expression = {
-    (double_literal|integer_literal) ~ time_units
+    (double_literal|integer_literal) ~ time_units_literal
     | "timespan(" ~ (time_literal|string_literal) ~ ")"
-    | "timespan(" ~ (double_literal|integer_literal) ~ time_units? ~ ")"
+    | "timespan(" ~ (double_literal|integer_literal) ~ time_units_literal? ~ ")"
+}
+regex_expression = { "regex(" ~ string_literal ~ ("," ~ string_literal)? ~ ")" }
+type_expressions = _{
+    null_literal
+    | real_expression
+    | datetime_expression
+    | time_expression
+    | regex_expression
+    | true_literal
+    | false_literal
+    | double_literal
+    | integer_literal
+    | string_literal
 }
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
@@ -158,7 +170,6 @@ conversion_expressions = _{
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
-parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
 strcat_expression = { "strcat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 extract_expression = { "extract" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
@@ -166,10 +177,16 @@ string_expressions = _{
     strlen_expression
     | replace_string_expression
     | substring_expression
-    | parse_json_expression
     | strcat_expression
     | strcat_delim_expression
     | extract_expression
+}
+
+parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
+parse_regex_expression = { "parse_regex" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
+parse_expressions = _{
+    parse_json_expression
+    | parse_regex_expression
 }
 
 array_concat_expression = { "array_concat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
@@ -196,22 +213,19 @@ arithmetic_expression = {
     arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
 }
 
-// Modify scalar_expression to include arithmetic_expression as first option
+/* Note: Order is imporant here. Once Pest has matched something it won't go
+backwards. For example if integer_literal is defined before time_expression "1h"
+would be parsed as integer_literal(1) and the remaining "h" would be fed into
+the next rule. */
 scalar_expression = {
-    null_literal
-    | real_expression
-    | datetime_expression
-    | time_expression
+    type_expressions
     | conditional_expressions
     | conversion_expressions
     | string_expressions
     | array_expressions
-    | boolean_expression
-    | double_literal
-    | integer_literal
-    | string_literal
     | math_expressions
     | temporal_expressions
+    | parse_expressions
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")
