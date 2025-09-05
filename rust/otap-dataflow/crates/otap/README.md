@@ -35,6 +35,7 @@ and exporters supporting natively the OTAP Pdata.
 ## Generate Protobuf Stubs
 
 In the root of the repository, run:
+
 ```bash
 cargo xtask compile-proto
 ```
