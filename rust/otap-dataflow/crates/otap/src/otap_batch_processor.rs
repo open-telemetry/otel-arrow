@@ -964,8 +964,8 @@ mod tests {
     // See crates/telemetry-macros/README.md ("Define a metric set"): if a metric field name is not
     // overridden, the field identifier is converted by replacing '_' with '.'.
     // Example: consumed_items_traces => consumed.items.traces
-    fn get_metric<'a>(
-        map: &'a std::collections::HashMap<&'static str, u64>,
+    fn get_metric(
+        map: &std::collections::HashMap<&'static str, u64>,
         snake_case: &str,
     ) -> u64 {
         let dotted = snake_case.replace('_', ".");
@@ -1036,8 +1036,8 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            // Spawn metrics collection loop
-            let _ = tokio::spawn(ms.run_collection_loop());
+            // Spawn metrics collection loop (detached)
+            let _bg = tokio::spawn(ms.run_collection_loop());
 
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
