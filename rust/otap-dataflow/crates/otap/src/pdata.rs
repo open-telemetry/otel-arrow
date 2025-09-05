@@ -236,7 +236,7 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-pub trait OtapPayloadHelpers: Clone + Into<OtapPayload> {
+pub trait OtapPayloadHelpers {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 
@@ -245,9 +245,6 @@ pub trait OtapPayloadHelpers: Clone + Into<OtapPayload> {
 
     /// Return true if there is no data.
     fn is_empty(&self) -> bool;
-
-    /// Make an empty clone (preserve signal type).
-    fn clone_empty(&self) -> Self;
 
     /// Takes the payload, leaving an empty payload behind.
     fn take_payload(&mut self) -> Self;
@@ -259,14 +256,6 @@ impl OtapPayloadHelpers for OtapArrowRecords {
             Self::Logs(_) => SignalType::Logs,
             Self::Metrics(_) => SignalType::Metrics,
             Self::Traces(_) => SignalType::Traces,
-        }
-    }
-
-    fn clone_empty(&self) -> Self {
-        match self {
-            Self::Logs(_) => Self::Logs(Default::default()),
-            Self::Metrics(_) => Self::Metrics(Default::default()),
-            Self::Traces(_) => Self::Traces(Default::default()),
         }
     }
 
@@ -321,14 +310,6 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             Self::ExportLogsRequest(_) => SignalType::Logs,
             Self::ExportMetricsRequest(_) => SignalType::Metrics,
             Self::ExportTracesRequest(_) => SignalType::Traces,
-        }
-    }
-
-    fn clone_empty(&self) -> Self {
-        match self {
-            Self::ExportLogsRequest(_) => Self::ExportLogsRequest(Vec::new()),
-            Self::ExportMetricsRequest(_) => Self::ExportMetricsRequest(Vec::new()),
-            Self::ExportTracesRequest(_) => Self::ExportTracesRequest(Vec::new()),
         }
     }
 
