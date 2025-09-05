@@ -163,6 +163,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
         // TODO comment on the purpose of these
         // TODO import so can use as just "channel" here
+        // TODO check if we can use our local channel in conjonction with a spawn_local.
         let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel(64);
         let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel(64);
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
