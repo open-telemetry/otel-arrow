@@ -666,10 +666,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                             if let Some(metrics) = &mut self.metrics {
                                 metrics.dirty_cleared_logs.inc();
                             }
-                        } else {
-                            if let Some(metrics) = &mut self.metrics {
-                                metrics.timer_flush_skipped_logs.inc();
-                            }
+                        } else if let Some(metrics) = &mut self.metrics {
+                            metrics.timer_flush_skipped_logs.inc();
                         }
                         if self.dirty_metrics && !self.current_metrics.is_empty() {
                             if let Some(metrics) = &mut self.metrics {
@@ -680,10 +678,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                             if let Some(metrics) = &mut self.metrics {
                                 metrics.dirty_cleared_metrics.inc();
                             }
-                        } else {
-                            if let Some(metrics) = &mut self.metrics {
-                                metrics.timer_flush_skipped_metrics.inc();
-                            }
+                        } else if let Some(metrics) = &mut self.metrics {
+                            metrics.timer_flush_skipped_metrics.inc();
                         }
                         if self.dirty_traces && !self.current_traces.is_empty() {
                             if let Some(metrics) = &mut self.metrics {
@@ -694,10 +690,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                             if let Some(metrics) = &mut self.metrics {
                                 metrics.dirty_cleared_traces.inc();
                             }
-                        } else {
-                            if let Some(metrics) = &mut self.metrics {
-                                metrics.timer_flush_skipped_traces.inc();
-                            }
+                        } else if let Some(metrics) = &mut self.metrics {
+                            metrics.timer_flush_skipped_traces.inc();
                         }
                         Ok(())
                     }
