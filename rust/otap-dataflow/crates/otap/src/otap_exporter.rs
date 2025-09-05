@@ -8,7 +8,6 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::OtapArrowBytes;
 use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
@@ -120,7 +119,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ))
             .await;
 
-        let exporter_id = effect_handler.exporter_id();
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
@@ -173,18 +171,21 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         
         let logs_handle = tokio::spawn(stream_arrow_batches(
             arrow_logs_client,
+            SignalType::Logs,
             logs_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
         let metrics_handle = tokio::spawn(stream_arrow_batches(
             arrow_metrics_client,
+            SignalType::Metrics,
             metrics_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
         let traces_handle = tokio::spawn(stream_arrow_batches(
             arrow_traces_client,
+            SignalType::Traces,
             traces_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
@@ -204,7 +205,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                        println!("shutting down");
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -294,6 +294,7 @@ enum PDataMetricsUpdate {
 
 async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
+    signal_type: SignalType,
     otap_batches_rx: Receiver<OtapArrowRecords>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -301,13 +302,35 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     let otap_batches_rx = Arc::new(tokio::sync::Mutex::new(otap_batches_rx));
     let mut shutdown = false;
 
-    while !shutdown {
-        let g = otap_batches_rx.lock();
-        let req_stream = create_req_stream(otap_batches_rx.clone());
+    // we'll do an exponential backoff if there was an error creating the streaming request
+    let max_backoff = Duration::from_secs(10);
+    let initial_backoff = Duration::from_millis(10);
+    let mut failed_request_backoff = initial_backoff;
+
+    // send streams of batches to the server until shutdown
+    while !shutdown {        
+        let mut rx = otap_batches_rx.lock().await;
         tokio::select! {
-            connect = client.handle_req_stream(req_stream) => {
-                match connect {
+            // wait to receive the first batch to create the streaming request
+            first_batch = rx.recv() => {
+                drop(rx);
+                let first_batch = match first_batch {
+                    Some(f) => f,
+                    
+                    None => {
+                        // no more batches
+                        break
+                    }
+                };
+
+                // create the request stream
+                let req_stream = create_req_stream(first_batch, otap_batches_rx.clone(), signal_type, pdata_metrics_tx.clone());
+                match client.handle_req_stream(req_stream).await {
                     Ok(res) => {
+                        // reset the reconnect timeout backoff
+                        failed_request_backoff = initial_backoff;
+
+                        // handle server responses until error or shutdown
                         shutdown = handle_res_stream(
                             res.into_inner(),
                             pdata_metrics_tx.clone(),
@@ -316,8 +339,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         ).await;
                     }
                     Err(_e) => {
-                        println!("error in connect {:?}", _e);
-                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(SignalType::Logs)).await;
+                        // there was an error initiating the streaming request
+                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
+                        log::error!("failed request, waiting {failed_request_backoff:?}");
+                        tokio::time::sleep(failed_request_backoff).await;
+                        failed_request_backoff = std::cmp::min(failed_request_backoff * 2, max_backoff);
                     }
                 };
             }
@@ -325,21 +351,36 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                  shutdown = *shutdown_rx.borrow();
             }
         }
-
-        println!("waiting a second before reconnecting");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 }
 
 #[allow(tail_expr_drop_order)]
 fn create_req_stream(
-    otap_batches_rx: Arc<tokio::sync::Mutex<Receiver<OtapArrowRecords>>>,
+    mut first_batch: OtapArrowRecords,
+    remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<OtapArrowRecords>>>,
+    signal_type: SignalType,
+    pdata_metrics_tx: Sender<PDataMetricsUpdate>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
         let mut producer = Producer::new();
-        let mut rx = otap_batches_rx.lock().await;
+
+        // send the first batch
+        match producer.produce_bar(&mut first_batch) {
+            Ok(bar) => yield bar,
+            Err(_) => {
+                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+            }
+        };
+
+        let mut rx = remaining_batches_rx.lock().await;
+        // send the remaining batches
         while let Some(mut otap_batch) = rx.recv().await {
-            yield producer.produce_bar(&mut otap_batch).unwrap();
+            match producer.produce_bar(&mut otap_batch) {
+                Ok(bar) => yield bar,
+                Err(_) => {
+                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+                }
+            }
         }
     }
 }
@@ -351,12 +392,13 @@ async fn handle_res_stream(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> bool {
     let mut shutdown = false;
+
+    // handle streaming responses until shutdown
     while !shutdown {
         tokio::select! {
             res = res_stream.message() => {
                 match res {
                     Ok(Some(_val)) => {
-                        // TODO eventually ack the val ...
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncExported(signal_type)).await;
                     },
                     Ok(None) => {
@@ -375,7 +417,7 @@ async fn handle_res_stream(
         }
     }
 
-    return shutdown;
+    shutdown
 }
 
 #[cfg(test)]
