@@ -8,10 +8,10 @@
 //! able to receive GRPC OTLP requests, and if there's no need to serialize them, we can keep
 //! the payload serialized as protobuf before then forwarding using these clients.
 
+use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use http::uri::PathAndQuery;
-use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_otlp::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use prost::bytes::BufMut;
 use std::marker::PhantomData;
