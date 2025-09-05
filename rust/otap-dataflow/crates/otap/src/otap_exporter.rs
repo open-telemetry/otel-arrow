@@ -169,6 +169,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+        // TODO check if we can expose/use spawn_local method in the effect handler 
         let logs_handle = tokio::spawn(stream_arrow_batches(
             arrow_logs_client,
             SignalType::Logs,
