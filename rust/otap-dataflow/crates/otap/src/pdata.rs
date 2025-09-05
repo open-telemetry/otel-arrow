@@ -73,13 +73,14 @@
 //!                                      └─────────────────────────┘                                          
 //! ```
 
-use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
+
+use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default)]
