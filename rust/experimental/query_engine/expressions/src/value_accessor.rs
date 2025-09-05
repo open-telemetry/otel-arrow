@@ -65,6 +65,90 @@ impl ValueAccessor {
         }
         Ok(())
     }
+
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        root: &'a StaticScalarExpression,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
+        let mut s: Vec<ScalarStaticResolutionResult> = self
+            .selectors
+            .iter_mut()
+            .map(|s| s.try_resolve_static(scope))
+            .collect();
+
+        Self::select_from_value(root, &mut s.drain(..))
+    }
+
+    fn select_from_value<'a>(
+        root: &'a StaticScalarExpression,
+        selectors: &mut std::vec::Drain<ScalarStaticResolutionResult<'a>>,
+    ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
+        match selectors.next() {
+            Some(s) => {
+                match s? {
+                    None => Ok(None),
+                    Some(value) => {
+                        let scalar = value.as_ref();
+
+                        let next = match scalar {
+                            StaticScalarExpression::String(map_key) => {
+                                if let StaticScalarExpression::Map(m) = root {
+                                    m.get_values().get(map_key.get_value())
+                                } else {
+                                    return Err(ExpressionError::ValidationFailure(
+                                        scalar.get_query_location().clone(),
+                                        format!(
+                                            "Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value",
+                                            map_key.get_value(),
+                                            root.get_value_type()
+                                        ),
+                                    ));
+                                }
+                            }
+                            StaticScalarExpression::Integer(array_index) => {
+                                if let StaticScalarExpression::Array(a) = root {
+                                    let mut index = array_index.get_value();
+                                    if index < 0 {
+                                        index += a.len() as i64;
+                                    }
+                                    if index < 0 {
+                                        return Err(ExpressionError::ValidationFailure(
+                                            scalar.get_query_location().clone(),
+                                            format!(
+                                                "Array index '{index}' specified in accessor expression is invalid"
+                                            ),
+                                        ));
+                                    } else {
+                                        a.get_values().get(index as usize)
+                                    }
+                                } else {
+                                    return Err(ExpressionError::ValidationFailure(
+                                        scalar.get_query_location().clone(),
+                                        format!(
+                                            "Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value",
+                                            array_index.get_value(),
+                                            root.get_value_type()
+                                        ),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(ExpressionError::ValidationFailure(scalar.get_query_location().clone(), "Unexpected scalar expression encountered in accessor expression".into()));
+                            }
+                        };
+
+                        if let Some(v) = next {
+                            Self::select_from_value(v, selectors)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+            None => Ok(Some(root)),
+        }
+    }
 }
 
 impl Default for ValueAccessor {

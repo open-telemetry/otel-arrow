@@ -32,7 +32,7 @@ impl TextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             TextScalarExpression::Concat(c) => c.try_resolve_string_static(scope),
             TextScalarExpression::Join(j) => j.try_resolve_static(scope),
@@ -126,7 +126,7 @@ impl ReplaceTextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let haystack_static = self.haystack_expression.try_resolve_static(scope)?;
         let needle_static = self.needle_expression.try_resolve_static(scope)?;
         let replacement_static = self.replacement_expression.try_resolve_static(scope)?;
@@ -231,7 +231,9 @@ impl JoinTextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
+        let values = self.values_expression.try_resolve_static(scope)?;
+
         let separator = match self.separator_expression.try_resolve_static(scope)? {
             None => return Ok(None),
             Some(s) => {
@@ -244,35 +246,8 @@ impl JoinTextScalarExpression {
             }
         };
 
-        let (mut values, len) = match self.values_expression.try_resolve_static(scope)? {
-            Some(ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Array(v))) => {
-                let value_expressions = v.get_values();
-
-                let mut len = 0;
-                let mut values = Vec::with_capacity(value_expressions.len());
-
-                for expression in value_expressions {
-                    let s = StringScalarExpression::new(
-                        expression.get_query_location().clone(),
-                        expression.to_value().to_string().as_str(),
-                    );
-
-                    len += s.get_value().len();
-
-                    if !values.is_empty() {
-                        len += separator.get_value().len();
-                        values.push(separator.clone());
-                    }
-
-                    values.push(s);
-                }
-
-                (values, len)
-            }
-            Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v)))
-            | Some(ResolvedStaticScalarExpression::FoldEligibleReference(
-                StaticScalarExpression::Array(v),
-            )) => {
+        let (mut values, len) = match values.as_ref().map(|v| v.as_ref()) {
+            Some(StaticScalarExpression::Array(v)) => {
                 let value_expressions = v.get_values();
 
                 let mut len = 0;
@@ -600,27 +575,42 @@ mod tests {
 
     #[test]
     pub fn test_join_text_scalar_expression_try_resolve() {
-        let run_test = |separator: ScalarExpression,
-                        values: ScalarExpression,
-                        expected_type: Option<ValueType>,
-                        expected_value: Option<&'static str>| {
-            let mut e = JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values);
+        let run_test =
+            |separator: ScalarExpression,
+             values: ScalarExpression,
+             expected_type: Option<ValueType>,
+             expected_value: Option<&'static str>,
+             expected_state: Option<(ScalarExpression, ScalarExpression)>| {
+                let mut e =
+                    JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values);
 
-            let pipeline: PipelineExpression = Default::default();
+                let pipeline = PipelineExpressionBuilder::new("")
+                    .with_constants(vec![StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )])
+                    .build()
+                    .unwrap();
 
-            let actual_type = e
-                .try_resolve_value_type(&pipeline.get_resolution_scope())
-                .unwrap();
-            assert_eq!(expected_type, actual_type);
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
+                assert_eq!(expected_type, actual_type);
 
-            let actual_value = e
-                .try_resolve_static(&pipeline.get_resolution_scope())
-                .unwrap();
-            assert_eq!(
-                expected_value.map(|v| v.into()),
-                actual_value.as_ref().map(|v| v.to_value().to_string())
-            );
-        };
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
+                assert_eq!(
+                    expected_value.map(|v| v.into()),
+                    actual_value.as_ref().map(|v| v.to_value().to_string())
+                );
+
+                if let Some((s, v)) = expected_state {
+                    assert_eq!(
+                        JoinTextScalarExpression::new(QueryLocation::new_fake(), s, v),
+                        e
+                    );
+                }
+            };
 
         run_test(
             ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
@@ -633,6 +623,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some(""),
+            None,
         );
 
         run_test(
@@ -655,6 +646,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some("hello|world"),
+            None,
         );
 
         run_test(
@@ -681,6 +673,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some("hello, world, 18"),
+            None,
         );
 
         run_test(
@@ -693,6 +686,7 @@ mod tests {
             )),
             Some(ValueType::String),
             Some(""),
+            None,
         );
 
         run_test(
@@ -715,6 +709,7 @@ mod tests {
             )),
             Some(ValueType::String),
             Some("hello|18"),
+            None,
         );
 
         run_test(
@@ -737,6 +732,7 @@ mod tests {
             )),
             Some(ValueType::String),
             None,
+            None,
         );
 
         run_test(
@@ -751,6 +747,91 @@ mod tests {
             )),
             None,
             None,
+            None,
+        );
+
+        run_test(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new(),
+            )),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![ScalarExpression::Constant(
+                        ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::String,
+                            0,
+                            ValueAccessor::new(),
+                        ),
+                    )],
+                ),
+            )),
+            Some(ValueType::String),
+            None,
+            Some((
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::Constant(
+                            CopyConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                0,
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
+                            ),
+                        )],
+                    ),
+                )),
+            )),
+        );
+
+        run_test(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                0,
+                ValueAccessor::new(),
+            )),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    ))],
+                ),
+            )),
+            Some(ValueType::String),
+            None,
+            Some((
+                ScalarExpression::Static(StaticScalarExpression::Constant(
+                    CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    ),
+                )),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        ))],
+                    ),
+                )),
+            )),
         );
     }
 }

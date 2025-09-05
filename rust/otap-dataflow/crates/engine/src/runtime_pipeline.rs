@@ -4,7 +4,7 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -13,7 +13,9 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
-use std::collections::HashMap;
+use otap_df_state::DeployedPipelineKey;
+use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_state::store::ObservedEvent;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -85,6 +87,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
         self,
+        pipeline_key: DeployedPipelineKey,
+        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
@@ -98,26 +102,38 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let local_tasks = LocalSet::new();
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
-        let mut control_senders = HashMap::new();
+        let mut control_senders = ControlSenders::default();
 
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
         for exporter in self.exporters {
-            _ = control_senders.insert(exporter.node_id().index, exporter.control_sender());
+            control_senders.register(
+                exporter.node_id(),
+                NodeType::Exporter,
+                exporter.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
             );
         }
         for processor in self.processors {
-            _ = control_senders.insert(processor.node_id().index, processor.control_sender());
+            control_senders.register(
+                processor.node_id(),
+                NodeType::Processor,
+                processor.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
             );
         }
         for receiver in self.receivers {
-            _ = control_senders.insert(receiver.node_id().index, receiver.control_sender());
+            control_senders.register(
+                receiver.node_id(),
+                NodeType::Receiver,
+                receiver.control_sender(),
+            );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
@@ -139,6 +155,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             local_tasks
                 .run_until(async {
                     let mut task_results = Vec::new();
+
+                    obs_evt_reporter.report(ObservedEvent::pipeline_running(pipeline_key));
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {

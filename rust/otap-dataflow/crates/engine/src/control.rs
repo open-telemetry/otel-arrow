@@ -5,9 +5,13 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
+use crate::error::TypedError;
 use crate::message::Sender;
+use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -163,4 +167,168 @@ pub fn pipeline_ctrl_msg_channel(
         SharedSender::MpscSender(tx),
         SharedReceiver::MpscReceiver(rx),
     )
+}
+
+/// Typed control message sender for a specific node type.
+pub struct TypedControlSender<PData> {
+    /// Unique identifier of the node.
+    pub node_id: NodeId,
+    /// Type of the node (Receiver, Processor, Exporter).
+    pub node_type: NodeType,
+    /// The control message sender for the node.
+    pub sender: Sender<NodeControlMsg<PData>>,
+}
+
+/// Holds the control message senders for all nodes in the pipeline.
+pub struct ControlSenders<PData> {
+    senders: HashMap<usize, TypedControlSender<PData>>,
+}
+
+impl<PData> TypedControlSender<PData> {
+    /// Sends a control message to the node, awaiting until the message is sent.
+    #[inline]
+    pub async fn send(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
+        self.sender.send(msg).await
+    }
+
+    /// Tries to send a control message to the node without awaiting.
+    #[inline]
+    pub fn try_send(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
+        self.sender.try_send(msg)
+    }
+}
+
+impl<PData> Default for ControlSenders<PData> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<PData> ControlSenders<PData> {
+    /// Creates a new `ControlSenders` instance.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            senders: HashMap::new(),
+        }
+    }
+
+    /// Gets the control message sender for a specific node by its ID.
+    ///
+    /// Returns `None` if no sender is found for the given node ID.
+    #[must_use]
+    pub fn get(&self, node_id: usize) -> Option<&TypedControlSender<PData>> {
+        self.senders.get(&node_id)
+    }
+
+    /// Registers a control message sender for a specific node.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - Unique identifier of the node.
+    /// * `node_type` - Type of the node (Receiver, Processor, Exporter).
+    /// * `sender` - The control message sender for the node.
+    pub fn register(
+        &mut self,
+        node_id: NodeId,
+        node_type: NodeType,
+        sender: Sender<NodeControlMsg<PData>>,
+    ) {
+        _ = self.senders.insert(
+            node_id.index,
+            TypedControlSender {
+                node_id,
+                node_type,
+                sender,
+            },
+        );
+    }
+
+    /// Returns the number of registered control message senders.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.senders.len()
+    }
+
+    /// Returns `true` if there are no registered control message senders.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.senders.is_empty()
+    }
+
+    /// Broadcast a shutdown control message to all receivers in order to drain the pipelines.
+    ///
+    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
+    /// if any sends failed.
+    pub async fn shutdown_receivers(
+        &self,
+        reason: String,
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        self.shutdown_nodes(Some(NodeType::Receiver), reason).await
+    }
+
+    /// Broadcast a shutdown control message to all nodes in the pipeline. This is usually not the
+    /// preferred way to shut down a pipeline, as it does not allow for graceful draining. Use
+    /// `shutdown_receivers` instead to first shut down receivers and let the rest of the
+    /// pipeline drain.
+    ///
+    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
+    /// if any sends failed.
+    pub async fn shutdown_all(
+        &self,
+        reason: String,
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        self.shutdown_nodes(None, reason).await
+    }
+
+    /// Internal helper method to broadcast shutdown messages to nodes.
+    ///
+    /// # Arguments
+    ///
+    /// - `node_type_filter`: If `Some(node_type)`, only send to nodes of that type.
+    ///   If `None`, send to all nodes.
+    /// - `reason`: The reason for the shutdown.
+    ///
+    /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
+    /// if any sends failed.
+    async fn shutdown_nodes(
+        &self,
+        node_type_filter: Option<NodeType>,
+        reason: String,
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
+
+        for typed_sender in self.senders.values() {
+            // Apply filter if specified
+            if let Some(filter_type) = node_type_filter {
+                if typed_sender.node_type != filter_type {
+                    continue;
+                }
+            }
+
+            let shutdown_msg = NodeControlMsg::Shutdown {
+                deadline: Default::default(),
+                reason: reason.clone(),
+            };
+
+            if let Err(error) = typed_sender.sender.send(shutdown_msg).await {
+                errors.push(TypedError::NodeControlMsgSendError {
+                    node: typed_sender.node_id.clone(),
+                    error,
+                });
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
