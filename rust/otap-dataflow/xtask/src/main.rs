@@ -109,11 +109,13 @@ fn compile_proto() -> anyhow::Result<()> {
                 "opentelemetry/proto/collector/trace/v1/trace_service.proto",
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
                 "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
-
                 // OTAP
-                "proto/experimental/arrow/v1/arrow_service.proto"
+                "proto/experimental/arrow/v1/arrow_service.proto",
             ],
-            &[format!("{base}/../../../proto/opentelemetry")],
+            &[
+                format!("{base}/../../../proto/opentelemetry-proto"),
+                format!("{base}/../../../proto/opentelemetry"),
+            ],
         )
         .expect("Failed to compile protos.");
     Ok(())
