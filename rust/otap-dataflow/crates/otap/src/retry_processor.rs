@@ -61,7 +61,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
-    control::NodeControlMsg,
+    control::{AckMsg, NackMsg, NodeControlMsg},
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -183,24 +183,29 @@ impl RetryProcessor {
         }
     }
 
-    fn acknowledge(&mut self, id: u64) {
+    async fn acknowledge(
+        &mut self,
+        ack: AckMsg<OtapPdata>,
+        _effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let id = ack.msgid;
         if let Some(_removed) = self.pending_messages.remove(&id) {
             log::debug!("Acknowledged and removed message with ID: {id}");
         } else {
             log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
         }
+        Ok(())
     }
 
     async fn handle_nack(
         &mut self,
-        id: u64,
-        reason: String,
-        _pdata: Option<Box<OtapPdata>>,
+        nack: NackMsg<OtapPdata>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        let id = nack.msgid;
         if let Some(mut pending) = self.pending_messages.remove(&id) {
             pending.retry_count += 1;
-            pending.last_error = reason;
+            pending.last_error = nack.reason;
 
             if pending.retry_count <= self.config.max_retries {
                 let delay_ms = (self.config.initial_retry_delay_ms as f64
@@ -326,13 +331,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack { id } => {
-                    self.acknowledge(id);
-                    Ok(())
-                }
-                NodeControlMsg::Nack { id, reason, pdata } => {
-                    self.handle_nack(id, reason, pdata, effect_handler).await
-                }
+                NodeControlMsg::Ack(ack) => self.acknowledge(ack, effect_handler).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
                     self.cleanup_expired_messages();
@@ -516,7 +516,7 @@ mod tests {
         // ACK the message
         processor
             .process(
-                Message::Control(NodeControlMsg::Ack { id: 1 }),
+                Message::Control(NodeControlMsg::Ack(AckMsg::new(1, None))),
                 &mut effect_handler,
             )
             .await
@@ -545,11 +545,12 @@ mod tests {
         // NACK the message
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                    1,
+                    "Test failure".to_string(),
+                    false,
+                    None,
+                ))),
                 &mut effect_handler,
             )
             .await
@@ -582,11 +583,12 @@ mod tests {
         for i in 1..=4 {
             processor
                 .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: 1,
-                        reason: format!("Test failure {i}"),
-                        pdata: None,
-                    }),
+                    Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                        1,
+                        format!("Test failure {i}"),
+                        false,
+                        None,
+                    ))),
                     &mut effect_handler,
                 )
                 .await
@@ -615,11 +617,12 @@ mod tests {
 
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                    1,
+                    "Test failure".to_string(),
+                    false,
+                    None,
+                ))),
                 &mut effect_handler,
             )
             .await
@@ -697,11 +700,12 @@ mod tests {
         // NACK it to get first retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "First failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                    1,
+                    "First failure".to_string(),
+                    false,
+                    None,
+                ))),
                 &mut effect_handler,
             )
             .await
@@ -713,11 +717,12 @@ mod tests {
         // NACK it again to get second retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Second failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                    1,
+                    "Second failure".to_string(),
+                    false,
+                    None,
+                ))),
                 &mut effect_handler,
             )
             .await
@@ -750,11 +755,12 @@ mod tests {
 
             processor
                 .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: i,
-                        reason: "Test failure".to_string(),
-                        pdata: None,
-                    }),
+                    Message::Control(NodeControlMsg::Nack(NackMsg::new(
+                        i,
+                        "Test failure".to_string(),
+                        false,
+                        None,
+                    ))),
                     &mut effect_handler,
                 )
                 .await
