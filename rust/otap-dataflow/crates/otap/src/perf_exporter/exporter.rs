@@ -239,12 +239,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
 #[cfg(test)]
 mod tests {
-
     use crate::fixtures::{
         SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
         create_simple_metrics_arrow_record_batches, create_simple_trace_arrow_record_batches,
     };
-    use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
@@ -256,6 +254,8 @@ mod tests {
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use std::future::Future;
     use std::sync::Arc;
     use tokio::time::{Duration, sleep};
@@ -269,32 +269,49 @@ mod tests {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
                 for i in 0..3 {
-                    let traces_batch_data =
+                    let mut traces_batch_data =
                         create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    let logs_batch_data =
+                    let mut logs_batch_data =
                         create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i + 1,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    let metrics_batch_data =
+                    let mut metrics_batch_data =
                         create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i + 2,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    // // Send a data message
-                    ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
+
+                    let trace_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut traces_batch_data)
+                            .unwrap(),
+                    );
+                    let logs_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut logs_batch_data)
+                            .unwrap(),
+                    );
+                    let metrics_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut metrics_batch_data)
+                            .unwrap(),
+                    );
+
+                    // Send a data message
+                    ctx.send_pdata(OtapArrowRecords::Traces(trace_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowLogs(logs_batch_data).into())
+                    ctx.send_pdata(OtapArrowRecords::Logs(logs_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowMetrics(metrics_batch_data).into())
+                    ctx.send_pdata(OtapArrowRecords::Metrics(metrics_batch_data).into())
                         .await
                         .expect("Failed to send data message");
                 }
