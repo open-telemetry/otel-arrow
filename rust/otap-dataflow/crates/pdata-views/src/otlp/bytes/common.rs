@@ -16,7 +16,7 @@ use crate::otlp::bytes::consts::field_num::common::{
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
-    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
     read_varint, to_nonzero_range,
 };
@@ -32,8 +32,8 @@ pub struct RawKeyValue<'a> {
 
     // the offsets for key & value - will initially be None, but will initialized to Some as we
     // iterate through the buffer and see the field tags for these fields.
-    key_offset: Cell<Option<usize>>,
-    value_offset: Cell<Option<usize>>,
+    key_range: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    value_range: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl<'a> RawKeyValue<'a> {
@@ -42,8 +42,8 @@ impl<'a> RawKeyValue<'a> {
         Self {
             buf,
             pos: Cell::new(0),
-            value_offset: Cell::new(None),
-            key_offset: Cell::new(None),
+            value_range: Cell::new(None),
+            key_range: Cell::new(None),
         }
     }
 
@@ -61,13 +61,19 @@ impl<'a> RawKeyValue<'a> {
             // invalid bytes in buffer
             None => return,
         };
-        self.pos.set(next_pos);
+
+        let (start, end) = match field_value_range(self.buf, wire_types::LEN, next_pos) {
+            Some(range) => range,
+            // invalid bytes in buffer
+            None => return,
+        };
+        self.pos.set(end);
 
         let field = tag >> 3;
 
         match field {
-            KEY_VALUE_KEY => self.key_offset.set(Some(next_pos)),
-            KEY_VALUE_VALUE => self.value_offset.set(Some(next_pos)),
+            KEY_VALUE_KEY => self.key_range.set(to_nonzero_range(start, end)),
+            KEY_VALUE_VALUE => self.value_range.set(to_nonzero_range(start, end)),
             _ => {
                 // ignore invalid field
             }
@@ -233,6 +239,7 @@ impl<'a> Iterator for AnyValueIter<'a> {
             if field == ARRAY_VALUE_VALUES && wire_type == wire_types::LEN {
                 let (slice, next_pos) = read_len_delim(self.buf, self.pos)?;
                 self.pos = next_pos;
+
                 return Some(RawAnyValue::new(slice));
             }
         }
@@ -252,13 +259,9 @@ impl AttributeView for RawKeyValue<'_> {
     #[inline]
     fn key(&self) -> crate::views::common::Str<'_> {
         loop {
-            if let Some(offset) = self.key_offset.get() {
-                let (slice, _) = match read_len_delim(self.buf, offset) {
-                    Some((slice, next_pos)) => (slice, next_pos),
-                    // break if cannot read length of key
-                    None => break,
-                };
-
+            if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
+            {
+                let slice = &self.buf[start..end];
                 match std::str::from_utf8(slice).ok() {
                     Some(str) => return str,
                     // break for invalid strings
@@ -278,12 +281,10 @@ impl AttributeView for RawKeyValue<'_> {
     #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
         loop {
-            if let Some(offset) = self.value_offset.get() {
-                let (slice, _) = match read_len_delim(self.buf, offset) {
-                    Some((slice, next_pos)) => (slice, next_pos),
-                    None => break,
-                };
-
+            if let Some((start, end)) =
+                from_option_nonzero_range_to_primitive(self.value_range.get())
+            {
+                let slice = &self.buf[start..end];
                 return Some(RawAnyValue {
                     buf: slice,
                     value_offset: Cell::new(None),
