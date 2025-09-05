@@ -9,7 +9,7 @@ pub struct ExportLogsServiceRequest {
     #[prost(message, repeated, tag = "1")]
     pub resource_logs: ::prost::alloc::vec::Vec<super::super::super::logs::v1::ResourceLogs>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportLogsServiceResponse {
     /// The details of a partially successful export request.
     ///
@@ -29,7 +29,7 @@ pub struct ExportLogsServiceResponse {
     #[prost(message, optional, tag = "1")]
     pub partial_success: ::core::option::Option<ExportLogsPartialSuccess>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportLogsPartialSuccess {
     /// The number of rejected log records.
     ///
@@ -148,7 +148,7 @@ pub mod logs_service_client {
             self.inner.ready().await.map_err(|e| {
                 tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
             })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
             );
@@ -281,7 +281,7 @@ pub mod logs_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExportSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
