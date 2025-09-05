@@ -738,13 +738,16 @@ fn split_metric_batches<const N: usize>(
                 *accumulator += element;
                 Some(*accumulator)
             }));
+            // A betch of metrics with no data points types should have a batch_length of 0, which
+            // means we should have added the whole thing to the output and never reached this point
+            // in the code.
+            assert!(!cumulative_child_counts.is_empty());
 
             // We want to partition `cumulative_child_counts` into chunks where the difference
             // between the first and last value of each chunk is as close to but less than
             // `batch_size`.
             let mut last_cumulative_child_count = 0;
             let mut starting_index = 0;
-            assert!(!cumulative_child_counts.is_empty());
             loop {
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
                     cum_child_count < last_cumulative_child_count + batch_size as u64
@@ -759,6 +762,8 @@ fn split_metric_batches<const N: usize>(
                             .expect("non-empty list"),
                     );
                 let ending_index = (candidate_index + 1).min(metric_length);
+                // We should always make forward progress
+                assert!(ending_index > starting_index || ending_index >= metric_length - 1);
 
                 result.push((batch_index, starting_index..ending_index));
                 if ending_index >= metric_length {
