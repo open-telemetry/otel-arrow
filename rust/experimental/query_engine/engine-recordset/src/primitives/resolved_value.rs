@@ -392,7 +392,51 @@ pub struct StringSlice<'a> {
 }
 
 impl<'a> StringSlice<'a> {
-    pub fn new(
+    pub fn from_char_range(
+        inner_value: ResolvedStringValue<'a>,
+        range_start_inclusive: usize,
+        range_end_exclusive: usize,
+    ) -> StringSlice<'a> {
+        // Note: Slice of a str returns raw utf8 bytes. Chars can take 1 to 4
+        // bytes. In order to correctly slice the str as chars we have to find
+        // the correct byte indices to do the slicing
+        let count = range_end_exclusive - range_start_inclusive;
+        let mut chars = inner_value
+            .get_value()
+            .char_indices()
+            .skip(range_start_inclusive)
+            .take(count);
+
+        if let Some(first) = chars.next() {
+            if let Some(last) = chars.last() {
+                let mut buf = [0; 4];
+                let encoded = last.1.encode_utf8(&mut buf);
+
+                Self {
+                    inner_value,
+                    range_start_inclusive: first.0,
+                    range_end_exclusive: last.0 + encoded.len(),
+                }
+            } else {
+                let mut buf = [0; 4];
+                let encoded = first.1.encode_utf8(&mut buf);
+
+                Self {
+                    inner_value,
+                    range_start_inclusive: first.0,
+                    range_end_exclusive: first.0 + encoded.len(),
+                }
+            }
+        } else {
+            Self {
+                inner_value,
+                range_start_inclusive: 0,
+                range_end_exclusive: 0,
+            }
+        }
+    }
+
+    pub fn from_byte_range(
         inner_value: ResolvedStringValue<'a>,
         range_start_inclusive: usize,
         range_end_exclusive: usize,
@@ -407,34 +451,9 @@ impl<'a> StringSlice<'a> {
 
 impl StringValue for StringSlice<'_> {
     fn get_value(&self) -> &str {
-        // Note: Slice of a str returns raw utf8 bytes. Chars can take 1 to 4
-        // bytes. In order to correctly slice the str as chars we have to find
-        // the correct byte indices to do the slicing
-        let count = self.range_end_exclusive - self.range_start_inclusive;
-        let mut chars = self
-            .inner_value
-            .get_value()
-            .char_indices()
-            .skip(self.range_start_inclusive)
-            .take(count);
-
         let value = self.inner_value.get_value();
 
-        if let Some(first) = chars.next() {
-            if let Some(last) = chars.last() {
-                let mut buf = [0; 4];
-                let encoded = last.1.encode_utf8(&mut buf);
-
-                &value[first.0..(last.0 + encoded.len())]
-            } else {
-                let mut buf = [0; 4];
-                let encoded = first.1.encode_utf8(&mut buf);
-
-                &value[first.0..(first.0 + encoded.len())]
-            }
-        } else {
-            &value[0..0]
-        }
+        &value[self.range_start_inclusive..self.range_end_exclusive]
     }
 }
 
