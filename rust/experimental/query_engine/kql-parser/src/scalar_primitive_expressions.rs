@@ -207,6 +207,30 @@ pub(crate) fn parse_timespan_expression(
     }
 }
 
+pub(crate) fn parse_regex_expression(
+    regex_expression_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, ParserError> {
+    let query_location = to_query_location(&regex_expression_rule);
+
+    let mut inner_rules = regex_expression_rule.into_inner();
+
+    let pattern = parse_standard_string_literal(inner_rules.next().unwrap());
+
+    let options = inner_rules.next().map(|r| parse_standard_string_literal(r));
+
+    let regex = Value::parse_regex(
+        &query_location,
+        &pattern.to_value(),
+        options.as_ref().map(|v| v.to_value()).as_ref(),
+    )
+    .map_err(|e| ParserError::from(&e))?;
+
+    Ok(StaticScalarExpression::Regex(RegexScalarExpression::new(
+        query_location,
+        regex,
+    )))
+}
+
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -1047,6 +1071,34 @@ mod tests {
                 + TimeDelta::seconds(3)
                 + TimeDelta::milliseconds(1)),
         );
+    }
+
+    #[test]
+    fn test_parse_regex_expression() {
+        let run_test_success = |input: &str, test: &str| {
+            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+
+            let d = parse_regex_expression(result.next().unwrap()).unwrap();
+
+            match d {
+                StaticScalarExpression::Regex(r) => assert!(r.get_value().is_match(test)),
+                _ => panic!("Unexpected type retured from parse_regex_expression"),
+            }
+        };
+
+        let run_test_failure = |input: &str| {
+            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+
+            let d = parse_regex_expression(result.next().unwrap());
+
+            assert!(d.is_err());
+        };
+
+        run_test_success("regex('^hello$')", "hello");
+
+        run_test_success("regex('^hello$', 'i')", "HELLO");
+
+        run_test_failure("regex('(')");
     }
 
     #[test]
