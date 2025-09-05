@@ -32,22 +32,18 @@ use otel_arrow_rust::{
     },
 };
 
-use otap_df_otlp::{
-    grpc::OTLPData,
-    otlp_exporter::OTLPExporter,
-    proto::opentelemetry::collector::{
-        logs::v1::{
-            ExportLogsServiceRequest, ExportLogsServiceResponse,
-            logs_service_server::{LogsService, LogsServiceServer},
-        },
-        metrics::v1::{
-            ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-            metrics_service_server::{MetricsService, MetricsServiceServer},
-        },
-        trace::v1::{
-            ExportTraceServiceRequest, ExportTraceServiceResponse,
-            trace_service_server::{TraceService, TraceServiceServer},
-        },
+use otap_df_otap::proto::opentelemetry::collector::{
+    logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+        logs_service_server::{LogsService, LogsServiceServer},
+    },
+    metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+        metrics_service_server::{MetricsService, MetricsServiceServer},
+    },
+    trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+        trace_service_server::{TraceService, TraceServiceServer},
     },
 };
 
@@ -66,8 +62,8 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
+use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
-use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use serde_json::json;
 use std::pin::Pin;
@@ -579,60 +575,6 @@ fn bench_exporter(c: &mut Criterion) {
                     // send signals to the exporter
                     for otap_signal in otap_signals {
                         _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
-
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
-                });
-            },
-        );
-
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otlp_exporter", size),
-            &(otlp_signals, otlp_grpc_port),
-            |b, input| {
-                b.to_async(&rt).iter(|| async {
-                    // create otlp exporter
-                    let exporter_config = ExporterConfig::new("otap_exporter");
-                    let (otlp_signals, otlp_grpc_port) = input;
-                    let grpc_addr = "127.0.0.1";
-                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
-                    let mut exporter = ExporterWrapper::local(
-                        OTLPExporter::new(grpc_endpoint, None),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
-
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
-
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-                    let control_sender = exporter.control_sender();
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(node_req_tx)
-                            .await
-                            .expect("Exporter event loop failed");
-                    });
-
-                    // send signals to the exporter
-                    for otlp_signal in otlp_signals {
-                        _ = pdata_sender.send(otlp_signal.clone()).await;
                     }
 
                     _ = control_sender

@@ -5,10 +5,15 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
+use crate::fake_data_generator::config::{Config, OTLPSignal};
+use crate::fake_data_generator::fake_signal::{
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
+};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::{OTAP_RECEIVER_FACTORIES, pdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -17,17 +22,22 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
-use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal};
-use otap_df_otlp::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-};
-use otap_df_otlp::fake_signal_receiver::metrics::FakeSignalReceiverMetrics;
 use otap_df_telemetry::metrics::MetricSet;
 use prost::{EncodeError, Message};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
 use weaver_forge::registry::ResolvedRegistry;
+
+pub mod attributes;
+/// allows the user to configure their fake signal receiver
+pub mod config;
+/// provides the fake signal with fake data
+pub mod fake_data;
+/// generates fake signals for the receiver to emit
+pub mod fake_signal;
+/// fake signal metrics implementation
+pub mod metrics;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
@@ -405,6 +415,7 @@ impl TryFrom<OTLPSignal> for OtapPdata {
 mod tests {
     use super::*;
 
+    use crate::fake_data_generator::config::{Config, OTLPSignal, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -412,7 +423,6 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, TrafficConfig};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;

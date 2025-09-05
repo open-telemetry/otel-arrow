@@ -75,6 +75,7 @@ pub enum ArrowPayloadType {
     ExpHistogramDpExemplarAttrs = 24,
     /// Multivariate metric payload
     MultivariateMetrics = 25,
+    MetricAttrs = 26,
     /// A set of payloads representing a collection of logs.
     Logs = 30,
     LogAttrs = 31,
@@ -112,6 +113,7 @@ impl ArrowPayloadType {
             Self::HistogramDpExemplarAttrs => "HISTOGRAM_DP_EXEMPLAR_ATTRS",
             Self::ExpHistogramDpExemplarAttrs => "EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS",
             Self::MultivariateMetrics => "MULTIVARIATE_METRICS",
+            Self::MetricAttrs => "METRIC_ATTRS",
             Self::Logs => "LOGS",
             Self::LogAttrs => "LOG_ATTRS",
             Self::Spans => "SPANS",
@@ -144,6 +146,7 @@ impl ArrowPayloadType {
             "HISTOGRAM_DP_EXEMPLAR_ATTRS" => Some(Self::HistogramDpExemplarAttrs),
             "EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS" => Some(Self::ExpHistogramDpExemplarAttrs),
             "MULTIVARIATE_METRICS" => Some(Self::MultivariateMetrics),
+            "METRIC_ATTRS" => Some(Self::MetricAttrs),
             "LOGS" => Some(Self::Logs),
             "LOG_ATTRS" => Some(Self::LogAttrs),
             "SPANS" => Some(Self::Spans),
