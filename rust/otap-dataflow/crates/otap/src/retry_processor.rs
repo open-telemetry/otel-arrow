@@ -107,6 +107,7 @@ use otap_df_engine::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -161,14 +162,15 @@ pub struct RetryProcessor {
 pub fn create_retry_processor(
     _pipeline_ctx: PipelineContext,
     node: NodeId,
-    config: &Value,
+    node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     // Deserialize the (currently empty) router configuration
-    let config: RetryConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
+        ConfigError::InvalidUserConfig {
             error: format!("Failed to parse retry configuration: {e}"),
-        })?;
+        }
+    })?;
 
     // Create the retry processor
     let retry = RetryProcessor::with_config(config);

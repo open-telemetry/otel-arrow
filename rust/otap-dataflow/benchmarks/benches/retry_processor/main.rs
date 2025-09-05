@@ -42,10 +42,9 @@ use otap_df_engine::{
     message::Message,
     testing::test_node,
 };
-use otap_df_otap::grpc::OtapArrowBytes;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
 use std::collections::HashMap;
 use std::hint::black_box;
 
@@ -82,12 +81,8 @@ fn create_processor_with_pending(
     (processor, effect_handler, receiver)
 }
 
-fn create_test_data(id: i64) -> OtapPdata {
-    OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(BatchArrowRecords {
-        batch_id: id,
-        arrow_payloads: vec![],
-        headers: vec![],
-    }))
+fn create_test_data() -> OtapPdata {
+    OtapArrowRecords::Logs(Logs::default()).into()
 }
 
 /// Benchmark 1: Individual message operations
@@ -103,7 +98,7 @@ fn bench_individual_operations(c: &mut Criterion) {
     let _ = group.bench_function("process_pdata", |b| {
         b.to_async(&rt).iter(|| async {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
-            let otlp_data = create_test_data(1);
+            let otlp_data = create_test_data();
 
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
@@ -119,7 +114,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
 
             // First add a message to have something to ACK
-            let otlp_data = create_test_data(2);
+            let otlp_data = create_test_data();
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
                 .await
@@ -143,7 +138,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
 
             // First add a message to have something to NACK
-            let otlp_data = create_test_data(3);
+            let otlp_data = create_test_data();
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
                 .await
@@ -188,7 +183,7 @@ fn bench_timer_tick_scaling(c: &mut Criterion) {
 
                     // Pre-populate with pending messages
                     for i in 0..hashmap_size {
-                        let otlp_data = create_test_data(4);
+                        let otlp_data = create_test_data();
                         processor
                             .process(Message::PData(otlp_data), &mut effect_handler)
                             .await

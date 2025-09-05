@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use regex::Regex;
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +42,7 @@ pub enum LogicalExpression {
 }
 
 impl LogicalExpression {
-    pub(crate) fn try_resolve_static(
+    pub fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> Result<Option<bool>, ExpressionError> {
@@ -54,9 +56,27 @@ impl LogicalExpression {
             LogicalExpression::Contains(c) => c.try_resolve_static(scope),
             LogicalExpression::Matches(m) => m.try_resolve_static(scope),
         }? {
+            match s {
+                ResolvedStaticScalarExpression::FoldEligibleReference(r)
+                | ResolvedStaticScalarExpression::Reference(r) => {
+                    if let Value::Boolean(b) = r.to_value() {
+                        // Note: We don't fold a static which is already a valid bool.
+                        return Ok(Some(b.get_value()));
+                    }
+                }
+                _ => {}
+            }
+
             let value = s.to_value();
 
             if let Some(b) = value.convert_to_bool() {
+                *self = LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.get_query_location().clone(),
+                        b,
+                    )),
+                ));
+
                 Ok(Some(b))
             } else {
                 let t = value.get_value_type();
@@ -138,7 +158,7 @@ impl ChainLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         if let Some(b) = self.first_expression.try_resolve_static(scope)? {
             let mut result = b;
 
@@ -235,7 +255,7 @@ impl EqualToLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -301,7 +321,7 @@ impl GreaterThanLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -362,7 +382,7 @@ impl GreaterThanOrEqualToLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let left = self.left.try_resolve_static(scope)?;
         let right = self.right.try_resolve_static(scope)?;
 
@@ -416,7 +436,7 @@ impl NotLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
             Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -478,7 +498,7 @@ impl ContainsLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = &self.query_location;
 
         let haystack = self.haystack.try_resolve_static(scope)?;
@@ -546,24 +566,72 @@ impl MatchesLogicalExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = &self.query_location;
 
         let haystack = self.haystack.try_resolve_static(scope)?;
         let pattern = self.pattern.try_resolve_static(scope)?;
 
         match (haystack, pattern) {
-            (Some(h), Some(n)) => {
-                let r = Value::matches(query_location, &h.to_value(), &n.to_value())?;
+            (Some(h), Some(p)) => {
+                let is_match = match p.as_ref() {
+                    StaticScalarExpression::Regex(r) => {
+                        Value::matches(query_location, &h.to_value(), &Value::Regex(r))?
+                    }
+                    s => match Self::try_parse_regex(s)? {
+                        Some(r) => {
+                            let regex = StaticScalarExpression::Regex(r);
+                            let is_match =
+                                Value::matches(query_location, &h.to_value(), &regex.to_value())?;
+                            self.pattern = ScalarExpression::Static(regex);
+                            is_match
+                        }
+                        None => return Ok(None),
+                    },
+                };
 
                 Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         query_location.clone(),
-                        r,
+                        is_match,
                     )),
                 )))
             }
+            (None, Some(p)) => {
+                if let Some(r) = Self::try_parse_regex(p.as_ref())? {
+                    self.pattern = ScalarExpression::Static(StaticScalarExpression::Regex(r));
+                }
+                Ok(None)
+            }
             _ => Ok(None),
+        }
+    }
+
+    fn try_parse_regex(
+        value: &StaticScalarExpression,
+    ) -> Result<Option<RegexScalarExpression>, ExpressionError> {
+        if !value.foldable() {
+            return Ok(None);
+        }
+
+        let mut result = None;
+
+        value.to_value().convert_to_string(&mut |s| {
+            result = Some(Regex::new(s));
+        });
+
+        match result {
+            Some(Ok(r)) => Ok(Some(RegexScalarExpression::new(
+                value.get_query_location().clone(),
+                r,
+            ))),
+            Some(Err(e)) => Err(ExpressionError::ParseError(
+                value.get_query_location().clone(),
+                format!("Failed to parse Regex from pattern: {e}"),
+            )),
+            None => {
+                panic!("Encountered a Value which does not correctly implement convert_to_string")
+            }
         }
     }
 }

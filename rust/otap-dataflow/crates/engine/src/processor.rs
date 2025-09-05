@@ -46,7 +46,7 @@ pub enum ProcessorWrapper<PData> {
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<LocalReceiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -163,10 +163,10 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 let message_channel = MessageChannel::new(
                     Receiver::Local(control_receiver),
-                    Receiver::Local(pdata_receiver.ok_or_else(|| Error::ProcessorError {
+                    pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
-                    })?),
+                    })?,
                 );
                 let default_port = user_config.default_out_port.clone();
                 let effect_handler =
@@ -245,7 +245,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ProcessorWrapper::Local { pdata_receiver, .. } => {
-                Receiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
                 Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
@@ -343,7 +343,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
         receiver: Receiver<PData>,
     ) -> Result<(), Error> {
         match (self, receiver) {
-            (ProcessorWrapper::Local { pdata_receiver, .. }, Receiver::Local(receiver)) => {
+            (ProcessorWrapper::Local { pdata_receiver, .. }, receiver) => {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
@@ -351,13 +351,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
-            (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                error: "Expected a local sender for PData".to_owned(),
-            }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
-                error: "Expected a shared sender for PData".to_owned(),
+                error: "Expected a shared receiver for PData".to_owned(),
             }),
         }
     }

@@ -34,7 +34,7 @@
 
 use crate::control::AckOrNack;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
@@ -263,11 +263,18 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_timer(duration).await
     }
 
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
     /// Reply to a request
     pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
         self.core.reply(node_id, acknack).await
     }
-
     // More methods will be added in the future as needed.
 }
 

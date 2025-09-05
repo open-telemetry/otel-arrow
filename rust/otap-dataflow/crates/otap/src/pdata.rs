@@ -74,33 +74,19 @@
 //!                                      │                         │                                          
 //!                                      │    OTAP Arrow Records   │                                          
 //!                                      │                         │                                          
-//!                                      └───┬─  ──────────────────┘                                          
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!       otel_arrow_rust::Producer::produce_bar()    otel_arrow_rust::Consumer::consume_bar()                
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!                                       ┌────────────────────┴───┐                                         
-//!                                       │                        │                                         
-//!                                       │    OTAP Arrow Bytes    │                                         
-//!                                       │                        │                                         
-//!                                       └────────────────────────┘                                         
-//!                                                                           
+//!                                      └─────────────────────────┘                                          
 //! ```
 
+pub use super::context::{Context, Register, ReplyState, ReplyTo};
 use crate::encoder::encode_spans_otap_batch;
+use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
-use otel_arrow_rust::{Consumer, Producer};
 use prost::{EncodeError, Message};
-
-pub use super::context::{Context, Register, ReplyState, ReplyTo};
 
 /// module contains related to pdata
 pub mod error {
@@ -162,9 +148,6 @@ impl OtlpProtoBytes {
 pub enum OtapPayload {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
-
-    /// data is contained in `BatchArrowRecords`, which contain ArrowIPC serialized
-    OtapArrowBytes(OtapArrowBytes),
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
     OtapArrowRecords(OtapArrowRecords),
@@ -636,68 +619,6 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
     }
 }
 
-impl TryFrom<OtlpProtoBytes> for OtapArrowBytes {
-    type Error = error::Error;
-
-    fn try_from(value: OtlpProtoBytes) -> Result<Self, Self::Error> {
-        let otap_batch: OtapArrowRecords = value.try_into()?;
-        otap_batch.try_into()
-    }
-}
-
-impl TryFrom<OtapArrowBytes> for OtlpProtoBytes {
-    type Error = error::Error;
-
-    fn try_from(value: OtapArrowBytes) -> Result<Self, Self::Error> {
-        let otap_batch: OtapArrowRecords = value.try_into()?;
-        otap_batch.try_into()
-    }
-}
-
-impl TryFrom<OtapArrowBytes> for OtapArrowRecords {
-    type Error = error::Error;
-
-    fn try_from(value: OtapArrowBytes) -> Result<Self, Self::Error> {
-        let map_error = |error: otel_arrow_rust::error::Error| error::Error::ConversionError {
-            error: format!("error decoding BatchArrowRecords: {error}"),
-        };
-        let mut consumer = Consumer::default();
-        match value {
-            OtapArrowBytes::ArrowLogs(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Logs(from_record_messages(record_messages)))
-            }
-            OtapArrowBytes::ArrowMetrics(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Metrics(from_record_messages(record_messages)))
-            }
-            OtapArrowBytes::ArrowTraces(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Traces(from_record_messages(record_messages)))
-            }
-        }
-    }
-}
-
-impl TryFrom<OtapArrowRecords> for OtapArrowBytes {
-    type Error = error::Error;
-
-    fn try_from(mut otap_batch: OtapArrowRecords) -> Result<Self, Self::Error> {
-        let mut producer = Producer::new();
-        let bar =
-            producer
-                .produce_bar(&mut otap_batch)
-                .map_err(|e| error::Error::ConversionError {
-                    error: format!("error encoding BatchArrowRecords: {e}"),
-                })?;
-        Ok(match otap_batch {
-            OtapArrowRecords::Logs(_) => Self::ArrowLogs(bar),
-            OtapArrowRecords::Metrics(_) => Self::ArrowMetrics(bar),
-            OtapArrowRecords::Traces(_) => Self::ArrowTraces(bar),
-        })
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1084,15 +1005,6 @@ mod test {
         assert_eq!(metrics_records.signal_type(), SignalType::Metrics);
         assert_eq!(traces_records.signal_type(), SignalType::Traces);
 
-        // Test signal_type for OtapArrowBytes variants
-        let logs_bytes = OtapArrowBytes::ArrowLogs(Default::default());
-        let metrics_bytes = OtapArrowBytes::ArrowMetrics(Default::default());
-        let traces_bytes = OtapArrowBytes::ArrowTraces(Default::default());
-
-        assert_eq!(logs_bytes.signal_type(), SignalType::Logs);
-        assert_eq!(metrics_bytes.signal_type(), SignalType::Metrics);
-        assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
-
         // Test signal_type for OtapPdata variants
         let pdata_logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
         let pdata_metrics =
@@ -1102,6 +1014,5 @@ mod test {
 
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
-        assert_eq!(pdata_traces.signal_type(), SignalType::Traces);
     }
 }

@@ -3,7 +3,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{AckOrNack, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{AckOrNack, Delayed, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
@@ -72,9 +72,9 @@ impl<PData> EffectHandlerCore<PData> {
     pub(crate) async fn info(&self, message: &str) {
         use tokio::io::{AsyncWriteExt, stdout};
         let mut out = stdout();
-        let formatted_message = format!("{message}\n");
         // Ignore write errors as they're typically not recoverable for stdout
-        let _ = out.write_all(formatted_message.as_bytes()).await;
+        let _ = out.write_all(message.as_bytes()).await;
+        let _ = out.write_all(b"\n").await;
         let _ = out.flush().await;
     }
 
@@ -213,11 +213,11 @@ impl<PData> EffectHandlerCore<PData> {
     /// Delay a message: DelayedData will be returned via NodeControlMsg.
     pub async fn delay_message(&self, data: Box<PData>, when: Instant) -> Result<(), Error> {
         let _ = self
-            .send_pipeline_ctrl_msg(PipelineControlMsg::DelayData {
+            .send_pipeline_ctrl_msg(PipelineControlMsg::DelayData(Delayed {
                 when,
                 node_id: self.node_id().index,
                 data,
-            })
+            }))
             .await?;
         Ok(())
     }

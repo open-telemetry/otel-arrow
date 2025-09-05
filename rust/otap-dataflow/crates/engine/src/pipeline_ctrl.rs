@@ -11,9 +11,10 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{
+    ControlSenders, Delayed, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
+};
 use crate::error::Error;
-use crate::message::Sender;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -111,38 +112,6 @@ impl TimerSet {
     }
 }
 
-/// Delayed data in the pipeline. This implements a custom Ord so that
-/// BinaryHeap<_> is an ascending min-heap.
-pub struct Delayed<PData> {
-    /// When the data resumes
-    when: Instant,
-    // Responsible node.
-    node_id: usize,
-    /// The data
-    data: Box<PData>,
-}
-
-impl<PData> Ord for Delayed<PData> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reversed => min-heap
-        other.when.cmp(&self.when)
-    }
-}
-
-impl<PData> PartialOrd for Delayed<PData> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<PData> PartialEq for Delayed<PData> {
-    fn eq(&self, other: &Self) -> bool {
-        self.when == other.when
-    }
-}
-
-impl<PData> Eq for Delayed<PData> {}
-
 /// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
 ///
 /// Internally uses two TimerSet instances: one for generic TimerTick and one for
@@ -152,7 +121,7 @@ pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+    control_senders: ControlSenders<PData>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
@@ -177,7 +146,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
-        control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
+        control_senders: ControlSenders<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
@@ -207,83 +176,78 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
 
             tokio::select! {
-                        biased;
-                        // Handle incoming control messages from nodes.
-                        msg = self.pipeline_ctrl_msg_receiver.recv() => {
-                            let Some(msg) = msg.ok() else { break; };
-                            match msg {
-                                PipelineControlMsg::Shutdown => break,
-                                PipelineControlMsg::StartTimer { node_id, duration } => {
-                                    self.tick_timers.start(node_id, duration);
-                                }
-                                PipelineControlMsg::CancelTimer { node_id } => {
-                                    self.tick_timers.cancel(node_id);
-                                }
-                                PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
-                                    self.telemetry_timers.start(node_id, duration);
-                                }
-                                PipelineControlMsg::CancelTelemetryTimer { node_id } => {
-                                    self.telemetry_timers.cancel(node_id);
-                                }
-                    PipelineControlMsg::DelayData { when, node_id, data } => {
-                        self.delayed_data.push(Delayed{
-                        when,
-                        node_id,
-                        data,
-                        })
-                    }
-                                PipelineControlMsg::DeliverAck { node_id, ack } => {
-                        self.send_node_message(node_id, NodeControlMsg::Ack(ack)).await;
-                    }
-                                PipelineControlMsg::DeliverNack { node_id, nack } => {
-                        self.send_node_message(node_id, NodeControlMsg::Nack(nack)).await;
-                    }
-                            }
+                biased;
+                // Handle incoming control messages from nodes.
+                msg = self.pipeline_ctrl_msg_receiver.recv() => {
+                    let Some(msg) = msg.ok() else { break; };
+                    match msg {
+                        PipelineControlMsg::Shutdown { .. } => break,
+                        PipelineControlMsg::StartTimer { node_id, duration } => {
+                            self.tick_timers.start(node_id, duration);
                         }
-                        // Handle timer expiration events.
-                        _ = async {
-                            if let Some(when) = next_earliest {
-                                let now = Instant::now();
-                                if when > now {
-                                    tokio::time::sleep_until(when).await;
-                                }
-                            }
-                        }, if next_earliest.is_some() => {
-                            let now = Instant::now();
-
-                            // Collect all due timer events, then send asynchronously outside of the
-                            // TimerSet borrows to avoid blocking within the closure.
-                            let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
-
-                            // Fire all due generic timers
-                            self.tick_timers.fire_due(now, |node_id| {
-                                to_send.push((*node_id, NodeControlMsg::TimerTick {}));
-                            });
-
-                            // Fire all due telemetry timers
-                            let metrics_reporter = self.metrics_reporter.clone();
-                            self.telemetry_timers.fire_due(now, |node_id| {
-                                to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
-                            });
-
-                // Unstall delayed data.
-                while self.delayed_data.peek().map(|d| d.when <= now).unwrap_or(false) {
-                let delayed = self.delayed_data.pop().expect("ok");
-                to_send.push((delayed.node_id, NodeControlMsg::DelayedData { data: delayed.data }));
+                        PipelineControlMsg::CancelTimer { node_id } => {
+                            self.tick_timers.cancel(node_id);
+                        }
+                        PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
+                            self.telemetry_timers.start(node_id, duration);
+                        }
+                        PipelineControlMsg::CancelTelemetryTimer { node_id } => {
+                            self.telemetry_timers.cancel(node_id);
+                        }
+                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                            self.send_node_message(node_id, NodeControlMsg::Ack(ack)).await;
+            }
+                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            self.send_node_message(node_id, NodeControlMsg::Nack(nack)).await;
+            }
+            PipelineControlMsg::DelayData(delayed) => {
+                self.delayed_data.push(delayed)
+            }
+                    }
                 }
-
-                            // Deliver all accumulated control messages (best-effort)
-                            for (node_id, msg) in to_send {
-                    self.send_node_message(node_id, msg).await;
-                            }
+                // Handle timer expiration events.
+                _ = async {
+                    if let Some(when) = next_earliest {
+                        let now = Instant::now();
+                        if when > now {
+                            tokio::time::sleep_until(when).await;
                         }
+                    }
+                }, if next_earliest.is_some() => {
+                    let now = Instant::now();
+
+                    // Collect all due timer events, then send asynchronously outside of the
+                    // TimerSet borrows to avoid blocking within the closure.
+                    let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
+
+                    // Fire all due generic timers
+                    self.tick_timers.fire_due(now, |node_id| {
+                        to_send.push((*node_id, NodeControlMsg::TimerTick {}));
+                    });
+
+                    // Fire all due telemetry timers
+                    let metrics_reporter = self.metrics_reporter.clone();
+                    self.telemetry_timers.fire_due(now, |node_id| {
+                        to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
+                    });
+                    // Unstall delayed data.
+                    while self.delayed_data.peek().map(|d| d.when <= now).unwrap_or(false) {
+            let delayed = self.delayed_data.pop().expect("ok");
+            to_send.push((delayed.node_id, NodeControlMsg::DelayedData { data: delayed.data }));
+                    }
+
+                    // Deliver all accumulated control messages (best-effort)
+                    for (node_id, msg) in to_send {
+            self.send_node_message(node_id, msg).await;
+                    }
+                }
             }
         }
         Ok(())
     }
 
     async fn send_node_message(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
-        if let Some(sender) = self.control_senders.get(&node_id) {
+        if let Some(sender) = self.control_senders.get(node_id) {
             // Use send_node_message as a fast path:
             // - avoids allocating/awaiting a future when the channel has capacity
             // - keeps the event loop responsive and reduces timer jitter
@@ -339,7 +303,7 @@ mod tests {
     use super::*;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::node::NodeId;
+    use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use std::collections::HashMap;
@@ -365,14 +329,14 @@ mod tests {
         Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
-        let mut control_senders = HashMap::new();
+        let mut control_senders = ControlSenders::new();
         let mut control_receivers = HashMap::new();
 
         // Create mock control senders for test nodes
         let nodes = test_nodes(vec!["node1", "node2", "node3"]);
         for node in &nodes {
             let (sender, receiver) = create_mock_control_sender();
-            let _ = control_senders.insert(node.index, sender);
+            control_senders.register(node.clone(), NodeType::Processor, sender);
             let _ = control_receivers.insert(node.index, receiver);
         }
 
@@ -439,7 +403,11 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -489,7 +457,11 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -583,7 +555,7 @@ mod tests {
             assert!(node2_received, "Node2 should have received TimerTick");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -644,7 +616,7 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -667,7 +639,9 @@ mod tests {
 
                 // Send shutdown message
                 pipeline_tx
-                    .send(PipelineControlMsg::Shutdown)
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
                     .await
                     .unwrap();
 
@@ -697,7 +671,7 @@ mod tests {
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_rx,
-                    HashMap::new(),
+                    ControlSenders::new(),
                     metrics_reporter,
                 );
                 let duration = Duration::from_millis(50);
@@ -717,7 +691,11 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Manager should still be responsive for shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(
                     shutdown_result.is_ok(),
@@ -852,7 +830,7 @@ mod tests {
             assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -983,23 +961,55 @@ mod tests {
         delayed_heap.push(delayed3);
 
         // Verify heap maintains correct size
-        assert_eq!(delayed_heap.len(), 3, "All delayed items should be in the heap");
+        assert_eq!(
+            delayed_heap.len(),
+            3,
+            "All delayed items should be in the heap"
+        );
 
         // Pop items and verify they come out in chronological order (min-heap behavior)
         let first = delayed_heap.pop().expect("First item should exist");
-        assert_eq!(first.when, now + Duration::from_millis(100), "Earliest item should be popped first");
-        assert_eq!(first.node_id, 2, "Correct node should be associated with earliest item");
-        assert_eq!(*first.data, "data2".to_string(), "Correct data should be associated with earliest item");
+        assert_eq!(
+            first.when,
+            now + Duration::from_millis(100),
+            "Earliest item should be popped first"
+        );
+        assert_eq!(
+            first.node_id, 2,
+            "Correct node should be associated with earliest item"
+        );
+        assert_eq!(
+            *first.data,
+            "data2".to_string(),
+            "Correct data should be associated with earliest item"
+        );
 
         let second = delayed_heap.pop().expect("Second item should exist");
-        assert_eq!(second.when, now + Duration::from_millis(200), "Middle item should be popped second");
-        assert_eq!(second.node_id, 3, "Correct node should be associated with middle item");
+        assert_eq!(
+            second.when,
+            now + Duration::from_millis(200),
+            "Middle item should be popped second"
+        );
+        assert_eq!(
+            second.node_id, 3,
+            "Correct node should be associated with middle item"
+        );
 
         let third = delayed_heap.pop().expect("Third item should exist");
-        assert_eq!(third.when, now + Duration::from_millis(300), "Latest item should be popped last");
-        assert_eq!(third.node_id, 1, "Correct node should be associated with latest item");
+        assert_eq!(
+            third.when,
+            now + Duration::from_millis(300),
+            "Latest item should be popped last"
+        );
+        assert_eq!(
+            third.node_id, 1,
+            "Correct node should be associated with latest item"
+        );
 
         // Heap should now be empty
-        assert!(delayed_heap.is_empty(), "Heap should be empty after popping all items");
+        assert!(
+            delayed_heap.is_empty(),
+            "Heap should be empty after popping all items"
+        );
     }
 }

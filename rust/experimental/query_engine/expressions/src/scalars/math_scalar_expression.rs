@@ -183,7 +183,7 @@ impl MathScalarExpression {
     pub(crate) fn try_resolve_static<'a>(
         &'a mut self,
         scope: &PipelineResolutionScope<'a>,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'a> {
         match self {
             MathScalarExpression::Add(b) => {
                 Self::try_resolve_static_binary_operation(scope, b, Value::add)
@@ -223,7 +223,7 @@ impl MathScalarExpression {
         scope: &PipelineResolutionScope<'a>,
         unary_expression: &'a mut UnaryMathematicalScalarExpression,
         op: F,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
+    ) -> ScalarStaticResolutionResult<'a>
     where
         F: FnOnce(&Value) -> Option<NumericValue>,
     {
@@ -252,7 +252,7 @@ impl MathScalarExpression {
         scope: &PipelineResolutionScope<'a>,
         binary_expression: &'a mut BinaryMathematicalScalarExpression,
         op: F,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
+    ) -> ScalarStaticResolutionResult<'a>
     where
         F: FnOnce(&Value, &Value) -> Option<NumericValue>,
     {

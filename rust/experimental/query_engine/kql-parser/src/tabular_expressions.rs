@@ -935,11 +935,8 @@ mod tests {
             "extend new_attribute1 = 1",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -961,12 +958,11 @@ mod tests {
             "extend const_str = const_str",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Constant(
-                    ConstantScalarExpression::Reference(ReferenceConstantScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueType::String,
-                        0,
-                    )),
+                ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueType::String,
+                    0,
+                    ValueAccessor::new(),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -985,11 +981,8 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1003,11 +996,8 @@ mod tests {
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            2,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1026,11 +1016,8 @@ mod tests {
             "extend body.nested[0] = 1",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -1055,12 +1042,10 @@ mod tests {
             "extend variable = variable",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                    VariableScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
-                        ValueAccessor::new(),
-                    ),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -1218,12 +1203,10 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                        VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
-                            ValueAccessor::new(),
-                        ),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1267,12 +1250,10 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                        VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
-                            ValueAccessor::new(),
-                        ),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1318,14 +1299,11 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Constant(
-                        ConstantScalarExpression::Reference(
-                            ReferenceConstantScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueType::String,
-                                0,
-                            ),
-                        ),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::String,
+                        0,
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1367,12 +1345,10 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                        VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
-                            ValueAccessor::new(),
-                        ),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1391,21 +1367,16 @@ mod tests {
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Attached(
-                        AttachedScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
-                                VariableScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "variable",
-                                    ),
-                                    ValueAccessor::new(),
-                                ),
-                            )]),
-                        ),
+                    ScalarExpression::Attached(AttachedScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
+                            VariableScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                                ValueAccessor::new(),
+                            ),
+                        )]),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1499,11 +1470,8 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "hello world",
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2468,11 +2436,8 @@ mod tests {
             .with_post_expressions(vec![DataExpression::Transform(
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2527,7 +2492,7 @@ mod tests {
                                     "Attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                            ScalarExpression::Static(StaticScalarExpression::Constant(
                                 CopyConstantScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     0,
@@ -2657,11 +2622,8 @@ mod tests {
                 ),
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2746,11 +2708,8 @@ mod tests {
             vec![DataExpression::Transform(TransformExpression::Set(
                 SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2787,11 +2746,8 @@ mod tests {
             vec![
                 DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            1,
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
