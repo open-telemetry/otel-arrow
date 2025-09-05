@@ -39,7 +39,6 @@ use crate::error::Error;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
 use async_trait::async_trait;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 /// A trait for egress exporters (!Send definition).
@@ -90,7 +89,6 @@ pub trait Exporter<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-    _pd: PhantomData<PData>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -99,7 +97,6 @@ impl<PData> EffectHandler<PData> {
     pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id),
-            _pd: PhantomData,
         }
     }
 

@@ -41,7 +41,6 @@ use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
@@ -208,7 +207,6 @@ impl<PData> MessageChannel<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-    _pd: PhantomData<PData>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -217,7 +215,6 @@ impl<PData> EffectHandler<PData> {
     pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id),
-            _pd: PhantomData,
         }
     }
 
