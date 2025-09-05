@@ -7,6 +7,9 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
+/// Request context associated with OTAP data.
+pub mod context;
+
 /// Code for encoding OTAP batch from pdata view
 pub mod encoder;
 /// Implementation of OTAP Exporter that implements the exporter trait

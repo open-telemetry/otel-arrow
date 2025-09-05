@@ -11,7 +11,9 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{
+    ControlSenders, Delayed, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
+};
 use crate::error::Error;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
@@ -117,22 +119,33 @@ impl TimerSet {
 /// corresponding NodeControlMsg to nodes when timers expire.
 pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
     control_senders: ControlSenders<PData>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
     telemetry_timers: TimerSet,
+    /// Delayed data in activation order.
+    delayed_data: BinaryHeap<Delayed<PData>>,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+}
+
+fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(std::cmp::min(a, b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
-        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
@@ -141,6 +154,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
+            delayed_data: BinaryHeap::new(),
             metrics_reporter,
         }
     }
@@ -157,23 +171,17 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             // Get the next expirations, if any.
             let next_expiry = self.tick_timers.next_expiry();
             let next_tel_expiry = self.telemetry_timers.next_expiry();
-            let next_earliest = match (next_expiry, next_tel_expiry) {
-                (Some(a), Some(b)) => Some(std::cmp::min(a, b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
+            let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
+
+            let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
+
             tokio::select! {
                 biased;
                 // Handle incoming control messages from nodes.
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineControlMsg::Shutdown {reason} => {
-                            // ToDo don't ignore the returned errors
-                            _ = self.control_senders.shutdown_receivers(reason).await;
-                            break;
-                        },
+                        PipelineControlMsg::Shutdown { .. } => break,
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             self.tick_timers.start(node_id, duration);
                         }
@@ -186,6 +194,15 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id } => {
                             self.telemetry_timers.cancel(node_id);
                         }
+                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                            self.send_node_message(node_id, NodeControlMsg::Ack(ack)).await;
+            }
+                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            self.send_node_message(node_id, NodeControlMsg::Nack(nack)).await;
+            }
+            PipelineControlMsg::DelayData(delayed) => {
+                self.delayed_data.push(delayed)
+            }
                     }
                 }
                 // Handle timer expiration events.
@@ -213,31 +230,40 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     self.telemetry_timers.fire_due(now, |node_id| {
                         to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
                     });
+                    // Unstall delayed data.
+                    while self.delayed_data.peek().map(|d| d.when <= now).unwrap_or(false) {
+            let delayed = self.delayed_data.pop().expect("ok");
+            to_send.push((delayed.node_id, NodeControlMsg::DelayedData { data: delayed.data }));
+                    }
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        if let Some(sender) = self.control_senders.get(node_id) {
-                            // Use try_send as a fast path:
-                            // - avoids allocating/awaiting a future when the channel has capacity
-                            // - keeps the event loop responsive and reduces timer jitter
-                            // - isolates backpressure to congested channels (only await on Full)
-                            // On Full, fall back to send(msg).await to preserve delivery
-                            match sender.try_send(msg) {
-                                Ok(()) => {}
-                                Err(otap_df_channel::error::SendError::Full(msg)) => {
-                                    // Channel backpressured: await until space is available
-                                    let _ = sender.send(msg).await;
-                                }
-                                Err(otap_df_channel::error::SendError::Closed(_)) => {
-                                    // Ignore closed channel
-                                }
-                            }
-                        }
+            self.send_node_message(node_id, msg).await;
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    async fn send_node_message(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+        if let Some(sender) = self.control_senders.get(node_id) {
+            // Use send_node_message as a fast path:
+            // - avoids allocating/awaiting a future when the channel has capacity
+            // - keeps the event loop responsive and reduces timer jitter
+            // - isolates backpressure to congested channels (only await on Full)
+            // On Full, fall back to send(msg).await to preserve delivery
+            match sender.try_send(msg) {
+                Ok(()) => {}
+                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    // Channel backpressured: await until space is available
+                    let _ = sender.send(msg).await;
+                }
+                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                    // Ignore closed channel
+                }
+            }
+        }
     }
 }
 
@@ -298,7 +324,7 @@ mod tests {
 
     fn setup_test_manager<PData>() -> (
         PipelineCtrlMsgManager<PData>,
-        crate::control::PipelineCtrlMsgSender,
+        crate::control::PipelineCtrlMsgSender<PData>,
         HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
     ) {
@@ -548,7 +574,7 @@ mod tests {
             .run_until(async {
                 let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
-		let node = nodes.first().expect("ok");
+                let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
                 let second_duration = Duration::from_millis(80); // Replacement (shorter)
 
@@ -897,5 +923,93 @@ mod tests {
                 "Correct node should be associated with latest timer"
             );
         }
+    }
+
+    /// Validates the delayed data min-heap ordering:
+    /// 1. Earlier timestamps have higher priority (come out first)
+    /// 2. BinaryHeap with custom Ord implementation creates correct ordering
+    /// 3. Multiple delayed items are ordered correctly regardless of insertion order
+    #[tokio::test]
+    async fn test_delayed_data_heap_ordering() {
+        let now = Instant::now();
+        let mut delayed_heap = BinaryHeap::new();
+
+        // Create test data with different delays
+        let data1 = Box::new("data1".to_string());
+        let data2 = Box::new("data2".to_string());
+        let data3 = Box::new("data3".to_string());
+
+        let delayed1 = Delayed {
+            when: now + Duration::from_millis(300), // Latest - should come out last
+            node_id: 1,
+            data: data1,
+        };
+        let delayed2 = Delayed {
+            when: now + Duration::from_millis(100), // Earliest - should come out first
+            node_id: 2,
+            data: data2,
+        };
+        let delayed3 = Delayed {
+            when: now + Duration::from_millis(200), // Middle - should come out second
+            node_id: 3,
+            data: data3,
+        };
+
+        // Insert in non-chronological order to test heap behavior
+        delayed_heap.push(delayed1);
+        delayed_heap.push(delayed2);
+        delayed_heap.push(delayed3);
+
+        // Verify heap maintains correct size
+        assert_eq!(
+            delayed_heap.len(),
+            3,
+            "All delayed items should be in the heap"
+        );
+
+        // Pop items and verify they come out in chronological order (min-heap behavior)
+        let first = delayed_heap.pop().expect("First item should exist");
+        assert_eq!(
+            first.when,
+            now + Duration::from_millis(100),
+            "Earliest item should be popped first"
+        );
+        assert_eq!(
+            first.node_id, 2,
+            "Correct node should be associated with earliest item"
+        );
+        assert_eq!(
+            *first.data,
+            "data2".to_string(),
+            "Correct data should be associated with earliest item"
+        );
+
+        let second = delayed_heap.pop().expect("Second item should exist");
+        assert_eq!(
+            second.when,
+            now + Duration::from_millis(200),
+            "Middle item should be popped second"
+        );
+        assert_eq!(
+            second.node_id, 3,
+            "Correct node should be associated with middle item"
+        );
+
+        let third = delayed_heap.pop().expect("Third item should exist");
+        assert_eq!(
+            third.when,
+            now + Duration::from_millis(300),
+            "Latest item should be popped last"
+        );
+        assert_eq!(
+            third.node_id, 1,
+            "Correct node should be associated with latest item"
+        );
+
+        // Heap should now be empty
+        assert!(
+            delayed_heap.is_empty(),
+            "Heap should be empty after popping all items"
+        );
     }
 }

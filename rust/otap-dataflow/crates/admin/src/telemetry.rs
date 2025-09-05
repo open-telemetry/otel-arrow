@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// All the routes for telemetry.
-pub(crate) fn routes() -> Router<AppState> {
+pub(crate) fn routes<PData: 'static + Clone + Send + Sync>() -> Router<AppState<PData>> {
     Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/metrics", get(get_metrics))
@@ -132,8 +132,8 @@ const fn default_true() -> bool {
 /// Handler for the /live-schema endpoint.
 ///
 /// This reflects the current live schema of the metrics registry.
-pub async fn get_live_schema(
-    State(state): State<AppState>,
+pub async fn get_live_schema<PData: 'static + Clone + Send + Sync>(
+    State(state): State<AppState<PData>>,
 ) -> Result<Json<SemConvRegistry>, StatusCode> {
     Ok(Json(state.metrics_registry.generate_semconv_registry()))
 }
@@ -144,8 +144,8 @@ pub async fn get_live_schema(
 /// Query parameters:
 /// - `reset` (bool, default true): whether to reset metrics after reading.
 /// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
-pub async fn get_metrics(
-    State(state): State<AppState>,
+pub async fn get_metrics<PData: 'static + Clone + Send + Sync>(
+    State(state): State<AppState<PData>>,
     Query(q): Query<MetricsQuery>,
 ) -> Result<Response, StatusCode> {
     let now = chrono::Utc::now();
@@ -220,8 +220,8 @@ pub async fn get_metrics(
 /// - `reset` (bool, default true): whether to reset metrics after reading.
 /// - `attrs` (string, optional): comma-separated list of attribute names to group by.
 /// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
-pub async fn get_metrics_aggregate(
-    State(state): State<AppState>,
+pub async fn get_metrics_aggregate<PData: 'static + Clone + Send + Sync>(
+    State(state): State<AppState<PData>>,
     Query(q): Query<AggregateQuery>,
 ) -> Result<Response, StatusCode> {
     let now = chrono::Utc::now();

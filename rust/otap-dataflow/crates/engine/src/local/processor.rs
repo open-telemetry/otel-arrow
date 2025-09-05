@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::control::AckOrNack;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
@@ -41,6 +42,7 @@ use async_trait::async_trait;
 use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -86,7 +88,7 @@ pub trait Processor<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the processor.
     /// Supports multiple named output ports.
@@ -201,8 +203,18 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Delay a message: DelayedData will be returned via NodeControlMsg.
+    pub async fn delay_message(&self, data: Box<PData>, when: Instant) -> Result<(), Error> {
+        self.core.delay_message(data, when).await
+    }
+
+    /// Reply to a request
+    pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        self.core.reply(node_id, acknack).await
     }
 
     // More methods will be added in the future as needed.

@@ -128,7 +128,10 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+    ) -> Result<(), Error> {
         match self {
             ExporterWrapper::Local {
                 mut effect_handler,
@@ -243,7 +246,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg;
+    use crate::control::{AckMsg, NodeControlMsg};
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
@@ -453,16 +456,13 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
-            .send_async(NodeControlMsg::Ack { id: 1 })
+            .send_async(NodeControlMsg::Ack(AckMsg::new("".into(), None)))
             .await
             .unwrap();
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            Message::Control(NodeControlMsg::Ack { id: 1 })
-        ));
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Ack(_)),));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
@@ -625,7 +625,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack(AckMsg::new("".into(), None)))
                 .await
                 .is_err()
         );

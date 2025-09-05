@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::control::AckOrNack;
 use crate::control::NodeControlMsg;
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -40,7 +41,6 @@ use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
@@ -206,8 +206,7 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
-    _pd: PhantomData<PData>,
+    pub(crate) core: EffectHandlerCore<PData>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -216,7 +215,6 @@ impl<PData> EffectHandler<PData> {
     pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id),
-            _pd: PhantomData,
         }
     }
 
@@ -241,7 +239,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
@@ -249,8 +247,13 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Reply to a request
+    pub async fn reply(&self, node_id: usize, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        self.core.reply(node_id, acknack).await
     }
 
     // More methods will be added in the future as needed.

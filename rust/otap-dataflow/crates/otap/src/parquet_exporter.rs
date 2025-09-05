@@ -176,8 +176,8 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     };
                 }
 
-                Message::PData(pdata) => {
-                    let mut otap_batch: OtapArrowRecords = pdata.try_into()?;
+                Message::PData(mut pdata) => {
+                    let mut otap_batch: OtapArrowRecords = pdata.take_payload().try_into()?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -311,9 +311,11 @@ mod test {
                     ))
                     .unwrap();
 
-                ctx.send_pdata(OtapArrowRecords::Logs(from_record_messages(otap_batch)).into())
-                    .await
-                    .expect("Failed to send  logs message");
+                ctx.send_pdata(OtapPdata::new_default(
+                    OtapArrowRecords::Logs(from_record_messages(otap_batch)).into(),
+                ))
+                .await
+                .expect("Failed to send  logs message");
 
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
@@ -381,7 +383,8 @@ mod test {
                             }),
                         })
                     }
-                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3);
+                    let pdata3 =
+                        fixtures::create_single_logs_pdata_with_attrs(attrs3).take_payload();
                     let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
@@ -409,7 +412,9 @@ mod test {
                         ArrowPayloadType::LogAttrs,
                         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
                     );
-                    ctx.send_pdata(otap_batch.into()).await.unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
+                        .await
+                        .unwrap();
 
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
@@ -452,6 +457,7 @@ mod test {
                             key: "strkey".to_string(),
                             value: Some(AnyValue::new_string("terry")),
                         }])
+                        .take_payload()
                         .try_into()
                         .unwrap();
 
@@ -460,6 +466,7 @@ mod test {
                             key: "intkey".to_string(),
                             value: Some(AnyValue::new_int(418)),
                         }])
+                        .take_payload()
                         .try_into()
                         .unwrap();
 
@@ -468,8 +475,12 @@ mod test {
                     let batch2_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap();
                     assert_ne!(batch1_attrs.schema(), batch2_attrs.schema());
 
-                    ctx.send_pdata(batch1.into()).await.unwrap();
-                    ctx.send_pdata(batch2.into()).await.unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(batch1.into()))
+                        .await
+                        .unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(batch2.into()))
+                        .await
+                        .unwrap();
 
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
@@ -721,7 +732,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -749,7 +760,10 @@ mod test {
                 .unwrap();
 
             let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
-            pdata_tx.send(otap_batch).await.unwrap();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch))
+                .await
+                .unwrap();
 
             let logs_data = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
@@ -769,7 +783,10 @@ mod test {
                     .unwrap(),
             );
 
-            pdata_tx.send(otap_batch2.into()).await.unwrap();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch2.into()))
+                .await
+                .unwrap();
 
             // wait for the log_attrs table to exist
             try_wait_table_exists(base_dir, ArrowPayloadType::LogAttrs, Duration::from_secs(5))
@@ -858,7 +875,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -867,7 +884,7 @@ mod test {
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver,
+            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {
@@ -901,7 +918,10 @@ mod test {
                 ))
                 .unwrap();
             let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
-            pdata_tx.send(otap_batch.into()).await.unwrap();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch.into()))
+                .await
+                .unwrap();
 
             // wait some time but not as long as the old age threshold, then send a timer tick
             _ = sleep(Duration::from_millis(50)).await;
@@ -996,7 +1016,7 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 
@@ -1061,7 +1081,7 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 
@@ -1146,7 +1166,9 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into()).await.unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
+                        .await
+                        .unwrap();
                     ctx.send_shutdown(Duration::from_millis(1000), "test complete")
                         .await
                         .unwrap();
