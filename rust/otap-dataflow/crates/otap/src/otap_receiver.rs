@@ -312,15 +312,6 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    // <<<<<<< HEAD
-                    //                     let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
-                    //                         .await
-                    //                         .expect("Timed out waiting for message")
-                    //                         .expect("No message received")
-                    //                         .take_payload()
-                    //                         .try_into()
-                    //                         .expect("Could convert pdata to OTAPData");
-                    // =======
                     let logs_received: OtapArrowRecords =
                         timeout(Duration::from_secs(3), ctx.recv())
                             .await

@@ -13,96 +13,6 @@ use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::time::Instant;
-
-/// The ACK
-#[derive(Debug, Clone)]
-pub struct AckMsg<PData> {
-    /// Reply-to information.
-    pub context: Box<PData>,
-
-    /// Rejected items
-    pub rejected: Option<(i64, String)>,
-}
-
-impl<PData> AckMsg<PData> {
-    /// Create a new Ack message
-    pub fn new(context: PData, rejected: Option<(i64, String)>) -> Self {
-        Self {
-            context: Box::new(context),
-            rejected,
-        }
-    }
-}
-
-/// The NACK
-#[derive(Debug, Clone)]
-pub struct NackMsg<PData> {
-    /// Failed request.
-    pub request: Box<PData>,
-
-    /// Human-readable reason for the NACK.
-    pub reason: String,
-
-    /// Protocol-independent permanent status
-    pub permanent: bool,
-
-    /// Protocol-independent code number
-    pub code: Option<i32>,
-}
-
-impl<PData> NackMsg<PData> {
-    /// Create a new Nack.
-    pub fn new(request: PData, reason: String, permanent: bool, code: Option<i32>) -> Self {
-        Self {
-            request: Box::new(request),
-            reason,
-            permanent,
-            code,
-        }
-    }
-}
-
-/// An Ack or a Nack
-pub enum AckOrNack<PData> {
-    /// The Ack
-    Ack(AckMsg<PData>),
-    /// The Nack
-    Nack(NackMsg<PData>),
-}
-
-/// Delayed data in the pipeline. This implements a custom Ord so that
-/// BinaryHeap<_> is an ascending min-heap.
-#[derive(Debug, Clone)]
-pub struct Delayed<PData> {
-    /// When the data resumes
-    pub when: Instant,
-    /// Responsible node.
-    pub node_id: usize,
-    /// The data
-    pub data: Box<PData>,
-}
-
-impl<PData> Ord for Delayed<PData> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reversed => min-heap
-        other.when.cmp(&self.when)
-    }
-}
-
-impl<PData> PartialOrd for Delayed<PData> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<PData> PartialEq for Delayed<PData> {
-    fn eq(&self, other: &Self) -> bool {
-        self.when == other.when
-    }
-}
-
-impl<PData> Eq for Delayed<PData> {}
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -112,13 +22,25 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack(AckMsg<PData>),
+    Ack {
+        /// Unique identifier of the message being acknowledged.
+        id: u64,
+    },
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
-    Nack(NackMsg<PData>),
+    Nack {
+        /// Unique identifier of the message not being acknowledged.
+        id: u64,
+        /// Human-readable reason for the NACK.
+        reason: String,
+
+        /// Placeholder for optional return value, making it possible for the
+        /// retry sender to be stateless.
+        pdata: Option<Box<PData>>,
+    },
 
     /// Notifies the node of a configuration change.
     ///
@@ -133,12 +55,8 @@ pub enum NodeControlMsg<PData> {
     /// (e.g., batch emissions).
     ///
     /// This variant currently carries no additional data.
-    TimerTick {},
-
-    /// Data that being returned after it was delayed.
-    DelayedData {
-        /// the data
-        data: Box<PData>,
+    TimerTick {
+        // For future usage
     },
 
     /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
@@ -165,7 +83,7 @@ pub enum NodeControlMsg<PData> {
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg<PData> {
+pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -192,28 +110,6 @@ pub enum PipelineControlMsg<PData> {
         /// Identifier of the node for which the telemetry timer is being canceled.
         node_id: usize,
     },
-
-    /// Let the pipeline manager deliver an Ack.
-    DeliverAck {
-        /// Destination
-        node_id: usize,
-
-        /// Acknowledgement context
-        ack: AckMsg<PData>,
-    },
-
-    /// Let the pipeline manager deliver a Nack.
-    DeliverNack {
-        /// Destination
-        node_id: usize,
-
-        /// Acknowledgement context
-        nack: NackMsg<PData>,
-    },
-
-    /// Delay data delivery.
-    DelayData(Delayed<PData>),
-
     /// Requests shutdown of the pipeline.
     Shutdown {
         /// Human-readable reason for the shutdown.
@@ -244,12 +140,12 @@ impl<PData> NodeControlMsg<PData> {
 /// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
+pub type PipelineCtrlMsgSender = SharedSender<PipelineControlMsg>;
 
 /// Type alias for the channel receiver used by the pipeline engine to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
+pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
 ///
@@ -263,9 +159,9 @@ pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PDat
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel<PData>(
+pub fn pipeline_ctrl_msg_channel(
     capacity: usize,
-) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
+) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),

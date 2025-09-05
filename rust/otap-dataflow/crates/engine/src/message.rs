@@ -3,7 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
-use crate::control::{AckMsg, NackMsg, NodeControlMsg};
+use crate::control::NodeControlMsg;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
@@ -16,7 +16,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 /// pipeline.
 ///
 /// Messages are categorized as either pipeline data (`PData`) or control messages (`Control`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Message<PData> {
     /// A pipeline data message traversing the pipeline.
     PData(PData),
@@ -32,16 +32,20 @@ impl<Data> Message<Data> {
         Message::PData(data)
     }
 
-    /// Create a ACK control message
+    /// Create a ACK control message with the given ID.
     #[must_use]
-    pub fn ack_ctrl_msg(ack: AckMsg<Data>) -> Self {
-        Message::Control(NodeControlMsg::Ack(ack))
+    pub fn ack_ctrl_msg(id: u64) -> Self {
+        Message::Control(NodeControlMsg::Ack { id })
     }
 
-    /// Create a NACK control message
+    /// Create a NACK control message with the given ID and reason.
     #[must_use]
-    pub fn nack_ctrl_msg(nack: NackMsg<Data>) -> Self {
-        Message::Control(NodeControlMsg::Nack(nack))
+    pub fn nack_ctrl_msg(id: u64, reason: &str, pdata: Option<Data>) -> Self {
+        Message::Control(NodeControlMsg::Nack {
+            id,
+            pdata: pdata.map(Box::new),
+            reason: reason.to_owned(),
+        })
     }
 
     /// Creates a config control message with the given configuration.

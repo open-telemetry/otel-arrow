@@ -547,7 +547,6 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                     }
                     otap_df_engine::control::NodeControlMsg::Ack { .. }
                     | otap_df_engine::control::NodeControlMsg::Nack { .. }
-                    | otap_df_engine::control::NodeControlMsg::DelayedData { .. }
                     | otap_df_engine::control::NodeControlMsg::CollectTelemetry { .. } => Ok(()),
                 }
             }

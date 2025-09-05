@@ -10,7 +10,7 @@
 use std::convert::Infallible;
 use std::task::Poll;
 
-use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
@@ -125,7 +125,7 @@ impl Decoder for OtapBatchDecoder {
             Signal::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
         };
         src.advance(buf.len());
-        Ok(Some(OtapPdata::new(Context::todo(), result.into())))
+        Ok(Some(OtapPdata::new_default(result.into())))
     }
 }
 

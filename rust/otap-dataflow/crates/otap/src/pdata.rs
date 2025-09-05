@@ -73,7 +73,6 @@
 //!                                      └─────────────────────────┘                                          
 //! ```
 
-pub use super::context::{Context, Register, ReplyState, ReplyTo};
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
@@ -81,6 +80,12 @@ use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
+
+/// Context for OTAP requests
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    // This is reserved for a future PR.
+}
 
 /// module contains related to pdata
 pub mod error {
@@ -93,15 +98,6 @@ pub mod error {
             /// The error that occurred
             error: String,
         },
-
-        /// An error involving the assembly of an OtapPdata context
-        /// and payload.
-        #[error("A request state error")]
-        RequestStateError,
-
-        /// An invalid data conversion attempted on a register.
-        #[error("A register error")]
-        RegisterError,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -157,30 +153,11 @@ pub struct OtapPdata {
 /* -------- Signal type -------- */
 
 impl OtapPdata {
-    /// Construct new OtapData from context and payload.
-    pub fn new(context: Context, payload: OtapPayload) -> Self {
-        Self { context, payload }
-    }
-
     /// Construct new OtapData with payload using default context.
     pub fn new_default(payload: OtapPayload) -> Self {
         Self {
             context: Context::default(),
             payload,
-        }
-    }
-
-    /// Constructs a request holder for returning a retryable request by
-    /// cloning the request payload in its (potentially modified) state.
-    pub fn new_reply<T: OtapPayloadExt>(context: Context, payload: &T) -> Self {
-        let has_reply = context.has_reply_state();
-        Self {
-            context: context,
-            payload: if !has_reply {
-                payload.clone_empty().into()
-            } else {
-                payload.clone().into()
-            },
         }
     }
 
@@ -213,17 +190,6 @@ impl OtapPdata {
     #[must_use]
     pub fn num_items(&self) -> usize {
         self.payload.num_items()
-    }
-
-    /// The return destination of the reply.
-    pub fn return_node_id(&self) -> Option<usize> {
-        self.context.return_node_id()
-    }
-
-    /// Removes the current element on stack, drops the node_id
-    /// (because it has arrived) and returns the state.
-    pub fn pop_stack(&mut self) -> ReplyState {
-        self.context.stack.pop().expect("has_reply").state
     }
 
     /// Take the context.
@@ -280,7 +246,7 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-pub trait OtapPayloadExt: Clone + Into<OtapPayload> {
+pub trait OtapPayloadHelpers: Clone + Into<OtapPayload> {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 
@@ -297,7 +263,7 @@ pub trait OtapPayloadExt: Clone + Into<OtapPayload> {
     fn take_payload(&mut self) -> Self;
 }
 
-impl OtapPayloadExt for OtapArrowRecords {
+impl OtapPayloadHelpers for OtapArrowRecords {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::Logs(_) => SignalType::Logs,
@@ -359,7 +325,7 @@ impl OtapPayloadExt for OtapArrowRecords {
     }
 }
 
-impl OtapPayloadExt for OtlpProtoBytes {
+impl OtapPayloadHelpers for OtlpProtoBytes {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::ExportLogsRequest(_) => SignalType::Logs,
