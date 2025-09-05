@@ -155,6 +155,7 @@ pub struct OtapPdata {
 
 impl OtapPdata {
     /// Construct new OtapData with payload using default context.
+    #[must_use]
     pub fn new_default(payload: OtapPayload) -> Self {
         Self {
             context: Context::default(),
@@ -272,15 +273,15 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         match self {
             Self::Logs(_) => {
                 self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
-                    .map_or(true, |batch| batch.num_rows() == 0)
+                    .is_none_or(|batch| batch.num_rows() == 0)
             }
             Self::Traces(_) => {
                 self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
-                    .map_or(true, |batch| batch.num_rows() == 0)
+                    .is_none_or(|batch| batch.num_rows() == 0)
             }
             Self::Metrics(_) => {
                 self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
-                    .map_or(true, |batch| batch.num_rows() == 0)
+                    .is_none_or(|batch| batch.num_rows() == 0)
             }
         }
     }
@@ -333,7 +334,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     fn num_items(&self) -> usize {
         match self {
             Self::ExportLogsRequest(bytes) => {
-                let logs_data_view = RawLogsData::new(&bytes);
+                let logs_data_view = RawLogsData::new(bytes);
                 use otap_df_pdata_views::views::logs::{
                     LogsDataView, ResourceLogsView, ScopeLogsView,
                 };
@@ -347,7 +348,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
                     .sum()
             }
             Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTraceData::new(&bytes);
+                let traces_data_view = RawTraceData::new(bytes);
                 use otap_df_pdata_views::views::trace::{
                     ResourceSpansView, ScopeSpansView, TracesView,
                 };
