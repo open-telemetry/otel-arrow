@@ -33,7 +33,7 @@ otap-df-pdata-views = { path = "../pdata-views" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 parquet.workspace = true
-tonic = { version = "0.13.1", default-features = false, features = [
+tonic = { version = "0.14.0", default-features = false, features = [
     "server",
     "channel",
     "router",
