@@ -11,15 +11,15 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "otap.processor.batch")]
 #[derive(Debug, Default, Clone)]
 pub struct OtapBatchProcessorMetrics {
-    /// Total rows received for logs signals
-    #[metric(unit = "{row}")]
-    pub received_rows_logs: Counter<u64>,
-    /// Total rows received for metrics signals
-    #[metric(unit = "{row}")]
-    pub received_rows_metrics: Counter<u64>,
-    /// Total rows received for traces signals
-    #[metric(unit = "{row}")]
-    pub received_rows_traces: Counter<u64>,
+    /// Total items consumed for logs signal
+    #[metric(unit = "{item}")]
+    pub consumed_items_logs: Counter<u64>,
+    /// Total items consumed for metrics signal
+    #[metric(unit = "{item}")]
+    pub consumed_items_metrics: Counter<u64>,
+    /// Total items consumed for traces signal
+    #[metric(unit = "{item}")]
+    pub consumed_items_traces: Counter<u64>,
 
     /// Number of flushes triggered by size threshold (all signals)
     #[metric(unit = "{flush}")]

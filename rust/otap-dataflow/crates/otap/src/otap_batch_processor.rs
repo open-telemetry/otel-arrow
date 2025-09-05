@@ -730,7 +730,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                     Ok(())
                                 } else {
                                     if let Some(metrics) = &mut self.metrics {
-                                        metrics.received_rows_logs.add(rows as u64);
+                                        metrics.consumed_items_logs.add(rows as u64);
                                     }
                                     // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
@@ -772,7 +772,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                     Ok(())
                                 } else {
                                     if let Some(metrics) = &mut self.metrics {
-                                        metrics.received_rows_metrics.add(rows as u64);
+                                        metrics.consumed_items_metrics.add(rows as u64);
                                     }
                                     // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
@@ -812,7 +812,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                                     Ok(())
                                 } else {
                                     if let Some(metrics) = &mut self.metrics {
-                                        metrics.received_rows_traces.add(rows as u64);
+                                        metrics.consumed_items_traces.add(rows as u64);
                                     }
                                     // Pre-append: flush if the incoming record would exceed max.
                                     if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
@@ -963,7 +963,7 @@ mod tests {
     // Helper to read dotted metric field names via snake_case identifiers in tests.
     // See crates/telemetry-macros/README.md ("Define a metric set"): if a metric field name is not
     // overridden, the field identifier is converted by replacing '_' with '.'.
-    // Example: received_rows_traces => received.rows.traces
+    // Example: consumed_items_traces => consumed.items.traces
     fn get_metric<'a>(
         map: &'a std::collections::HashMap<&'static str, u64>,
         snake_case: &str,
@@ -1042,7 +1042,7 @@ mod tests {
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
             // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
-            // OtapArrowRecords::batch_length handles logs), switch assertions to received_rows_logs.
+            // OtapArrowRecords::batch_length handles logs), switch assertions to consumed_items_logs.
             let pdata_logs: OtapPdata = logs_record_with_n_entries(3).into();
             ctx.process(Message::PData(pdata_logs))
                 .await
@@ -1108,7 +1108,7 @@ mod tests {
                     }
                 });
                 // Wait until traces are observed (positive path), logs may still be seen as empty.
-                if get_metric(&map, "received_rows_traces") >= 1 {
+                if get_metric(&map, "consumed_items_traces") >= 1 {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -1125,10 +1125,10 @@ mod tests {
             });
 
             // Positive path: traces row counter observed
-            let traces_rows = get_metric(&map, "received_rows_traces");
+            let traces_rows = get_metric(&map, "consumed_items_traces");
             if traces_rows < 1 {
                 eprintln!(
-                    "[diag] no received_rows_traces yet. sets observed: {:?}",
+                    "[diag] no consumed_items_traces yet. sets observed: {:?}",
                     sets
                 );
             }
@@ -1138,7 +1138,7 @@ mod tests {
             assert_eq!(get_metric(&map, "flushes_timer"), 0);
             assert!(get_metric(&map, "timer_flush_skipped_logs") >= 1);
             // Logs may either be processed (rows counted) or dropped as empty depending on encoder/test data.
-            let logs_rows = get_metric(&map, "received_rows_logs");
+            let logs_rows = get_metric(&map, "consumed_items_logs");
             let dropped_empty = get_metric(&map, "dropped_empty_records");
             assert!(
                 logs_rows >= 1 || dropped_empty >= 1,
