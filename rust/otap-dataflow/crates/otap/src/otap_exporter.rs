@@ -10,7 +10,6 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::OtapArrowBytes;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -169,7 +168,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        
+
         let logs_handle = tokio::spawn(stream_arrow_batches(
             arrow_logs_client,
             SignalType::Logs,
@@ -309,7 +308,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     let mut failed_request_backoff = initial_backoff;
 
     // send streams of batches to the server until shutdown
-    while !shutdown {        
+    while !shutdown {
         let mut rx = otap_batches_rx.lock().await;
         tokio::select! {
             // wait to receive the first batch to create the streaming request
@@ -317,7 +316,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 drop(rx);
                 let first_batch = match first_batch {
                     Some(f) => f,
-                    
+
                     None => {
                         // no more batches
                         break
