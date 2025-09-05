@@ -138,7 +138,7 @@ pub mod span {
 }
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Status")]
 #[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Status {
     #[prost(string, tag="2")]
     pub message: ::prost::alloc::string::String,

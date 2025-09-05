@@ -93,9 +93,9 @@ pub struct ScopeProfiles {
 pub struct Profile {
     /// A description of the samples associated with each Sample.value.
     /// For a cpu profile this might be:
-    /// \[\["cpu","nanoseconds"\]\] or \[\["wall","seconds"\]\] or \[\["syscall","count"\]\]
+    /// ["cpu","nanoseconds"]("cpu","nanoseconds") or ["wall","seconds"]("wall","seconds") or ["syscall","count"]("syscall","count")
     /// For a heap profile, this might be:
-    /// \[\["allocations","count"\], \["space","bytes"\]\],
+    /// \["allocations","count"\], ["space","bytes"](<"allocations","count"], ["space","bytes">),
     /// If one of the values represents the number of events represented
     /// by the sample, by convention it should be at index 0 and use
     /// sample_type.unit == "count".
@@ -173,7 +173,7 @@ pub struct Profile {
     pub attribute_indices: ::prost::alloc::vec::Vec<i32>,
 }
 /// Represents a mapping between Attribute Keys and Units.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AttributeUnit {
     /// Index into string table.
     #[prost(int32, tag = "1")]
@@ -184,7 +184,7 @@ pub struct AttributeUnit {
 }
 /// A pointer from a profile Sample to a trace Span.
 /// Connects a profile sample to a trace span, identified by unique trace and span IDs.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Link {
     /// A unique identifier of a trace that this linked span is part of. The ID is a
     /// 16-byte array.
@@ -195,7 +195,7 @@ pub struct Link {
     pub span_id: ::prost::alloc::vec::Vec<u8>,
 }
 /// ValueType describes the type and units of a value, with an optional aggregation temporality.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ValueType {
     /// Index into ProfilesData.string_table.
     #[prost(int32, tag = "1")]
@@ -210,7 +210,7 @@ pub struct ValueType {
 /// context. The program context is typically a stack trace, perhaps
 /// augmented with auxiliary information like the thread-id, some
 /// indicator of a higher level request being handled etc.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Sample {
     /// locations_start_index along with locations_length refers to to a slice of locations in Profile.location_indices.
     #[prost(int32, tag = "1")]
@@ -240,7 +240,7 @@ pub struct Sample {
 }
 /// Describes the mapping of a binary in memory, including its address range,
 /// file offset, and metadata like build ID
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Mapping {
     /// Address at which the binary (or DLL) is loaded into memory.
     #[prost(uint64, tag = "1")]
@@ -307,7 +307,7 @@ pub struct Location {
     pub attribute_indices: ::prost::alloc::vec::Vec<i32>,
 }
 /// Details a specific line in a source code, linked to a function.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Line {
     /// Reference to function in ProfilesData.function_table.
     #[prost(int32, tag = "1")]
@@ -321,7 +321,7 @@ pub struct Line {
 }
 /// Describes a function, including its human-readable name, system name,
 /// source file, and starting line number in the source.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Function {
     /// Function name. Empty string if not available.
     #[prost(int32, tag = "1")]
