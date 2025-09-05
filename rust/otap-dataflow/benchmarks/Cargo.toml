@@ -20,7 +20,6 @@ mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
-otap-df-otlp = { path="../crates/otlp"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
@@ -39,10 +38,6 @@ prost = "0.13"
 tokio-stream = "0.1.17"
 [lints]
 workspace = true
-
-[[bench]]
-name = "otlp"
-harness = false
 
 [[bench]]
 name = "config"
