@@ -7,13 +7,20 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
+use crate::control::{
+    NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    pipeline_ctrl_msg_channel,
+};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
+
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -25,6 +32,7 @@ use tokio::time::sleep;
 pub struct TestContext<PData> {
     runtime: ProcessorWrapperRuntime<PData>,
     output_receiver: Option<Receiver<PData>>,
+    pipeline_ctrl_sender: Option<PipelineCtrlMsgSender<PData>>,
 }
 
 /// Context used during the validation phase of a test.
@@ -33,13 +41,22 @@ pub struct ValidateContext {
 }
 
 impl<PData> TestContext<PData> {
-    /// Creates a new TestContext from a ProcessorWrapperRuntime.
+    /// Creates a new TestContext from a ProcessorWrapperRuntime with pipeline control support.
     #[must_use]
-    pub fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
+    pub fn new(
+        runtime: ProcessorWrapperRuntime<PData>,
+        pipeline_ctrl_sender: PipelineCtrlMsgSender<PData>,
+    ) -> Self {
         Self {
             runtime,
             output_receiver: None,
+            pipeline_ctrl_sender: Some(pipeline_ctrl_sender),
         }
+    }
+
+    /// Returns the pipeline control sender if available.
+    pub fn pipeline_ctrl_sender(&self) -> Option<&PipelineCtrlMsgSender<PData>> {
+        self.pipeline_ctrl_sender.as_ref()
     }
 
     /// Processes a new message.
@@ -120,13 +137,17 @@ pub struct TestPhase<PData> {
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
     output_receiver: Option<Receiver<PData>>,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 /// Data and operations for the validation phase of a processor.
-pub struct ValidationPhase {
+pub struct ValidationPhase<PData> {
     rt: tokio::runtime::Runtime,
     local_tasks: LocalSet,
     counters: CtrlMsgCounters,
+    control_receivers: HashMap<usize, Receiver<NodeControlMsg<PData>>>,
+    manager_handle: Option<tokio::task::JoinHandle<Result<(), Error>>>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -155,7 +176,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         self.counter.clone()
     }
 
-    /// Initializes the test runtime with a processor using a non-sendable effect handler.
+    /// Initializes the test runtime with a processor and includes pipeline control support.
     pub fn set_processor(self, mut processor: ProcessorWrapper<PData>) -> TestPhase<PData> {
         // Set up test channels for the processor
         let (pdata_sender, pdata_receiver) = match &processor {
@@ -195,12 +216,17 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         };
         let _ = processor.set_pdata_receiver(test_node(self.config().name.clone()), dummy_receiver);
 
+        // Set up pipeline control channel
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             processor,
             counters: self.counter,
             output_receiver: Some(pdata_receiver),
+            pipeline_ctrl_msg_sender: pipeline_ctrl_msg_tx,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }
@@ -212,59 +238,102 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 }
 
 impl<PData: Debug + 'static> TestPhase<PData> {
-    /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase
+    /// Starts the test scenario with pipeline control support by executing the provided function with the test context.
+    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
     where
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        // The entire scenario is run to completion before the validation phase
+        // Set up the pipeline control manager using the setup pattern from pipeline_ctrl.rs tests
+        let mut control_senders = HashMap::new();
+        let mut control_receivers = HashMap::new();
+
+        // Create a control channel for the processor (we only have one processor in tests)
+        let processor_node_id = 1; // Simple node ID for test processor
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(10);
+        let control_sender = Sender::Shared(SharedSender::MpscSender(control_tx));
+        let control_receiver = Receiver::Shared(SharedReceiver::MpscReceiver(control_rx));
+        
+        let _ = control_senders.insert(processor_node_id, control_sender);
+        let _ = control_receivers.insert(processor_node_id, control_receiver);
+
+        // Create metrics reporter for the pipeline control manager
+        let config = otap_df_telemetry::config::Config::default();
+        let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
+        let metrics_reporter = metrics_system.reporter();
+
+        // Create and start the pipeline control manager
+        let manager = PipelineCtrlMsgManager::new(
+            self.pipeline_ctrl_msg_receiver,
+            control_senders,
+            metrics_reporter,
+        );
+
+        let manager_handle = self
+            .local_tasks
+            .spawn_local(async move { manager.run().await });
+
+        // Run the test scenario
         self.rt.block_on(async move {
             let runtime = self
                 .processor
                 .prepare_runtime()
                 .await
                 .expect("Failed to prepare runtime");
-            let mut context = TestContext::new(runtime);
+            let mut context = TestContext::new(runtime, self.pipeline_ctrl_msg_sender);
             context.output_receiver = self.output_receiver;
             f(context).await;
         });
 
-        // Prepare for next phase
+        // Prepare for validation phase
         ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
+            control_receivers,
+            manager_handle: Some(manager_handle),
         }
     }
 }
 
-impl ValidationPhase {
+impl<PData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
-    /// expectations.
+    /// expectations with access to pipeline control receivers.
     ///
     /// # Type Parameters
     ///
-    /// * `F` - A function that creates a future with access to the test context.
+    /// * `F` - A function that creates a future with access to the test context and control receivers.
     /// * `Fut` - The future type returned by the function.
     /// * `T` - The output type of the future.
     ///
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub fn validate<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(ValidateContext) -> Fut,
+        F: FnOnce(ValidateContext, HashMap<usize, Receiver<NodeControlMsg<PData>>>) -> Fut,
         Fut: Future<Output = T>,
     {
         let context = ValidateContext {
             counters: self.counters,
         };
 
-        // First run all the spawned tasks to completion
+        // Send shutdown to pipeline control manager
+        if let Some(manager_handle) = self.manager_handle.take() {
+            // Note: In a real scenario, we'd send a shutdown message to the pipeline control manager,
+            // but for simplicity in tests, we'll just let it run until the local task set completes.
+            let _ = manager_handle;
+        }
+
+        // Run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
+        self.rt.block_on(future_fn(context, self.control_receivers))
+    }
+
+    /// Returns a reference to the control receivers for accessing ACK/NACK and other control messages.
+    pub fn control_receivers(&self) -> &HashMap<usize, Receiver<NodeControlMsg<PData>>> {
+        &self.control_receivers
     }
 }
