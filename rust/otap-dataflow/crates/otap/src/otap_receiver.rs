@@ -10,7 +10,8 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl};
+use crate::compression::CompressionMethod;
+use crate::otap_grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -23,7 +24,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
-use otap_df_otlp::compression::CompressionMethod;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
     arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -187,7 +187,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::mock::create_otap_batch;
+    use crate::otap_mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
     use async_stream::stream;

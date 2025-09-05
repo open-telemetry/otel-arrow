@@ -6,8 +6,8 @@
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
-use crate::fake_signal_receiver::attributes::get_attribute_name_value;
-use crate::fake_signal_receiver::fake_data::{
+use crate::fake_data_generator::attributes::get_attribute_name_value;
+use crate::fake_data_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
 use otel_arrow_rust::proto::opentelemetry::{

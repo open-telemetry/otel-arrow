@@ -11,12 +11,12 @@ use std::convert::Infallible;
 use std::task::Poll;
 
 use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
+use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_otlp::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use prost::bytes::Buf;
 use tonic::Status;

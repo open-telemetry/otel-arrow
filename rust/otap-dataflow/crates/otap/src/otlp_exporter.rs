@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
+use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
+use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -17,7 +18,6 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
-use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -198,6 +198,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
 mod tests {
     use super::*;
 
+    use crate::otlp_grpc::OTLPData;
+    use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
+    use crate::proto::opentelemetry::collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
+    };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
@@ -205,13 +212,6 @@ mod tests {
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
-    };
-    use otap_df_otlp::grpc::OTLPData;
-    use otap_df_otlp::mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use otap_df_otlp::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
