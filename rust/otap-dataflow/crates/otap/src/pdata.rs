@@ -180,9 +180,9 @@ impl OtapPdata {
         self.payload.take_payload()
     }
 
-    /// Drops the payload from this request, leaving an empty request.
-    pub fn drop_payload(&mut self) {
-        _ = self.payload.take_payload();
+    /// Take the context.
+    pub fn take_context(&mut self) -> Context {
+        std::mem::take(&mut self.context)
     }
 
     /// Returns the number of items of the primary signal (spans, data
@@ -190,16 +190,6 @@ impl OtapPdata {
     #[must_use]
     pub fn num_items(&self) -> usize {
         self.payload.num_items()
-    }
-
-    /// Take the context.
-    pub fn take_context(&mut self) -> Context {
-        std::mem::take(&mut self.context)
-    }
-
-    /// Mutate the context.
-    pub fn mut_context(&mut self) -> &mut Context {
-        &mut self.context
     }
 }
 
