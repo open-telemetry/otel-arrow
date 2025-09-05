@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 
 use crate::{execution_context::*, scalars::execute_scalar_expression, *};
@@ -26,7 +29,7 @@ where
                     return Err(ExpressionError::ParseError(
                         p.get_query_location().clone(),
                         format!(
-                            "Input of '{:?}' type could not be pased as JSON",
+                            "Input of '{:?}' type could not be parsed as JSON",
                             value.get_value_type()
                         ),
                     ));

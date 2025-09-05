@@ -17,8 +17,8 @@ use crate::otlp::bytes::consts::field_num::common::{
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-    from_option_nonzero_range_to_primitive, read_fixed64, read_len_delim, read_varint,
-    to_nonzero_range,
+    from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
+    read_varint, to_nonzero_range,
 };
 use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 
@@ -523,17 +523,10 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        if let Some(slice) = self
+        let slice = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT)
-        {
-            if let Some((val, _)) = read_varint(slice, 0) {
-                return val as u32;
-            }
-        }
-
-        // default = 0 = no dropped attributes
-        0
+            .advance_to_find_field(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT);
+        read_dropped_count(slice)
     }
 
     #[inline]

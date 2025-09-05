@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 
@@ -18,7 +21,7 @@ where
     println!("Pipeline:");
     println!("{pipeline:?}");
 
-    let mut batch = engine.begin_batch(pipeline);
+    let mut batch = engine.begin_batch(pipeline).unwrap();
 
     let dropped_records = batch.push_records(records);
 
@@ -28,17 +31,52 @@ where
         final_results.dropped_records.push(record);
     }
 
-    println!("Included summaries:");
-    if final_results.summaries.is_empty() {
+    println!("Initialization:");
+    if final_results.diagnostics.is_empty() {
         println!("None")
     } else {
-        for summary in &final_results.summaries {
-            println!("{summary:?}");
+        println!("{final_results}");
+    }
+
+    println!("Included summaries:");
+    if final_results.summaries.included_summaries.is_empty() {
+        println!("None")
+    } else {
+        for included_summary in &final_results.summaries.included_summaries {
+            let diagnostics = included_summary.to_string();
+            if !diagnostics.is_empty() {
+                println!("{included_summary}");
+            }
+            println!(
+                "Id: {}, GroupBy: {:?}, Aggregation: {:?}, Map: {:?}",
+                included_summary.summary_id,
+                included_summary.group_by_values,
+                included_summary.aggregation_values,
+                included_summary.map
+            );
+        }
+    }
+
+    println!("Dropped summaries:");
+    if final_results.summaries.dropped_summaries.is_empty() {
+        println!("None")
+    } else {
+        for dropped_summary in &final_results.summaries.dropped_summaries {
+            let diagnostics = dropped_summary.to_string();
+            if !diagnostics.is_empty() {
+                println!("{dropped_summary}");
+            }
+            println!(
+                "Id: {}, GroupBy: {:?}, Aggregation: {:?}, Map: {:?}",
+                dropped_summary.summary_id,
+                dropped_summary.group_by_values,
+                dropped_summary.aggregation_values,
+                dropped_summary.map
+            );
         }
     }
 
     println!("Included records:");
-
     if final_results.included_records.is_empty() {
         println!("None")
     } else {
@@ -49,7 +87,6 @@ where
     }
 
     println!("Dropped records:");
-
     if final_results.dropped_records.is_empty() {
         println!("None")
     } else {

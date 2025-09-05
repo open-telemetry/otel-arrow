@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
 use crate::pdata::otlp::PrecomputedSizes;
 

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Microbenchmarks for OTLP batch splitting logic.
 
 #![allow(missing_docs)]

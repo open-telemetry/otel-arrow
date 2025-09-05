@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{cell::Ref, slice::Iter};
 
 use data_engine_expressions::*;
@@ -6,9 +9,9 @@ use crate::{
     execution_context::*,
     logical_expressions::execute_logical_expression,
     scalars::{
-        execute_convert_scalar_expression, execute_math_scalar_expression,
-        execute_parse_scalar_expression, execute_temporal_scalar_expression,
-        execute_text_scalar_expression,
+        execute_collection_scalar_expression, execute_convert_scalar_expression,
+        execute_math_scalar_expression, execute_parse_scalar_expression,
+        execute_temporal_scalar_expression, execute_text_scalar_expression,
     },
     *,
 };
@@ -23,25 +26,31 @@ where
 {
     match scalar_expression {
         ScalarExpression::Source(s) => {
-            let record = Ref::map(execution_context.get_record().borrow(), |v| {
-                v as &dyn AsStaticValue
-            });
-            let mut selectors = s.get_value_accessor().get_selectors().iter();
+            if let Some(record) = execution_context.get_record() {
+                let mut selectors = s.get_value_accessor().get_selectors().iter();
 
-            let value = select_from_borrowed_value(
-                execution_context,
-                BorrowSource::Source,
-                record,
-                &mut selectors,
-            )?;
+                let value = select_from_borrowed_value(
+                    execution_context,
+                    BorrowSource::Source,
+                    record.borrow(),
+                    &mut selectors,
+                )?;
 
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{value}'"),
-            );
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    scalar_expression,
+                    || format!("Evaluated as: '{value}'"),
+                );
 
-            Ok(value)
+                Ok(value)
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    scalar_expression,
+                    || "Evaluated as 'null' because source could not be found".into(),
+                );
+                Ok(ResolvedValue::Computed(OwnedValue::Null))
+            }
         }
         ScalarExpression::Attached(a) => {
             if let Some(Some(record)) = execution_context
@@ -70,11 +79,11 @@ where
             }
         }
         ScalarExpression::Variable(v) => {
-            let variable = Ref::filter_map(execution_context.get_variables().borrow(), |vars| {
-                vars.get(v.get_name().get_value())
-            });
+            let variable = execution_context
+                .get_variables()
+                .get_global_or_local_variable(v.get_name().get_value());
 
-            if variable.is_err() {
+            if variable.is_none() {
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
                     scalar_expression,
@@ -116,56 +125,43 @@ where
 
             Ok(ResolvedValue::Value(value))
         }
-        ScalarExpression::Constant(c) => match c {
-            ConstantScalarExpression::Reference(r) => {
-                let constant_id = r.get_constant_id();
+        ScalarExpression::Constant(c) => {
+            let constant_id = c.get_constant_id();
 
-                let constant = execution_context
-                    .get_pipeline()
-                    .get_constant(constant_id)
-                    .unwrap_or_else(|| {
-                        panic!("Constant for id '{constant_id}' was not found on pipeline")
-                    });
+            let constant = execution_context
+                .get_pipeline()
+                .get_constant(constant_id)
+                .unwrap_or_else(|| {
+                    panic!("Constant for id '{constant_id}' was not found on pipeline")
+                });
 
-                let value = constant.to_value();
+            let value_accessor = c.get_value_accessor();
 
-                if execution_context
-                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
-                {
-                    let (line, column) =
-                        constant.get_query_location().get_line_and_column_numbers();
-                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                            RecordSetEngineDiagnosticLevel::Verbose,
-                            scalar_expression,
-                            format!("Resolved constant with id '{constant_id}' on line {line} at column {column} as: {value}"),
-                        ));
+            let value = match value_accessor.has_selectors() {
+                true => {
+                    let mut selectors = value_accessor.get_selectors().iter();
+
+                    select_from_value(execution_context, constant.to_value(), &mut selectors)?
                 }
+                false => ResolvedValue::Value(constant.to_value()),
+            };
 
-                Ok(ResolvedValue::Value(value))
+            if execution_context
+                .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
+            {
+                let (line, column) = constant.get_query_location().get_line_and_column_numbers();
+                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        format!("Resolved constant with id '{constant_id}' on line {line} at column {column} as: {value}"),
+                    ));
             }
-            ConstantScalarExpression::Copy(c) => {
-                let constant_id = c.get_constant_id();
 
-                let constant_copy = c.get_value();
-
-                let value = constant_copy.to_value();
-
-                if execution_context
-                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
-                {
-                    let (line, column) = constant_copy
-                        .get_query_location()
-                        .get_line_and_column_numbers();
-                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                            RecordSetEngineDiagnosticLevel::Verbose,
-                            scalar_expression,
-                            format!("Resolved constant with id '{constant_id}' from copy of value on line {line} at column {column} as: {value}"),
-                        ));
-                }
-
-                Ok(ResolvedValue::Value(value))
-            }
-        },
+            Ok(value)
+        }
+        ScalarExpression::Collection(c) => {
+            execute_collection_scalar_expression(execution_context, c)
+        }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
 
@@ -263,7 +259,19 @@ where
                 Value::Map(m) => ResolvedValue::Computed(OwnedValue::Integer(
                     IntegerValueStorage::new(m.len() as i64),
                 )),
-                _ => ResolvedValue::Computed(OwnedValue::Null),
+                value => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        l,
+                        || {
+                            format!(
+                                "Cannot calculate the length of '{:?}' input",
+                                value.get_value_type()
+                            )
+                        },
+                    );
+                    ResolvedValue::Computed(OwnedValue::Null)
+                }
             };
 
             execution_context.add_diagnostic_if_enabled(
@@ -278,14 +286,16 @@ where
             let inner_value = execute_scalar_expression(execution_context, s.get_source())?;
 
             let range_start_inclusive = match s.get_range_start_inclusive() {
-                Some(start) => s.validate_resolved_range_value(
+                Some(start) => SliceScalarExpression::validate_resolved_range_value(
+                    start.get_query_location(),
                     "start",
                     execute_scalar_expression(execution_context, start)?.to_value(),
                 )?,
                 None => 0,
             };
             let range_end_exclusive = match s.get_range_end_exclusive() {
-                Some(end) => Some(s.validate_resolved_range_value(
+                Some(end) => Some(SliceScalarExpression::validate_resolved_range_value(
+                    end.get_query_location(),
                     "end",
                     execute_scalar_expression(execution_context, end)?.to_value(),
                 )?),
@@ -294,41 +304,44 @@ where
 
             let v = match inner_value.try_resolve_string() {
                 Ok(string_value) => {
-                    let range_end_exclusive = s.validate_slice_range(
+                    let range_end_exclusive = SliceScalarExpression::validate_slice_range(
+                        s.get_query_location(),
                         "String",
                         string_value.get_value().chars().count(),
                         range_start_inclusive,
                         range_end_exclusive,
                     )?;
 
-                    ResolvedValue::Slice(
-                        string_value.get_borrow_source(),
-                        Slice::String(StringSlice::new(
-                            string_value,
-                            range_start_inclusive,
-                            range_end_exclusive,
-                        )),
-                    )
+                    ResolvedValue::Slice(Slice::String(StringSlice::new(
+                        string_value,
+                        range_start_inclusive,
+                        range_end_exclusive,
+                    )))
                 }
                 Err(v) => match v.try_resolve_array() {
                     Ok(array_value) => {
-                        let range_end_exclusive = s.validate_slice_range(
+                        let range_end_exclusive = SliceScalarExpression::validate_slice_range(
+                            s.get_query_location(),
                             "Array",
                             array_value.len(),
                             range_start_inclusive,
                             range_end_exclusive,
                         )?;
 
-                        ResolvedValue::Slice(
-                            array_value.get_borrow_source(),
-                            Slice::Array(ArraySlice::new(
-                                array_value,
-                                range_start_inclusive,
-                                range_end_exclusive,
-                            )),
-                        )
+                        ResolvedValue::Slice(Slice::Array(ArraySlice::new(
+                            array_value,
+                            range_start_inclusive,
+                            range_end_exclusive,
+                        )))
                     }
-                    Err(_) => ResolvedValue::Computed(OwnedValue::Null),
+                    Err(e) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            s,
+                            || format!("Cannot take a slice of '{:?}' input", e.get_value_type()),
+                        );
+                        ResolvedValue::Computed(OwnedValue::Null)
+                    }
                 },
             };
 
@@ -405,8 +418,8 @@ where
                                     );
                             None
                         } else {
-                            match a.get(index as usize) {
-                                Some(v) => {
+                            match a.get_static(index as usize) {
+                                Ok(Some(v)) => {
                                     execution_context.add_diagnostic_if_enabled(
                                                     RecordSetEngineDiagnosticLevel::Verbose,
                                                     s,
@@ -414,11 +427,19 @@ where
                                                 );
                                     Some(v)
                                 }
-                                None => {
+                                Ok(None) => {
                                     execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Warn,
                                                 s,
                                                 || format!("Could not find array index '{index}' specified in accessor expression"),
+                                            );
+                                    None
+                                }
+                                Err(e) => {
+                                    execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Error,
+                                                s,
+                                                || format!("Interior mutability is not supported by the target array: {e}"),
                                             );
                                     None
                                 }
@@ -731,21 +752,32 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let mut test = TestExecutionContext::new();
 
+            test.set_global_variable(
+                "gvar1",
+                ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(18))),
+            );
+
             let execution_context = test.create_execution_context();
 
-            execution_context.get_variables().borrow_mut().set(
-                "var1",
-                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
-                    "hello world".into(),
-                ))),
-            );
-            execution_context.get_variables().borrow_mut().set(
-                "var2",
-                ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                    "key1".into(),
-                    OwnedValue::String(StringValueStorage::new("hello world".into())),
-                )])))),
-            );
+            {
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
+
+                variables.set(
+                    "var1",
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                        "hello world".into(),
+                    ))),
+                );
+                variables.set(
+                    "var2",
+                    ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from(
+                        [(
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("hello world".into())),
+                        )],
+                    )))),
+                );
+            }
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -786,6 +818,16 @@ mod tests {
             )),
             Value::String(&StringValueStorage::new("hello world".into())),
         );
+
+        // Test global variable resolution
+        run_test(
+            ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                ValueAccessor::new(),
+            )),
+            Value::Integer(&IntegerValueStorage::new(18)),
+        );
     }
 
     #[test]
@@ -795,6 +837,16 @@ mod tests {
                 .with_constants(vec![StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
                 )])
+                .with_constants(vec![StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                ))])
                 .build()
                 .unwrap();
 
@@ -808,28 +860,28 @@ mod tests {
         };
 
         run_test(
-            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                ReferenceConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueType::Integer,
-                    0,
-                ),
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::Integer,
+                0,
+                ValueAccessor::new(),
             )),
             Value::Integer(&IntegerValueStorage::new(18)),
         );
 
         run_test(
-            ScalarExpression::Constant(ConstantScalarExpression::Copy(
-                CopyConstantScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    1,
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                1,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
                         QueryLocation::new_fake(),
-                        99,
+                        "key1",
                     )),
-                ),
+                )]),
             )),
-            Value::Integer(&IntegerValueStorage::new(99)),
+            Value::String(&StringValueStorage::new("value1".into())),
         );
     }
 

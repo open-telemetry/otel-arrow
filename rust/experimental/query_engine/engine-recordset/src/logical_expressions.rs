@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 
 use crate::{execution_context::*, scalars::*, *};
@@ -170,11 +173,33 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 Err(e) => Err(e),
             }
         }
+        LogicalExpression::Matches(m) => {
+            let haystack = execute_scalar_expression(execution_context, m.get_haystack())?;
+            let pattern = execute_scalar_expression(execution_context, m.get_pattern())?;
+
+            match Value::matches(
+                m.get_query_location(),
+                &haystack.to_value(),
+                &pattern.to_value(),
+            ) {
+                Ok(b) => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: '{b}'"),
+                    );
+                    Ok(b)
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use regex::Regex;
+
     use super::*;
 
     #[test]
@@ -632,6 +657,49 @@ mod tests {
                 false,
             )),
             false,
+        );
+    }
+
+    #[test]
+    fn test_execute_matches_logical_expression() {
+        let run_test = |logical_expression, expected_value: bool| {
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let value =
+                execute_logical_expression(&execution_context, &logical_expression).unwrap();
+
+            assert_eq!(expected_value, value);
+        };
+
+        run_test(
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Regex(
+                    RegexScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Regex::new("^hello world$").unwrap(),
+                    ),
+                )),
+            )),
+            true,
+        );
+
+        run_test(
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "^hello.*$"),
+                )),
+            )),
+            true,
         );
     }
 }

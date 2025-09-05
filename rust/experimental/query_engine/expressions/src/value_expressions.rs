@@ -1,6 +1,7 @@
-use crate::{
-    Expression, QueryLocation, ScalarExpression, SourceScalarExpression, VariableScalarExpression,
-};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutableValueExpression {
@@ -17,6 +18,18 @@ pub enum MutableValueExpression {
     Variable(VariableScalarExpression),
 }
 
+impl MutableValueExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            MutableValueExpression::Source(s) => s.try_fold(scope),
+            MutableValueExpression::Variable(v) => v.try_fold(scope),
+        }
+    }
+}
+
 impl Expression for MutableValueExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
@@ -29,26 +42,6 @@ impl Expression for MutableValueExpression {
         match self {
             MutableValueExpression::Source(_) => "MutableValueExpression(Source)",
             MutableValueExpression::Variable(_) => "MutableValueExpression(Variable)",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ImmutableValueExpression {
-    /// Scalar value.
-    Scalar(ScalarExpression),
-}
-
-impl Expression for ImmutableValueExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        match self {
-            ImmutableValueExpression::Scalar(s) => s.get_query_location(),
-        }
-    }
-
-    fn get_name(&self) -> &'static str {
-        match self {
-            ImmutableValueExpression::Scalar(_) => "ImmutableValueExpression(Scalar)",
         }
     }
 }

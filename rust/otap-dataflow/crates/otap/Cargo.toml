@@ -20,6 +20,8 @@ ciborium.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
+humantime-serde.workspace = true
+log.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
 otap-df-engine = { path = "../engine" }
@@ -28,6 +30,8 @@ otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-otlp = { path = "../otlp", features = ["test-utils"]}
 otap-df-pdata-views = { path = "../pdata-views" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
 parquet.workspace = true
 tonic = { version = "0.14.0", default-features = false, features = [
     "server",
@@ -40,9 +44,8 @@ tonic = { version = "0.14.0", default-features = false, features = [
     "gzip",
     "deflate",
 ] }
+chrono = { version = "0.4", features = ["serde"] }
 tower-service = "0.3"
-sysinfo = "0.36.0"
-byte-unit = "4"
 fluke-hpack = "0.3.1"
 serde = {version="1", features=["derive"]}
 prost = "0.13.5"
@@ -55,7 +58,11 @@ tokio = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
+weaver_common.workspace = true
+humantime = "2.2.0"
 
 [dev-dependencies]
 portpicker = "0.1.1"
+pretty_assertions = "1.4.1"
 tempfile.workspace = true
+url.workspace = true

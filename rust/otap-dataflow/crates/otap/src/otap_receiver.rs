@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTAP receiver node
@@ -16,8 +17,10 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
@@ -56,9 +59,13 @@ pub struct OTAPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
-            OTAPReceiver::from_config(&node_config.config)?,
+            OTAPReceiver::from_config(pipeline, &node_config.config)?,
+            node,
             node_config,
             receiver_config,
         ))
@@ -83,7 +90,10 @@ impl OTAPReceiver {
     }
 
     /// Creates a new OTAPReceiver from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -100,50 +110,55 @@ impl OTAPReceiver {
 impl shared::Receiver<OtapPdata> for OTAPReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
+        mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        let listener_stream = TcpListenerStream::new(listener);
 
-        //start event loop
-        loop {
-            //create services for the grpc server and clone the effect handler to pass message
-            let logs_service =
-                ArrowLogsServiceImpl::new(effect_handler.clone(), self.config.message_size);
-            let metrics_service =
-                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.config.message_size);
-            let trace_service =
-                ArrowTracesServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        //create services for the grpc server and clone the effect handler to pass message
+        let logs_service =
+            ArrowLogsServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        let metrics_service =
+            ArrowMetricsServiceImpl::new(effect_handler.clone(), self.config.message_size);
+        let trace_service =
+            ArrowTracesServiceImpl::new(effect_handler.clone(), self.config.message_size);
 
-            let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
-            let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
-            let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
+        let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
+        let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
+        let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
 
-            // apply the tonic compression if it is set
-            if let Some(ref compression) = self.config.compression_method {
-                let encoding = compression.map_to_compression_encoding();
+        // apply the tonic compression if it is set
+        if let Some(ref compression) = self.config.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-                logs_service_server = logs_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                metrics_service_server = metrics_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-            }
+            logs_service_server = logs_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            metrics_service_server = metrics_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            trace_service_server = trace_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+        }
 
-            tokio::select! {
-                biased; //prioritize ctrl_msg over all other blocks
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    match ctrl_msg {
+        let server = Server::builder()
+            .add_service(logs_service_server)
+            .add_service(metrics_service_server)
+            .add_service(trace_service_server);
+
+        tokio::select! {
+            biased; //prioritize ctrl_msg over all other blocks
+
+            // Process internal events
+            ctrl_msg_result = async {
+                loop {
+                    match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
-                            break;
+                            return Ok(());
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -153,34 +168,37 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         }
                     }
                 }
-                // Poll the grpc server
-                result = Server::builder()
-                .add_service(logs_service_server)
-                .add_service(metrics_service_server)
-                .add_service(trace_service_server)
-                .serve_with_incoming(&mut listener_stream)=> {
-                    if let Err(error) = result {
-                        // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
-                    }
+            } => {
+                return ctrl_msg_result;
+            },
+
+            // Run server
+            result = server.serve_with_incoming(listener_stream) => {
+                if let Err(error) = result {
+                    // Report receiver error
+                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
                 }
             }
         }
-        //Exit event loop
+
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OtapArrowBytes;
-    use crate::mock::create_batch_arrow_record;
+    use crate::mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
+    use otel_arrow_rust::Producer;
+    use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -195,7 +213,7 @@ mod tests {
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
         grpc_endpoint: String,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // send data to the receiver
@@ -206,11 +224,14 @@ mod tests {
                     ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Metrics Service Client");
+
                 #[allow(tail_expr_drop_order)]
                 let metrics_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
-                        yield metrics_records;
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let bar = producer.produce_bar(&mut metrics_records).unwrap();
+                        yield bar
                     }
                 };
                 let _metrics_response = arrow_metrics_client
@@ -223,9 +244,11 @@ mod tests {
                     .expect("Failed to connect to server from Logs Service Client");
                 #[allow(tail_expr_drop_order)]
                 let logs_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
-                        yield logs_records;
+                        let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
                     }
                 };
                 let _logs_response = arrow_logs_client
@@ -239,9 +262,11 @@ mod tests {
                         .expect("Failed to connect to server from Trace Service Client");
                 #[allow(tail_expr_drop_order)]
                 let traces_stream = stream! {
+                    let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
-                        yield traces_records;
+                        let mut traces_records = create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                        let bar = producer.produce_bar(&mut traces_records).unwrap();
+                        yield bar;
                     }
                 };
                 let _traces_response = arrow_traces_client
@@ -271,7 +296,7 @@ mod tests {
 
                 // read from the effect handler
                 for batch_id in 0..3 {
-                    let metrics_received: OtapArrowBytes =
+                    let metrics_received: OtapArrowRecords =
                         timeout(Duration::from_secs(3), ctx.recv())
                             .await
                             .expect("Timed out waiting for message")
@@ -281,26 +306,27 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
                     assert!(matches!(metrics_received, _expected_metrics_message));
                 }
 
                 for batch_id in 0..3 {
-                    let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received")
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
+                    let logs_received: OtapArrowRecords =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_logs_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
+                        create_otap_batch(batch_id, ArrowPayloadType::Logs);
                     assert!(matches!(logs_received, _expected_logs_message));
                 }
 
                 for batch_id in 0..3 {
-                    let traces_received: OtapArrowBytes =
+                    let traces_received: OtapArrowRecords =
                         timeout(Duration::from_secs(3), ctx.recv())
                             .await
                             .expect("Timed out waiting for message")
@@ -310,7 +336,7 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_traces_message =
-                        create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
+                        create_otap_batch(batch_id, ArrowPayloadType::Spans);
                     assert!(matches!(traces_received, _expected_traces_message));
                 }
             })
@@ -332,6 +358,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
         let receiver = ReceiverWrapper::shared(
             OTAPReceiver::new(addr, None, message_size),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

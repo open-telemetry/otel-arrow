@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //! crate containing GRPC Server implementations for the OTLP services that
 //! convert the received OTLP signals into OTAP

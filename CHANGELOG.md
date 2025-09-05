@@ -9,6 +9,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.42.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.42.0) - 2025-08-27
+
+- Standardize to shorthand license header.
+  [#954](https://github.com/open-telemetry/otel-arrow/pull/954)
+- Fix logs handling of missing optional trace_id and span_id columns.
+  [#973](https://github.com/open-telemetry/otel-arrow/pull/973)
+- Upgrade to v0.133.0 / v1.37.0 of collector dependencies.
+  [#890](https://github.com/open-telemetry/otel-arrow/pull/890),
+  [#1010](https://github.com/open-telemetry/otel-arrow/pull/1010)
+  - Notable upgrade, this also bumps minimum Go version from `1.23.0` to `1.24`,
+    see [collector
+    #13627](https://github.com/open-telemetry/opentelemetry-collector/pull/13627)
+    and [collector-contrib
+    #41968](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/41968).
+
 ## [0.41.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.41.0) - 2025-08-06
 
 - Add proper automation in `prepare-release` workflow for

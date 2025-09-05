@@ -8,6 +8,8 @@ engine's handling of OTLP logs.
 Before running the tests, you need to set up a virtual environment and install
 the required dependencies.
 
+Navigate to "./tools/pipeline_perf_test" directory and follow the steps below.
+
 ### 1. Set Up a Virtual Environment
 
 If you don't already have a virtual environment for Python, you can create one
@@ -24,8 +26,8 @@ After activating your virtual environment, install the required dependencies for
 the project:
 
 ```bash
-pip install -r ./otel-arrow/tools/pipeline_perf_test/orchestrator/requirements.txt
-pip install -r ./otel-arrow/tools/pipeline_perf_test/backend/requirements.txt
+pip install -r ./orchestrator/requirements.txt
+pip install -r ./backend/requirements.txt
 ```
 
 This will install all the necessary Python packages, including dependencies for

@@ -25,7 +25,7 @@
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource    
 //! };
-//! # use otap_df_otap::{pdata::{OtapPdata, OtlpProtoBytes}, grpc::OtapArrowBytes};
+//! # use otap_df_otap::pdata::{OtapPdata, OtlpProtoBytes};
 //! # use prost::Message;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
 //!    ResourceLogs::build(Resource::default())
@@ -47,10 +47,6 @@
 //!
 //! // convert to Otap Arrow Records
 //! let otap_arrow_records: OtapArrowRecords = otap_pdata.try_into().unwrap();
-//!
-//! // convert to OTAP Arrow Bytes
-//! let otap_pdata: OtapPdata = otap_arrow_records.into();
-//! let otap_arrow_bytes: OtapArrowBytes = otap_pdata.try_into().unwrap();
 //! ```
 //!
 //! Internally, conversions are happening using various utility functions:
@@ -73,30 +69,17 @@
 //!                                      │                         │                                          
 //!                                      │    OTAP Arrow Records   │                                          
 //!                                      │                         │                                          
-//!                                      └───┬─  ──────────────────┘                                          
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!       otel_arrow_rust::Producer::produce_bar()    otel_arrow_rust::Consumer::consume_bar()                
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!                                       ┌────────────────────┴───┐                                         
-//!                                       │                        │                                         
-//!                                       │    OTAP Arrow Bytes    │                                         
-//!                                       │                        │                                         
-//!                                       └────────────────────────┘                                         
-//!                                                                           
+//!                                      └─────────────────────────┘                                          
 //! ```
 
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
+use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
-use otel_arrow_rust::{Consumer, Producer};
 use prost::{EncodeError, Message};
 
-use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
+use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
 /// module contains related to pdata
 pub mod error {
@@ -111,7 +94,7 @@ pub mod error {
         },
     }
 
-    impl<T> From<Error> for otap_df_engine::error::Error<T> {
+    impl From<Error> for otap_df_engine::error::Error {
         fn from(e: Error) -> Self {
             otap_df_engine::error::Error::PdataConversionError {
                 error: format!("{e}"),
@@ -150,9 +133,6 @@ pub enum OtapPdata {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
 
-    /// data is contained in `BatchArrowRecords`, which contain ArrowIPC serialized
-    OtapArrowBytes(OtapArrowBytes),
-
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
     OtapArrowRecords(OtapArrowRecords),
 }
@@ -163,7 +143,6 @@ impl OtapPdata {
     pub fn signal_type(&self) -> SignalType {
         match self {
             Self::OtlpBytes(inner) => inner.signal_type(),
-            Self::OtapArrowBytes(inner) => inner.signal_type(),
             Self::OtapArrowRecords(inner) => inner.signal_type(),
         }
     }
@@ -197,16 +176,6 @@ impl OtapPdataHelpers for OtapArrowRecords {
     }
 }
 
-impl OtapPdataHelpers for OtapArrowBytes {
-    fn signal_type(&self) -> SignalType {
-        match self {
-            Self::ArrowLogs(_) => SignalType::Logs,
-            Self::ArrowMetrics(_) => SignalType::Metrics,
-            Self::ArrowTraces(_) => SignalType::Traces,
-        }
-    }
-}
-
 /* -------- Conversion implementations -------- */
 
 impl From<OtapArrowRecords> for OtapPdata {
@@ -221,18 +190,11 @@ impl From<OtlpProtoBytes> for OtapPdata {
     }
 }
 
-impl From<OtapArrowBytes> for OtapPdata {
-    fn from(value: OtapArrowBytes) -> Self {
-        Self::OtapArrowBytes(value)
-    }
-}
-
 impl TryFrom<OtapPdata> for OtapArrowRecords {
     type Error = error::Error;
 
     fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes(otap_data) => otap_data.try_into(),
             OtapPdata::OtapArrowRecords(otap_batch) => Ok(otap_batch),
             OtapPdata::OtlpBytes(otlp_bytes) => otlp_bytes.try_into(),
         }
@@ -244,21 +206,8 @@ impl TryFrom<OtapPdata> for OtlpProtoBytes {
 
     fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes(otap_data) => otap_data.try_into(),
             OtapPdata::OtapArrowRecords(otap_batch) => otap_batch.try_into(),
             OtapPdata::OtlpBytes(otlp_bytes) => Ok(otlp_bytes),
-        }
-    }
-}
-
-impl TryFrom<OtapPdata> for OtapArrowBytes {
-    type Error = error::Error;
-
-    fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
-        match value {
-            OtapPdata::OtapArrowBytes(otap_data) => Ok(otap_data),
-            OtapPdata::OtapArrowRecords(otap_batch) => otap_batch.try_into(),
-            OtapPdata::OtlpBytes(otlp_bytes) => otlp_bytes.try_into(),
         }
     }
 }
@@ -321,6 +270,12 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 
                 Ok(otap_batch)
             }
+            OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                let trace_data_view = RawTraceData::new(&bytes);
+                let otap_batch = encode_spans_otap_batch(&trace_data_view).map_err(map_error)?;
+
+                Ok(otap_batch)
+            }
             _ => {
                 // TODO add conversions when we support
                 // https://github.com/open-telemetry/otel-arrow/issues/768
@@ -333,77 +288,21 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
     }
 }
 
-impl TryFrom<OtlpProtoBytes> for OtapArrowBytes {
-    type Error = error::Error;
-
-    fn try_from(value: OtlpProtoBytes) -> Result<Self, Self::Error> {
-        let otap_batch: OtapArrowRecords = value.try_into()?;
-        otap_batch.try_into()
-    }
-}
-
-impl TryFrom<OtapArrowBytes> for OtlpProtoBytes {
-    type Error = error::Error;
-
-    fn try_from(value: OtapArrowBytes) -> Result<Self, Self::Error> {
-        let otap_batch: OtapArrowRecords = value.try_into()?;
-        otap_batch.try_into()
-    }
-}
-
-impl TryFrom<OtapArrowBytes> for OtapArrowRecords {
-    type Error = error::Error;
-
-    fn try_from(value: OtapArrowBytes) -> Result<Self, Self::Error> {
-        let map_error = |error: otel_arrow_rust::error::Error| error::Error::ConversionError {
-            error: format!("error decoding BatchArrowRecords: {error}"),
-        };
-        let mut consumer = Consumer::default();
-        match value {
-            OtapArrowBytes::ArrowLogs(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Logs(from_record_messages(record_messages)))
-            }
-            OtapArrowBytes::ArrowMetrics(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Metrics(from_record_messages(record_messages)))
-            }
-            OtapArrowBytes::ArrowTraces(mut bar) => {
-                let record_messages = consumer.consume_bar(&mut bar).map_err(map_error)?;
-                Ok(Self::Traces(from_record_messages(record_messages)))
-            }
-        }
-    }
-}
-
-impl TryFrom<OtapArrowRecords> for OtapArrowBytes {
-    type Error = error::Error;
-
-    fn try_from(otap_batch: OtapArrowRecords) -> Result<Self, Self::Error> {
-        let mut producer = Producer::new();
-        let bar = producer
-            .produce_bar(&otap_batch)
-            .map_err(|e| error::Error::ConversionError {
-                error: format!("error encoding BatchArrowRecords: {e}"),
-            })?;
-        Ok(match otap_batch {
-            OtapArrowRecords::Logs(_) => Self::ArrowLogs(bar),
-            OtapArrowRecords::Metrics(_) => Self::ArrowMetrics(bar),
-            OtapArrowRecords::Traces(_) => Self::ArrowTraces(bar),
-        })
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
-            collector::logs::v1::ExportLogsServiceRequest,
+            collector::{logs::v1::ExportLogsServiceRequest, trace::v1::ExportTraceServiceRequest},
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             resource::v1::Resource,
+            trace::v1::{
+                ResourceSpans, ScopeSpans, Span, Status,
+                span::{Event, Link},
+                status::StatusCode,
+            },
         },
     };
 
@@ -436,29 +335,16 @@ mod test {
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPdata = otlp_bytes.into();
 
-        // test can go OtlpProtoBytes -> OTAPData
-        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
-        assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
-        let pdata: OtapPdata = otap_data.into();
-
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPdata = otlp_bytes.into();
-
-        // test can go otap_batch -> OTAPData
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
-        let pdata: OtapPdata = otap_batch.into();
-        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
-        assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
-        let pdata: OtapPdata = otap_data.into();
 
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
     }
 
-    // TODO add additional tests for converting between metrics & traces
-    // once we have the ability to convert between OTLP bytes -> OTAP for
-    // these signal types
+    // TODO add additional tests for converting between metrics once we have the ability to convert
+    //  between OTLP bytes -> OTAP for this signal types
     // https://github.com/open-telemetry/otel-arrow/issues/768
 
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
@@ -478,6 +364,26 @@ mod test {
         };
 
         let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+        assert_eq!(otlp_service_req, result);
+    }
+
+    fn roundtrip_otlp_otap_traces(otlp_service_req: ExportTraceServiceRequest) {
+        let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
+        let pdata: OtapPdata = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
+
+        // test can go OtlpBytes -> OtapBatch & back
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
+        let pdata: OtapPdata = otap_batch.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let bytes = match otlp_bytes {
+            OtlpProtoBytes::ExportTracesRequest(bytes) => bytes,
+            _ => panic!("unexpected otlp bytes pdata variant"),
+        };
+
+        let result = ExportTraceServiceRequest::decode(bytes.as_ref()).unwrap();
         assert_eq!(otlp_service_req, result);
     }
 
@@ -619,6 +525,124 @@ mod test {
     }
 
     #[test]
+    fn test_otlp_otap_traces_roundtrip() {
+        let otlp_service_req = ExportTraceServiceRequest::new(vec![
+            ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+                    ..Default::default()
+                })
+                .spans(vec![
+                    Span::build(u128::to_be_bytes(1), u64::to_be_bytes(1), "albert", 1u64)
+                        .end_time_unix_nano(4u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                        .links(vec![
+                            Link::build(u128::to_be_bytes(10), u64::to_be_bytes(10)).finish(),
+                            // this Link's trace_id repeats with the next one. doing this to ensure
+                            // their parent IDs don't get interpreted as delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(11))
+                                .attributes(vec![
+                                    KeyValue::new("link_key", AnyValue::new_string("val0")),
+                                    // repeating the attr here with the next one for same reason
+                                    // as repeating link with trace ID
+                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                ])
+                                .finish(),
+                        ])
+                        .events(vec![
+                            Event::build("event0", 0u64).finish(),
+                            // this event has the repeating name with the next one. doing this to
+                            // ensure their parent IDs don't get interpreted as delta encoded
+                            Event::build("event1", 1u64)
+                                .attributes(vec![
+                                    KeyValue::new("evt_key", AnyValue::new_string("val0")),
+                                    // repeating the attr here with the next one for same reason
+                                    // as repeating link with trace ID
+                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                    Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
+                        .end_time_unix_nano(3u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                        .links(vec![
+                            // this Link's trace_id repeats with the previous, and  next one.
+                            // doing this to ensure their parent IDs don't get interpreted as
+                            // delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(20))
+                                .attributes(vec![
+                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                    KeyValue::new("link_key", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .events(vec![
+                            // this event has the repeating name with the next one and previous one
+                            // doing this to ensure their parent IDs don't get interpreted as
+                            // delta encoded
+                            Event::build("event1", 1u64)
+                                .attributes(vec![
+                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                    KeyValue::new("evt_key", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
+                    ..Default::default()
+                })
+                .spans(vec![
+                    Span::build(u128::to_be_bytes(3), u64::to_be_bytes(3), "albert", 3u64)
+                        .end_time_unix_nano(4u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                        .links(vec![
+                            // this Link's trace_id repeats with the previous one. do this to ensure they
+                            // don't get interpreted as delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(30)).finish(),
+                            Link::build(u128::to_be_bytes(31), u64::to_be_bytes(31)).finish(),
+                        ])
+                        .events(vec![
+                            // this event has the repeating name with the previous one. doing this
+                            // to ensure their parent IDs don't get interpreted as delta encoded
+                            Event::build("event1", 2u64).finish(),
+                        ])
+                        .finish(),
+                    Span::build(u128::to_be_bytes(4), u64::to_be_bytes(4), "terry", 4u64)
+                        .end_time_unix_nano(5u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
+                        .links(vec![
+                            Link::build(u128::to_be_bytes(40), u64::to_be_bytes(40)).finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        roundtrip_otlp_otap_traces(otlp_service_req);
+    }
+
+    #[test]
     fn test_signal_type() {
         // Test signal_type for OtlpProtoBytes variants
         let logs_bytes = OtlpProtoBytes::ExportLogsRequest(vec![]);
@@ -638,24 +662,11 @@ mod test {
         assert_eq!(metrics_records.signal_type(), SignalType::Metrics);
         assert_eq!(traces_records.signal_type(), SignalType::Traces);
 
-        // Test signal_type for OtapArrowBytes variants
-        let logs_bytes = OtapArrowBytes::ArrowLogs(Default::default());
-        let metrics_bytes = OtapArrowBytes::ArrowMetrics(Default::default());
-        let traces_bytes = OtapArrowBytes::ArrowTraces(Default::default());
-
-        assert_eq!(logs_bytes.signal_type(), SignalType::Logs);
-        assert_eq!(metrics_bytes.signal_type(), SignalType::Metrics);
-        assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
-
         // Test signal_type for OtapPdata variants
         let pdata_logs = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
         let pdata_metrics =
             OtapPdata::OtapArrowRecords(OtapArrowRecords::Metrics(Default::default()));
-        let pdata_traces =
-            OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowTraces(Default::default()));
-
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
-        assert_eq!(pdata_traces.signal_type(), SignalType::Traces);
     }
 }

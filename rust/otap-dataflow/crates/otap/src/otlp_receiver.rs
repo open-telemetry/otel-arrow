@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
@@ -10,11 +10,16 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -35,6 +40,7 @@ pub struct Config {
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
 pub struct OTLPReceiver {
     config: Config,
+    metrics: MetricSet<OtlpReceiverMetrics>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -43,9 +49,13 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
-            OTLPReceiver::from_config(&node_config.config)?,
+            OTLPReceiver::from_config(pipeline, &node_config.config)?,
+            node,
             node_config,
             receiver_config,
         ))
@@ -54,54 +64,82 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 
 impl OTLPReceiver {
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
-        Ok(OTLPReceiver { config })
+        // Register OTLP receiver metrics for this node.
+        let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+
+        Ok(OTLPReceiver { config, metrics })
     }
+}
+
+/// OTLP receiver metrics moved into the node module.
+#[metric_set(name = "otlp.receiver.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct OtlpReceiverMetrics {
+    /// Number of bytes received.
+    #[metric(unit = "By")]
+    pub bytes_received: Counter<u64>,
+    /// Number of messages received.
+    #[metric(unit = "{msg}")]
+    pub messages_received: Counter<u64>,
 }
 
 #[async_trait]
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
-        self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
+        mut self: Box<Self>,
+        mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
+        // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        let listener_stream = TcpListenerStream::new(listener);
 
-        loop {
-            let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-            let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-            let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
+        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
+        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
 
-            if let Some(ref compression) = self.config.compression_method {
-                let encoding = compression.map_to_compression_encoding();
+        if let Some(ref compression) = self.config.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-                logs_service_server = logs_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                metrics_service_server = metrics_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-            }
+            logs_service_server = logs_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            metrics_service_server = metrics_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            trace_service_server = trace_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+        }
 
-            tokio::select! {
-                biased;
+        let server = Server::builder()
+            .add_service(logs_service_server)
+            .add_service(metrics_service_server)
+            .add_service(trace_service_server);
 
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    match ctrl_msg {
+        tokio::select! {
+            biased;
+
+            // Process internal events
+            ctrl_msg_result = async {
+                loop {
+                    match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
-                            break;
+                            return Ok(());
+                        },
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            // Report current receiver metrics.
+                            _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -111,18 +149,18 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         }
                     }
                 }
-                result = Server::builder()
-                    .add_service(logs_service_server)
-                    .add_service(metrics_service_server)
-                    .add_service(trace_service_server)
-                    .serve_with_incoming(&mut listener_stream) => {
-                        if let Err(error) = result {
-                            return Err(Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                error: error.to_string()
-                            })
-                        }
-                    }
+            } => {
+                return ctrl_msg_result;
+            },
+
+            // Run server
+            result = server.serve_with_incoming(listener_stream) => {
+                if let Err(error) = result {
+                    return Err(Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        error: error.to_string()
+                    });
+                }
             }
         }
 
@@ -140,8 +178,12 @@ mod tests {
     use std::time::Duration;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -159,6 +201,7 @@ mod tests {
     use otap_df_otlp::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use otap_df_otlp::proto::opentelemetry::resource::v1::Resource;
     use otap_df_otlp::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use tokio::time::timeout;
 
@@ -234,7 +277,7 @@ mod tests {
 
     fn scenario(
         grpc_endpoint: String,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
@@ -356,13 +399,22 @@ mod tests {
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
                 },
+                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

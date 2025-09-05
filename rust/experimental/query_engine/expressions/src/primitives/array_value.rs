@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{fmt::Debug, ops::*};
 
 use crate::*;
@@ -7,7 +10,13 @@ pub trait ArrayValue: Debug {
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)>;
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)>;
+
+    // Note: Used to update the RefCell borrow when accessing sub-elements of
+    // the source or variables which use interior mutability. In arrays that
+    // have dynamic elements a string message will be returned indicating lack
+    // of support for this method
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
         self.get_item_range((..).into(), item_callback)
@@ -25,6 +34,22 @@ pub trait ArrayValue: Debug {
         }));
 
         (action)(serde_json::Value::Array(values).to_string().as_str())
+    }
+}
+
+impl AsStaticValue for dyn ArrayValue + 'static {
+    fn to_static_value(&self) -> StaticValue<'_> {
+        todo!()
+    }
+}
+
+impl AsValue for dyn ArrayValue {
+    fn get_value_type(&self) -> ValueType {
+        todo!()
+    }
+
+    fn to_value(&self) -> Value<'_> {
+        todo!()
     }
 }
 

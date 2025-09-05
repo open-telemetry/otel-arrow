@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    ByteArrayAccessor, DurationNanosArrayAccessor, StringArrayAccessor,
+    ByteArrayAccessor, DurationNanosArrayAccessor, Int32ArrayAccessor, StringArrayAccessor,
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error;
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
 use crate::schema::consts;
-use arrow::array::{
-    Int32Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
-};
+use arrow::array::{RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Fields};
 use snafu::OptionExt;
 
@@ -21,7 +19,7 @@ pub(crate) struct SpansArrays<'a> {
     pub(crate) span_id: Option<ByteArrayAccessor<'a>>,
     pub(crate) parent_span_id: Option<ByteArrayAccessor<'a>>,
     pub(crate) name: Option<StringArrayAccessor<'a>>,
-    pub(crate) kind: Option<&'a Int32Array>,
+    pub(crate) kind: Option<Int32ArrayAccessor<'a>>,
     pub(crate) start_time_unix_nano: Option<&'a TimestampNanosecondArray>,
     pub(crate) duration_time_unix_nano: Option<DurationNanosArrayAccessor<'a>>,
     pub(crate) dropped_attributes_count: Option<&'a UInt32Array>,
@@ -59,15 +57,7 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
 
         let kind = rb
             .column_by_name(consts::KIND)
-            .map(|arr| {
-                arr.as_any().downcast_ref::<Int32Array>().context(
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::KIND,
-                        actual: arr.data_type().clone(),
-                        expect: DataType::Int32,
-                    },
-                )
-            })
+            .map(Int32ArrayAccessor::try_new)
             .transpose()?;
 
         let start_time_unix_nano =

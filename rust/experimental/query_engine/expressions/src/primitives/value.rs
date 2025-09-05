@@ -1,6 +1,9 @@
-use std::fmt::{Debug, Display};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
-use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
+use std::fmt::{Debug, Display, Write};
+
+use chrono::{DateTime, FixedOffset, SecondsFormat, TimeDelta, TimeZone, Utc};
 use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
@@ -20,6 +23,7 @@ pub enum Value<'a> {
     Null,
     Regex(&'a dyn RegexValue),
     String(&'a dyn StringValue),
+    TimeSpan(&'a dyn TimeSpanValue),
 }
 
 impl Value<'_> {
@@ -34,6 +38,7 @@ impl Value<'_> {
             Value::Null => ValueType::Null,
             Value::Regex(_) => ValueType::Regex,
             Value::String(_) => ValueType::String,
+            Value::TimeSpan(_) => ValueType::TimeSpan,
         }
     }
 
@@ -41,6 +46,7 @@ impl Value<'_> {
         match self {
             Value::Boolean(b) => Some(b.get_value()),
             Value::Integer(i) => Some(i.get_value() != 0),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v != 0),
             Value::Double(d) => Some(d.get_value() != 0.0),
             Value::String(s) => {
                 let v = s.get_value();
@@ -52,7 +58,7 @@ impl Value<'_> {
                     None
                 }
             }
-            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v != 0),
+            Value::TimeSpan(ts) => ts.get_value().num_nanoseconds().map(|v| v != 0),
             _ => None,
         }
     }
@@ -61,9 +67,10 @@ impl Value<'_> {
         match self {
             Value::Boolean(b) => Some(if b.get_value() { 1 } else { 0 }),
             Value::Integer(i) => Some(i.get_value()),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt(),
             Value::Double(d) => Some(d.get_value() as i64),
             Value::String(s) => s.get_value().parse::<i64>().ok(),
-            Value::DateTime(d) => d.get_value().timestamp_nanos_opt(),
+            Value::TimeSpan(ts) => ts.get_value().num_nanoseconds(),
             _ => None,
         }
     }
@@ -95,10 +102,41 @@ impl Value<'_> {
         match self {
             Value::Boolean(b) => Some(if b.get_value() { 1.0 } else { 0.0 }),
             Value::Integer(i) => Some(i.get_value() as f64),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v as f64),
             Value::Double(d) => Some(d.get_value()),
             Value::String(s) => s.get_value().parse::<f64>().ok(),
-            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v as f64),
+            Value::TimeSpan(ts) => ts.get_value().num_nanoseconds().map(|v| v as f64),
             _ => None,
+        }
+    }
+
+    pub fn convert_to_regex<F>(&self, mut action: F) -> Result<(), regex::Error>
+    where
+        F: FnMut(&Regex),
+    {
+        match self {
+            Value::Regex(r) => {
+                (action)(r.get_value());
+                Ok(())
+            }
+            v => {
+                let mut result = None;
+
+                v.convert_to_string(&mut |s| match Regex::new(s) {
+                    Ok(r) => {
+                        (action)(&r);
+                        result = Some(Ok(()))
+                    }
+                    Err(e) => result = Some(Err(e)),
+                });
+
+                match result {
+                    Some(e) => e,
+                    None => panic!(
+                        "Encountered a Value which does not correctly implement convert_to_string"
+                    ),
+                }
+            }
         }
     }
 
@@ -116,6 +154,30 @@ impl Value<'_> {
             Value::Null => (action)("null"),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
+            Value::TimeSpan(t) => t.to_string(action),
+        }
+    }
+
+    pub fn convert_to_timespan(&self) -> Option<TimeDelta> {
+        match self {
+            Value::TimeSpan(t) => Some(t.get_value()),
+            _ => {
+                if let Some(i) = self.convert_to_integer() {
+                    Some(TimeDelta::nanoseconds(i))
+                } else {
+                    let mut result = None;
+                    self.convert_to_string(&mut |v| {
+                        result = Some(date_utils::parse_timespan(v));
+                    });
+
+                    match result {
+                        Some(v) => v.ok(),
+                        None => panic!(
+                            "Encountered a Value which does not correctly implement convert_to_string"
+                        ),
+                    }
+                }
+            }
         }
     }
 
@@ -148,6 +210,7 @@ impl Value<'_> {
             Value::Null => json!(null),
             Value::Regex(_) => json!(self.to_string()),
             Value::String(s) => json!(s.get_value()),
+            Value::TimeSpan(_) => json!(self.to_string()),
         }
     }
 
@@ -259,6 +322,16 @@ impl Value<'_> {
                 right,
                 case_insensitive,
             )),
+            Value::TimeSpan(t) => match right.convert_to_timespan() {
+                Some(o) => Ok(t.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{:?}' type on right side of equality operation could not be converted to TimeSpan",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
         }
     }
 
@@ -425,6 +498,34 @@ impl Value<'_> {
         }
     }
 
+    pub fn matches(
+        query_location: &QueryLocation,
+        haystack: &Value,
+        pattern: &Value,
+    ) -> Result<bool, ExpressionError> {
+        let mut result = None;
+
+        pattern
+            .convert_to_regex(&mut |r: &Regex| {
+                haystack.convert_to_string(&mut |s| {
+                    result = Some(r.is_match(s));
+                });
+            })
+            .map_err(|e| {
+                ExpressionError::ParseError(
+                    query_location.clone(),
+                    format!("Failed to parse Regex from pattern: {e}"),
+                )
+            })?;
+
+        match result {
+            Some(b) => Ok(b),
+            None => panic!(
+                "Encountered a Value type which does not correctly implement convert_to_string"
+            ),
+        }
+    }
+
     pub fn replace_matches(
         haystack: &Value,
         needle: &Value,
@@ -502,6 +603,12 @@ impl Value<'_> {
             (Value::Double(l), Value::Double(r)) => {
                 Some(NumericValue::Double(l.get_value() + r.get_value()))
             }
+            (Value::DateTime(l), r) => Some(NumericValue::DateTime(
+                l.get_value() + r.convert_to_timespan()?,
+            )),
+            (Value::TimeSpan(l), r) => Some(NumericValue::TimeSpan(
+                l.get_value() + r.convert_to_timespan()?,
+            )),
             _ => {
                 if Self::values_may_be_double(left, right) {
                     let left_double = left.convert_to_double()?;
@@ -524,6 +631,12 @@ impl Value<'_> {
             (Value::Double(l), Value::Double(r)) => {
                 Some(NumericValue::Double(l.get_value() - r.get_value()))
             }
+            (Value::DateTime(l), r) => Some(NumericValue::DateTime(
+                l.get_value() - r.convert_to_timespan()?,
+            )),
+            (Value::TimeSpan(l), r) => Some(NumericValue::TimeSpan(
+                l.get_value() - r.convert_to_timespan()?,
+            )),
             _ => {
                 if Self::values_may_be_double(left, right) {
                     let left_double = left.convert_to_double()?;
@@ -617,6 +730,42 @@ impl Value<'_> {
                 Some(NumericValue::Double(
                     (value.get_value() / bin_size).floor() * bin_size,
                 ))
+            }
+            (Value::DateTime(value), right) => {
+                if let Some(interval) = right.convert_to_timespan() {
+                    let dt = value.get_value();
+
+                    let timestamp_ms = dt.timestamp_millis();
+
+                    let interval_ms = interval.num_milliseconds();
+
+                    let binned_timestamp_ms = (timestamp_ms / interval_ms) * interval_ms;
+
+                    Some(NumericValue::DateTime(
+                        DateTime::from_timestamp_millis(binned_timestamp_ms)
+                            .expect("Timestamp conversion should not fail")
+                            .with_timezone(dt.offset()),
+                    ))
+                } else {
+                    None
+                }
+            }
+            (Value::TimeSpan(value), right) => {
+                if let Some(interval) = right.convert_to_timespan() {
+                    let t = value.get_value();
+
+                    let timestamp_ms = t.num_milliseconds();
+
+                    let interval_ms = interval.num_milliseconds();
+
+                    let binned_timestamp_ms = (timestamp_ms / interval_ms) * interval_ms;
+
+                    Some(NumericValue::TimeSpan(TimeDelta::milliseconds(
+                        binned_timestamp_ms,
+                    )))
+                } else {
+                    None
+                }
             }
             _ => {
                 if Self::values_may_be_double(value, bin_size) {
@@ -718,6 +867,7 @@ impl Value<'_> {
         match value {
             Value::Integer(i) => Some(NumericValue::Integer(-i.get_value())),
             Value::Double(d) => Some(NumericValue::Double(-d.get_value())),
+            Value::TimeSpan(t) => Some(NumericValue::TimeSpan(-t.get_value())),
             _ => {
                 if let Value::String(l) = value
                     && l.get_value().contains(['.', 'e'])
@@ -791,7 +941,9 @@ impl PartialEq for Value<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NumericValue {
     Integer(i64),
+    DateTime(DateTime<FixedOffset>),
     Double(f64),
+    TimeSpan(TimeDelta),
 }
 
 pub trait AsValue: Debug {
@@ -811,6 +963,7 @@ pub enum StaticValue<'a> {
     Null,
     Regex(&'a (dyn RegexValue + 'static)),
     String(&'a (dyn StringValue + 'static)),
+    TimeSpan(&'a (dyn TimeSpanValue + 'static)),
 }
 
 pub trait AsStaticValue: AsValue {
@@ -829,6 +982,7 @@ impl<T: AsStaticValue> AsValue for T {
             StaticValue::Null => ValueType::Null,
             StaticValue::Regex(_) => ValueType::Regex,
             StaticValue::String(_) => ValueType::String,
+            StaticValue::TimeSpan(_) => ValueType::TimeSpan,
         }
     }
 
@@ -843,6 +997,7 @@ impl<T: AsStaticValue> AsValue for T {
             StaticValue::Null => Value::Null,
             StaticValue::Regex(r) => Value::Regex(r),
             StaticValue::String(s) => Value::String(s),
+            StaticValue::TimeSpan(t) => Value::TimeSpan(t),
         }
     }
 }
@@ -893,6 +1048,79 @@ pub trait RegexValue: Debug {
 
 pub trait StringValue: Debug {
     fn get_value(&self) -> &str;
+}
+
+pub trait TimeSpanValue: Debug {
+    fn get_value(&self) -> TimeDelta;
+
+    fn to_string(&self, action: &mut dyn FnMut(&str)) {
+        let mut v = String::new();
+
+        let raw_nano_seconds = self.get_value().num_nanoseconds().unwrap_or(0);
+
+        let mut nano_seconds = if raw_nano_seconds < 0 {
+            v.push('-');
+            raw_nano_seconds.unsigned_abs()
+        } else {
+            raw_nano_seconds as u64
+        };
+
+        let days = nano_seconds / (86_400 * 1_000_000_000);
+        if days > 0 {
+            write!(&mut v, "{}.", days).ok();
+            nano_seconds -= days * (86_400 * 1_000_000_000);
+        }
+
+        let hours = nano_seconds / (3_600 * 1_000_000_000);
+        write!(&mut v, "{:02}:", hours).ok();
+        if hours > 0 {
+            nano_seconds -= hours * (3_600 * 1_000_000_000);
+        }
+
+        let minutes = nano_seconds / (60 * 1_000_000_000);
+        write!(&mut v, "{:02}:", minutes).ok();
+        if minutes > 0 {
+            nano_seconds -= minutes * (60 * 1_000_000_000);
+        }
+
+        let seconds = nano_seconds / 1_000_000_000;
+        write!(&mut v, "{:02}", seconds).ok();
+        if seconds > 0 {
+            nano_seconds -= seconds * 1_000_000_000;
+        }
+
+        let remaining_ticks = nano_seconds / 100;
+        if remaining_ticks > 0 {
+            let (trailing_zeros, mut significant) = count_trailing_zeros(remaining_ticks);
+
+            let mut buffer = [0x00u8; 7];
+
+            let mut pos = 6i32 - trailing_zeros as i32;
+            while pos >= 0 {
+                let temp = 48 + significant;
+                significant /= 10;
+                buffer[pos as usize] = (temp - (significant * 10)) as u8;
+                pos -= 1;
+            }
+
+            v.push('.');
+            v.push_str(std::str::from_utf8(&buffer[..(7 - trailing_zeros)]).unwrap());
+        }
+
+        (action)(v.as_str());
+
+        fn count_trailing_zeros(value: u64) -> (usize, u64) {
+            let mut count = 0;
+            let mut v = value;
+
+            while v > 0 && v % 10 == 0 {
+                count += 1;
+                v /= 10;
+            }
+
+            (count, v)
+        }
+    }
 }
 
 fn compare_ordered_values<T: Ord>(left: T, right: T) -> i64 {
@@ -2979,6 +3207,40 @@ mod tests {
                 true,
             )),
             Some(NumericValue::Integer(-1)),
+        );
+    }
+
+    #[test]
+    pub fn test_timespan_to_string() {
+        let run_test = |input: TimeDelta, expected: &str| {
+            let timespan = StaticScalarExpression::TimeSpan(TimeSpanScalarExpression::new(
+                QueryLocation::new_fake(),
+                input,
+            ));
+            assert_eq!(expected, timespan.to_value().to_string());
+        };
+
+        run_test(TimeDelta::days(1), "1.00:00:00");
+        run_test(TimeDelta::hours(1), "01:00:00");
+        run_test(TimeDelta::minutes(1), "00:01:00");
+        run_test(TimeDelta::seconds(1), "00:00:01");
+        run_test(TimeDelta::milliseconds(1), "00:00:00.001");
+        run_test(TimeDelta::milliseconds(900), "00:00:00.9");
+        run_test(TimeDelta::milliseconds(999), "00:00:00.999");
+        run_test(TimeDelta::microseconds(1), "00:00:00.000001");
+        run_test(TimeDelta::nanoseconds(100), "00:00:00.0000001");
+        run_test(TimeDelta::nanoseconds(1), "00:00:00");
+
+        run_test(
+            TimeDelta::milliseconds(1) + TimeDelta::microseconds(1) + TimeDelta::nanoseconds(100),
+            "00:00:00.0010011",
+        );
+        run_test(
+            TimeDelta::days(-1)
+                - TimeDelta::hours(23)
+                - TimeDelta::minutes(59)
+                - TimeDelta::seconds(59),
+            "-1.23:59:59",
         );
     }
 }

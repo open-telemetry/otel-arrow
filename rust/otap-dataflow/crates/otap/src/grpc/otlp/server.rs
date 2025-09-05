@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //! Implementations of OTLP grpc service servers that can produce Otap Pdata.
 //!

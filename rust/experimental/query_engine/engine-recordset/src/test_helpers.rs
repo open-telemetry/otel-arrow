@@ -1,5 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #![cfg(test)]
-use std::{collections::HashMap, time::SystemTime};
+use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset};
 use data_engine_expressions::*;
@@ -101,22 +104,6 @@ impl Default for TestRecord {
 }
 
 impl Record for TestRecord {
-    fn get_timestamp(&self) -> Option<SystemTime> {
-        if let Some(OwnedValue::DateTime(d)) = self.values.get("Timestamp") {
-            Some((*d.get_raw_value()).into())
-        } else {
-            None
-        }
-    }
-
-    fn get_observed_timestamp(&self) -> Option<SystemTime> {
-        if let Some(OwnedValue::DateTime(d)) = self.values.get("ObservedTimestamp") {
-            Some((*d.get_raw_value()).into())
-        } else {
-            None
-        }
-    }
-
     fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel> {
         None
     }

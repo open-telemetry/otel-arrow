@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! This benchmark compares the performance of different perf exporter configurations
@@ -8,22 +9,27 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
-use otap_df_engine::node::NodeWithPDataReceiver;
 use otap_df_engine::{
     config::ExporterConfig,
     exporter::ExporterWrapper,
     message::{Receiver, Sender},
+    node::NodeWithPDataReceiver,
+    testing::test_node,
 };
 use otap_df_otap::{
-    grpc::OtapArrowBytes,
     otap_exporter::OTAPExporter,
+    pdata::OtapPdata,
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
+use otel_arrow_rust::{
+    Consumer,
+    otap::{OtapArrowRecords, from_record_messages},
+    proto::opentelemetry::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
+    },
 };
 
 use otap_df_otlp::{
@@ -57,10 +63,13 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
+use otap_df_telemetry::registry::MetricsRegistryHandle;
+use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
@@ -352,28 +361,45 @@ fn bench_exporter(c: &mut Criterion) {
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
         for _ in 0..size {
-            let arrow_traces_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_traces_batch_data = create_batch_arrow_record_helper(
                 TRACES_BATCH_ID,
                 ArrowPayloadType::Spans,
                 message_len,
                 row_size,
             );
-            let arrow_logs_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_logs_batch_data = create_batch_arrow_record_helper(
                 LOGS_BATCH_ID,
                 ArrowPayloadType::Logs,
                 message_len,
                 row_size,
             );
-            let arrow_metrics_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_metrics_batch_data = create_batch_arrow_record_helper(
                 METRICS_BATCH_ID,
                 ArrowPayloadType::UnivariateMetrics,
                 message_len,
                 row_size,
             );
 
-            otap_signals.push(OtapArrowBytes::ArrowTraces(arrow_traces_batch_data));
-            otap_signals.push(OtapArrowBytes::ArrowLogs(arrow_logs_batch_data));
-            otap_signals.push(OtapArrowBytes::ArrowMetrics(arrow_metrics_batch_data));
+            let mut consumer = Consumer::default();
+            let trace_records = OtapArrowRecords::Traces(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_traces_batch_data)
+                    .expect("can consume BAR"),
+            ));
+            let log_records = OtapArrowRecords::Logs(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_logs_batch_data)
+                    .expect("can consume BAR"),
+            ));
+            let metrics_records = OtapArrowRecords::Metrics(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_metrics_batch_data)
+                    .expect("can consume BAR"),
+            ));
+
+            otap_signals.push(OtapPdata::from(trace_records));
+            otap_signals.push(OtapPdata::from(log_records));
+            otap_signals.push(OtapPdata::from(metrics_records));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
@@ -394,8 +420,16 @@ fn bench_exporter(c: &mut Criterion) {
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+
+                    // Create a proper pipeline context for the benchmark
+                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                    let pipeline_ctx =
+                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
                     let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(config, None),
+                        PerfExporter::new(pipeline_ctx, config),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -408,7 +442,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
                     // start the exporter
                     let local = LocalSet::new();
@@ -421,7 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone().into()).await;
+                        _ = pdata_sender.send(signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
@@ -444,8 +478,16 @@ fn bench_exporter(c: &mut Criterion) {
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+
+                    // Create a proper pipeline context for the benchmark
+                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                    let pipeline_ctx =
+                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
                     let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(config, None),
+                        PerfExporter::new(pipeline_ctx, config),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -458,7 +500,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
 
                     // start the exporter
@@ -472,7 +514,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
@@ -498,8 +540,18 @@ fn bench_exporter(c: &mut Criterion) {
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+                    let config = json!({
+                        "grpc_endpoint": grpc_endpoint,
+                    });
+                    // Create a proper pipeline context for the benchmark
+                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                    let pipeline_ctx =
+                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
                     let mut exporter = ExporterWrapper::local(
-                        OTAPExporter::new(grpc_endpoint, None),
+                        OTAPExporter::from_config(pipeline_ctx, &config)
+                            .expect("Failed to create OTAPExporter from config"),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -512,7 +564,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
 
                     // start the exporter
@@ -526,7 +578,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender
@@ -553,6 +605,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         OTLPExporter::new(grpc_endpoint, None),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -564,7 +617,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
                     let control_sender = exporter.control_sender();
 

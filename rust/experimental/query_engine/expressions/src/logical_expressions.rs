@@ -1,7 +1,9 @@
-use crate::{
-    Expression, ExpressionError, PipelineExpression, QueryLocation, ScalarExpression,
-    resolved_static_scalar_expression::ResolvedStaticScalarExpression,
-};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use regex::Regex;
+
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalExpression {
@@ -34,26 +36,60 @@ pub enum LogicalExpression {
 
     /// Returns true if the haystack contains the needle.
     Contains(ContainsLogicalExpression),
+
+    /// Returns true if the haystack matches the pattern.
+    Matches(MatchesLogicalExpression),
 }
 
 impl LogicalExpression {
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        match self {
-            LogicalExpression::Scalar(s) => s.try_resolve_static(pipeline),
-            // todo: Implement static resolution of logicals:
-            LogicalExpression::EqualTo(_) => Ok(None),
-            LogicalExpression::GreaterThan(_) => Ok(None),
-            LogicalExpression::GreaterThanOrEqualTo(_) => Ok(None),
-            LogicalExpression::Not(_) => Ok(None),
-            LogicalExpression::Chain(_) => Ok(None),
-            LogicalExpression::Contains(_) => Ok(None),
+    pub fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<bool>, ExpressionError> {
+        if let Some(s) = match self {
+            LogicalExpression::Scalar(s) => s.try_resolve_static(scope),
+            LogicalExpression::EqualTo(e) => e.try_resolve_static(scope),
+            LogicalExpression::GreaterThan(g) => g.try_resolve_static(scope),
+            LogicalExpression::GreaterThanOrEqualTo(g) => g.try_resolve_static(scope),
+            LogicalExpression::Not(n) => n.try_resolve_static(scope),
+            LogicalExpression::Chain(c) => c.try_resolve_static(scope),
+            LogicalExpression::Contains(c) => c.try_resolve_static(scope),
+            LogicalExpression::Matches(m) => m.try_resolve_static(scope),
+        }? {
+            match s {
+                ResolvedStaticScalarExpression::FoldEligibleReference(r)
+                | ResolvedStaticScalarExpression::Reference(r) => {
+                    if let Value::Boolean(b) = r.to_value() {
+                        // Note: We don't fold a static which is already a valid bool.
+                        return Ok(Some(b.get_value()));
+                    }
+                }
+                _ => {}
+            }
+
+            let value = s.to_value();
+
+            if let Some(b) = value.convert_to_bool() {
+                *self = LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.get_query_location().clone(),
+                        b,
+                    )),
+                ));
+
+                Ok(Some(b))
+            } else {
+                let t = value.get_value_type();
+                Err(ExpressionError::TypeMismatch(
+                    self.get_query_location().clone(),
+                    format!(
+                        "Value of '{:?}' type returned by logical expression could not be converted to bool",
+                        t
+                    ),
+                ))
+            }
+        } else {
+            Ok(None)
         }
     }
 }
@@ -68,6 +104,7 @@ impl Expression for LogicalExpression {
             LogicalExpression::Not(n) => n.get_query_location(),
             LogicalExpression::Chain(c) => c.get_query_location(),
             LogicalExpression::Contains(c) => c.get_query_location(),
+            LogicalExpression::Matches(m) => m.get_query_location(),
         }
     }
 
@@ -80,6 +117,7 @@ impl Expression for LogicalExpression {
             LogicalExpression::Not(_) => "LogicalExpression(Not)",
             LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
             LogicalExpression::Contains(_) => "LogicalExpression(Contains)",
+            LogicalExpression::Matches(_) => "LogicalExpression(Matches)",
         }
     }
 }
@@ -113,8 +151,53 @@ impl ChainLogicalExpression {
             .push(ChainedLogicalExpression::And(expression));
     }
 
-    pub fn get_expressions(&self) -> (&LogicalExpression, &Vec<ChainedLogicalExpression>) {
+    pub fn get_expressions(&self) -> (&LogicalExpression, &[ChainedLogicalExpression]) {
         (&self.first_expression, &self.chain_expressions)
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        if let Some(b) = self.first_expression.try_resolve_static(scope)? {
+            let mut result = b;
+
+            for c in &mut self.chain_expressions {
+                match c {
+                    ChainedLogicalExpression::Or(or) => {
+                        if result {
+                            // Short-circuiting chain because left-hand side of OR is true
+                            break;
+                        }
+
+                        match or.try_resolve_static(scope)? {
+                            Some(b) => result = b,
+                            None => return Ok(None),
+                        }
+                    }
+                    ChainedLogicalExpression::And(and) => {
+                        if !result {
+                            // Short-circuiting chain because left-hand side of AND is false
+                            break;
+                        }
+
+                        match and.try_resolve_static(scope)? {
+                            Some(b) => result = b,
+                            None => return Ok(None),
+                        }
+                    }
+                }
+            }
+
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
+                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    self.query_location.clone(),
+                    result,
+                )),
+            )))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -168,6 +251,33 @@ impl EqualToLogicalExpression {
     pub fn get_right(&self) -> &ScalarExpression {
         &self.right
     }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let left = self.left.try_resolve_static(scope)?;
+        let right = self.right.try_resolve_static(scope)?;
+
+        match (left, right) {
+            (Some(l), Some(r)) => {
+                let b = Value::are_values_equal(
+                    &self.query_location,
+                    &l.to_value(),
+                    &r.to_value(),
+                    self.case_insensitive,
+                )?;
+
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.query_location.clone(),
+                        b,
+                    )),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 impl Expression for EqualToLogicalExpression {
@@ -206,6 +316,28 @@ impl GreaterThanLogicalExpression {
 
     pub fn get_right(&self) -> &ScalarExpression {
         &self.right
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let left = self.left.try_resolve_static(scope)?;
+        let right = self.right.try_resolve_static(scope)?;
+
+        match (left, right) {
+            (Some(l), Some(r)) => {
+                let r = Value::compare_values(&self.query_location, &l.to_value(), &r.to_value())?;
+
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.query_location.clone(),
+                        r > 0,
+                    )),
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 }
 
@@ -246,6 +378,28 @@ impl GreaterThanOrEqualToLogicalExpression {
     pub fn get_right(&self) -> &ScalarExpression {
         &self.right
     }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let left = self.left.try_resolve_static(scope)?;
+        let right = self.right.try_resolve_static(scope)?;
+
+        match (left, right) {
+            (Some(l), Some(r)) => {
+                let r = Value::compare_values(&self.query_location, &l.to_value(), &r.to_value())?;
+
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.query_location.clone(),
+                        r >= 0,
+                    )),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 impl Expression for GreaterThanOrEqualToLogicalExpression {
@@ -277,6 +431,22 @@ impl NotLogicalExpression {
 
     pub fn get_inner_expression(&self) -> &LogicalExpression {
         &self.inner_expression
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
+                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    self.query_location.clone(),
+                    !v,
+                )),
+            )))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -324,6 +494,35 @@ impl ContainsLogicalExpression {
     pub fn get_needle(&self) -> &ScalarExpression {
         &self.needle
     }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let query_location = &self.query_location;
+
+        let haystack = self.haystack.try_resolve_static(scope)?;
+        let needle = self.needle.try_resolve_static(scope)?;
+
+        match (haystack, needle) {
+            (Some(h), Some(n)) => {
+                let r = Value::contains(
+                    query_location,
+                    &h.to_value(),
+                    &n.to_value(),
+                    self.case_insensitive,
+                )?;
+
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        query_location.clone(),
+                        r,
+                    )),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 impl Expression for ContainsLogicalExpression {
@@ -333,5 +532,562 @@ impl Expression for ContainsLogicalExpression {
 
     fn get_name(&self) -> &'static str {
         "ContainsLogicalExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchesLogicalExpression {
+    query_location: QueryLocation,
+    haystack: ScalarExpression,
+    pattern: ScalarExpression,
+}
+
+impl MatchesLogicalExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        haystack: ScalarExpression,
+        pattern: ScalarExpression,
+    ) -> MatchesLogicalExpression {
+        Self {
+            query_location,
+            haystack,
+            pattern,
+        }
+    }
+
+    pub fn get_haystack(&self) -> &ScalarExpression {
+        &self.haystack
+    }
+
+    pub fn get_pattern(&self) -> &ScalarExpression {
+        &self.pattern
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let query_location = &self.query_location;
+
+        let haystack = self.haystack.try_resolve_static(scope)?;
+        let pattern = self.pattern.try_resolve_static(scope)?;
+
+        match (haystack, pattern) {
+            (Some(h), Some(p)) => {
+                let is_match = match p.as_ref() {
+                    StaticScalarExpression::Regex(r) => {
+                        Value::matches(query_location, &h.to_value(), &Value::Regex(r))?
+                    }
+                    s => match Self::try_parse_regex(s)? {
+                        Some(r) => {
+                            let regex = StaticScalarExpression::Regex(r);
+                            let is_match =
+                                Value::matches(query_location, &h.to_value(), &regex.to_value())?;
+                            self.pattern = ScalarExpression::Static(regex);
+                            is_match
+                        }
+                        None => return Ok(None),
+                    },
+                };
+
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        query_location.clone(),
+                        is_match,
+                    )),
+                )))
+            }
+            (None, Some(p)) => {
+                if let Some(r) = Self::try_parse_regex(p.as_ref())? {
+                    self.pattern = ScalarExpression::Static(StaticScalarExpression::Regex(r));
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn try_parse_regex(
+        value: &StaticScalarExpression,
+    ) -> Result<Option<RegexScalarExpression>, ExpressionError> {
+        if !value.foldable() {
+            return Ok(None);
+        }
+
+        let mut result = None;
+
+        value.to_value().convert_to_string(&mut |s| {
+            result = Some(Regex::new(s));
+        });
+
+        match result {
+            Some(Ok(r)) => Ok(Some(RegexScalarExpression::new(
+                value.get_query_location().clone(),
+                r,
+            ))),
+            Some(Err(e)) => Err(ExpressionError::ParseError(
+                value.get_query_location().clone(),
+                format!("Failed to parse Regex from pattern: {e}"),
+            )),
+            None => {
+                panic!("Encountered a Value which does not correctly implement convert_to_string")
+            }
+        }
+    }
+}
+
+impl Expression for MatchesLogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "MatchesLogicalExpression"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+
+    use super::*;
+
+    #[test]
+    fn test_equal_to_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                true,
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -18),
+                )),
+                true,
+            )),
+            Some(false),
+        );
+
+        run_test(
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                    NowScalarExpression::new(QueryLocation::new_fake()),
+                )),
+                true,
+            )),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_greater_than_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 19),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+            )),
+            Some(false),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 19),
+                )),
+            )),
+            Some(false),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                    NowScalarExpression::new(QueryLocation::new_fake()),
+                )),
+            )),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_greater_than_or_equal_to_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 19),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 19),
+                )),
+            )),
+            Some(false),
+        );
+
+        run_test(
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                )),
+                ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                    NowScalarExpression::new(QueryLocation::new_fake()),
+                )),
+            )),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_not_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Temporal(
+                    TemporalScalarExpression::Now(NowScalarExpression::new(
+                        QueryLocation::new_fake(),
+                    )),
+                )),
+            )),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_chain_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::Chain(ChainLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::Chain(ChainLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Temporal(
+                    TemporalScalarExpression::Now(NowScalarExpression::new(
+                        QueryLocation::new_fake(),
+                    )),
+                )),
+            )),
+            None,
+        );
+
+        let mut c1 = ChainLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            ))),
+        );
+
+        c1.push_or(LogicalExpression::Scalar(ScalarExpression::Temporal(
+            TemporalScalarExpression::Now(NowScalarExpression::new(QueryLocation::new_fake())),
+        )));
+
+        // true || now() will evaluate to true because now() gets short-circuited
+        run_test(LogicalExpression::Chain(c1), Some(true));
+
+        let mut c2 = ChainLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+            ))),
+        );
+
+        c2.push_and(LogicalExpression::Scalar(ScalarExpression::Temporal(
+            TemporalScalarExpression::Now(NowScalarExpression::new(QueryLocation::new_fake())),
+        )));
+
+        // flase && now() will evaluate to false because now() gets short-circuited
+        run_test(LogicalExpression::Chain(c2), Some(false));
+
+        let mut c3 = ChainLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+            ))),
+        );
+
+        c3.push_or(LogicalExpression::Scalar(ScalarExpression::Static(
+            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+        )));
+
+        run_test(LogicalExpression::Chain(c3), Some(true));
+
+        let mut c4 = ChainLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            ))),
+        );
+
+        c4.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
+            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+        )));
+
+        run_test(LogicalExpression::Chain(c4), Some(true));
+    }
+
+    #[test]
+    fn test_contains_try_resolve_static() {
+        let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                false,
+            )),
+            Some(true),
+        );
+
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                    NowScalarExpression::new(QueryLocation::new_fake()),
+                )),
+                false,
+            )),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_matches_try_resolve_static() {
+        let run_test_success = |mut input: LogicalExpression, expected: Option<bool>| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let r = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, r)
+        };
+
+        let run_test_failure = |mut input: LogicalExpression| {
+            let pipeline: PipelineExpression = Default::default();
+
+            let e = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
+
+            assert!(matches!(e, ExpressionError::ParseError(_, _)));
+        };
+
+        run_test_success(
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Regex(
+                    RegexScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Regex::new("^hello world$").unwrap(),
+                    ),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test_success(
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "^hello.*$"),
+                )),
+            )),
+            Some(true),
+        );
+
+        run_test_success(
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                    NowScalarExpression::new(QueryLocation::new_fake()),
+                )),
+            )),
+            None,
+        );
+
+        run_test_failure(LogicalExpression::Matches(MatchesLogicalExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "\\",
+            ))),
+        )));
     }
 }

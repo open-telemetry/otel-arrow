@@ -1,10 +1,14 @@
-use crate::{DataExpression, Expression, ExpressionError, QueryLocation, StaticScalarExpression};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExpression {
     query: Box<str>,
     query_location: QueryLocation,
     constants: Vec<StaticScalarExpression>,
+    initializations: Vec<PipelineInitialization>,
     expressions: Vec<DataExpression>,
 }
 
@@ -14,6 +18,7 @@ impl PipelineExpression {
             query: query.into(),
             query_location: QueryLocation::new(0, query.len(), 1, 1).unwrap(),
             constants: Vec::new(),
+            initializations: Vec::new(),
             expressions: Vec::new(),
         }
     }
@@ -28,12 +33,12 @@ impl PipelineExpression {
         &self.query[start..end]
     }
 
-    pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
+    pub(crate) fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
         self.constants.push(value);
         self.constants.len() - 1
     }
 
-    pub fn get_constants(&self) -> &Vec<StaticScalarExpression> {
+    pub fn get_constants(&self) -> &[StaticScalarExpression] {
         &self.constants
     }
 
@@ -49,8 +54,35 @@ impl PipelineExpression {
         self.expressions.push(expression);
     }
 
+    pub(crate) fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.initializations
+            .push(PipelineInitialization::SetGlobalVariable {
+                name: name.into(),
+                value,
+            });
+    }
+
+    pub fn get_initializations(&self) -> &[PipelineInitialization] {
+        &self.initializations
+    }
+
+    pub fn get_resolution_scope(&self) -> PipelineResolutionScope<'_> {
+        PipelineResolutionScope {
+            constants: &self.constants,
+        }
+    }
+
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
-        // todo: Implement constant folding and other optimizations
+        let scope = PipelineResolutionScope {
+            constants: &self.constants,
+        };
+
+        let mut errors = Vec::new();
+        for e in &mut self.expressions {
+            if let Err(e) = e.try_fold(&scope) {
+                errors.push(e);
+            }
+        }
         Ok(())
     }
 }
@@ -69,6 +101,24 @@ impl Expression for PipelineExpression {
     fn get_name(&self) -> &'static str {
         "PipelineExpression"
     }
+}
+
+pub struct PipelineResolutionScope<'a> {
+    constants: &'a Vec<StaticScalarExpression>,
+}
+
+impl<'a> PipelineResolutionScope<'a> {
+    pub fn get_constant(&self, constant_id: usize) -> Option<&'a StaticScalarExpression> {
+        self.constants.get(constant_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PipelineInitialization {
+    SetGlobalVariable {
+        name: String,
+        value: ScalarExpression,
+    },
 }
 
 pub struct PipelineExpressionBuilder {
@@ -93,6 +143,17 @@ impl PipelineExpressionBuilder {
         self
     }
 
+    pub fn with_global_variables(
+        mut self,
+        variables: Vec<(&str, ScalarExpression)>,
+    ) -> PipelineExpressionBuilder {
+        for (name, value) in variables {
+            self.push_global_variable(name, value);
+        }
+
+        self
+    }
+
     pub fn with_expressions(
         mut self,
         expressions: Vec<DataExpression>,
@@ -104,12 +165,16 @@ impl PipelineExpressionBuilder {
         self
     }
 
-    pub fn push_expression(&mut self, expression: DataExpression) {
-        self.pipeline.push_expression(expression);
-    }
-
     pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
         self.pipeline.push_constant(value)
+    }
+
+    pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.pipeline.push_global_variable(name, value)
+    }
+
+    pub fn push_expression(&mut self, expression: DataExpression) {
+        self.pipeline.push_expression(expression);
     }
 
     pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {
@@ -122,5 +187,51 @@ impl PipelineExpressionBuilder {
 impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
     fn as_ref(&self) -> &PipelineExpression {
         &self.pipeline
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_folding_test() {
+        let actual = PipelineExpressionBuilder::new("")
+            .with_constants(vec![StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )])
+            .with_expressions(vec![DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Boolean(
+                            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                        )),
+                        ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::Boolean,
+                            0,
+                            ValueAccessor::new(),
+                        )),
+                        false,
+                    )),
+                ),
+            )])
+            .build()
+            .unwrap();
+
+        let mut expected = PipelineExpression::new("");
+
+        expected.push_constant(StaticScalarExpression::Boolean(
+            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+        ));
+
+        // Note: In this test the predicate evaluates to a static true so it
+        // gets elided completely.
+        expected.push_expression(DataExpression::Discard(DiscardDataExpression::new(
+            QueryLocation::new_fake(),
+        )));
+
+        assert_eq!(expected, actual);
     }
 }

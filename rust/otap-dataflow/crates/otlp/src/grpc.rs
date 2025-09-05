@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Expose the OTLP gRPC services.

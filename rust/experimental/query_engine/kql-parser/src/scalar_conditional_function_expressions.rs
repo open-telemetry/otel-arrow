@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -8,7 +11,7 @@ use crate::{
 
 pub(crate) fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&conditional_expression_rule);
 
@@ -23,16 +26,16 @@ pub(crate) fn parse_conditional_expression(
     Ok(ScalarExpression::Conditional(
         ConditionalScalarExpression::new(
             query_location,
-            parse_logical_expression(condition_logical, state)?,
-            parse_scalar_expression(true_scalar, state)?,
-            parse_scalar_expression(false_scalar, state)?,
+            parse_logical_expression(condition_logical, scope)?,
+            parse_scalar_expression(true_scalar, scope)?,
+            parse_scalar_expression(false_scalar, scope)?,
         ),
     ))
 }
 
 pub(crate) fn parse_case_expression(
     case_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&case_expression_rule);
 
@@ -57,13 +60,13 @@ pub(crate) fn parse_case_expression(
     let mut i = 0;
     while i < rules_vec.len() - 1 {
         // Parse condition
-        let condition = parse_logical_expression(rules_vec[i].clone(), state)?;
+        let condition = parse_logical_expression(rules_vec[i].clone(), scope)?;
         i += 1;
 
         // Parse corresponding expression
         if i < rules_vec.len() - 1 {
             // Not the last element (which is else)
-            let expression = parse_scalar_expression(rules_vec[i].clone(), state)?;
+            let expression = parse_scalar_expression(rules_vec[i].clone(), scope)?;
             expressions_with_conditions.push((condition, expression));
             i += 1;
         } else {
@@ -76,12 +79,42 @@ pub(crate) fn parse_case_expression(
     }
 
     // Parse the else expression (last element)
-    let else_expression = parse_scalar_expression(rules_vec[rules_vec.len() - 1].clone(), state)?;
+    let else_expression = parse_scalar_expression(rules_vec[rules_vec.len() - 1].clone(), scope)?;
 
     Ok(ScalarExpression::Case(CaseScalarExpression::new(
         query_location,
         expressions_with_conditions,
         else_expression,
+    )))
+}
+
+pub(crate) fn parse_coalesce_expression(
+    coalesce_expression_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&coalesce_expression_rule);
+
+    let mut coalesce_rules = coalesce_expression_rule.into_inner();
+
+    let mut expressions = Vec::new();
+
+    expressions.push(parse_scalar_expression(
+        coalesce_rules.next().unwrap(),
+        scope,
+    )?);
+
+    expressions.push(parse_scalar_expression(
+        coalesce_rules.next().unwrap(),
+        scope,
+    )?);
+
+    for e in coalesce_rules {
+        expressions.push(parse_scalar_expression(e, scope)?);
+    }
+
+    Ok(ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+        query_location,
+        expressions,
     )))
 }
 
@@ -315,6 +348,52 @@ mod tests {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
                 )),
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_coalesce_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "coalesce('one', 'two')",
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "one"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "two"),
+                    )),
+                ],
+            )),
+        );
+
+        run_test_success(
+            "coalesce('one', 'two', 'three')",
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "one"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "two"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "three"),
+                    )),
+                ],
             )),
         );
     }
