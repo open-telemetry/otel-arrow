@@ -738,41 +738,38 @@ fn split_metric_batches<const N: usize>(
                 *accumulator += element;
                 Some(*accumulator)
             }));
+            // A betch of metrics with no data points types should have a batch_length of 0, which
+            // means we should have added the whole thing to the output and never reached this point
+            // in the code.
+            assert!(!cumulative_child_counts.is_empty());
 
+            // We want to partition `cumulative_child_counts` into chunks where the difference
+            // between the first and last value of each chunk is as close to but less than
+            // `batch_size`.
+            let mut last_cumulative_child_count = 0;
+            let mut starting_index = 0;
             loop {
-                // Find the index of the largest element of `cumulative_child_counts` that is
-                // smaller than the desired batch size.
-                let candidate_index = cumulative_child_counts
-                    .partition_point(|&cum_child_count| cum_child_count < batch_size as u64);
-                let candidate_count = cumulative_child_counts[candidate_index];
-                // Some possibilities:
-                // 1. candidate_count == batch_size -> we win!
-                // 2. candidate_count < batch_size -> this shouldn't happen since it implies that our early termination in the other branch of the if statement should've fired
-                // 3. candidate_count > batch_size && candidate_index==0 -> we overshot because the first entry is bigger than our target batch size
-                // 4. candidate_count > batch_size -> we overshot, so try candidate_index-=1
-
-                let starting_index = result
-                    .last()
-                    .filter(|(other_batch, _)| *other_batch == batch_index)
-                    .map(|(_, range)| range.end)
-                    .unwrap_or(0);
+                let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
+                    cum_child_count < last_cumulative_child_count + batch_size as u64
+                });
+                last_cumulative_child_count = cumulative_child_counts
+                    .get(candidate_index)
+                    .copied()
+                    .unwrap_or(
+                        cumulative_child_counts
+                            .last()
+                            .copied()
+                            .expect("non-empty list"),
+                    );
                 let ending_index = (candidate_index + 1).min(metric_length);
+                // We should always make forward progress
+                assert!(ending_index > starting_index || ending_index >= metric_length - 1);
 
                 result.push((batch_index, starting_index..ending_index));
-                let candidate_size = (candidate_count
-                    + cumulative_child_counts
-                        .get(candidate_count as usize + 1)
-                        .copied()
-                        .unwrap_or(0)
-                    - cumulative_child_counts[starting_index])
-                    as usize;
-                batch_size = batch_size.saturating_sub(candidate_size);
-                if batch_size == 0 {
-                    batch_size = max_output_batch;
-                }
                 if ending_index >= metric_length {
                     break;
                 }
+                starting_index = ending_index;
             }
         }
     }
@@ -2958,12 +2955,17 @@ mod test {
     // ignoring testing metrics for now. It seems like there's an issue where we subtract with
     // underflow when calculating the splits.
     #[test]
-    #[ignore = "this test currently does not pass"]
     fn test_simple_split_metrics() {
         let [_, metrics, _] = RecordsGroup::split_by_type(vec![make_metrics()]);
 
-        let _original_metrics = metrics.clone();
-        let _split = metrics.split(NonZeroU64::new(2).unwrap()).unwrap();
-        todo!("assert results")
+        let split = metrics.split(NonZeroU64::new(2).unwrap()).unwrap();
+        assert_eq!(
+            split
+                .into_otap_arrow_records()
+                .iter()
+                .map(OtapArrowRecords::batch_length)
+                .collect_vec(),
+            vec![2, 2, 4]
+        );
     }
 }
