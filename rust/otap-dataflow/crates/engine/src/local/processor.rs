@@ -42,6 +42,7 @@ use async_trait::async_trait;
 use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -207,12 +208,8 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Delay a message: DelayedData will be returned via NodeControlMsg.
-    pub async fn delay_message(
-        &self,
-        data: PData,
-        delay: Duration,
-    ) -> Result<(), TypedError<PData>> {
-        self.core.delay_message(data, delay).await
+    pub async fn delay_message(&self, data: Box<PData>, when: Instant) -> Result<(), Error> {
+        self.core.delay_message(data, when).await
     }
 
     /// Reply to a request

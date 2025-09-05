@@ -606,21 +606,3 @@ fn collect_hyper_edges_runtime<PData>(
     }
     edges
 }
-
-#[cfg(test)]
-impl PipelineData for String {
-    type Context = ();
-    type Payload = String;
-}
-
-#[cfg(test)]
-impl PipelineData for u64 {
-    type Context = ();
-    type Payload = u64;
-}
-
-#[cfg(test)]
-impl PipelineData for () {
-    type Context = ();
-    type Payload = ();
-}

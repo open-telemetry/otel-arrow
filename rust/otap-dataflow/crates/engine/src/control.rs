@@ -9,6 +9,7 @@ use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// The ACK
 #[derive(Debug, Clone)]
@@ -166,13 +167,25 @@ pub enum PipelineControlMsg<PData> {
         ack: AckMsg<PData>,
     },
 
-    /// Let the pipeline manager deliver an Nack.
+    /// Let the pipeline manager deliver a Nack.
     DeliverNack {
         /// Destination
         node_id: usize,
 
         /// Acknowledgement context
         nack: NackMsg<PData>,
+    },
+
+    /// Delay data delivery.
+    DelayData {
+        /// When to resume.
+        when: Instant,
+
+        /// The node that issued the delay.
+        node_id: usize,
+
+        /// The data.
+        data: Box<PData>,
     },
 }
 

@@ -456,7 +456,7 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
-            .send_async(NodeControlMsg::Ack(AckMsg::new((), None)))
+            .send_async(NodeControlMsg::Ack(AckMsg::new("".into(), None)))
             .await
             .unwrap();
 
@@ -625,7 +625,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack(AckMsg::new((), None)))
+                .send_async(NodeControlMsg::Ack(AckMsg::new("".into(), None)))
                 .await
                 .is_err()
         );

@@ -69,7 +69,8 @@ use otap_df_engine::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 use tonic::Code;
 
 /// URN for the RetryProcessor processor
@@ -165,7 +166,7 @@ struct RetryState {
 
 impl From<RetryState> for ReplyState {
     fn from(value: RetryState) -> Self {
-        Self::new(value.retries.into(), Register::None)
+        Self::new(value.retries.into())
     }
 }
 
@@ -267,7 +268,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                         .deadline
                         // duration_since asks "how long after", how long
                         // is deadline after retry time. zero indicates expired.
-                        .map(|dead| dead.duration_since(next_retry_time).is_zero())
+                        .map(|dead| {
+                            Instant::from_std(dead)
+                                .duration_since(next_retry_time)
+                                .is_zero()
+                        })
                         .unwrap_or(false);
 
                     if expired {
@@ -276,15 +281,22 @@ impl Processor<OtapPdata> for RetryProcessor {
                         return Ok(());
                     }
 
-                    nack.request
+                    let mut request = nack.request;
+
+                    request
                         .mut_context()
                         .reply_to(effect_handler.processor_id().index(), rstate.into());
 
-                    effect_handler.send_message(*nack.request).await?;
+                    effect_handler
+                        .delay_message(request, next_retry_time)
+                        .await?;
 
                     Ok(())
                 }
-                NodeControlMsg::DelayedData { .. } => {}
+                NodeControlMsg::DelayedData { data } => {
+                    effect_handler.send_message(*data).await?;
+                    Ok(())
+                }
                 NodeControlMsg::TimerTick { .. } => {
                     // Nothing
                     Ok(())

@@ -21,9 +21,6 @@ pub enum Register {
 pub struct ReplyState {
     /// First register
     pub(crate) r0: Register,
-
-    /// Second register
-    pub(crate) r1: Register,
 }
 
 ///
@@ -75,8 +72,8 @@ impl Context {
 
 impl ReplyState {
     /// New return-to response data.
-    pub fn new(r0: Register, r1: Register) -> Self {
-        Self { r0, r1 }
+    pub fn new(r0: Register) -> Self {
+        Self { r0 }
     }
 }
 
