@@ -170,6 +170,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        
         let logs_handle = tokio::spawn(stream_arrow_batches(
             arrow_logs_client,
             logs_receiver,
@@ -203,6 +204,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                        println!("shutting down");
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -300,6 +302,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     let mut shutdown = false;
 
     while !shutdown {
+        let g = otap_batches_rx.lock();
         let req_stream = create_req_stream(otap_batches_rx.clone());
         tokio::select! {
             connect = client.handle_req_stream(req_stream) => {
@@ -313,8 +316,8 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         ).await;
                     }
                     Err(_e) => {
+                        println!("error in connect {:?}", _e);
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(SignalType::Logs)).await;
-                        continue
                     }
                 };
             }
