@@ -201,7 +201,7 @@ mod tests {
 
                 // Data message is forwarded
                 let data = OtapArrowRecords::Logs(Logs::default());
-                ctx.process(Message::data_msg(data.into()))
+                ctx.process(Message::data_msg(OtapPdata::new_default(data.into())))
                     .await
                     .expect("data processing failed");
                 let forwarded = ctx.drain_pdata().await;

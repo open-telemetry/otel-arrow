@@ -344,6 +344,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .take_payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
 
@@ -358,6 +359,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .take_payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
@@ -374,6 +376,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .take_payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(

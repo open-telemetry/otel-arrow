@@ -225,7 +225,10 @@ where
     })?;
     let batch = from_record_messages::<T>(batch);
 
-    let status_result = match effect_handler.send_message(otap_batch(batch).into()).await {
+    let status_result = match effect_handler
+        .send_message(OtapPdata::new_default(otap_batch(batch).into()))
+        .await
+    {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };
