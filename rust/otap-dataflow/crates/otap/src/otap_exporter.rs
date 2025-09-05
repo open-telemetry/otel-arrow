@@ -158,112 +158,177 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
         }
-        // Loop until a Shutdown event is received.
-        loop {
-            match msg_chan.recv().await? {
-                // handle control messages
-                Message::Control(NodeControlMsg::TimerTick { .. })
-                | Message::Control(NodeControlMsg::Config { .. }) => {}
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
-                }
-                // shutdown the exporter
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                    // ToDo: add proper deadline function
-                    break;
-                }
-                //send data
-                Message::PData(pdata) => {
-                    // Capture signal type before moving pdata into try_from
-                    let signal_type = pdata.signal_type();
 
-                    self.pdata_metrics.inc_consumed(signal_type);
-                    let mut message: OtapArrowRecords = pdata
-                        .try_into()
-                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+        // TODO comment on the purpose of these
+        // TODO import so can use as just "channel" here
+        let (logs_sender, mut logs_receiver) = tokio::sync::mpsc::channel(64);
+        let (metrics_sender, mut metrics_receiver) = tokio::sync::mpsc::channel(64);
+        let (traces_sender, mut traces_receiver) = tokio::sync::mpsc::channel(64);
 
-                    // TODO eventually create a producer per stream. We'll do this when we refactor
-                    // this this implementation to not send one message per stream.
+        let mut control_loop = async move || {
+            // Loop until a Shutdown event is received.
+            loop {
+                match msg_chan.recv().await? {
+                    // handle control messages
+                    Message::Control(NodeControlMsg::TimerTick { .. })
+                    | Message::Control(NodeControlMsg::Config { .. }) => {}
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    }) => {
+                        _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    }
+                    // shutdown the exporter
+                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                        // ToDo: add proper deadline function
+                        break;
+                    }
+                    //send data
+                    Message::PData(pdata) => {
+                        // Capture signal type before moving pdata into try_from
+                        let signal_type = pdata.signal_type();
+
+                        self.pdata_metrics.inc_consumed(signal_type);
+                        let message: OtapArrowRecords = pdata
+                            .try_into()
+                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+
+                        match signal_type {
+                            SignalType::Logs => logs_sender.send(message).await,
+                            SignalType::Metrics => metrics_sender.send(message).await,
+                            SignalType::Traces => traces_sender.send(message).await
+                        }.unwrap(); // good unwrap very cool (NOT)
+
+                        /*
+                        // TODO eventually create a producer per stream. We'll do this when we refactor
+                        // this this implementation to not send one message per stream.
+                        let mut producer = Producer::new();
+                        let bar =
+                            producer
+                                .produce_bar(&mut message)
+                                .map_err(|e| Error::ExporterError {
+                                    exporter: effect_handler.exporter_id(),
+                                    error: format!("error encoding OTAP batch: {e:?}"),
+                                })?;
+                        let message = match signal_type {
+                            SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
+                            SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
+                            SignalType::Traces => OtapArrowBytes::ArrowTraces(bar),
+                        };
+
+                        match message {
+                            // match on OTAPData type and use the respective client to send message
+                            // ToDo: Add Ack/Nack handling, send a signal that data has been exported
+                            // check what message the data is
+                            OtapArrowBytes::ArrowMetrics(req) => {
+                                // handle stream differently here?
+                                // ToDo: [LQ or someone else] Check if there is a better way to handle that.
+                                let request_stream = stream! {
+                                    yield req;
+                                };
+                                _ = arrow_metrics_client
+                                    .arrow_metrics(request_stream)
+                                    .await
+                                    .map_err(|e| {
+                                        self.pdata_metrics.metrics_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    })?;
+                                self.pdata_metrics.metrics_exported.inc();
+                            }
+                            OtapArrowBytes::ArrowLogs(req) => {
+                                let request_stream = stream! {
+                                    yield req;
+                                };
+                                _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
+                                    |e| {
+                                        self.pdata_metrics.logs_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    },
+                                )?;
+                                self.pdata_metrics.logs_exported.inc();
+                            }
+                            OtapArrowBytes::ArrowTraces(req) => {
+                                let request_stream = stream! {
+                                    yield req;
+                                };
+                                _ = arrow_traces_client
+                                    .arrow_traces(request_stream)
+                                    .await
+                                    .map_err(|e| {
+                                        self.pdata_metrics.traces_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    })?;
+                                self.pdata_metrics.traces_exported.inc();
+                            }
+                        }
+                        */
+                    }
+                    _ => {
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_id(),
+                            error: "Unknown control message".to_owned(),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        // let producer = Producer::new();
+        // producer.
+
+        tokio::select! {
+            ctrl_loop_exit = control_loop() => {
+                ctrl_loop_exit
+            }
+            _ = async {
+                
+                // create a new stream of gRPC requests
+                #[allow(tail_expr_drop_order)]
+                let req_stream = stream! {
                     let mut producer = Producer::new();
-                    let bar =
-                        producer
-                            .produce_bar(&mut message)
-                            .map_err(|e| Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                error: format!("error encoding OTAP batch: {e:?}"),
-                            })?;
-                    let message = match signal_type {
-                        SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
-                        SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
-                        SignalType::Traces => OtapArrowBytes::ArrowTraces(bar),
-                    };
+                    // logs_receiver is a tokio mspc channel Receiver
+                    while let Some(mut otap_batch) = logs_receiver.recv().await {
+                        yield producer.produce_bar(&mut otap_batch).unwrap()
+                    }
+                };
+                
+                // have the grpc client stream the requests
+                let mut resp_stream = arrow_logs_client.arrow_logs(req_stream).await.unwrap().into_inner();
 
-                    match message {
-                        // match on OTAPData type and use the respective client to send message
-                        // ToDo: Add Ack/Nack handling, send a signal that data has been exported
-                        // check what message the data is
-                        OtapArrowBytes::ArrowMetrics(req) => {
-                            // handle stream differently here?
-                            // ToDo: [LQ or someone else] Check if there is a better way to handle that.
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_metrics_client
-                                .arrow_metrics(request_stream)
-                                .await
-                                .map_err(|e| {
-                                    self.pdata_metrics.metrics_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                })?;
-                            self.pdata_metrics.metrics_exported.inc();
+                // streaming all responses
+                loop {
+                    match resp_stream.message().await {
+                        Ok(Some(val)) => {
+                            // success fully streamed request
+                            // TODO increment metric
                         }
-                        OtapArrowBytes::ArrowLogs(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
-                                |e| {
-                                    self.pdata_metrics.logs_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                },
-                            )?;
-                            self.pdata_metrics.logs_exported.inc();
+                        Ok(None) => {
+                            // stream as closed by sender (shouldn't happen)
+                            break
                         }
-                        OtapArrowBytes::ArrowTraces(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_traces_client
-                                .arrow_traces(request_stream)
-                                .await
-                                .map_err(|e| {
-                                    self.pdata_metrics.traces_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                })?;
-                            self.pdata_metrics.traces_exported.inc();
+                        Err(grpc_status) => {
+                            // some error happened, need to maybe reconnect?
+                            println!("beans");
+                            
                         }
                     }
                 }
-                _ => {
-                    return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_id(),
-                        error: "Unknown control message".to_owned(),
-                    });
-                }
+                // resp.for
+                println!("arrow stream exitted");
+            } => {
+                // TODO is it really ... 
+                unreachable!("TODO")
             }
         }
-        Ok(())
     }
 }
 
