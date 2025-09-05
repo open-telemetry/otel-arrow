@@ -82,7 +82,7 @@ fn create_processor_with_pending(
 }
 
 fn create_test_data() -> OtapPdata {
-    OtapArrowRecords::Logs(Logs::default()).into()
+    OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into())
 }
 
 /// Benchmark 1: Individual message operations

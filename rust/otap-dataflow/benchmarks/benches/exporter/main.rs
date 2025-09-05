@@ -393,9 +393,9 @@ fn bench_exporter(c: &mut Criterion) {
                     .expect("can consume BAR"),
             ));
 
-            otap_signals.push(OtapPdata::from(trace_records));
-            otap_signals.push(OtapPdata::from(log_records));
-            otap_signals.push(OtapPdata::from(metrics_records));
+            otap_signals.push(OtapPdata::new_default(trace_records.into()));
+            otap_signals.push(OtapPdata::new_default(log_records.into()));
+            otap_signals.push(OtapPdata::new_default(metrics_records.into()));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
