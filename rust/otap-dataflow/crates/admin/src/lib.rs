@@ -22,7 +22,7 @@ use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
-struct AppState<PData: Clone + Send + Sync> {
+struct AppState {
     /// The observed state store for querying the current state of the entire system.
     observed_state_store: ObservedStateHandle,
 
@@ -30,14 +30,14 @@ struct AppState<PData: Clone + Send + Sync> {
     metrics_registry: MetricsRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender<PData>>,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
-pub async fn run<PData: 'static + Clone + Send + Sync>(
+pub async fn run(
     config: HttpAdminSettings,
     observed_store: ObservedStateHandle,
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender<PData>>,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {

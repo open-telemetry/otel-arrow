@@ -273,8 +273,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_handle: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
     ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {

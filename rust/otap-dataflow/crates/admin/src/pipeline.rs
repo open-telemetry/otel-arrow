@@ -24,16 +24,16 @@ use otap_df_state::PipelineKey;
 use otap_df_state::store::PipelineStatus;
 
 /// All the routes for pipelines.
-pub(crate) fn routes<PData: 'static + Clone + Send + Sync>() -> Router<AppState<PData>> {
+pub(crate) fn routes() -> Router<AppState> {
     Router::new().route(
         "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
         axum::routing::get(show_status),
     )
 }
 
-pub async fn show_status<PData: 'static + Clone + Send + Sync>(
+pub async fn show_status(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
-    State(state): State<AppState<PData>>,
+    State(state): State<AppState>,
 ) -> Result<Json<Option<PipelineStatus>>, StatusCode> {
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
     let pipeline_status = state.observed_state_store.pipeline_status(&key);
