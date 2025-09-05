@@ -43,6 +43,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, scope)?,
         Rule::strcat_expression => parse_strcat_expression(scalar_rule, scope)?,
         Rule::strcat_delim_expression => parse_strcat_delim_expression(scalar_rule, scope)?,
+        Rule::extract_expression => parse_extract_expression(scalar_rule, scope)?,
         Rule::array_concat_expression => parse_array_concat_expression(scalar_rule, scope)?,
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
