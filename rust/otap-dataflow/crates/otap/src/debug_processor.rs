@@ -18,6 +18,8 @@ use crate::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use self::metrics::DebugPdataMetrics;
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
@@ -39,6 +41,7 @@ use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+mod metrics;
 mod config;
 mod detailed_marshaler;
 mod marshaler;
@@ -76,19 +79,20 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
 pub struct DebugProcessor {
     config: Config,
     output: Option<String>,
+    metrics: MetricSet<DebugPdataMetrics>
 }
 
 /// Factory function to create an DebugProcessor.
 ///
 /// See the module documentation for configuration examples
 pub fn create_debug_processor(
-    _pipeline_ctx: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     Ok(ProcessorWrapper::local(
-        DebugProcessor::from_config(&node_config.config)?,
+        DebugProcessor::from_config(pipeline_ctx, &node_config.config)?,
         node,
         node_config,
         processor_config,
@@ -113,12 +117,14 @@ impl DebugProcessor {
     /// Creates a new Debug processor
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(config: Config, output: Option<String>) -> Self {
-        DebugProcessor { config, output }
+    pub fn new(config: Config, output: Option<String>, pipeline_ctx: PipelineContext) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        DebugProcessor { config, output, metrics }
     }
 
     /// Creates a new DebugProcessor from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -126,6 +132,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             output: None,
+            metrics
         })
     }
 }
@@ -160,6 +167,9 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     NodeControlMsg::Shutdown { .. } => {
                         writer.write("Shutdown message received\n").await?;
                     }
+                    NodeControlMsg::CollectTelemetry { mut metrics_reporter, } => {
+                        _ = metrics_reporter.report(&mut self.metrics);
+                    }
                     _ => {}
                 }
                 Ok(())
@@ -177,7 +187,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 error: format!("error decoding proto bytes: {e}"),
                             }
                         })?;
-                        push_log(&self.config.verbosity(), req, &*marshaler, &mut writer).await?;
+                        push_log(&self.config.verbosity(), req, &*marshaler, &mut writer, &mut self.metrics).await?;
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         let req = MetricsData::decode(bytes.as_slice()).map_err(|e| {
@@ -185,7 +195,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 error: format!("error decoding proto bytesf: {e}"),
                             }
                         })?;
-                        push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer)
+                        push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer, &mut self.metrics)
                             .await?;
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
@@ -194,7 +204,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 error: format!("error decoding proto bytes: {e}"),
                             }
                         })?;
-                        push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer).await?;
+                        push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer, &mut self.metrics).await?;
                     }
                 }
                 Ok(())
@@ -226,6 +236,7 @@ async fn push_metric(
     metric_request: MetricsData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>
 ) -> Result<(), Error> {
     // collect number of resource metrics
     // collect number of metrics
@@ -260,6 +271,9 @@ async fn push_metric(
         }
     }
 
+    internal_metrics.metrics.add(metrics as u64);
+    internal_metrics.metric_datapoints.add(data_points as u64);
+
     writer
         .write(&format!("Received {resource_metrics} resource metrics\n"))
         .await?;
@@ -284,6 +298,7 @@ async fn push_trace(
     trace_request: TracesData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>
 ) -> Result<(), Error> {
     // collect number of resource spans
     // collect number of spans
@@ -300,7 +315,9 @@ async fn push_trace(
             }
         }
     }
-
+    internal_metrics.spans.add(spans as u64);
+    internal_metrics.span_events.add(events as u64);
+    internal_metrics.span_links.add(links as u64);
     writer
         .write(&format!("Received {resource_spans} resource spans\n"))
         .await?;
@@ -322,6 +339,7 @@ async fn push_log(
     log_request: LogsData,
     marshaler: &dyn ViewMarshaler,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>
 ) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
@@ -336,6 +354,8 @@ async fn push_log(
             }
         }
     }
+    internal_metrics.logs.add(log_records as u64);
+    internal_metrics.events.add(events as u64);
     writer
         .write(&format!("Received {resource_logs} resource logs\n"))
         .await?;
