@@ -338,6 +338,10 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
+                NodeControlMsg::DelayedData { .. } => {
+                    // TODO: demonstrated in #1041
+                    Ok(())
+                }
                 NodeControlMsg::CollectTelemetry { .. } => {
                     // Retry processor has no telemetry collection to perform here.
                     Ok(())

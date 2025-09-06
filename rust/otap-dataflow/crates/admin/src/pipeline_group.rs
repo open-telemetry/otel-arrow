@@ -24,7 +24,7 @@ use otap_df_state::store::ObservedStateHandle;
 use serde::Serialize;
 
 /// All the routes for pipeline groups.
-pub(crate) fn routes() -> Router<AppState> {
+pub(crate) fn routes<PData: 'static + Clone + Send + Sync>() -> Router<AppState<PData>> {
     Router::new()
         .route("/pipeline-groups/status", get(show_status))
         .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
@@ -38,13 +38,15 @@ struct ShutdownResponse {
     errors: Option<Vec<String>>,
 }
 
-pub async fn show_status(
-    State(state): State<AppState>,
+pub async fn show_status<PData: 'static + Clone + Send + Sync>(
+    State(state): State<AppState<PData>>,
 ) -> Result<Json<ObservedStateHandle>, StatusCode> {
     Ok(Json(state.observed_state_store))
 }
 
-async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
+async fn shutdown_all_pipelines<PData: 'static + Clone + Send + Sync>(
+    State(state): State<AppState<PData>>,
+) -> impl IntoResponse {
     let errors: Vec<_> = state
         .ctrl_msg_senders
         .iter()
