@@ -698,7 +698,7 @@ mod tests {
         for i in 0..5 {
             let handle_clone = handle.clone();
             let thread_handle = thread::spawn(move || {
-                let attrs = MockAttributeSet::new(format!("value_{}", i));
+                let attrs = MockAttributeSet::new(format!("value_{i}"));
                 let metric_set: MetricSet<MockMetricSet> = handle_clone.register(attrs);
                 let metrics_key = metric_set.key;
 

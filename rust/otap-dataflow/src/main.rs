@@ -97,9 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print what we're doing
     match &quota.core_allocation {
         CoreAllocation::AllCores => println!("Starting pipeline using all available cores"),
-        CoreAllocation::CoreCount { count } => println!("Starting pipeline with {} cores", count),
+        CoreAllocation::CoreCount { count } => println!("Starting pipeline with {count} cores"),
         CoreAllocation::CoreRange { start, end } => {
-            println!("Starting pipeline on core ID range [{}-{}]", start, end);
+            println!("Starting pipeline on core ID range [{start}-{end}]");
         }
     }
 
