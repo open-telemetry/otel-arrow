@@ -925,49 +925,44 @@ mod tests {
         }
     }
 
-    /// Validates the delayed data min-heap ordering:
-    /// 1. Earlier timestamps have higher priority (come out first)
-    /// 2. BinaryHeap with custom Ord implementation creates correct ordering
-    /// 3. Multiple delayed items are ordered correctly regardless of insertion order
+    /// Validates the delayed data min-heap ordering: earlier
+    /// timestamps come first, custom Ord implementation, multiple
+    /// delayed items are ordered correctly.
     #[tokio::test]
     async fn test_delayed_data_heap_ordering() {
         let now = Instant::now();
         let mut delayed_heap = BinaryHeap::new();
 
-        // Create test data with different delays
         let data1 = Box::new("data1".to_string());
         let data2 = Box::new("data2".to_string());
         let data3 = Box::new("data3".to_string());
 
         let delayed1 = Delayed {
-            when: now.into_std() + Duration::from_millis(300), // Latest - should come out last
+            when: now.into_std() + Duration::from_millis(300),
             node_id: 1,
             data: data1,
         };
         let delayed2 = Delayed {
-            when: now.into_std() + Duration::from_millis(100), // Earliest - should come out first
+            when: now.into_std() + Duration::from_millis(100),
             node_id: 2,
             data: data2,
         };
         let delayed3 = Delayed {
-            when: now.into_std() + Duration::from_millis(200), // Middle - should come out second
+            when: now.into_std() + Duration::from_millis(200),
             node_id: 3,
             data: data3,
         };
 
-        // Insert in non-chronological order to test heap behavior
         delayed_heap.push(delayed1);
         delayed_heap.push(delayed2);
         delayed_heap.push(delayed3);
 
-        // Verify heap maintains correct size
         assert_eq!(
             delayed_heap.len(),
             3,
             "All delayed items should be in the heap"
         );
 
-        // Pop items and verify they come out in chronological order (min-heap behavior)
         let first = delayed_heap.pop().expect("First item should exist");
         assert_eq!(
             first.when,
@@ -1006,7 +1001,6 @@ mod tests {
             "Correct node should be associated with latest item"
         );
 
-        // Heap should now be empty
         assert!(
             delayed_heap.is_empty(),
             "Heap should be empty after popping all items"
