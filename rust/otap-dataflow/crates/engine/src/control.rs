@@ -12,7 +12,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -40,6 +40,15 @@ pub enum NodeControlMsg<PData> {
         /// Placeholder for optional return value, making it possible for the
         /// retry sender to be stateless.
         pdata: Option<Box<PData>>,
+    },
+
+    /// Data delayed by a node having reached its resume time.
+    DelayedData {
+        /// When the data resumed
+        when: Instant,
+
+        /// The data
+        data: Box<PData>,
     },
 
     /// Notifies the node of a configuration change.
@@ -83,7 +92,7 @@ pub enum NodeControlMsg<PData> {
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg {
+pub enum PipelineControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -110,12 +119,49 @@ pub enum PipelineControlMsg {
         /// Identifier of the node for which the telemetry timer is being canceled.
         node_id: usize,
     },
+    /// To delay data in a pipeline, this will return to the node as a
+    /// NodeControl::DelayedData.
+    DelayData(Delayed<PData>),
+
     /// Requests shutdown of the pipeline.
     Shutdown {
         /// Human-readable reason for the shutdown.
         reason: String,
     },
 }
+
+/// Delayed data in the pipeline. This implements a custom Ord so that
+/// BinaryHeap<_> is an ascending min-heap.
+#[derive(Debug, Clone)]
+pub struct Delayed<PData> {
+    /// When the data resumes
+    pub when: Instant,
+    /// Responsible node.
+    pub node_id: usize,
+    /// The data
+    pub data: Box<PData>,
+}
+
+impl<PData> Ord for Delayed<PData> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reversed => min-heap
+        other.when.cmp(&self.when)
+    }
+}
+
+impl<PData> PartialOrd for Delayed<PData> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<PData> PartialEq for Delayed<PData> {
+    fn eq(&self, other: &Self) -> bool {
+        self.when == other.when
+    }
+}
+
+impl<PData> Eq for Delayed<PData> {}
 
 /// Trait for nodes that can receive and process control messages from the pipeline engine.
 ///
@@ -140,12 +186,12 @@ impl<PData> NodeControlMsg<PData> {
 /// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender = SharedSender<PipelineControlMsg>;
+pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
 
 /// Type alias for the channel receiver used by the pipeline engine to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
+pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
 ///
@@ -159,9 +205,9 @@ pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel(
+pub fn pipeline_ctrl_msg_channel<PData>(
     capacity: usize,
-) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
+) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),

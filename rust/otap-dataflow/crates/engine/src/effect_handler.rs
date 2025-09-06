@@ -15,13 +15,13 @@ use tokio::net::{TcpListener, UdpSocket};
 ///
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
-pub(crate) struct EffectHandlerCore {
+pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
-    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
+    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
 }
 
-impl EffectHandlerCore {
+impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id.
     pub(crate) fn new(node_id: NodeId) -> Self {
         Self {
@@ -32,7 +32,7 @@ impl EffectHandlerCore {
 
     pub(crate) fn set_pipeline_ctrl_msg_sender(
         &mut self,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
@@ -155,7 +155,7 @@ impl EffectHandlerCore {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
@@ -180,7 +180,7 @@ impl EffectHandlerCore {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self
             .pipeline_ctrl_msg_sender
             .clone()
@@ -203,14 +203,14 @@ impl EffectHandlerCore {
 }
 
 /// Handle to cancel a running timer.
-pub struct TimerCancelHandle {
+pub struct TimerCancelHandle<PData> {
     node_id: usize,
-    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
 }
 
-impl TimerCancelHandle {
+impl<PData> TimerCancelHandle<PData> {
     /// Cancels the timer.
-    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
+    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
         self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTimer {
                 node_id: self.node_id,
@@ -220,14 +220,14 @@ impl TimerCancelHandle {
 }
 
 /// Handle to cancel a running telemetry timer.
-pub struct TelemetryTimerCancelHandle {
+pub struct TelemetryTimerCancelHandle<PData> {
     node_id: NodeId,
-    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
 }
 
-impl TelemetryTimerCancelHandle {
+impl<PData> TelemetryTimerCancelHandle<PData> {
     /// Cancels the telemetry collection timer.
-    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
+    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
         self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTelemetryTimer {
                 node_id: self.node_id.index,

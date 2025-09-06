@@ -3,7 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
-use crate::control::NodeControlMsg;
+use crate::control::{Delayed, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
@@ -45,6 +45,15 @@ impl<Data> Message<Data> {
             id,
             pdata: pdata.map(Box::new),
             reason: reason.to_owned(),
+        })
+    }
+
+    /// Create a delayed-data message.
+    #[must_use]
+    pub fn delayed_data_msg(delayed: Delayed<Data>) -> Self {
+        Message::Control(NodeControlMsg::DelayedData {
+            when: delayed.when,
+            data: delayed.data,
         })
     }
 
