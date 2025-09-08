@@ -526,6 +526,67 @@ impl Value<'_> {
         }
     }
 
+    pub fn capture(
+        query_location: &QueryLocation,
+        haystack: &dyn StringValue,
+        pattern: &Value,
+        capture_group: &Value,
+    ) -> Result<Option<core::ops::Range<usize>>, ExpressionError> {
+        let mut result = None;
+
+        pattern
+            .convert_to_regex(&mut |r: &Regex| {
+                result = match capture_group {
+                    Value::String(name) => match r.captures(haystack.get_value()) {
+                        Some(c) => match c.name(name.get_value()) {
+                            Some(m) => Some(Ok(Some(m.range()))),
+                            None => Some(Ok(None)),
+                        },
+                        None => Some(Ok(None)),
+                    },
+                    Value::Integer(index) => {
+                        let i = index.get_value();
+
+                        if i < 0 {
+                            Some(Err(ExpressionError::ValidationFailure(
+                                query_location.clone(),
+                                "Capture group index cannot be a negative value".into(),
+                            )))
+                        } else {
+                            match r.captures(haystack.get_value()) {
+                                Some(c) => match c.get(i as usize) {
+                                    Some(m) => Some(Ok(Some(m.range()))),
+                                    None => Some(Ok(None)),
+                                },
+                                None => Some(Ok(None)),
+                            }
+                        }
+                    }
+                    v => Some(Err(ExpressionError::ValidationFailure(
+                        query_location.clone(),
+                        format!(
+                            "Value of '{:?}' type cannot be used to resolve a capture group",
+                            v.get_value_type()
+                        ),
+                    ))),
+                }
+            })
+            .map_err(|e| {
+                ExpressionError::ParseError(
+                    query_location.clone(),
+                    format!("Failed to parse Regex from pattern: {e}"),
+                )
+            })?;
+
+        match result {
+            Some(Ok(r)) => Ok(r),
+            Some(Err(e)) => Err(e),
+            None => panic!(
+                "Encountered a Value type which does not correctly implement convert_to_string"
+            ),
+        }
+    }
+
     pub fn replace_matches(
         haystack: &Value,
         needle: &Value,

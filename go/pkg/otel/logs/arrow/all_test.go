@@ -71,10 +71,10 @@ func TestLogs(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"body":{"str":"body1","type":1},"dropped_attributes_count":0,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
-,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
-,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
-,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+	expected := `[{"body":{"str":"body1","type":1},"dropped_attributes_count":0,"event_name":"event1","flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"event_name":"event2","flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"event_name":"event2","flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"event_name":"event2","flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004Z","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003Z","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
 ]`
 
 	jsonassert.JSONCanonicalEq(stdTesting, expected, actual)
@@ -147,6 +147,7 @@ func LogRecord1() plog.LogRecord {
 	attrs.PutDouble("double", 1)
 	log.SetDroppedAttributesCount(0)
 	log.SetFlags(1)
+	log.SetEventName("event1")
 	return log
 }
 
@@ -165,6 +166,7 @@ func LogRecord2() plog.LogRecord {
 	attrs.PutDouble("double", 2)
 	log.SetDroppedAttributesCount(1)
 	log.SetFlags(2)
+	log.SetEventName("event2")
 	return log
 }
 

@@ -125,43 +125,6 @@ pub(crate) fn parse_substring_expression(
     )))
 }
 
-pub(crate) fn parse_parse_json_expression(
-    parse_json_expression_rule: Pair<Rule>,
-    scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
-    let query_location = to_query_location(&parse_json_expression_rule);
-
-    let mut parse_json_rules = parse_json_expression_rule.into_inner();
-
-    let inner_rule = parse_json_rules.next().unwrap();
-    let inner_rule_location = to_query_location(&inner_rule);
-    let mut inner_scalar = parse_scalar_expression(inner_rule, scope)?;
-
-    if let Some(v) = scope.try_resolve_value_type(&mut inner_scalar)?
-        && v != ValueType::String
-    {
-        return Err(ParserError::QueryLanguageDiagnostic {
-            location: inner_rule_location,
-            diagnostic_id: "KS107",
-            message: "A value of type string expected".into(),
-        });
-    }
-
-    let mut parse_json_scalar = ScalarExpression::Parse(ParseScalarExpression::Json(
-        ParseJsonScalarExpression::new(query_location, inner_scalar),
-    ));
-
-    // Note: Call into try_resolve_static here is to try to validate the json
-    // string and bubble up any errors. It can be removed if/when expression
-    // tree gets constant folding which should automatically call into
-    // try_resolve_static.
-    parse_json_scalar
-        .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
-        .map_err(|e| ParserError::from(&e))?;
-
-    Ok(parse_json_scalar)
-}
-
 pub(crate) fn parse_strcat_expression(
     strcat_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
@@ -217,9 +180,66 @@ pub(crate) fn parse_strcat_delim_expression(
     )))
 }
 
+pub(crate) fn parse_extract_expression(
+    extract_expression_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&extract_expression_rule);
+
+    let mut extract_rules = extract_expression_rule.into_inner();
+
+    let regex_rule = extract_rules.next().unwrap();
+    let regex_location = to_query_location(&regex_rule);
+    let mut regex = parse_scalar_expression(regex_rule, scope)?;
+    if let Some(v) = scope.try_resolve_value_type(&mut regex)?
+        && v != ValueType::Regex
+        && v != ValueType::String
+    {
+        return Err(ParserError::QueryLanguageDiagnostic {
+            location: regex_location,
+            diagnostic_id: "KS107",
+            message: "A value of type regex or string expected".into(),
+        });
+    }
+
+    let capture_rule = extract_rules.next().unwrap();
+    let capture_location = to_query_location(&capture_rule);
+    let mut capture_group = parse_scalar_expression(capture_rule, scope)?;
+
+    if let Some(v) = scope.try_resolve_value_type(&mut capture_group)?
+        && v != ValueType::Integer
+        && v != ValueType::String
+    {
+        return Err(ParserError::QueryLanguageDiagnostic {
+            location: capture_location,
+            diagnostic_id: "KS107",
+            message: "A value of type long or string expected".into(),
+        });
+    }
+
+    let source_rule = extract_rules.next().unwrap();
+    let source_location = to_query_location(&source_rule);
+    let mut source = parse_scalar_expression(source_rule, scope)?;
+
+    if let Some(v) = scope.try_resolve_value_type(&mut source)?
+        && v != ValueType::String
+    {
+        return Err(ParserError::QueryLanguageDiagnostic {
+            location: source_location,
+            diagnostic_id: "KS107",
+            message: "A value of type string expected".into(),
+        });
+    }
+
+    Ok(ScalarExpression::Text(TextScalarExpression::Capture(
+        CaptureTextScalarExpression::new(query_location, source, regex, capture_group),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use pest::Parser;
+    use regex::Regex;
 
     use crate::KqlPestParser;
 
@@ -448,88 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_parse_json_expression() {
-        let run_test_success = |input: &str, expected: ScalarExpression| {
-            println!("Testing: {input}");
-
-            let state = ParserState::new(input);
-
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
-
-            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
-
-            assert_eq!(expected, expression);
-        };
-
-        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
-            println!("Testing: {input}");
-
-            let state = ParserState::new(input);
-
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
-
-            let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
-
-            if let Some(eid) = expected_id {
-                if let ParserError::QueryLanguageDiagnostic {
-                    location: _,
-                    diagnostic_id: id,
-                    message: msg,
-                } = error
-                {
-                    assert_eq!(eid, id);
-                    assert_eq!(expected_msg, msg);
-                } else {
-                    panic!("Expected QueryLanguageDiagnostic");
-                }
-            } else if let ParserError::SyntaxError(_, msg) = error {
-                assert_eq!(expected_msg, msg);
-            } else {
-                panic!("Unexpected error");
-            }
-        };
-
-        // Note: This whole expression is folded into a static array.
-        run_test_success(
-            "parse_json('[]')",
-            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
-                QueryLocation::new_fake(),
-                vec![],
-            ))),
-        );
-
-        run_test_success(
-            "parse_json(source.Attributes['json'])",
-            ScalarExpression::Parse(ParseScalarExpression::Json(ParseJsonScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "json"),
-                        )),
-                    ]),
-                )),
-            ))),
-        );
-
-        run_test_failure(
-            "parse_json(0)",
-            Some("KS107"),
-            "A value of type string expected",
-        );
-
-        run_test_failure(
-            "parse_json('[')",
-            None,
-            "Input could not be parsed as JSON: EOF while parsing a list at line 1 column 1",
-        );
-    }
-
-    #[test]
     fn test_parse_strcat_expression() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             println!("Testing: {input}");
@@ -632,6 +570,119 @@ mod tests {
                     ),
                 )),
             ))),
+        );
+    }
+
+    #[test]
+    fn test_parse_extract_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            expression
+                .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let error = match parse_scalar_expression(result.next().unwrap(), &state) {
+                Err(e) => e,
+                Ok(mut s) => s
+                    .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                    .map_err(|e| ParserError::from(&e))
+                    .unwrap_err(),
+            };
+
+            if let Some(eid) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(eid, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Unexpected error");
+            }
+        };
+
+        // Note: This gets folded into a string.
+        run_test_success(
+            r#"extract('(\\w*)', 1, 'hello world')"#,
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            ))),
+        );
+
+        run_test_success(
+            r#"extract('(\\w*)', 1, SomeField)"#,
+            ScalarExpression::Text(TextScalarExpression::Capture(
+                CaptureTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "SomeField",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Regex(
+                        RegexScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Regex::new("(\\w*)").unwrap(),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_failure(
+            r#"extract(timespan(1h), 1, 'hello world')"#,
+            Some("KS107"),
+            "A value of type regex or string expected",
+        );
+
+        run_test_failure(
+            r#"extract('hello world', timespan(1h), 'hello world')"#,
+            Some("KS107"),
+            "A value of type long or string expected",
+        );
+
+        run_test_failure(
+            r#"extract('hello world', 'name', timespan(1h))"#,
+            Some("KS107"),
+            "A value of type string expected",
+        );
+
+        run_test_failure(
+            r#"extract('(', 0, 'hello world')"#,
+            None,
+            "Failed to parse Regex from pattern: regex parse error:\n    (\n    ^\nerror: unclosed group",
         );
     }
 }
