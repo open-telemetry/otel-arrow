@@ -11,7 +11,7 @@ use tonic_middleware::{Middleware, ServiceBound};
 const ENCODING_HEADER: &str = "grpc-encoding";
 
 /// Tonic middleware implementation that will replace the `grpc-encoding` header that the golang
-/// exporter produces (which has the format zstdarrow[0-9]) with the value that tonic expects, 
+/// exporter produces (which has the format zstdarrow[0-9]) with the value that tonic expects,
 /// which is just "zstd"
 #[derive(Clone, Default)]
 pub struct ZstdRequestHeaderAdapter {}
