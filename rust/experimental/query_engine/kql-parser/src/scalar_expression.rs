@@ -8,8 +8,9 @@ use pest::iterators::Pair;
 use crate::{
     Rule, logical_expressions::parse_logical_expression, scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
-    scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
+    scalar_mathematical_function_expressions::*, scalar_parse_function_expressions::*,
+    scalar_primitive_expressions::*, scalar_string_function_expressions::*,
+    scalar_temporal_function_expressions::*,
 };
 
 pub(crate) fn parse_scalar_expression(
@@ -25,6 +26,7 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
         Rule::time_expression => ScalarExpression::Static(parse_timespan_expression(scalar_rule)?),
+        Rule::regex_expression => ScalarExpression::Static(parse_regex_expression(scalar_rule)?),
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, scope)?,
         Rule::case_expression => parse_case_expression(scalar_rule, scope)?,
         Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, scope)?,
@@ -41,6 +43,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, scope)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, scope)?,
         Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, scope)?,
+        Rule::parse_regex_expression => parse_parse_regex_expression(scalar_rule, scope)?,
         Rule::strcat_expression => parse_strcat_expression(scalar_rule, scope)?,
         Rule::strcat_delim_expression => parse_strcat_delim_expression(scalar_rule, scope)?,
         Rule::extract_expression => parse_extract_expression(scalar_rule, scope)?,
