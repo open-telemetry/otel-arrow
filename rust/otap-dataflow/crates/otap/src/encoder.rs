@@ -2505,6 +2505,11 @@ mod test {
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, false),
                 Field::new("flags", DataType::UInt32, true),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -2660,6 +2665,11 @@ mod test {
                 Arc::new(UInt32Array::from(vec![
                     LogRecordFlags::TraceFlagsMask as u32,
                 ])) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event1"])),
+                )),
             ],
         )
         .unwrap();
