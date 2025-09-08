@@ -214,13 +214,15 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         break;
                     }
                     //send data
-                    Message::PData(mut pdata) => {
+                    Message::PData(pdata) => {
                         // Capture signal type before moving pdata into try_from
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-                        let message: OtapArrowRecords = pdata
-                .take_payload()
+            let (_context, payload) = pdata.take_apart();
+
+            // TODO: context is lost
+                        let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 

@@ -46,8 +46,9 @@
 //! // Create a new OtapPdata with default context
 //! let mut pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(buf).into());
 //!
-//! // Take the payload, convert to Otap Arrow Records
-//! let otap_arrow_records: OtapArrowRecords = pdata.take_payload().try_into().unwrap();
+//! // Split the request, convert to Otap Arrow Records
+//! let (context, payload) = pdata.take_apart();
+//! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
 //! ```
 //!
 //! Internally, conversions are happening using various utility functions:
