@@ -184,7 +184,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_) => Ok(()),
-            Message::PData(mut pdata) => {
+            Message::PData(pdata) => {
                 // Fast path: no actions to apply
                 if self.transform.rename.is_none() && self.transform.delete.is_none() {
                     return effect_handler
@@ -194,13 +194,15 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let mut records: OtapArrowRecords = pdata.take_payload().try_into()?;
+                let (context, payload) = pdata.take_apart();
+
+                let mut records: OtapArrowRecords = payload.try_into()?;
 
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
                 effect_handler
-                    .send_message(OtapPdata::new(pdata.take_context(), records.into()))
+                    .send_message(OtapPdata::new(context, records.into()))
                     .await
                     .map_err(|e| e.into())
             }
