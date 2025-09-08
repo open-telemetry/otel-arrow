@@ -378,10 +378,12 @@ mod tests {
         use crate::pdata::OtapPdata;
         use otap_df_channel::mpsc;
         use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::local::message::LocalSender;
-        use otap_df_engine::local::processor::{EffectHandler as LocalEffectHandler, Processor as _};
-        use otap_df_engine::message::Message;
         use otap_df_engine::control::NodeControlMsg;
+        use otap_df_engine::local::message::LocalSender;
+        use otap_df_engine::local::processor::{
+            EffectHandler as LocalEffectHandler, Processor as _,
+        };
+        use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_telemetry::MetricsSystem;
         use otap_df_telemetry::config::Config as TelemetryConfig;
@@ -454,14 +456,29 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&registry);
-                assert_eq!(metrics.get("signals.received.logs").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed.named.logs").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed.default.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.default.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 // shutdown collector
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -509,13 +526,28 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&registry);
-                assert_eq!(metrics.get("signals.received.logs").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed.named.logs").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.routed.default.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.default.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -566,13 +598,28 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&registry);
-                assert_eq!(metrics.get("signals.received.logs").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed.named.logs").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.routed.default.logs").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.default.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -605,7 +652,10 @@ mod tests {
 
                 let pdata: OtapPdata = OtapArrowRecords::Logs(Logs::default()).into();
                 let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected failure on default route when receiver closed");
+                assert!(
+                    res.is_err(),
+                    "expected failure on default route when receiver closed"
+                );
 
                 router
                     .process(
@@ -619,13 +669,28 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&registry);
-                assert_eq!(metrics.get("signals.received.logs").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed.named.logs").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.routed.default.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.default.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -637,12 +702,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_traces_success");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
@@ -650,23 +720,37 @@ mod tests {
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
                 let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
-                router.process(Message::PData(pdata), &mut eh).await.expect("router failed processing traces");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router failed processing traces");
                 let _ = rx.recv().await.expect("no message on traces port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.traces").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.default.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -677,12 +761,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_traces_failure");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
@@ -694,20 +783,31 @@ mod tests {
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on named traces port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.traces").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -718,12 +818,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_traces_success");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
@@ -731,23 +836,37 @@ mod tests {
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
                 let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
-                router.process(Message::PData(pdata), &mut eh).await.expect("router failed on default traces path");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router failed on default traces path");
                 let _ = rx.recv().await.expect("no message on default port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.traces").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.traces").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    1
+                );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -758,12 +877,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_traces_failure");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
@@ -775,20 +899,31 @@ mod tests {
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on default traces route");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.traces").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -800,12 +935,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_metrics_success");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
@@ -813,23 +953,39 @@ mod tests {
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
                 let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
-                router.process(Message::PData(pdata), &mut eh).await.expect("router failed processing metrics");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router failed processing metrics");
                 let _ = rx.recv().await.expect("no message on metrics port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.default.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -840,12 +996,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_metrics_failure");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
@@ -857,20 +1018,33 @@ mod tests {
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on named metrics port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.metrics").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -881,12 +1055,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_metrics_success");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
@@ -894,23 +1073,39 @@ mod tests {
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
                 let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
-                router.process(Message::PData(pdata), &mut eh).await.expect("router failed on default metrics path");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router failed on default metrics path");
                 let _ = rx.recv().await.expect("no message on default port");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.metrics").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.metrics").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
 
@@ -921,12 +1116,17 @@ mod tests {
                 let telemetry = MetricsSystem::new(TelemetryConfig::default());
                 let registry = telemetry.registry();
                 let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move { let _ = telemetry.run_collection_loop().await; });
+                let collector_task = tokio::spawn(async move {
+                    let _ = telemetry.run_collection_loop().await;
+                });
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_metrics_failure");
-                let mut router = SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
 
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
@@ -938,20 +1138,33 @@ mod tests {
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on default metrics route");
 
-                router.process(
-                    Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter: reporter.clone() }),
-                    &mut eh,
-                ).await.expect("collect telemetry failed");
+                router
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(m.get("signals.routed.named.metrics").copied().unwrap_or(0), 0);
-                assert_eq!(m.get("signals.routed.default.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.routed.default.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
 
                 drop(reporter);
-                let _ = collector_task.abort();
+                collector_task.abort();
             });
         }
     }
