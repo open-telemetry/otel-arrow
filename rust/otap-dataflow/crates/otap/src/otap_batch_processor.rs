@@ -964,10 +964,7 @@ mod tests {
     // See crates/telemetry-macros/README.md ("Define a metric set"): if a metric field name is not
     // overridden, the field identifier is converted by replacing '_' with '.'.
     // Example: consumed_items_traces => consumed.items.traces
-    fn get_metric(
-        map: &std::collections::HashMap<&'static str, u64>,
-        snake_case: &str,
-    ) -> u64 {
+    fn get_metric(map: &std::collections::HashMap<&'static str, u64>, snake_case: &str) -> u64 {
         let dotted = snake_case.replace('_', ".");
         map.get(dotted.as_str())
             .copied()
