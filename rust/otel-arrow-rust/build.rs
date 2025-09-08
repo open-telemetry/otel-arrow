@@ -31,39 +31,39 @@ fn prost_cfg() -> prost_build::Config {
 
 fn generate_otap_protos(out_dir: &Path, base: &str) {
     // Create a tonic-build configuration with our custom settings
-    let builder = tonic_build::configure()
+    let builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .disable_comments(".")
+        .disable_comments(["."])
         .out_dir(out_dir);
 
     // Compile the protobuf definitions
     builder
-        .compile_protos_with_config(
+        .compile_with_config(
             prost_cfg(),
             &["experimental/arrow/v1/arrow_service.proto"],
-            &[format!("{base}/../../proto/opentelemetry/proto/")],
+            &[format!("{base}/../../proto/opentelemetry/proto/").as_str()],
         )
         .expect("Failed to compile OTAP protos.");
 }
 
 fn generate_otlp_protos(out_dir: &Path, base: &str) {
     // Configure the builder for OTLP protos
-    let builder = tonic_build::configure()
+    let builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .disable_comments(".")
+        .disable_comments(["."])
         .out_dir(out_dir);
 
     // Note: this adds derive expressions for each OTLP message type.
     let builder = otlp_model::add_type_attributes(builder);
 
     builder
-        .compile_protos_with_config(
+        .compile_with_config(
             prost_cfg(),
             &[
                 "opentelemetry/proto/common/v1/common.proto",
@@ -75,7 +75,7 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
                 "opentelemetry/proto/collector/trace/v1/trace_service.proto",
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
             ],
-            &[format!("{base}/../../proto/opentelemetry-proto")],
+            &[format!("{base}/../../proto/opentelemetry-proto").as_str()],
         )
         .expect("Failed to compile OTLP protos.");
 }

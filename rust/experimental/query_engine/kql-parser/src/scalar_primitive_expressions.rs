@@ -28,9 +28,7 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
         let mut current_char = c.unwrap();
         let mut skip_push = false;
 
-        if position == 1 || current_char == '\\' {
-            skip_push = true;
-        } else if last_char == '\\' {
+        if last_char == '\\' {
             match current_char {
                 '"' => current_char = '"',
                 '\'' => current_char = '\'',
@@ -40,9 +38,15 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
                 't' => current_char = '\t',
                 _ => panic!("Unexpected escape character"),
             }
+            last_char = '\0';
+        } else {
+            if position == 1 || current_char == '\\' {
+                skip_push = true;
+            }
+
+            last_char = current_char;
         }
 
-        last_char = current_char;
         position += 1;
 
         c = chars.next();
@@ -607,6 +611,7 @@ mod tests {
         run_test("'Hello world'", "Hello world");
         run_test("'Hello \" world'", "Hello \" world");
         run_test("'Hello \\' world'", "Hello ' world");
+        run_test("'(\\\\w*)'", "(\\w*)");
     }
 
     #[test]

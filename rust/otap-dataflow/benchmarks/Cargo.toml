@@ -17,6 +17,7 @@ otap-df-otap = { path="../crates/otap"}
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 prost = { workspace = true }
 
 mimalloc = "0.1.46"

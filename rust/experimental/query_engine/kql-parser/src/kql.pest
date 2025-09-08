@@ -161,6 +161,7 @@ substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_ex
 parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
 strcat_expression = { "strcat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+extract_expression = { "extract" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 string_expressions = _{
     strlen_expression
     | replace_string_expression
@@ -168,6 +169,7 @@ string_expressions = _{
     | parse_json_expression
     | strcat_expression
     | strcat_delim_expression
+    | extract_expression
 }
 
 array_concat_expression = { "array_concat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
