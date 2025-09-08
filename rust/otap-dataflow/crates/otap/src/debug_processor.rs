@@ -164,9 +164,9 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
                 Ok(())
             }
-            Message::PData(mut pdata) => {
+            Message::PData(pdata) => {
                 // make a copy of the data and convert it to protobytes that we will later convert to the views
-                let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into()?;
+                let otlp_bytes: OtlpProtoBytes = pdata.clone_payload().try_into()?;
                 // forward the data to the next node
                 effect_handler.send_message(pdata).await?;
 

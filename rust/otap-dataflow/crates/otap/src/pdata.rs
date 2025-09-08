@@ -147,8 +147,8 @@ pub enum OtapPayload {
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
-    pub(crate) context: Context,
-    pub(crate) payload: OtapPayload,
+    context: Context,
+    payload: OtapPayload,
 }
 
 /* -------- Signal type -------- */
@@ -186,6 +186,12 @@ impl OtapPdata {
     #[must_use]
     pub fn take_payload(&mut self) -> OtapPayload {
         self.payload.take_payload()
+    }
+
+    /// Clones the payload from this request.
+    #[must_use]
+    pub fn clone_payload(&self) -> OtapPayload {
+        self.payload.clone()
     }
 
     /// Take the context.
