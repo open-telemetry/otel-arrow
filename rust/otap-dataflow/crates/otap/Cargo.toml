@@ -34,6 +34,7 @@ uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 prost = { workspace = true }
 
 otap-df-engine = { path = "../engine" }

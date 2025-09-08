@@ -2358,10 +2358,14 @@ mod test {
                         .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
                         .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
                         .severity_text("Info")
-                        .attributes(vec![KeyValue::new(
-                            "log_attr1",
-                            AnyValue::new_string("log_val_1"),
-                        )])
+                        .attributes(vec![
+                            KeyValue::new("log_attr1", AnyValue::new_string("log_val_1")),
+                            // test some realistic attrs with special characters & whitespaces..
+                            KeyValue::new("syslog_type", AnyValue::new_string("syslog rfc3164")),
+                            KeyValue::new("az.service_request_id", AnyValue::new_string("00000000-0000-0000-0000-000000000000")),
+                            KeyValue::new("cloud.resource_id", AnyValue::new_string("/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>")),
+
+                        ])
                         .dropped_attributes_count(3u32)
                         .flags(LogRecordFlags::TraceFlagsMask)
                         .body(AnyValue::new_string("log_body"))
@@ -2740,17 +2744,26 @@ mod test {
                 ),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt16Array::from_iter_values(vec![0,0,0,0])),
                 Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from_iter_values(vec![0]),
-                    Arc::new(StringArray::from_iter_values(vec!["log_attr1"])),
+                    UInt8Array::from_iter_values(vec![0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "log_attr1", "syslog_type", "az.service_request_id", "cloud.resource_id"
+                        ])),
                 )),
                 Arc::new(UInt8Array::from_iter_values(vec![
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
                 ])),
                 Arc::new(DictionaryArray::<UInt16Type>::new(
-                    UInt16Array::from_iter_values(vec![0]),
-                    Arc::new(StringArray::from_iter_values(vec!["log_val_1"])),
+                    UInt16Array::from_iter_values(vec![0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "log_val_1", "syslog rfc3164",
+                        "00000000-0000-0000-0000-000000000000", 
+                        "/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>"
+                    ])),
                 )),
             ],
         )

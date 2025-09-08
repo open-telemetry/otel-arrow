@@ -75,18 +75,18 @@ flume = { version = "0.11.1", default-features = false, features = ["async"] }
 slotmap = "1.0.7"
 chrono = { version = "0.4", features = ["serde"] }
 core_affinity = "0.8.3"
-tonic = { version = "0.13.1", default-features = false, features = [
+tonic = { version = "0.14", default-features = false, features = [
     "server",
     "channel",
     "router",
     "transport",
     "codegen",
-    "prost",
     "zstd",
     "gzip",
     "deflate",
 ] }
-prost = "0.13.5"
+tonic-prost = "0.14"
+prost = "0.14"
 
 [features]
 default = []

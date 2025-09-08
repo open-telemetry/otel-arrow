@@ -10,7 +10,6 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::OtapArrowBytes;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -29,6 +28,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::Producer;
 use otel_arrow_rust::otap::OtapArrowRecords;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -38,6 +38,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tonic::transport::Channel;
+use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -116,7 +119,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ))
             .await;
 
-        let exporter_id = effect_handler.exporter_id();
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
@@ -158,113 +160,266 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
         }
+
+        // TODO comment on the purpose of these
+        // TODO import so can use as just "channel" here
+        // TODO check if we can use our local channel in conjonction with a spawn_local.
+        let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel(64);
+        let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel(64);
+        let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
+        let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // TODO check if we can expose/use spawn_local method in the effect handler
+        let logs_handle = tokio::spawn(stream_arrow_batches(
+            arrow_logs_client,
+            SignalType::Logs,
+            logs_receiver,
+            pdata_metrics_tx.clone(),
+            shutdown_rx.clone(),
+        ));
+        let metrics_handle = tokio::spawn(stream_arrow_batches(
+            arrow_metrics_client,
+            SignalType::Metrics,
+            metrics_receiver,
+            pdata_metrics_tx.clone(),
+            shutdown_rx.clone(),
+        ));
+        let traces_handle = tokio::spawn(stream_arrow_batches(
+            arrow_traces_client,
+            SignalType::Traces,
+            traces_receiver,
+            pdata_metrics_tx.clone(),
+            shutdown_rx.clone(),
+        ));
+
         // Loop until a Shutdown event is received.
         loop {
-            match msg_chan.recv().await? {
-                // handle control messages
-                Message::Control(NodeControlMsg::TimerTick { .. })
-                | Message::Control(NodeControlMsg::Config { .. }) => {}
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
-                }
-                // shutdown the exporter
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                    // ToDo: add proper deadline function
-                    break;
-                }
-                //send data
-                Message::PData(pdata) => {
-                    // Capture signal type before moving pdata into try_from
-                    let signal_type = pdata.signal_type();
-
-                    self.pdata_metrics.inc_consumed(signal_type);
-                    let mut message: OtapArrowRecords = pdata
-                        .try_into()
-                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
-
-                    // TODO eventually create a producer per stream. We'll do this when we refactor
-                    // this this implementation to not send one message per stream.
-                    let mut producer = Producer::new();
-                    let bar =
-                        producer
-                            .produce_bar(&mut message)
-                            .map_err(|e| Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                error: format!("error encoding OTAP batch: {e:?}"),
-                            })?;
-                    let message = match signal_type {
-                        SignalType::Logs => OtapArrowBytes::ArrowLogs(bar),
-                        SignalType::Metrics => OtapArrowBytes::ArrowMetrics(bar),
-                        SignalType::Traces => OtapArrowBytes::ArrowTraces(bar),
-                    };
-
-                    match message {
-                        // match on OTAPData type and use the respective client to send message
-                        // ToDo: Add Ack/Nack handling, send a signal that data has been exported
-                        // check what message the data is
-                        OtapArrowBytes::ArrowMetrics(req) => {
-                            // handle stream differently here?
-                            // ToDo: [LQ or someone else] Check if there is a better way to handle that.
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_metrics_client
-                                .arrow_metrics(request_stream)
-                                .await
-                                .map_err(|e| {
-                                    self.pdata_metrics.metrics_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                })?;
-                            self.pdata_metrics.metrics_exported.inc();
-                        }
-                        OtapArrowBytes::ArrowLogs(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
-                                |e| {
-                                    self.pdata_metrics.logs_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                },
-                            )?;
-                            self.pdata_metrics.logs_exported.inc();
-                        }
-                        OtapArrowBytes::ArrowTraces(req) => {
-                            let request_stream = stream! {
-                                yield req;
-                            };
-                            _ = arrow_traces_client
-                                .arrow_traces(request_stream)
-                                .await
-                                .map_err(|e| {
-                                    self.pdata_metrics.traces_failed.inc();
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        error: e.to_string(),
-                                    }
-                                })?;
-                            self.pdata_metrics.traces_exported.inc();
-                        }
+            tokio::select! {
+                msg = msg_chan.recv() => match msg? {
+                    // handle control messages
+                    Message::Control(NodeControlMsg::TimerTick { .. })
+                    | Message::Control(NodeControlMsg::Config { .. }) => {}
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    }) => {
+                        _ = metrics_reporter.report(&mut self.pdata_metrics);
                     }
-                }
-                _ => {
-                    return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_id(),
-                        error: "Unknown control message".to_owned(),
-                    });
+                    // shutdown the exporter
+                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                        _ = shutdown_tx.send_replace(true);
+                        _ = logs_handle.await;
+                        _ = metrics_handle.await;
+                        _ = traces_handle.await;
+                        break;
+                    }
+                    //send data
+                    Message::PData(pdata) => {
+                        // Capture signal type before moving pdata into try_from
+                        let signal_type = pdata.signal_type();
+
+                        self.pdata_metrics.inc_consumed(signal_type);
+                        let message: OtapArrowRecords = pdata
+                            .try_into()
+                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+
+                        _ = match signal_type {
+                            SignalType::Logs => logs_sender.send(message).await,
+                            SignalType::Metrics => metrics_sender.send(message).await,
+                            SignalType::Traces => traces_sender.send(message).await,
+                        };
+                    }
+                    _ => {
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_id(),
+                            error: "Unknown control message".to_owned(),
+                        });
+                    }
+                },
+                metrics_update = pdata_metrics_rx.recv() => match metrics_update {
+                    Some(PDataMetricsUpdate::IncFailed(signal_type)) => {
+                        self.pdata_metrics.inc_failed(signal_type);
+                    },
+                    Some(PDataMetricsUpdate::IncExported(signal_type)) => {
+                        self.pdata_metrics.inc_exported(signal_type);
+                    },
+                    _ => {}
                 }
             }
         }
         Ok(())
     }
+}
+
+#[async_trait]
+trait StreamingArrowService {
+    async fn handle_req_stream(
+        &mut self,
+        req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+    ) -> Result<Response<Streaming<BatchStatus>>, Status>;
+}
+
+#[async_trait]
+impl StreamingArrowService for ArrowLogsServiceClient<Channel> {
+    async fn handle_req_stream(
+        &mut self,
+        req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+    ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+        self.arrow_logs(req_stream).await
+    }
+}
+
+#[async_trait]
+impl StreamingArrowService for ArrowMetricsServiceClient<Channel> {
+    async fn handle_req_stream(
+        &mut self,
+        req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+    ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+        self.arrow_metrics(req_stream).await
+    }
+}
+
+#[async_trait]
+impl StreamingArrowService for ArrowTracesServiceClient<Channel> {
+    async fn handle_req_stream(
+        &mut self,
+        req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+    ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+        self.arrow_traces(req_stream).await
+    }
+}
+
+enum PDataMetricsUpdate {
+    IncExported(SignalType),
+    IncFailed(SignalType),
+}
+
+async fn stream_arrow_batches<T: StreamingArrowService>(
+    mut client: T,
+    signal_type: SignalType,
+    otap_batches_rx: Receiver<OtapArrowRecords>,
+    pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let otap_batches_rx = Arc::new(tokio::sync::Mutex::new(otap_batches_rx));
+    let mut shutdown = false;
+
+    // we'll do an exponential backoff if there was an error creating the streaming request
+    let max_backoff = Duration::from_secs(10);
+    let initial_backoff = Duration::from_millis(10);
+    let mut failed_request_backoff = initial_backoff;
+
+    // send streams of batches to the server until shutdown
+    while !shutdown {
+        let mut rx = otap_batches_rx.lock().await;
+        tokio::select! {
+            // wait to receive the first batch to create the streaming request
+            first_batch = rx.recv() => {
+                drop(rx);
+                let first_batch = match first_batch {
+                    Some(f) => f,
+
+                    None => {
+                        // no more batches
+                        break
+                    }
+                };
+
+                // create the request stream
+                let req_stream = create_req_stream(first_batch, otap_batches_rx.clone(), signal_type, pdata_metrics_tx.clone());
+                match client.handle_req_stream(req_stream).await {
+                    Ok(res) => {
+                        // reset the reconnect timeout backoff
+                        failed_request_backoff = initial_backoff;
+
+                        // handle server responses until error or shutdown
+                        shutdown = handle_res_stream(
+                            res.into_inner(),
+                            pdata_metrics_tx.clone(),
+                            SignalType::Logs,
+                            shutdown_rx.clone()
+                        ).await;
+                    }
+                    Err(_e) => {
+                        // there was an error initiating the streaming request
+                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
+                        log::error!("failed request, waiting {failed_request_backoff:?}");
+                        tokio::time::sleep(failed_request_backoff).await;
+                        failed_request_backoff = std::cmp::min(failed_request_backoff * 2, max_backoff);
+                    }
+                };
+            }
+            _ = shutdown_rx.changed() => {
+                 shutdown = *shutdown_rx.borrow();
+            }
+        }
+    }
+}
+
+#[allow(tail_expr_drop_order)]
+fn create_req_stream(
+    mut first_batch: OtapArrowRecords,
+    remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<OtapArrowRecords>>>,
+    signal_type: SignalType,
+    pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
+    stream! {
+        let mut producer = Producer::new();
+
+        // send the first batch
+        match producer.produce_bar(&mut first_batch) {
+            Ok(bar) => yield bar,
+            Err(_) => {
+                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+            }
+        };
+
+        let mut rx = remaining_batches_rx.lock().await;
+        // send the remaining batches
+        while let Some(mut otap_batch) = rx.recv().await {
+            match producer.produce_bar(&mut otap_batch) {
+                Ok(bar) => yield bar,
+                Err(_) => {
+                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+                }
+            }
+        }
+    }
+}
+
+async fn handle_res_stream(
+    mut res_stream: Streaming<BatchStatus>,
+    pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    signal_type: SignalType,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    let mut shutdown = false;
+
+    // handle streaming responses until shutdown
+    while !shutdown {
+        tokio::select! {
+            res = res_stream.message() => {
+                match res {
+                    Ok(Some(_val)) => {
+                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncExported(signal_type)).await;
+                    },
+                    Ok(None) => {
+                        // sender disconnected
+                        break
+                    }
+                    Err(_grpc_status) => {
+                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
+                        break
+                    }
+                };
+            }
+            _ = shutdown_rx.changed() => {
+                shutdown = *shutdown_rx.borrow();
+            }
+        }
+    }
+
+    shutdown
 }
 
 #[cfg(test)]
