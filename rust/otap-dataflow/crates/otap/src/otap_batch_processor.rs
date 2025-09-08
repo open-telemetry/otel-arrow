@@ -550,9 +550,14 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                     | otap_df_engine::control::NodeControlMsg::CollectTelemetry { .. } => Ok(()),
                 }
             }
-            Message::PData(mut data) => {
+            Message::PData(request) => {
                 let max = self.config.send_batch_max_size;
-                match OtapArrowRecords::try_from(data.take_payload()) {
+                let signal_type = request.signal_type();
+
+                // Note: Context is dropped.
+                let (_ctx, data) = request.take_apart();
+
+                match OtapArrowRecords::try_from(data) {
                     Ok(rec) => {
                         let rows = rec.batch_length();
                         // Per-signal policy: drop zero-row; pre-flush if exceeding max; append rows; flush on max or send_batch_size.
@@ -647,7 +652,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                     }
                     Err(_) => {
                         // Conversion failed: log and drop (TODO: Nack)
-                        match data.signal_type() {
+                        match signal_type {
                             SignalType::Logs => {
                                 effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
                                 Ok(())

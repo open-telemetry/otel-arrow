@@ -188,6 +188,12 @@ impl OtapPdata {
         self.payload.take_payload()
     }
 
+    /// Splits the context and payload from this request, consuming it.
+    #[must_use]
+    pub fn take_apart(self) -> (Context, OtapPayload) {
+        (self.context, self.payload)
+    }
+
     /// Clones the payload from this request.
     #[must_use]
     pub fn clone_payload(&self) -> OtapPayload {
