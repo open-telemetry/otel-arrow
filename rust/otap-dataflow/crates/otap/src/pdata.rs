@@ -163,6 +163,12 @@ impl OtapPdata {
         }
     }
 
+    /// Construct new OtapData with context and payload
+    #[must_use]
+    pub fn new(context: Context, payload: OtapPayload) -> Self {
+        Self { context, payload }
+    }
+
     /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {

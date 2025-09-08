@@ -200,7 +200,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
                 effect_handler
-                    .send_message(OtapPdata::new_default(records.into()))
+                    .send_message(OtapPdata::new(pdata.take_context(), records.into()))
                     .await
                     .map_err(|e| e.into())
             }
