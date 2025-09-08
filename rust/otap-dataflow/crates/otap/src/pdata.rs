@@ -77,7 +77,7 @@
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_rust::otap::OtapArrowRecords;
+use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
 
@@ -305,20 +305,9 @@ impl OtapPayloadHelpers for OtapArrowRecords {
 
     fn num_items(&self) -> usize {
         match self {
-            Self::Logs(_) => {
-                self
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            Self::Traces(_) => {
-		self
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            Self::Metrics(_) => {
-                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
-                    .map_or(0, |batch| batch.num_rows())
-            }
+            Self::Logs(records) => records.batch_length(),
+            Self::Traces(records) => records.batch_length(),
+            Self::Metrics(records) => records.batch_length(),
         }
     }
 }
