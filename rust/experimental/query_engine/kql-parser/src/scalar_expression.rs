@@ -20,13 +20,7 @@ pub(crate) fn parse_scalar_expression(
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
     let scalar = match scalar_rule.as_rule() {
-        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
-        Rule::real_expression => ScalarExpression::Static(parse_real_expression(scalar_rule)?),
-        Rule::datetime_expression => {
-            ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
-        }
-        Rule::time_expression => ScalarExpression::Static(parse_timespan_expression(scalar_rule)?),
-        Rule::regex_expression => ScalarExpression::Static(parse_regex_expression(scalar_rule)?),
+        Rule::type_expression => ScalarExpression::Static(parse_type_expression(scalar_rule)?),
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, scope)?,
         Rule::case_expression => parse_case_expression(scalar_rule, scope)?,
         Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, scope)?,
@@ -48,16 +42,6 @@ pub(crate) fn parse_scalar_expression(
         Rule::strcat_delim_expression => parse_strcat_delim_expression(scalar_rule, scope)?,
         Rule::extract_expression => parse_extract_expression(scalar_rule, scope)?,
         Rule::array_concat_expression => parse_array_concat_expression(scalar_rule, scope)?,
-        Rule::true_literal | Rule::false_literal => {
-            ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
-        }
-        Rule::double_literal => {
-            ScalarExpression::Static(parse_standard_double_literal(scalar_rule, None)?)
-        }
-        Rule::integer_literal => {
-            ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
-        }
-        Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
         Rule::negate_expression => parse_negate_expression(scalar_rule, scope)?,
         Rule::bin_expression => parse_bin_expression(scalar_rule, scope)?,
         Rule::now_expression => parse_now_expression(scalar_rule, scope)?,
