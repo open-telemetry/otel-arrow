@@ -11,11 +11,12 @@ use otel_arrow_rust::schema::{SpanId, TraceId};
 
 use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
 use crate::otlp::bytes::consts::field_num::logs::{
-    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
-    LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
-    LOG_RECORD_SPAN_ID, LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE,
-    RESOURCE_LOGS_RESOURCE, RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE,
-    SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
+    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
+    LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
+    LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID,
+    LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE, RESOURCE_LOGS_RESOURCE,
+    RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS,
+    SCOPE_LOGS_SCHEMA_URL,
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
@@ -478,5 +479,13 @@ impl LogRecordView for RawLogRecord<'_> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_TRACE_ID)
             .and_then(|slice| slice.try_into().ok())
+    }
+
+    #[inline]
+    fn event_name(&self) -> Option<crate::views::common::Str<'_>> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_EVENT_NAME)?;
+        std::str::from_utf8(slice).ok()
     }
 }

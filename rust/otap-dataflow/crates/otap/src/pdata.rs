@@ -403,13 +403,13 @@ mod test {
                     ..Default::default()
                 })
                 .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                    LogRecord::build(1u64, SeverityNumber::Info, "event1")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                         .finish(),
-                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                    LogRecord::build(2u64, SeverityNumber::Info, "event1")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                         .finish(),
-                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                    LogRecord::build(3u64, SeverityNumber::Info, "event2")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
                         .finish(),
                 ])
@@ -427,10 +427,10 @@ mod test {
                     ..Default::default()
                 })
                 .log_records(vec![
-                    LogRecord::build(4u64, SeverityNumber::Info, "")
+                    LogRecord::build(4u64, SeverityNumber::Info, "event3")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
                         .finish(),
-                    LogRecord::build(5u64, SeverityNumber::Info, "")
+                    LogRecord::build(5u64, SeverityNumber::Info, "event1")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val5"))])
                         .finish(),
                 ])
@@ -440,7 +440,7 @@ mod test {
                     ..Default::default()
                 })
                 .log_records(vec![
-                    LogRecord::build(6u64, SeverityNumber::Info, "")
+                    LogRecord::build(6u64, SeverityNumber::Info, "event1")
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val6"))])
                         .finish(),
                     LogRecord::build(7u64, SeverityNumber::Info, "")
