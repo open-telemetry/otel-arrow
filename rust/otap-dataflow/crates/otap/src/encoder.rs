@@ -365,6 +365,15 @@ where
                 }
 
                 for log_record in log_records_slice {
+                    logs.append_event_name(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .event_name(),
+                    );
+                }
+
+                for log_record in log_records_slice {
                     if let Some(body) = log_record
                         .as_ref()
                         .expect("LogRecord should not be None")
