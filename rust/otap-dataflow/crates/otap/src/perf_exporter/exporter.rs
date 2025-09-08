@@ -135,14 +135,17 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     _ = timer_cancel_handle.cancel().await;
                     break;
                 }
-                Message::PData(mut pdata) => {
+                Message::PData(pdata) => {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
                     // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let batch: OtapArrowRecords = match pdata.take_payload().try_into() {
+                    // Context is unused
+                    let (_ctx, data) = pdata.take_apart();
+
+                    let batch: OtapArrowRecords = match data.try_into() {
                         Ok(batch) => batch,
                         Err(_) => {
                             self.pdata_metrics.inc_failed(signal_type);
