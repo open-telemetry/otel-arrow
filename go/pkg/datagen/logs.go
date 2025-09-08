@@ -6,6 +6,7 @@
 package datagen
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v6"
@@ -85,6 +86,7 @@ func (dg *DataGenerator) logRecord(log plog.LogRecord, sev plog.SeverityNumber, 
 	dg.NewStandardAttributes().CopyTo(log.Attributes())
 	log.SetTraceID(dg.Id16Bytes())
 	log.SetSpanID(dg.Id8Bytes())
+	log.SetEventName(fmt.Sprintf("event%d", dg.GenI64Range(0, 10)))
 }
 
 func (dg *DataGenerator) complexLogRecord(log plog.LogRecord, sev plog.SeverityNumber, txt string) {
