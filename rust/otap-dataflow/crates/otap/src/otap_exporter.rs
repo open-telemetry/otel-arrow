@@ -219,7 +219,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-            let (_context, payload) = pdata.take_apart();
+            let (_context, payload) = pdata.split();
 
             // TODO: context is lost
                         let message: OtapArrowRecords = payload
@@ -511,7 +511,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_payload()
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -525,7 +525,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_payload()
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
@@ -537,7 +537,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
-                        .take_payload()
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 

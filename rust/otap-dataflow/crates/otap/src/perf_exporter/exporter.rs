@@ -143,7 +143,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     self.pdata_metrics.inc_consumed(signal_type);
 
                     // Context is unused
-                    let (_ctx, data) = pdata.take_apart();
+                    let (_ctx, data) = pdata.split();
 
                     let batch: OtapArrowRecords = match data.try_into() {
                         Ok(batch) => batch,

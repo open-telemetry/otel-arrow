@@ -47,7 +47,7 @@
 //! let mut pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(buf).into());
 //!
 //! // Split the request, convert to Otap Arrow Records
-//! let (context, payload) = pdata.take_apart();
+//! let (context, payload) = pdata.split();
 //! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
 //! ```
 //!
@@ -183,15 +183,18 @@ impl OtapPdata {
         self.payload.is_empty()
     }
 
-    /// Removes the payload from this request, leaving an empty request.
+    /// Returns the payload from this request, consuming it.  This is
+    /// only considered useful in testing.  Use split() to split an
+    /// OtapPdata into (Context, OtapPayload).
     #[must_use]
-    pub fn take_payload(&mut self) -> OtapPayload {
-        self.payload.take_payload()
+    #[cfg(test)]
+    pub fn payload(self) -> OtapPayload {
+        self.payload
     }
 
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
-    pub fn take_apart(self) -> (Context, OtapPayload) {
+    pub fn split(self) -> (Context, OtapPayload) {
         (self.context, self.payload)
     }
 
@@ -199,11 +202,6 @@ impl OtapPdata {
     #[must_use]
     pub fn clone_payload(&self) -> OtapPayload {
         self.payload.clone()
-    }
-
-    /// Take the context.
-    pub fn take_context(&mut self) -> Context {
-        std::mem::take(&mut self.context)
     }
 
     /// Returns the number of items of the primary signal (spans, data
@@ -236,10 +234,10 @@ impl OtapPayload {
 
     /// Removes the payload from this request, leaving an empty request.
     #[must_use]
-    pub fn take_payload(&mut self) -> Self {
+    pub fn payload(&mut self) -> Self {
         match self {
-            Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
-            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
+            Self::OtlpBytes(value) => Self::OtlpBytes(value.payload()),
+            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.payload()),
         }
     }
 
@@ -268,7 +266,7 @@ pub trait OtapPayloadHelpers {
     fn is_empty(&self) -> bool;
 
     /// Takes the payload, leaving an empty payload behind.
-    fn take_payload(&mut self) -> Self;
+    fn payload(&mut self) -> Self;
 }
 
 impl OtapPayloadHelpers for OtapArrowRecords {
@@ -280,7 +278,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         }
     }
 
-    fn take_payload(&mut self) -> Self {
+    fn payload(&mut self) -> Self {
         match self {
             Self::Logs(value) => Self::Logs(std::mem::take(value)),
             Self::Metrics(value) => Self::Metrics(std::mem::take(value)),
@@ -342,7 +340,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         }
     }
 
-    fn take_payload(&mut self) -> Self {
+    fn payload(&mut self) -> Self {
         match self {
             Self::ExportLogsRequest(value) => Self::ExportLogsRequest(std::mem::take(value)),
             Self::ExportMetricsRequest(value) => Self::ExportMetricsRequest(std::mem::take(value)),
@@ -532,21 +530,21 @@ mod test {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into())
-            .take_payload();
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).take_payload();
+        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into()).take_payload();
+        let pdata = OtapPdata::new_default(otlp_bytes.into()).payload();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into()).take_payload();
+        let pdata = OtapPdata::new_default(otlp_bytes.into()).payload();
 
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
@@ -559,13 +557,13 @@ mod test {
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into())
-            .take_payload();
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).take_payload();
+        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
@@ -581,12 +579,12 @@ mod test {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into())
-            .take_payload();
+            .payload();
 
         // test can go OtlpBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).take_payload();
+        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {

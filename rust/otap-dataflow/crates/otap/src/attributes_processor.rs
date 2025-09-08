@@ -194,7 +194,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let (context, payload) = pdata.take_apart();
+                let (context, payload) = pdata.split();
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
@@ -450,7 +450,7 @@ mod tests {
 
                 // capture output
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").take_payload();
+                let first = out.into_iter().next().expect("one output").payload();
 
                 // Convert output to OTLP bytes for easy assertions
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
@@ -529,7 +529,7 @@ mod tests {
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").take_payload();
+                let first = out.into_iter().next().expect("one output").payload();
 
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
@@ -613,7 +613,7 @@ mod tests {
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").take_payload();
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -688,7 +688,7 @@ mod tests {
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").take_payload();
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -767,7 +767,7 @@ mod tests {
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").take_payload();
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,

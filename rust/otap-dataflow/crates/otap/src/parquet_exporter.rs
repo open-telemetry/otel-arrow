@@ -178,7 +178,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
                 Message::PData(pdata) => {
                     // Note: context is not used
-                    let (_context, payload) = pdata.take_apart();
+                    let (_context, payload) = pdata.split();
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
 
                     // generate unique IDs
@@ -385,8 +385,7 @@ mod test {
                             }),
                         })
                     }
-                    let pdata3 =
-                        fixtures::create_single_logs_pdata_with_attrs(attrs3).take_payload();
+                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
                     let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
@@ -459,7 +458,7 @@ mod test {
                             key: "strkey".to_string(),
                             value: Some(AnyValue::new_string("terry")),
                         }])
-                        .take_payload()
+                        .payload()
                         .try_into()
                         .unwrap();
 
@@ -468,7 +467,7 @@ mod test {
                             key: "intkey".to_string(),
                             value: Some(AnyValue::new_int(418)),
                         }])
-                        .take_payload()
+                        .payload()
                         .try_into()
                         .unwrap();
 

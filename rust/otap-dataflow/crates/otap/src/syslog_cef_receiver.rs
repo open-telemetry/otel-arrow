@@ -511,7 +511,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for first message")
                     .expect("No first message received")
-                    .take_payload();
+                    .payload();
 
                 // Extract arrow_records for further validation
                 let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
@@ -630,7 +630,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for first message")
                     .expect("No first message received")
-                    .take_payload();
+                    .payload();
 
                 // Extract arrow_records for further validation
                 let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
@@ -751,9 +751,8 @@ mod tests {
                 // Collect all messages within a reasonable timeout
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
-                        Ok(Ok(mut message)) => {
-                            let OtapPayload::OtapArrowRecords(arrow_records) =
-                                message.take_payload()
+                        Ok(Ok(message)) => {
+                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
                             else {
                                 panic!("Expected OtapArrowRecords variant")
                             };

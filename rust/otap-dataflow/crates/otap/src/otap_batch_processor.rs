@@ -555,7 +555,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                 let signal_type = request.signal_type();
 
                 // Note: Context is dropped.
-                let (_ctx, data) = request.take_apart();
+                let (_ctx, data) = request.split();
 
                 match OtapArrowRecords::try_from(data) {
                     Ok(rec) => {
@@ -1124,7 +1124,7 @@ mod tests {
                 1,
                 "single oversize record should be forwarded unsplit due to guard"
             );
-            let first = emitted.into_iter().next().unwrap().take_payload();
+            let first = emitted.into_iter().next().unwrap().payload();
             let first_rec: OtapArrowRecords = first.try_into().unwrap();
             assert_eq!(
                 first_rec.batch_length(),
