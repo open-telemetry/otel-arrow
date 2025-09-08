@@ -2986,6 +2986,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(StructArray::from(vec![
@@ -3042,6 +3047,11 @@ mod test {
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event"])),
                 )) as ArrayRef,
             ],
         )
@@ -3170,6 +3180,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -3230,6 +3245,11 @@ mod test {
                     UInt8Array::from(vec![0, 1, 0]),
                     Arc::new(Int32Array::from(vec![5, 9, 5])),
                 )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 0, 0]),
+                    Arc::new(StringArray::from(vec!["event"])),
+                )),
             ],
         )
         .unwrap();
