@@ -388,9 +388,11 @@ mod tests {
         use otap_df_telemetry::MetricsSystem;
         use otap_df_telemetry::config::Config as TelemetryConfig;
         use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
         use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
         use std::collections::HashMap;
         use std::time::Duration;
+        use tokio::task::JoinHandle;
 
         fn collect_metrics_map(registry: &MetricsRegistryHandle) -> HashMap<String, u64> {
             let mut out = HashMap::new();
@@ -402,17 +404,30 @@ mod tests {
             out
         }
 
+        // Helper to start/stop telemetry collection on the local task set.
+        // Returns the registry, a cloneable reporter, and the spawned collector task handle.
+        fn start_telemetry() -> (MetricsRegistryHandle, MetricsReporter, JoinHandle<()>) {
+            let telemetry = MetricsSystem::new(TelemetryConfig::default());
+            let registry = telemetry.registry();
+            let reporter = telemetry.reporter();
+            let collector_task = tokio::task::spawn_local(async move {
+                let _ = telemetry.run_collection_loop().await;
+            });
+            (registry, reporter, collector_task)
+        }
+
+        // Stops telemetry collection by dropping the reporter and aborting the collector task.
+        fn stop_telemetry(reporter: MetricsReporter, collector_task: JoinHandle<()>) {
+            drop(reporter);
+            collector_task.abort();
+        }
+
         #[test]
         fn test_metrics_named_logs_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
                 // Telemetry setup (registry + collector + reporter)
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 // Pipeline + node context
                 let controller = ControllerContext::new(registry.clone());
@@ -477,21 +492,15 @@ mod tests {
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 // shutdown collector
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_named_logs_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -546,21 +555,15 @@ mod tests {
                 );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_logs_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -618,21 +621,15 @@ mod tests {
                 );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_logs_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -689,22 +686,16 @@ mod tests {
                 );
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         // -------- Traces (spans) tests --------
         #[test]
         fn test_metrics_named_traces_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -749,21 +740,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_named_traces_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -806,21 +791,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_traces_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -865,21 +844,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_traces_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -922,22 +895,16 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         // -------- Metrics tests --------
         #[test]
         fn test_metrics_named_metrics_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -984,21 +951,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_named_metrics_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -1043,21 +1004,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_metrics_success() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -1104,21 +1059,15 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
 
         #[test]
         fn test_metrics_default_metrics_failure() {
-            let (rt, _local) = setup_test_runtime();
-            rt.block_on(async move {
-                let telemetry = MetricsSystem::new(TelemetryConfig::default());
-                let registry = telemetry.registry();
-                let reporter = telemetry.reporter();
-                let collector_task = tokio::spawn(async move {
-                    let _ = telemetry.run_collection_loop().await;
-                });
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
@@ -1163,9 +1112,8 @@ mod tests {
                 );
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
 
-                drop(reporter);
-                collector_task.abort();
-            });
+                stop_telemetry(reporter, collector_task);
+            }));
         }
     }
 }
