@@ -11,6 +11,7 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
+use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use crate::otap_grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
@@ -35,6 +36,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+use tonic_middleware::MiddlewareLayer;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
@@ -145,6 +147,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         }
 
         let server = Server::builder()
+            .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_service_server)
             .add_service(metrics_service_server)
             .add_service(trace_service_server);
@@ -301,6 +304,7 @@ mod tests {
                             .await
                             .expect("Timed out waiting for message")
                             .expect("No message received")
+                            .payload()
                             .try_into()
                             .expect("Could convert pdata to OTAPData");
 
@@ -316,6 +320,7 @@ mod tests {
                             .await
                             .expect("Timed out waiting for message")
                             .expect("No message received")
+                            .payload()
                             .try_into()
                             .expect("Could convert pdata to OTAPData");
 
@@ -331,6 +336,7 @@ mod tests {
                             .await
                             .expect("Timed out waiting for message")
                             .expect("No message received")
+                            .payload()
                             .try_into()
                             .expect("Could convert pdata to OTAPData");
 

@@ -166,10 +166,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
             }
             Message::PData(pdata) => {
                 // make a copy of the data and convert it to protobytes that we will later convert to the views
-                let otlp_bytes: OtlpProtoBytes = pdata.clone().try_into()?;
+                let data_copy = pdata.clone();
                 // forward the data to the next node
                 effect_handler.send_message(pdata).await?;
 
+                let (_context, payload) = data_copy.into_parts();
+                let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         let req = LogsData::decode(bytes.as_slice()).map_err(|e| {
@@ -444,7 +446,8 @@ mod tests {
                 logs_data
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let otlp_logs_bytes: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let otlp_logs_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -497,8 +500,8 @@ mod tests {
                 metrics_data
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let otlp_metrics_bytes: OtapPdata =
-                    OtlpProtoBytes::ExportMetricsRequest(bytes).into();
+                let otlp_metrics_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
                 ctx.process(Message::PData(otlp_metrics_bytes))
                     .await
                     .expect("failed to process");
@@ -562,8 +565,8 @@ mod tests {
                 traces_data
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let otlp_traces_bytes: OtapPdata =
-                    OtlpProtoBytes::ExportTracesRequest(bytes).into();
+                let otlp_traces_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
                 ctx.process(Message::PData(otlp_traces_bytes))
                     .await
                     .expect("failed to process");
