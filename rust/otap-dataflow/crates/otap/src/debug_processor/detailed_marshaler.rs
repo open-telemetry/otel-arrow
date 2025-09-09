@@ -297,6 +297,17 @@ impl ViewMarshaler for DetailedViewMarshaler {
         }
         report
     }
+
+    fn marshal_logs_signal(&self, log_record: LogsRecord) -> String {
+
+    }
+    fn marshal_metrics_signal(&self, metric: Metric) -> String {
+
+    }
+
+    fn marshal_span_signal(&self, span: Span) -> String {
+
+    }
 }
 
 fn attributes_string_detailed(attributes: &[KeyValue], prefix: &str) -> String {

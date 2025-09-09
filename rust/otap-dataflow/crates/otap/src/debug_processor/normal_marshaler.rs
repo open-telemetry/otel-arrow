@@ -69,6 +69,23 @@ impl ViewMarshaler for NormalViewMarshaler {
         }
         report
     }
+
+    fn marshal_logs_signal(&self, log_records: LogRecords) -> String {
+        let mut report = String::new();
+        for log_record in log_records.iter() {
+            if let Some(body) = &log_record.body {
+                _ = write!(&mut report, "      Body: {body}, ");
+            }
+            _ = writeln!(
+                &mut report,
+                "Attributes: {attributes}",
+                attributes = attributes_string_normal(&log_record.attributes)
+            );
+        }
+
+        report
+    }
+
     fn marshal_metrics(&self, metrics: MetricsData) -> String {
         let mut report = String::new();
         for (resource_index, resource_metric) in metrics.resource_metrics.iter().enumerate() {
@@ -139,6 +156,39 @@ impl ViewMarshaler for NormalViewMarshaler {
         }
         report
     }
+    fn marshal_metrics_signal(&self, metrics: Metrics) -> String {
+        let mut report = String::new();
+
+        for metric in metrics.iter() {
+            if let Some(data) = &metric.data {
+                match data {
+                    Data::Gauge(gauge) => {
+                        write_number_datapoints_normal(&mut report, metric, &gauge.data_points)
+                    }
+                    Data::Sum(sum) => {
+                        write_number_datapoints_normal(&mut report, metric, &sum.data_points)
+                    }
+                    Data::Histogram(histogram) => write_histogram_datapoints_normal(
+                        &mut report,
+                        metric,
+                        &histogram.data_points,
+                    ),
+                    Data::ExponentialHistogram(exponential_histogram) => {
+                        write_exponential_histogram_datapoints_normal(
+                            &mut report,
+                            metric,
+                            &exponential_histogram.data_points,
+                        )
+                    }
+                    Data::Summary(summary) => {
+                        write_summary_datapoints_normal(&mut report, metric, &summary.data_points)
+                    }
+                }
+            }
+        }
+
+        report
+    }
     fn marshal_traces(&self, traces: TracesData) -> String {
         let mut report = String::new();
         for (resource_index, resource_span) in traces.resource_spans.iter().enumerate() {
@@ -189,6 +239,28 @@ impl ViewMarshaler for NormalViewMarshaler {
                 }
             }
         }
+        report
+    }
+    fn marshal_spans_signal(&self, spans: Spans) -> String {
+        let mut report = String::new();
+
+        for span in spans.iter() {
+            // write line " {name} {trace_id} {span_id} {attributes}"
+            _ = write!(&mut report, "      Name: {name}, ", name = &span.name,);
+            if let Ok(trace_id) = String::from_utf8(span.trace_id.clone()) {
+                _ = write!(&mut report, "Trace ID: {trace_id}, ");
+            }
+            if let Ok(span_id) = String::from_utf8(span.span_id.clone()) {
+                _ = write!(&mut report, "Span ID: {span_id}, ");
+            }
+
+            _ = writeln!(
+                &mut report,
+                "Attributes: {attributes}",
+                attributes = attributes_string_normal(&span.attributes)
+            );
+        }
+        
         report
     }
 }

@@ -17,11 +17,20 @@ pub enum Verbosity {
     Basic,
 }
 
+/// Enum that describes how the output should be handled
+pub enum OutputMode {
+    /// output the whole batch at once
+    Batch,
+    /// output per signal
+    Signal,
+}
+
 /// Defines the settings of the debug processor, controls the level of verbosity the processor outputs
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
+    mode: OutputMode,
 }
 
 fn default_verbosity() -> Verbosity {
