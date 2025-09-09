@@ -31,7 +31,7 @@ pub struct LogsProtoBytesEncoder {
 }
 
 impl LogsProtoBytesEncoder {
-    fn new() -> Self {
+    pub fn new() -> Self {
         // TODO -- is there any way to estimate capacity here?
         Self {
             root_column_sorter: RootColumnSorter::new(),
@@ -59,42 +59,72 @@ impl LogsProtoBytesEncoder {
             .set_root_indices_to_visit_in_order(logs_rb, &mut self.root_columns_indices_sorted);
         self.root_column_sorted_index = 0;
 
-        while self.root_column_sorted_index < logs_rb.num_rows() {
-            // write the tag
+        // encode all `ResourceLog`s for this `LogsData`
+        loop {
             encode_field_tag(1, wire_types::LEN, result_buf);
             let len_start_pos = result_buf.len();
             encode_len_placeholder(5, result_buf);
             self.encode_resource_log(logs_rb, result_buf);
             let len = result_buf.len() - len_start_pos - 5;
             patch_len_placeholder(5, result_buf, len, len_start_pos);
+
+            if self.root_column_sorted_index >= logs_rb.num_rows() {
+                break
+            }
+
         }
 
         Ok(())
     }
 
     fn encode_resource_log(&mut self, logs_rb: &RecordBatch, result_buf: &mut Vec<u8>) {
-        let index = self.root_columns_indices_sorted[self.root_column_sorted_index];
-
-        if let Some(resources_col) = logs_rb.column_by_name(consts::RESOURCE) {
-            let resource_col = resources_col
+        let mut resource_id = None;
+        let mut resource_ids_col = None;
+        if let Some(resource_col) = logs_rb.column_by_name(consts::RESOURCE) {
+            let resource_col = resource_col
                 .as_any()
                 .downcast_ref::<StructArray>()
                 .unwrap();
-            // self.resource_encoder.encode(resource_col, index, &mut self.resource_logs_buf);
+            
+            if let Some(id_col) = resource_col.column_by_name(consts::ID) {
+                let id_col = id_col.as_any().downcast_ref::<UInt16Array>().unwrap();
+                resource_id = id_col.value_at(self.curr_root_rb_index());
+                resource_ids_col = Some(id_col)
+            }
         }
 
-        encode_field_tag(2, wire_types::LEN, result_buf);
-        let len_start_pos = result_buf.len();
-        encode_len_placeholder(5, result_buf);
-        self.encode_scope_logs(logs_rb, result_buf);
-        let len = result_buf.len() - len_start_pos - 5;
-        patch_len_placeholder(5, result_buf, len, len_start_pos);
+        // encode all `ScopeLog`s for this `ResourceLog`
+        loop {
+            encode_field_tag(2, wire_types::LEN, result_buf);
+            let len_start_pos = result_buf.len();
+            encode_len_placeholder(5, result_buf);
+            self.encode_scope_logs(logs_rb, result_buf);
+            let len = result_buf.len() - len_start_pos - 5;
+            patch_len_placeholder(5, result_buf, len, len_start_pos);
+
+            // break when we've reached the end of the record batch
+            if self.root_column_sorted_index >= logs_rb.num_rows() {
+                break
+            }
+
+            // check if we've found a new scope ID. If so, break
+            // TODO -- handle nulls. I _think_ based on this logic, they need to be last?
+            if let Some(resource_id) = resource_id {
+                if let Some(resource_ids_col) = resource_ids_col {
+                    let index = self.curr_root_rb_index();
+                    if resource_ids_col.is_valid(index) {
+                        if resource_id != resource_ids_col.value(index) {
+                            break
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn encode_scope_logs(&mut self, logs_rb: &RecordBatch, result_buf: &mut Vec<u8>) {
-        let mut index = self.root_columns_indices_sorted[self.root_column_sorted_index];
-
         let mut scope_id = None;
+        let mut scope_ids_column = None;
         if let Some(scopes_col) = logs_rb.column_by_name(consts::SCOPE) {
             let scopes_col = scopes_col.as_any().downcast_ref::<StructArray>().unwrap();
             // TODO instrumentation scopes fields
@@ -102,31 +132,50 @@ impl LogsProtoBytesEncoder {
             // get a reference to the scope_id we're working with
             if let Some(id_col) = scopes_col.column_by_name(consts::ID) {
                 let id_col = id_col.as_any().downcast_ref::<UInt16Array>().unwrap();
-                scope_id = id_col.value_at(index)
+                scope_id = id_col.value_at(self.curr_root_rb_index());
+                scope_ids_column = Some(id_col);
             }
         }
 
-        while self.root_column_sorted_index < logs_rb.num_rows() {
+        // encode all `LogRecord`s for this `ScopeLog``
+        loop {
             encode_field_tag(2, wire_types::LEN, result_buf);
             let len_start_pos = result_buf.len();
             encode_len_placeholder(5, result_buf);
             self.encode_log_record(logs_rb, result_buf);
             let len = result_buf.len() - len_start_pos - 5;
             patch_len_placeholder(5, result_buf, len, len_start_pos);
-            self.root_column_sorted_index += 1;
 
-            // TODO check if scope IDs match, then break
+
+            // break if we've reached the end of the record batch
+            if self.root_column_sorted_index >= logs_rb.num_rows() {
+                break
+            } 
+
+            // check if we've found a new scope ID. If so, break
+            // TODO -- handle nulls. I _think_ based on this logic, they need to be last?
+            if let Some(scope_id) = scope_id {
+                if let Some(scope_ids_col) = scope_ids_column {
+                    let index = self.curr_root_rb_index();
+                    if scope_ids_col.is_valid(index) {
+                        if scope_id != scope_ids_col.value(index) {
+                            break
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn encode_log_record(&mut self, logs_rb: &RecordBatch, result_buf: &mut Vec<u8>) {
-        let index = self.root_columns_indices_sorted[self.root_column_sorted_index];
+        let index = self.curr_root_rb_index();
 
         if let Some(time_unix_nano_col) = logs_rb.column_by_name(consts::TIME_UNIX_NANO) {
             let time_unix_nano_col = time_unix_nano_col
                 .as_any()
                 .downcast_ref::<TimestampNanosecondArray>()
                 .unwrap();
+            
             if time_unix_nano_col.is_valid(index) {
                 let val = time_unix_nano_col.value(index);
                 encode_field_tag(1, wire_types::FIXED64, result_buf);
@@ -146,6 +195,17 @@ impl LogsProtoBytesEncoder {
                 result_buf.extend_from_slice(val.as_bytes());
             }
         }
+
+        self.advance_root_rb_index();
+    }
+
+    #[inline]
+    fn curr_root_rb_index(&self) -> usize {
+        self.root_columns_indices_sorted[self.root_column_sorted_index]
+    }
+
+    fn advance_root_rb_index(&mut self) {
+        self.root_column_sorted_index += 1;
     }
 }
 
@@ -181,12 +241,12 @@ mod test {
             vec![
                 Arc::new(StructArray::new(
                     struct_fields.clone(),
-                    vec![Arc::new(UInt16Array::from_iter_values([0, 0, 0]))],
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
                     None,
                 )),
                 Arc::new(StructArray::new(
                     struct_fields.clone(),
-                    vec![Arc::new(UInt16Array::from_iter_values([0, 0, 0]))],
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 2]))],
                     None,
                 )),
                 Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),

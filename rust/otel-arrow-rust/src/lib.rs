@@ -8,7 +8,7 @@
 
 #[allow(dead_code)]
 pub(crate) mod arrays;
-mod decode;
+pub mod decode;
 
 pub mod encode;
 pub mod error;

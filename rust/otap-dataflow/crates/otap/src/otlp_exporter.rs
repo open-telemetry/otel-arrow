@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::otap_grpc::OtapArrowBytes;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
@@ -8,6 +9,7 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -19,6 +21,8 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_rust::decode::proto_bytes::logs::LogsProtoBytesEncoder;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,6 +137,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 .accept_compressed(encoding);
         }
 
+        let mut logs_encoder = LogsProtoBytesEncoder::new();
+
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
@@ -144,8 +150,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 Message::PData(pdata) => {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
-
                     self.pdata_metrics.inc_consumed(signal_type);
+
+                    if  SignalType::Logs == signal_type {
+                        let otap_batch: OtapArrowRecords = pdata.try_into()?;
+                        let mut bytes = vec![];
+                        logs_encoder.encode(&otap_batch, &mut bytes).unwrap();
+                        _ = logs_client.export(bytes).await.unwrap();
+                        continue
+                    }
+
+
                     let service_req: OtlpProtoBytes = pdata
                         .try_into()
                         .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
