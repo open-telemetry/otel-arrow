@@ -96,7 +96,10 @@ impl ArrowLogsService for ArrowLogsServiceMock {
                 let pdata = OtapArrowRecords::Logs(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(pdata.into()).await {
+                let status_result = match sender_clone
+                    .send(OtapPdata::new_default(pdata.into()))
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -140,7 +143,10 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
                 let pdata = OtapArrowRecords::Metrics(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(pdata.into()).await {
+                let status_result = match sender_clone
+                    .send(OtapPdata::new_default(pdata.into()))
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
@@ -183,7 +189,10 @@ impl ArrowTracesService for ArrowTracesServiceMock {
                 let pdata = OtapArrowRecords::Traces(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(pdata.into()).await {
+                let status_result = match sender_clone
+                    .send(OtapPdata::new_default(pdata.into()))
+                    .await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };

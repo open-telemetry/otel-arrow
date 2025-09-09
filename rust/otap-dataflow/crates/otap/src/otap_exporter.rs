@@ -222,7 +222,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-                        let message: OtapArrowRecords = pdata
+            let (_context, payload) = pdata.into_parts();
+
+            // TODO(#1098): Note context is dropped.
+                        let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
@@ -483,17 +486,17 @@ mod tests {
                 // Send a data message
                 let metric_message =
                     create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
-                ctx.send_pdata(metric_message.into())
+                ctx.send_pdata(OtapPdata::new_default(metric_message.into()))
                     .await
                     .expect("Failed to send metric message");
 
                 let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                ctx.send_pdata(log_message.into())
+                ctx.send_pdata(OtapPdata::new_default(log_message.into()))
                     .await
                     .expect("Failed to send log message");
 
                 let trace_message = create_otap_batch(TRACE_BATCH_ID, ArrowPayloadType::Spans);
-                ctx.send_pdata(trace_message.into())
+                ctx.send_pdata(OtapPdata::new_default(trace_message.into()))
                     .await
                     .expect("Failed to send trace message");
 
@@ -522,6 +525,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -535,6 +539,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
@@ -546,6 +551,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
