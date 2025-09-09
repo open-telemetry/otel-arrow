@@ -365,6 +365,15 @@ where
                 }
 
                 for log_record in log_records_slice {
+                    logs.append_event_name(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .event_name(),
+                    );
+                }
+
+                for log_record in log_records_slice {
                     if let Some(body) = log_record
                         .as_ref()
                         .expect("LogRecord should not be None")
@@ -2496,6 +2505,11 @@ mod test {
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, false),
                 Field::new("flags", DataType::UInt32, true),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -2651,6 +2665,11 @@ mod test {
                 Arc::new(UInt32Array::from(vec![
                     LogRecordFlags::TraceFlagsMask as u32,
                 ])) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event1"])),
+                )),
             ],
         )
         .unwrap();
@@ -2967,6 +2986,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(StructArray::from(vec![
@@ -3023,6 +3047,11 @@ mod test {
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event"])),
                 )) as ArrayRef,
             ],
         )
@@ -3151,6 +3180,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -3211,6 +3245,11 @@ mod test {
                     UInt8Array::from(vec![0, 1, 0]),
                     Arc::new(Int32Array::from(vec![5, 9, 5])),
                 )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 0, 0]),
+                    Arc::new(StringArray::from(vec!["event"])),
+                )),
             ],
         )
         .unwrap();

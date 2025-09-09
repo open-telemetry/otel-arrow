@@ -124,12 +124,18 @@ time_expression = {
     | "timespan(" ~ (double_literal|integer_literal) ~ time_units_literal? ~ ")"
 }
 regex_expression = { "regex(" ~ string_literal ~ ("," ~ string_literal)? ~ ")" }
-type_expressions = _{
+dynamic_array_expression = { "[" ~ (dynamic_inner_expression ~ ("," ~ dynamic_inner_expression)*)? ~ "]" }
+dynamic_map_item_expression = { string_literal ~ ":" ~ dynamic_inner_expression }
+dynamic_map_expression = { "{" ~ (dynamic_map_item_expression ~ ("," ~ dynamic_map_item_expression)*)? ~ "}" }
+dynamic_inner_expression = _{ dynamic_array_expression|dynamic_map_expression|type_expression }
+dynamic_expression = { "dynamic" ~ "(" ~ dynamic_inner_expression ~ ")" }
+type_expression = {
     null_literal
     | real_expression
     | datetime_expression
     | time_expression
     | regex_expression
+    | dynamic_expression
     | true_literal
     | false_literal
     | double_literal
@@ -218,7 +224,7 @@ backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
 scalar_expression = {
-    type_expressions
+    type_expression
     | conditional_expressions
     | conversion_expressions
     | string_expressions
