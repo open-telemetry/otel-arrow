@@ -244,7 +244,7 @@ impl OtapBatchProcessor {
             if max_val <= MIN_SEND_BATCH_SIZE {
                 // Bypass upstream splitter for degenerate max; just forward each record
                 for records in input {
-                    let pdata = OtapPdata::new_default(records.into());
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 // Always reset counter in the degenerate path
@@ -281,7 +281,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata = OtapPdata::new_default(records.into());
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -304,13 +304,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is (avoids upstream edge-cases)
                         for records in input {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -338,7 +338,7 @@ impl OtapBatchProcessor {
             let max_val = self.config.send_batch_max_size;
             if max_val <= MIN_SEND_BATCH_SIZE {
                 for records in input {
-                    let pdata = OtapPdata::new_default(records.into());
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 self.rows_metrics = 0;
@@ -370,7 +370,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata = OtapPdata::new_default(records.into());
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -392,13 +392,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is
                         for records in input {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -425,7 +425,7 @@ impl OtapBatchProcessor {
             let max_val = self.config.send_batch_max_size;
             if max_val <= MIN_SEND_BATCH_SIZE {
                 for records in input {
-                    let pdata = OtapPdata::new_default(records.into());
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 self.rows_traces = 0;
@@ -457,7 +457,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata = OtapPdata::new_default(records.into());
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -479,13 +479,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is
                         for records in input {
-                            let pdata = OtapPdata::new_default(records.into());
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -555,7 +555,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                 let signal_type = request.signal_type();
 
                 // Note: Context is dropped.
-                let (_ctx, data) = request.split();
+                let (_ctx, data) = request.into_parts();
 
                 match OtapArrowRecords::try_from(data) {
                     Ok(rec) => {

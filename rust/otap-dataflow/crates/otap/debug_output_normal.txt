@@ -1,0 +1,25 @@
+Received 1 resource logs
+Received 1 log records
+Received 1 events
+ResourceLog #0, Schema:[], Attributes: 
+   ScopeLog #0, Name: library, Version: @scopev1, Schema: [], Attributes: 
+      Body: log_body, Attributes: log_attr1=log_val_1 
+
+Received 1 resource metrics
+Received 1 metrics
+Received 1 data points
+ResourceMetric #0, Schema:[], Attributes: 
+   ScopeMetric #0, Name: library, Version: @scopev1, Schema: [], Attributes: 
+      gauge name gauge_attr1=gauge_val 3.141592653589793
+
+Received 1 resource spans
+Received 1 spans
+Received 1 events
+Received 1 links
+ResourceSpan #0, Schema:[], Attributes: 
+   ScopeSpan #0, Name: library, Version: @scopev1, Schema: [], Attributes: 
+      Name: span_name_1, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: 
+
+Timer tick received
+Config message received
+Shutdown message received

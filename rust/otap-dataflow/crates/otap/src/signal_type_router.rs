@@ -447,7 +447,7 @@ mod tests {
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
                 // Send a logs pdata -> should route to named port
-                let pdata: OtapPdata = OtapArrowRecords::Logs(Logs::default()).into();
+                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -518,7 +518,7 @@ mod tests {
                 let _ = senders.insert(PORT_LOGS.into(), LocalSender::MpscSender(tx_logs));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Logs(Logs::default()).into();
+                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected send failure on closed named port");
 
@@ -580,7 +580,7 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Logs(Logs::default()).into();
+                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -647,7 +647,7 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Logs(Logs::default()).into();
+                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(
                     res.is_err(),
@@ -710,7 +710,8 @@ mod tests {
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -764,7 +765,8 @@ mod tests {
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on named traces port");
 
@@ -814,7 +816,8 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -868,7 +871,8 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Traces(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on default traces route");
 
@@ -919,7 +923,8 @@ mod tests {
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -975,7 +980,8 @@ mod tests {
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on named metrics port");
 
@@ -1027,7 +1033,8 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -1083,7 +1090,8 @@ mod tests {
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
                 let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
 
-                let pdata: OtapPdata = OtapArrowRecords::Metrics(Default::default()).into();
+                let pdata =
+                    OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
                 assert!(res.is_err(), "expected failure on default metrics route");
 

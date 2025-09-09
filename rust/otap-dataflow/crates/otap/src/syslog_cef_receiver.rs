@@ -180,7 +180,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break;
                                                         },
@@ -223,7 +223,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await {
+                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                                     return; // Break out of the entire task
                                                                 }
                                                             }
@@ -232,7 +232,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break; // ToDo: Handle read error properly
                                                         }
@@ -248,7 +248,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await {
+                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                             return; // Break out of the entire task
                                                         }
                                                     }
@@ -318,7 +318,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await?;
+                                        effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                                     }
                                 },
                                 Err(e) => {
@@ -336,7 +336,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                effect_handler.send_message(OtapPdata::new_default(arrow_records.into())).await?;
+                                effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                             }
                         },
                     }

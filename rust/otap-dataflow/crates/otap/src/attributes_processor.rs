@@ -194,7 +194,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let (context, payload) = pdata.split();
+                let (context, payload) = pdata.into_parts();
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 

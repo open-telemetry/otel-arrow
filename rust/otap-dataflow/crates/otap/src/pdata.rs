@@ -44,10 +44,11 @@
 //! otlp_service_req.encode(&mut buf).unwrap();
 //!
 //! // Create a new OtapPdata with default context
-//! let mut pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(buf).into());
+//! let context = Context::default();
+//! let mut pdata = OtapPdata::new(context, OtlpProtoBytes::ExportLogsRequest(buf).into());
 //!
 //! // Split the request, convert to Otap Arrow Records
-//! let (context, payload) = pdata.split();
+//! let (context, payload) = pdata.into_parts();
 //! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
 //! ```
 //!
@@ -156,8 +157,20 @@ pub struct OtapPdata {
 
 impl OtapPdata {
     /// Construct new OtapData with payload using default context.
+    /// This is a test-only form.
     #[must_use]
+    #[cfg(test)]
     pub fn new_default(payload: OtapPayload) -> Self {
+        Self {
+            context: Context::default(),
+            payload,
+        }
+    }
+
+    /// New OtapData with payload using TODO(#1098) context. This is
+    /// a definite problem. See issue #1098.
+    #[must_use]
+    pub fn new_todo_context(payload: OtapPayload) -> Self {
         Self {
             context: Context::default(),
             payload,
@@ -184,7 +197,7 @@ impl OtapPdata {
     }
 
     /// Returns the payload from this request, consuming it.  This is
-    /// only considered useful in testing.  Use split() to split an
+    /// only considered useful in testing.  Use into_parts() to split an
     /// OtapPdata into (Context, OtapPayload).
     #[must_use]
     #[cfg(test)]
@@ -194,14 +207,8 @@ impl OtapPdata {
 
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
-    pub fn split(self) -> (Context, OtapPayload) {
+    pub fn into_parts(self) -> (Context, OtapPayload) {
         (self.context, self.payload)
-    }
-
-    /// Clones the payload from this request.
-    #[must_use]
-    pub fn clone_payload(&self) -> OtapPayload {
-        self.payload.clone()
     }
 
     /// Returns the number of items of the primary signal (spans, data

@@ -178,7 +178,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
                 Message::PData(pdata) => {
                     // Note: context is not used
-                    let (_context, payload) = pdata.split();
+                    let (_context, payload) = pdata.into_parts();
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
 
                     // generate unique IDs

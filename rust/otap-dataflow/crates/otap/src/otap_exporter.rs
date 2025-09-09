@@ -222,7 +222,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-            let (_context, payload) = pdata.split();
+            let (_context, payload) = pdata.into_parts();
 
             // TODO: context is lost
                         let message: OtapArrowRecords = payload

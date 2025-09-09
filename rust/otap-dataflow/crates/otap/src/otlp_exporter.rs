@@ -146,7 +146,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let signal_type = pdata.signal_type();
 
                     // TODO: context is lost
-                    let (_context, payload) = pdata.split();
+                    let (_context, payload) = pdata.into_parts();
 
                     self.pdata_metrics.inc_consumed(signal_type);
                     let service_req: OtlpProtoBytes = payload

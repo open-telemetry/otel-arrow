@@ -166,10 +166,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
             }
             Message::PData(pdata) => {
                 // make a copy of the data and convert it to protobytes that we will later convert to the views
-                let otlp_bytes: OtlpProtoBytes = pdata.clone_payload().try_into()?;
+                let data_copy = pdata.clone();
                 // forward the data to the next node
                 effect_handler.send_message(pdata).await?;
 
+                let (_context, payload) = data_copy.into_parts();
+                let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         let req = LogsData::decode(bytes.as_slice()).map_err(|e| {
