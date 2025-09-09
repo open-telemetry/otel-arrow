@@ -217,4 +217,13 @@ impl LogRecordView for ObjLogRecord<'_> {
     fn span_id(&self) -> Option<&SpanId> {
         parse_span_id(&self.inner.span_id)
     }
+
+    #[inline]
+    fn event_name(&self) -> Option<Str<'_>> {
+        if !self.inner.event_name.is_empty() {
+            Some(self.inner.event_name.as_str())
+        } else {
+            None
+        }
+    }
 }
