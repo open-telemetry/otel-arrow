@@ -691,11 +691,11 @@ mod tests {
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
                 // check the the processor has received the expected number of messages
-                assert_eq!(reader.contains("Received 1 resource metrics"), false);
-                assert_eq!(reader.contains("Received 1 metrics"), false);
-                assert_eq!(reader.contains("Received 1 data points"), false);
-                assert_eq!(reader.contains("Received 1 resource spans"), false);
-                assert_eq!(reader.contains("Received 1 spans"), false);
+                assert!(!reader.contains("Received 1 resource metrics"));
+                assert!(!reader.contains("Received 1 metrics"));
+                assert!(!reader.contains("Received 1 data points"));
+                assert!(!reader.contains("Received 1 resource spans"));
+                assert!(!reader.contains("Received 1 spans"));
                 assert!(reader.contains("Received 1 resource logs"));
                 assert!(reader.contains("Received 1 log records"));
                 assert!(reader.contains("Received 1 events"));
@@ -742,11 +742,11 @@ mod tests {
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
-                assert_eq!(reader.contains("Received 1 resource spans"), false);
-                assert_eq!(reader.contains("Received 1 spans"), false);
-                assert_eq!(reader.contains("Received 1 resource logs"), false);
-                assert_eq!(reader.contains("Received 1 log records"), false);
-                assert_eq!(reader.contains("Received 1 events"), false);
+                assert!(!reader.contains("Received 1 resource spans"));
+                assert!(!reader.contains("Received 1 spans"));
+                assert!(!reader.contains("Received 1 resource logs"));
+                assert!(!reader.contains("Received 1 log records"));
+                assert!(!reader.contains("Received 1 events"));
                 assert!(reader.contains("Timer tick received"));
                 assert!(reader.contains("Config message received"));
                 assert!(reader.contains("Shutdown message received"));
@@ -787,15 +787,15 @@ mod tests {
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
                 // check the the processor has received the expected number of messages
-                assert_eq!(reader.contains("Received 1 resource metrics"), false);
-                assert_eq!(reader.contains("Received 1 metrics"), false);
-                assert_eq!(reader.contains("Received 1 data points"), false);
+                assert!(!reader.contains("Received 1 resource metrics"));
+                assert!(!reader.contains("Received 1 metrics"));
+                assert!(!reader.contains("Received 1 data points"));
                 assert!(reader.contains("Received 1 resource spans"));
                 assert!(reader.contains("Received 1 spans"));
                 assert!(reader.contains("Received 1 events"));
                 assert!(reader.contains("Received 1 links"));
-                assert_eq!(reader.contains("Received 1 resource logs"), false);
-                assert_eq!(reader.contains("Received 1 log records"), false);
+                assert!(!reader.contains("Received 1 resource logs"));
+                assert!(!reader.contains("Received 1 log records"));
                 assert!(reader.contains("Timer tick received"));
                 assert!(reader.contains("Config message received"));
                 assert!(reader.contains("Shutdown message received"));
