@@ -17,7 +17,7 @@ config:
 
 Valid levels of verbosity are: `basic`, `normal`, and `detailed`
 
-Select what signals you want output for, by default the following 
+Select what signals you want output for, by default the following
 signals will be displayed `metrics`, `logs`, and `spans`
 
 ## Example Output => Basic Verbosity
