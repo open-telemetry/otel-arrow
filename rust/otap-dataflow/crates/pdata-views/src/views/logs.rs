@@ -152,5 +152,6 @@ pub trait LogRecordView {
     /// span ID or incorrect length (length != 8)
     fn span_id(&self) -> Option<&SpanId>;
 
-    // TODO event_name https://github.com/open-telemetry/otel-arrow/issues/422
+    /// access the unique identifier of event category/type
+    fn event_name(&self) -> Option<Str<'_>>;
 }

@@ -39,6 +39,7 @@ struct LogsArrays<'a> {
     body: Option<LogBodyArrays<'a>>,
     dropped_attributes_count: Option<&'a UInt32Array>,
     flags: Option<&'a UInt32Array>,
+    event_name: Option<StringArrayAccessor<'a>>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
@@ -73,6 +74,10 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
 
         let dropped_attributes_count = get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?;
         let flags = get_u32_array_opt(rb, consts::FLAGS)?;
+        let event_name = rb
+            .column_by_name(consts::EVENT_NAME)
+            .map(StringArrayAccessor::try_new)
+            .transpose()?;
 
         let body = rb
             .column_by_name(consts::BODY)
@@ -101,6 +106,7 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
             body,
             dropped_attributes_count,
             flags,
+            event_name,
         })
     }
 }
@@ -337,6 +343,7 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
             .dropped_attributes_count
             .value_at_or_default(idx);
         current_log_record.flags = logs_arrays.flags.value_at_or_default(idx);
+        current_log_record.event_name = logs_arrays.event_name.value_at_or_default(idx);
 
         if let Some(body_val) = logs_arrays.body.value_at(idx) {
             current_log_record.body = Some(body_val?)
