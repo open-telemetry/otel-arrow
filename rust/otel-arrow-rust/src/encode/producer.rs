@@ -10,6 +10,8 @@ use std::{collections::HashMap, io::Cursor};
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
+use arrow_ipc::CompressionType;
+use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions};
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
@@ -25,11 +27,16 @@ struct StreamProducer {
 }
 
 impl StreamProducer {
-    fn try_new(payload_type: ArrowPayloadType, schema: SchemaRef, schema_id: i64) -> Result<Self> {
+    fn try_new(
+        payload_type: ArrowPayloadType,
+        schema: SchemaRef,
+        schema_id: i64,
+        ipc_write_options: IpcWriteOptions,
+    ) -> Result<Self> {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
-        let stream_writer =
-            StreamWriter::try_new(cursor, &schema).context(error::BuildStreamWriterSnafu)?;
+        let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options)
+            .context(error::BuildStreamWriterSnafu)?;
 
         Ok(Self {
             payload_type,
@@ -56,17 +63,44 @@ pub struct Producer {
     next_schema_id: i64,
     stream_producers: HashMap<String, StreamProducer>,
     schema_id_builder: SchemaIdBuilder,
+    ipc_write_options: IpcWriteOptions,
+}
+
+/// Options for creating [`Producer`]
+pub struct ProducerOptions {
+    /// compression method for IPC batches. default = zstd
+    pub ipc_compression: Option<CompressionType>,
+}
+
+impl Default for ProducerOptions {
+    fn default() -> Self {
+        Self {
+            ipc_compression: Some(CompressionType::ZSTD),
+        }
+    }
 }
 
 impl Producer {
     /// create a new instance of `Producer`
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_options(ProducerOptions::default())
+    }
+
+    /// create a new instance of `Producer` with the given options for the IPC stream writer
+    #[must_use]
+    pub fn new_with_options(options: ProducerOptions) -> Self {
         Self {
             next_batch_id: 0,
             next_schema_id: 0,
             stream_producers: HashMap::new(),
             schema_id_builder: SchemaIdBuilder::new(),
+            ipc_write_options: IpcWriteOptions::default()
+                .with_dictionary_handling(DictionaryHandling::Delta)
+                // safety: this will only fail if the writer options's metadata version has been
+                // configured to version before V5, which we're not doing here.
+                .try_with_compression(options.ipc_compression)
+                .expect("can configure compression"),
         }
     }
 
@@ -103,6 +137,7 @@ impl Producer {
                             *payload_type,
                             schema,
                             payload_schema_id,
+                            self.ipc_write_options.clone(),
                         )?)
                 }
                 Some(s) => s,

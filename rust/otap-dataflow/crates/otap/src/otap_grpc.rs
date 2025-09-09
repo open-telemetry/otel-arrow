@@ -28,6 +28,7 @@ use tonic::{Request, Response, Status};
 
 use crate::pdata::OtapPdata;
 
+pub mod middleware;
 pub mod otlp;
 
 /// struct that implements the ArrowLogsService trait
