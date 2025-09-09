@@ -224,7 +224,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         self.pdata_metrics.inc_consumed(signal_type);
             let (_context, payload) = pdata.into_parts();
 
-            // TODO: context is lost
+            // TODO(#1098): Note context is dropped.
                         let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;

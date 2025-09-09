@@ -145,7 +145,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
-                    // TODO: context is lost
+                    // TODO(#1098): Note context is dropped.
                     let (_context, payload) = pdata.into_parts();
 
                     self.pdata_metrics.inc_consumed(signal_type);
