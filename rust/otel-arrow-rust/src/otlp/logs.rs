@@ -18,7 +18,8 @@ use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{AttributeArrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
-   proto_encode_instrumentation_scope, proto_encode_resource, AnyValueArrays, ChildIndexIter, BatchSorter, ProtoBuffer, ResourceArrays, ScopeArrays, SortedBatchCursor
+    AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
+    SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
 };
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
@@ -33,7 +34,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
-use crate::proto_encode_len_delimited_mystery_size;
+use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::{consts, is_id_plain_encoded};
 
 use super::attributes::{cbor, store::AttributeValueType};
@@ -497,10 +498,8 @@ impl LogsProtoBytesEncoder {
 
         // encode all `ResourceLog`s for this `LogsData`
         loop {
-            let num_bytes = 5;
-            proto_encode_len_delimited_mystery_size!(
+            proto_encode_len_delimited_unknown_size!(
                 LOGS_DATA_RESOURCE,
-                num_bytes,
                 self.encode_resource_log(&logs_data_arrays, result_buf),
                 result_buf
             );
@@ -519,10 +518,8 @@ impl LogsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) {
         // encode the `Resource`
-        let num_bytes = 5;
-        proto_encode_len_delimited_mystery_size!(
+        proto_encode_len_delimited_unknown_size!(
             LOGS_DATA_RESOURCE,
-            num_bytes,
             proto_encode_resource(
                 self.root_cursor.curr_index(),
                 &logs_data_arrays.resource_arrays,
@@ -539,10 +536,8 @@ impl LogsProtoBytesEncoder {
             .id
             .value_at(self.root_cursor.curr_index());
         loop {
-            let num_bytes = 5;
-            proto_encode_len_delimited_mystery_size!(
+            proto_encode_len_delimited_unknown_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
-                num_bytes,
                 self.encode_scope_logs(logs_data_arrays, result_buf),
                 result_buf
             );
@@ -570,10 +565,8 @@ impl LogsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) {
         // encode the `InstrumentationScope`
-        let num_bytes = 5;
-        proto_encode_len_delimited_mystery_size!(
+        proto_encode_len_delimited_unknown_size!(
             SCOPE_LOG_SCOPE,
-            num_bytes,
             proto_encode_instrumentation_scope(
                 self.root_cursor.curr_index(),
                 &logs_data_arrays.scope_arrays,
@@ -590,10 +583,8 @@ impl LogsProtoBytesEncoder {
             .id
             .value_at(self.root_cursor.curr_index());
         loop {
-            let num_bytes = 5;
-            proto_encode_len_delimited_mystery_size!(
+            proto_encode_len_delimited_unknown_size!(
                 SCOPE_LOGS_LOG_RECORDS,
-                num_bytes,
                 self.encode_log_record(logs_data_arrays, result_buf),
                 result_buf
             );
@@ -649,15 +640,13 @@ impl LogsProtoBytesEncoder {
         if log_body_arrays.body.is_valid(index) {
             let anyval_arrays = &log_body_arrays.anyval_arrays;
             if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
-                // TODO nounwrap
-                let value_type = AttributeValueType::try_from(value_type).unwrap();
-                let num_bytes = 5;
-                proto_encode_len_delimited_mystery_size!(
-                    LOG_RECORD_BODY,
-                    num_bytes,
-                    encode_any_value(anyval_arrays, index, value_type, result_buf),
-                    result_buf
-                );
+                if let Ok(value_type) = AttributeValueType::try_from(value_type) {
+                    proto_encode_len_delimited_unknown_size!(
+                        LOG_RECORD_BODY,
+                        encode_any_value(anyval_arrays, index, value_type, result_buf),
+                        result_buf
+                    );
+                }
             }
         }
 
@@ -670,10 +659,8 @@ impl LogsProtoBytesEncoder {
                 };
 
                 while let Some(attr_index) = attrs_index_iter.next() {
-                    let num_bytes = 5;
-                    proto_encode_len_delimited_mystery_size!(
+                    proto_encode_len_delimited_unknown_size!(
                         LOG_RECORD_ATTRIBUTES,
-                        num_bytes,
                         encode_key_value(log_attrs, attr_index, result_buf),
                         result_buf
                     );
@@ -683,10 +670,8 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = log_arrays.dropped_attributes_count {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(
-                    LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
-                    wire_types::VARINT,
-                );
+                result_buf
+                    .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
                 result_buf.encode_varint(val as u64);
             }
         }
@@ -716,10 +701,8 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = log_arrays.observed_time_unix_nano {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(
-                    LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
-                    wire_types::FIXED64,
-                );
+                result_buf
+                    .encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64);
                 result_buf.extend_from_slice(&val.to_le_bytes());
             }
         }

@@ -13,7 +13,7 @@ use crate::proto::consts::field_num::common::{
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_mystery_size;
+use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
 pub mod cbor;
@@ -62,18 +62,16 @@ pub(crate) fn encode_key_value(
     }
 
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
-        // TODO nounwrap
-        let value_type = AttributeValueType::try_from(value_type).unwrap();
-        // TODO just guessing the max byte length for attributes is probably the biggest contributor to
-        // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
-        // size guess it's here
-        let num_bytes = 5;
-        proto_encode_len_delimited_mystery_size!(
-            KEY_VALUE_VALUE,
-            num_bytes,
-            encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf),
-            result_buf
-        );
+        if let Ok(value_type) = AttributeValueType::try_from(value_type) {
+            // TODO just guessing the max byte length for attributes is probably the biggest contributor to
+            // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
+            // size guess it's here
+            proto_encode_len_delimited_unknown_size!(
+                KEY_VALUE_VALUE,
+                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf),
+                result_buf
+            );
+        }
     }
 }
 

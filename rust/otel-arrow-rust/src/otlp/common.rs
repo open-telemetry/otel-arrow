@@ -16,10 +16,11 @@ use crate::proto::consts::field_num::resource::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
-use crate::proto_encode_len_delimited_mystery_size;
+use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array, UInt8Array
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
@@ -69,10 +70,8 @@ pub(crate) fn proto_encode_resource(
             };
 
             while let Some(attr_index) = attrs_index_iter.next() {
-                let num_bytes = 5;
-                proto_encode_len_delimited_mystery_size!(
+                proto_encode_len_delimited_unknown_size!(
                     RESOURCE_ATTRIBUTES,
-                    num_bytes,
                     encode_key_value(attrs_arrays, attr_index, result_buf),
                     result_buf
                 );
@@ -82,10 +81,7 @@ pub(crate) fn proto_encode_resource(
 
     if let Some(col) = resource_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(
-                RESOURCE_DROPPED_ATTRIBUTES_COUNT,
-                wire_types::VARINT,
-            );
+            result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
             result_buf.encode_varint(val as u64);
         }
     }
@@ -208,10 +204,8 @@ pub(crate) fn proto_encode_instrumentation_scope(
             };
 
             while let Some(attr_index) = attrs_index_iter.next() {
-                let num_bytes = 5;
-                proto_encode_len_delimited_mystery_size!(
+                proto_encode_len_delimited_unknown_size!(
                     INSTRUMENTATION_SCOPE_ATTRIBUTES,
-                    num_bytes,
                     encode_key_value(attr_arrays, attr_index, result_buf),
                     result_buf
                 );
@@ -221,10 +215,8 @@ pub(crate) fn proto_encode_instrumentation_scope(
 
     if let Some(col) = scope_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(
-                INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT,
-                wire_types::VARINT,
-            );
+            result_buf
+                .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
             result_buf.encode_varint(val as u64);
         }
     }
@@ -326,6 +318,7 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
+/// mutable buffer for encoding protobuf bytes
 #[derive(Debug)]
 pub struct ProtoBuffer {
     buffer: Vec<u8>,
@@ -333,9 +326,7 @@ pub struct ProtoBuffer {
 
 impl ProtoBuffer {
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
@@ -343,32 +334,12 @@ impl ProtoBuffer {
         self.encode_varint(key);
     }
 
-    /// Encodes a u64 as protobuf varint into `buf`.
-    // TODO should this be generic over T so we don't always have to pass a u64
     pub fn encode_varint(&mut self, mut value: u64) {
         while value >= 0x80 {
-        self.buffer.push(((value as u8) & 0x7F) | 0x80);
+            self.buffer.push(((value as u8) & 0x7F) | 0x80);
             value >>= 7;
         }
         self.buffer.push(value as u8);
-    }
-
-    pub(crate) fn encode_len_placeholder(&mut self, num_bytes: usize) {
-        for _ in 0..num_bytes - 1 {
-            self.buffer.push(0x80)
-        }
-        self.buffer.push(0x00);
-    }
-
-    pub(crate) fn patch_len_placeholder(
-        &mut self, 
-        num_bytes: usize,
-        len: usize,
-        len_start_pos: usize,
-    ) {
-        for i in 0..num_bytes {
-            self.buffer[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
-        }
     }
 
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
@@ -386,46 +357,75 @@ impl AsRef<[u8]> for ProtoBuffer {
     }
 }
 
-
-
-/// Helper for encoding with unknown length. usage:
+/// Helper for encoding with unknown length. Usage:
 /// ```norun
-/// encode_len_delimited_mystery_size!(
+/// proto_encode_len_delimited_unknown_size!(
 ///     1, // field tag
-///     5, // number of bytes to use for len
 ///     encode_some_nested_field(&mut result_buf), // fills in the child body
 ///     result_buf
 /// )
 /// ```
+///
+/// Our proto encoding algorithm tries to encode in a single pass over the OTAP data, but it will
+/// not know the size of the nested child messages a priori. Because the length fields are encoded
+/// in a varint, we don't know how many bytes we need to set aside for the length before we start
+/// appending the encoded child.
+///
+/// The workaround is that we set aside a fixed length number of bytes, and create a zero-padded
+/// varint. For example, the varint 5, encoded in 8 bytes would be. Observe that in all bytes, the
+/// continuation bit (msb) is set:
+/// ```text
+/// 0x85 0x80 0x80 0x80 0x80 0x80 0x80 0x00
+/// ```
+///
+/// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
+/// between encoded size and CPU needed to compute the size ofr the length.
+///
+/// TODO: currently we're always allocating 8 bytes, which should be able hold 2^(7*8) bytes
+/// which is ~72GB. This is clearly too much, but we over-allocate to be safe. Eventually we should
+/// maybe allow a size hint here and allocate fewer bytes.
+///
 #[macro_export]
-macro_rules! proto_encode_len_delimited_mystery_size {
-    ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
-        $buf.encode_field_tag(
-            $field_tag,
-            crate::proto::consts::wire_types::LEN,
-        );
+macro_rules! proto_encode_len_delimited_unknown_size {
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
+        let num_bytes = 8;
+        $buf.encode_field_tag($field_tag, crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
-        $buf.encode_len_placeholder($placeholder_size);
+        crate::otlp::common::encode_len_placeholder($buf, num_bytes);
         $encode_fn;
-        let len = $buf.len() - len_start_pos - $placeholder_size;
-        $buf.patch_len_placeholder(
-            $placeholder_size,
-            len,
-            len_start_pos,
-        );
+        let len = $buf.len() - len_start_pos - num_bytes;
+        crate::otlp::common::patch_len_placeholder($buf, num_bytes, len, len_start_pos);
     }};
+}
+
+pub(crate) fn encode_len_placeholder(buf: &mut ProtoBuffer, num_bytes: usize) {
+    for _ in 0..num_bytes - 1 {
+        buf.buffer.push(0x80)
+    }
+    buf.buffer.push(0x00);
+}
+
+pub(crate) fn patch_len_placeholder(
+    buf: &mut ProtoBuffer,
+    num_bytes: usize,
+    len: usize,
+    len_start_pos: usize,
+) {
+    for i in 0..num_bytes {
+        buf.buffer[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
+    }
 }
 
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
-    curr_index: usize
-} 
+    curr_index: usize,
+}
 
 impl SortedBatchCursor {
     pub fn new() -> Self {
         Self {
             sorted_indices: Vec::new(),
-            curr_index: 0
+            curr_index: 0,
         }
     }
 
@@ -449,10 +449,7 @@ impl SortedBatchCursor {
 
 pub(crate) struct BatchSorter {
     row_converter: RowConverter,
-
-    // TODO comment about reusing the heap allocation for the vec of rows
     rows: Vec<(usize, Row<'static>)>,
-
     u16_ids: Vec<(usize, u16)>,
 }
 
@@ -474,7 +471,11 @@ impl BatchSorter {
 
     /// TODO comment
     // TODO revisit the return type here
-    pub fn root_indices_sorted(&mut self, record_batch: &RecordBatch, cursor: &mut SortedBatchCursor) {
+    pub fn root_indices_sorted(
+        &mut self,
+        record_batch: &RecordBatch,
+        cursor: &mut SortedBatchCursor,
+    ) {
         const PLACEHOLDER_ARRAY: LazyLock<ArrayRef> =
             LazyLock::new(|| Arc::new(UInt8Array::new_null(0)));
 
@@ -537,7 +538,9 @@ impl BatchSorter {
             todo!()
         }
 
-        cursor.sorted_indices.extend(self.u16_ids.iter().map(|(i, _)| *i));
+        cursor
+            .sorted_indices
+            .extend(self.u16_ids.iter().map(|(i, _)| *i));
     }
 }
 
@@ -546,8 +549,6 @@ fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)>
     v.clear();
     v.into_iter().map(|_| unreachable!()).collect()
 }
-
-
 
 /// TODO coment on what this is doing
 pub(crate) struct ChildIndexIter<'a> {
@@ -562,9 +563,8 @@ impl Iterator for ChildIndexIter<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         // we've iterated to the end of the attributes array - no more attributes
         if self.cursor.finished() {
-            return None
+            return None;
         }
-
 
         // TODO there's a bug in here that we actually need to increment pos
         // until it's greater than or equal to parent_id? I guess in case there's

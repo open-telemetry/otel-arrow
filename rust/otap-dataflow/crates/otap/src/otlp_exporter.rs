@@ -23,6 +23,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_rust::otlp::ProtoBuffer;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -138,6 +139,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         }
 
         let mut logs_encoder = LogsProtoBytesEncoder::new();
+        let mut proto_buffer = ProtoBuffer::new();
 
         loop {
             match msg_chan.recv().await? {
@@ -152,21 +154,19 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let signal_type = pdata.signal_type();
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    if SignalType::Logs == signal_type {
-                        let otap_batch: OtapArrowRecords = pdata.try_into()?;
-                        let mut bytes = vec![];
-                        logs_encoder.encode(&otap_batch, &mut bytes).unwrap();
-                        _ = logs_client.export(bytes).await.unwrap();
-                        continue;
-                    }
-
-                    let service_req: OtlpProtoBytes = pdata
-                        .try_into()
-                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
-
-                    _ = match service_req {
-                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                            _ = logs_client.export(bytes).await.map_err(|e| {
+                    match (signal_type, pdata) {
+                        // use optimized direct encoding OTAP -> OTLP directly
+                        // TODO currently this is only implemented for logs, but eventually we'll do
+                        // do this for other signal types as well
+                        (SignalType::Logs, OtapPdata::OtapArrowRecords(mut otap_batch)) => {
+                            logs_encoder.encode(&mut otap_batch, &mut proto_buffer).map_err(|e| {
+                                self.pdata_metrics.logs_failed.inc();
+                                Error::ExporterError {
+                                    exporter: exporter_id.clone(),
+                                    error: e.to_string(),
+                                }
+                            })?;
+                            _ = logs_client.export(proto_buffer.as_ref().to_vec()).await.map_err(|e| {
                                 self.pdata_metrics.logs_failed.inc();
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
@@ -174,29 +174,47 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 }
                             })?;
                             self.pdata_metrics.logs_exported.inc();
-                        }
-                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                            _ = metrics_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.metrics_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
+                        },
+                        (_, pdata) => {
+                            let service_req: OtlpProtoBytes = pdata
+                                .try_into()
+                                .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+
+                            _ = match service_req {
+                                OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                                    _ = logs_client.export(bytes).await.map_err(|e| {
+                                        self.pdata_metrics.logs_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    })?;
+                                    self.pdata_metrics.logs_exported.inc();
                                 }
-                            })?;
-                            self.pdata_metrics.metrics_exported.inc();
-                        }
-                        OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                            _ = trace_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.traces_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
+                                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                                    _ = metrics_client.export(bytes).await.map_err(|e| {
+                                        self.pdata_metrics.metrics_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    })?;
+                                    self.pdata_metrics.metrics_exported.inc();
                                 }
-                            })?;
-                            self.pdata_metrics.traces_exported.inc();
+                                OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                                    _ = trace_client.export(bytes).await.map_err(|e| {
+                                        self.pdata_metrics.traces_failed.inc();
+                                        Error::ExporterError {
+                                            exporter: exporter_id.clone(),
+                                            error: e.to_string(),
+                                        }
+                                    })?;
+                                    self.pdata_metrics.traces_exported.inc();
+                                }
+                            };
                         }
-                    };
-                }
+                    }
+                },
                 _ => {
                     // ignore unhandled messages
                 }
