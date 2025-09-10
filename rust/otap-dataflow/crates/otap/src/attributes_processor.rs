@@ -194,13 +194,15 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let mut records: OtapArrowRecords = pdata.try_into()?;
+                let (context, payload) = pdata.into_parts();
+
+                let mut records: OtapArrowRecords = payload.try_into()?;
 
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
                 effect_handler
-                    .send_message(records.into())
+                    .send_message(OtapPdata::new(context, records.into()))
                     .await
                     .map_err(|e| e.into())
             }
@@ -440,14 +442,15 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 // capture output
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
 
                 // Convert output to OTLP bytes for easy assertions
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
@@ -520,13 +523,13 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
 
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
@@ -603,13 +606,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -677,13 +681,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -755,13 +760,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,

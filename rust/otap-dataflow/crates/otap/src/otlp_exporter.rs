@@ -145,8 +145,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
+                    // TODO(#1098): Note context is dropped.
+                    let (_context, payload) = pdata.into_parts();
+
                     self.pdata_metrics.inc_consumed(signal_type);
-                    let service_req: OtlpProtoBytes = pdata
+                    let service_req: OtlpProtoBytes = payload
                         .try_into()
                         .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
@@ -231,23 +234,29 @@ mod tests {
                 let req = ExportLogsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportLogsRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send log message");
+                ctx.send_pdata(OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(req_bytes).into(),
+                ))
+                .await
+                .expect("Failed to send log message");
 
                 let req = ExportMetricsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportMetricsRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send metric message");
+                ctx.send_pdata(OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(req_bytes).into(),
+                ))
+                .await
+                .expect("Failed to send metric message");
 
                 let req = ExportTraceServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportTracesRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send metric message");
+                ctx.send_pdata(OtapPdata::new_default(
+                    OtlpProtoBytes::ExportTracesRequest(req_bytes).into(),
+                ))
+                .await
+                .expect("Failed to send metric message");
 
                 // Send shutdown
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")
