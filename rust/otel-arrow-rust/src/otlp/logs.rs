@@ -697,11 +697,14 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(AttributeValueType::Str as u8, 3))),
-                Arc::new(StringArray::from_iter_values(vec!["ka", "ka", "kb"]))
+                Arc::new(StringArray::from_iter_values(vec!["ka", "ka", "kb"])),
+                Arc::new(StringArray::from_iter_values(vec!["va", "va", "vb"])),
+
             ]
         ).unwrap();
 

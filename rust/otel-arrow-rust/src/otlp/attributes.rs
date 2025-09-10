@@ -1,16 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::{RecordBatch, StringArray, UInt16Array, UInt8Array};
+use arrow::array::{BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, UInt16Array, UInt8Array};
 use snafu::OptionExt;
 
 
-use crate::arrays::{get_u16_array, get_u8_array, MaybeDictArrayAccessor, NullableArrayAccessor};
+use crate::arrays::{get_bool_array_opt, get_f64_array_opt, get_u16_array, get_u8_array, MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::decode::proto_bytes::{encode_field_tag, encode_varint};
 use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::proto::consts::field_num::common::{KEY_VALUE_KEY, KEY_VALUE_VALUE};
+use crate::proto::consts::field_num::common::{ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE};
 use crate::proto::consts::wire_types;
 use crate::schema::consts;
 
@@ -22,8 +22,13 @@ pub mod store;
 pub(crate) struct AttributeArrays<'a> {
     pub parent_id: &'a UInt16Array,
     pub attr_type: &'a UInt8Array,
-    pub key: MaybeDictArrayAccessor<'a, StringArray>,
-    // TODO fill in the rest
+    pub attr_key: MaybeDictArrayAccessor<'a, StringArray>,
+    pub attr_str: Option<MaybeDictArrayAccessor<'a, StringArray>>,
+    pub attr_int: Option<MaybeDictArrayAccessor<'a, Int64Array>>,
+    pub attr_double: Option<&'a Float64Array>,
+    pub attr_bool: Option<&'a BooleanArray>,
+    pub attr_bytes: Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
+    pub attr_ser:  Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for AttributeArrays<'a> {
@@ -35,12 +40,24 @@ impl<'a> TryFrom<&'a RecordBatch> for AttributeArrays<'a> {
         let key = rb
             .column_by_name(consts::ATTRIBUTE_KEY)
             .with_context(|| error::ColumnNotFoundSnafu { name: consts::ATTRIBUTE_KEY })?;
-        let key = MaybeDictArrayAccessor::<StringArray>::try_new(key)?;
+        let attr_key = MaybeDictArrayAccessor::<StringArray>::try_new(key)?;
+        let attr_str = rb.column_by_name(consts::ATTRIBUTE_STR).map(MaybeDictArrayAccessor::<StringArray>::try_new).transpose()?;
+        let attr_int = rb.column_by_name(consts::ATTRIBUTE_INT).map(MaybeDictArrayAccessor::<Int64Array>::try_new).transpose()?;
+        let attr_double = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
+        let attr_bool = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
+        let attr_bytes = rb.column_by_name(consts::ATTRIBUTE_BYTES).map(MaybeDictArrayAccessor::<BinaryArray>::try_new).transpose()?;
+        let attr_ser = rb.column_by_name(consts::ATTRIBUTE_BYTES).map(MaybeDictArrayAccessor::<BinaryArray>::try_new).transpose()?;
 
         Ok(Self {
             parent_id,
             attr_type,
-            key
+            attr_key,
+            attr_str,
+            attr_int,
+            attr_double,
+            attr_bool,
+            attr_bytes,
+            attr_ser
         })
 
     }
@@ -78,17 +95,20 @@ impl Iterator for AttributesIter<'_> {
     }
 }
 
-pub fn encode_key_value(
+pub(crate) fn encode_key_value(
     attr_arrays: &AttributeArrays<'_>,
     index: usize,
     result_buf: &mut Vec<u8>
 ) {
-    if let Some(key) = attr_arrays.key.value_at(index) {
+    if let Some(key) = attr_arrays.attr_key.value_at(index) {
         encode_field_tag(KEY_VALUE_KEY, wire_types::LEN, result_buf);
         encode_varint(key.len() as u64, result_buf);
         result_buf.extend_from_slice(key.as_bytes());
     }
 
+    // TODO just guessing the max byte length for attributes is probably the biggest contributor to
+    // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
+    // size guess it's here
     let num_bytes = 5;
     encode_len_delimited_mystery_size!(
         KEY_VALUE_VALUE,
@@ -109,7 +129,13 @@ fn encode_any_value(
         let value_type = AttributeValueType::try_from(value_type).unwrap();
         match value_type {
             AttributeValueType::Str => {
-                // TODO
+                if let Some(attr_str) = &attr_arrays.attr_str {
+                    if let Some(val) = attr_str.value_at(index) {
+                        encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN, result_buf);
+                        encode_varint(val.len() as u64, result_buf);
+                        result_buf.extend_from_slice(val.as_bytes());
+                    }
+                }
             },
             _ => {
                 todo!()
