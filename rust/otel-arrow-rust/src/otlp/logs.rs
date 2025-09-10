@@ -611,7 +611,7 @@ impl LogsProtoBytesEncoder {
                 &logs_data_arrays.scope_arrays,
                 logs_data_arrays.scope_attrs.as_ref(),
                 &self.scope_attrs_sorted_indices,
-                &mut self.resource_attrs_sorted_index,
+                &mut self.scope_attrs_sorted_index,
                 result_buf
             ),
             result_buf
@@ -796,7 +796,11 @@ mod test {
 
     #[test]
     fn albert_smoke_test() {
-        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+        let res_struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]);
         let body_struct_fields = Fields::from(vec![
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -806,10 +810,14 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new(
                     consts::RESOURCE,
-                    DataType::Struct(struct_fields.clone()),
+                    DataType::Struct(res_struct_fields.clone()),
                     true,
                 ),
-                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
                 Field::new(consts::ID, DataType::UInt16, true),
                 Field::new(
                     consts::TIME_UNIX_NANO,
@@ -825,13 +833,18 @@ mod test {
             ])),
             vec![
                 Arc::new(StructArray::new(
-                    struct_fields.clone(),
+                    res_struct_fields.clone(),
                     vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
                     None,
                 )),
                 Arc::new(StructArray::new(
-                    struct_fields.clone(),
-                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 2]))],
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "scope0", "scope1", "scope2",
+                        ])),
+                    ],
                     None,
                 )),
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
@@ -854,7 +867,7 @@ mod test {
         )
         .unwrap();
 
-        let log_attrs_record_batch = RecordBatch::try_new(
+        let attrs_record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -875,8 +888,9 @@ mod test {
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, logs_record_batch);
-        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_record_batch.clone());
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, log_attrs_record_batch);
+        otap_batch.set(ArrowPayloadType::LogAttrs, attrs_record_batch.clone());
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_record_batch.clone());
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_record_batch.clone());
         let mut result_buf = vec![];
         let mut encoder = LogsProtoBytesEncoder::new();
         encoder.encode(&otap_batch, &mut result_buf).unwrap();
