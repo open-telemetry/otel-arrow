@@ -1,8 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::thread::Scope;
+
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StructArray,
+    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
@@ -13,6 +15,12 @@ use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
+use crate::decode::proto_bytes::resource::ResourceProtoBytesEncoder;
+use crate::decode::proto_bytes::{
+    RootColumnSorter, encode_field_tag, encode_fixed64, encode_len_placeholder, encode_varint,
+    patch_len_placeholder, wire_types,
+};
+use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
@@ -365,4 +373,229 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
     }
 
     Ok(logs)
+}
+
+pub struct LogsProtoBytesEncoder {
+    root_column_sorter: RootColumnSorter,
+    root_columns_indices_sorted: Vec<usize>,
+    root_column_sorted_index: usize,
+
+    resource_encoder: ResourceProtoBytesEncoder,
+}
+
+impl LogsProtoBytesEncoder {
+    pub fn new() -> Self {
+        // TODO -- is there any way to estimate capacity here?
+        Self {
+            root_column_sorter: RootColumnSorter::new(),
+            root_columns_indices_sorted: Vec::new(),
+            root_column_sorted_index: 0,
+
+            resource_encoder: ResourceProtoBytesEncoder::new(),
+        }
+    }
+
+    /// TODO comments
+    pub fn encode(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        result_buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        // TODO -- do we need to ensure the buf is empty?
+
+        // TODO nounwrap
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let logs_arrays = LogsArrays::try_from(logs_rb).unwrap();
+        let scope_arrays = ScopeArrays::try_from(logs_rb).unwrap();
+        let resource_arrays = ResourceArrays::try_from(logs_rb).unwrap();
+
+        // get the list of indices in the root record to visit in order
+        self.root_columns_indices_sorted.clear();
+        self.root_column_sorter
+            .set_root_indices_to_visit_in_order(logs_rb, &mut self.root_columns_indices_sorted);
+        self.root_column_sorted_index = 0;
+
+        // encode all `ResourceLog`s for this `LogsData`
+        loop {
+            let num_bytes = 5;
+            encode_len_delimited_mystery_size!(
+                1,
+                num_bytes,
+                self.encode_resource_log(
+                    &logs_arrays,
+                    &scope_arrays,
+                    &resource_arrays,
+                    result_buf,
+                ),
+                result_buf
+            );
+
+            if self.root_column_sorted_index >= logs_rb.num_rows() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_resource_log(
+        &mut self,
+        logs_arrays: &LogsArrays<'_>,
+        scope_arrays: &ScopeArrays<'_>,
+        resource_arrays: &ResourceArrays<'_>,
+        result_buf: &mut Vec<u8>,
+    ) {
+        let resource_id = resource_arrays.id.value_at(self.curr_root_rb_index());
+
+        // encode all `ScopeLog`s for this `ResourceLog`
+        loop {
+            let num_bytes = 5;
+            encode_len_delimited_mystery_size!(
+                2,
+                num_bytes,
+                self.encode_scope_logs(logs_arrays, scope_arrays, result_buf),
+                result_buf
+            );
+
+            // break when we've reached the end of the record batch
+            if self.root_column_sorted_index >= self.root_columns_indices_sorted.len() {
+                break;
+            }
+
+            // check if we've found a new scope ID. If so, break
+            if resource_id != resource_arrays.id.value_at(self.curr_root_rb_index()) {
+                break;
+            }
+        }
+    }
+
+    fn encode_scope_logs(
+        &mut self,
+        log_arrays: &LogsArrays<'_>,
+        scope_arrays: &ScopeArrays<'_>,
+        result_buf: &mut Vec<u8>,
+    ) {
+        let scope_id = scope_arrays.id.value_at(self.curr_root_rb_index());
+
+        // encode all `LogRecord`s for this `ScopeLog``
+        loop {
+            let num_bytes = 5;
+            encode_len_delimited_mystery_size!(
+                2,
+                num_bytes,
+                self.encode_log_record(log_arrays, result_buf),
+                result_buf
+            );
+
+            // break if we've reached the end of the record batch
+            if self.root_column_sorted_index >= self.root_columns_indices_sorted.len() {
+                break;
+            }
+
+            // check if we've found a new scope ID. If so, break
+            if scope_id != scope_arrays.id.value_at(self.curr_root_rb_index()) {
+                break;
+            }
+        }
+    }
+
+    fn encode_log_record(&mut self, log_arrays: &LogsArrays<'_>, result_buf: &mut Vec<u8>) {
+        let index = self.curr_root_rb_index();
+
+        if let Some(col) = log_arrays.time_unix_nano {
+            if let Some(val) = col.value_at(index) {
+                encode_field_tag(1, wire_types::FIXED64, result_buf);
+                encode_fixed64(val as u64, result_buf);
+            }
+        }
+
+        if let Some(col) = &log_arrays.severity_text {
+            if let Some(val) = col.value_at(index) {
+                encode_field_tag(3, wire_types::LEN, result_buf);
+                encode_varint(val.len() as u64, result_buf);
+                result_buf.extend_from_slice(val.as_bytes());
+            }
+        }
+
+        self.advance_root_rb_index();
+    }
+
+    #[inline]
+    fn curr_root_rb_index(&self) -> usize {
+        self.root_columns_indices_sorted[self.root_column_sorted_index]
+    }
+
+    fn advance_root_rb_index(&mut self) {
+        self.root_column_sorted_index += 1;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::array::{
+        RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array,
+    };
+
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::schema::consts;
+    use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use prost::Message;
+    use std::sync::Arc;
+
+    use crate::{otap::Logs, proto::opentelemetry::logs::v1::LogsData};
+
+    use super::*;
+
+    #[test]
+    fn albert_smoke_test() {
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 2]))],
+                    None,
+                )),
+                Arc::new(UInt16Array::new_null(3)),
+                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "ERROR", "INFO", "DEBUG",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, record_batch);
+        let mut result_buf = vec![];
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&otap_batch, &mut result_buf).unwrap();
+
+        println!("{:?}", result_buf);
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        println!("{:#?}", result);
+    }
 }

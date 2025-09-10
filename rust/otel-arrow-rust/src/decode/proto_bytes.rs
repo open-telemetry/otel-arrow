@@ -11,7 +11,6 @@ use arrow::compute::sort_to_indices;
 use arrow::datatypes::DataType;
 use arrow::row::{Row, RowConverter, SortField};
 
-pub mod logs;
 pub mod resource;
 
 // TODO don't duplicate this
@@ -27,20 +26,20 @@ pub mod wire_types {
     pub const FIXED32: u64 = 5;
 }
 
-pub fn encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
+pub(crate) fn encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
     let key = (field_number << 3) | wire_type;
     encode_varint(key, result_buf);
 }
 
 // todo comment on what is happening
-fn encode_len_placeholder(num_bytes: usize, result_buf: &mut Vec<u8>) {
+pub(crate) fn encode_len_placeholder(num_bytes: usize, result_buf: &mut Vec<u8>) {
     for _ in 0..num_bytes - 1 {
         result_buf.push(0x80)
     }
     result_buf.push(0x00);
 }
 
-fn patch_len_placeholder(
+pub(crate) fn patch_len_placeholder(
     num_bytes: usize,
     result_buf: &mut Vec<u8>,
     len: usize,
@@ -51,8 +50,20 @@ fn patch_len_placeholder(
     }
 }
 
+#[macro_export]
+macro_rules! encode_len_delimited_mystery_size {
+    ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
+        encode_field_tag($field_tag, wire_types::LEN, $buf);
+        let len_start_pos = $buf.len();
+        encode_len_placeholder($placeholder_size, $buf);
+        $encode_fn;
+        let len = $buf.len() - len_start_pos - $placeholder_size;
+        patch_len_placeholder($placeholder_size, $buf, len, len_start_pos);
+    }};
+}
+
 /// Encodes a u64 as protobuf varint into `buf`.
-fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
+pub(crate) fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
     while value >= 0x80 {
         buf.push(((value as u8) & 0x7F) | 0x80);
         value >>= 7;
@@ -60,7 +71,7 @@ fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
     buf.push(value as u8);
 }
 
-pub fn encode_fixed64(value: u64, buf: &mut Vec<u8>) {
+pub(crate) fn encode_fixed64(value: u64, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -72,7 +83,7 @@ pub(crate) struct RootColumnSorter {
 }
 
 impl RootColumnSorter {
-    fn new() -> Self {
+    pub fn new() -> Self {
         // safety: these datatypes are sortable
         let row_converter = RowConverter::new(vec![
             SortField::new(DataType::UInt16),
