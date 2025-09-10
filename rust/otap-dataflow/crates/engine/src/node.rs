@@ -139,6 +139,11 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
 }
 
 impl NodeId {
+    /// Node index assigned by pipeline builder.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     pub(crate) fn build(index: usize, name: NodeName) -> NodeId {
         NodeId { index, name }
     }

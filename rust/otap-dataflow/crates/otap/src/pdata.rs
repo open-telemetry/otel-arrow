@@ -81,13 +81,67 @@ use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
+use std::time::{Duration, Instant};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
+
+/// Context data per node
+#[derive(Clone, Debug, Default)]
+pub struct ContextData {
+    /// Placeholder, e.g., number of retries.
+    register: i32,
+}
+
+impl ContextData {
+    /// Context data is a PLACEHOLDER currently an i32 used for retry count
+    /// in the retry processor.
+    pub fn new(register: i32) -> Self {
+        Self { register }
+    }
+}
+
+/// Interest allows pipeline controller to route by Ack or Nack.
+pub enum Interest {
+    /// Only cares for Ack responses (???).
+    AckOnly,
+    /// Only cares for Nack responses (for retry).
+    NackOnly,
+    /// Cares about any response.
+    AckOrNack,
+}
+
+/// Frame of interest.
+pub struct Frame {
+    /// Which responses matter
+    interest: Interest,
+
+    /// Which node created this frame.
+    node_id: usize,
+
+    /// When the frame was initialized.
+    when: Instant,
+
+    /// Remaining time, relative to when.
+    dead: Option<Duration>,
+
+    /// Data for this frame.
+    data: ContextData,
+}
 
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    // This is reserved for a future PR.
+    /// Stack of interested-component states.
+    stack: Vec<Frame>,
+}
+
+impl Context {
+    pub fn deadline(&self) -> Option<Instant> {
+        let last = self.stack.last();
+        last.map(|f| f.dead.map(|d| f.when.checked_add(d)))
+            .flatten()
+            .flatten()
+    }
 }
 
 /// module contains related to pdata
@@ -101,6 +155,10 @@ pub mod error {
             /// The error that occurred
             error: String,
         },
+
+        /// Request already timed out
+        #[error("Request timed out")]
+        AlreadyTimedOut,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -209,6 +267,34 @@ impl OtapPdata {
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
         (self.context, self.payload)
+    }
+
+    /// Reply
+    pub fn with_reply_to(
+        self,
+        interest: Interest,
+        node_id: usize,
+        data: ContextData,
+    ) -> Result<Self, error::Error> {
+        let mut context = self.context;
+        let now = Instant::now();
+        let dead = context.deadline();
+        if let Some(timeout) = dead {
+            if now >= timeout {
+                return Err(error::Error::AlreadyTimedOut);
+            }
+        }
+        context.stack.push(Frame {
+            interest,
+            node_id,
+            when: now,
+            dead,
+            data,
+        });
+        Ok(Self {
+            context,
+            payload: self.payload,
+        })
     }
 
     /// Returns the number of items of the primary signal (spans, data
