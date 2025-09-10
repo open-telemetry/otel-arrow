@@ -6,7 +6,8 @@ use crate::arrays::{
     get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::{AttributeArrays, encode_key_value};
+use crate::otlp::attributes::store::AttributeValueType;
+use crate::otlp::attributes::{AttributeArrays, cbor, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -24,7 +25,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
-use snafu::OptionExt;
+use snafu::{OptionExt, ResultExt};
 use std::fmt;
 use std::fmt::Write;
 use std::sync::{Arc, LazyLock};
@@ -318,6 +319,45 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
+impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
+    type Native = Result<AnyValue>;
+
+    fn value_at(&self, idx: usize) -> Option<Self::Native> {
+        let value_type = AttributeValueType::try_from(self.attr_type.value_at_or_default(idx))
+            .context(error::UnrecognizedAttributeValueTypeSnafu);
+        let value_type = match value_type {
+            Ok(v) => v,
+            Err(err) => {
+                return Some(Err(err));
+            }
+        };
+
+        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
+            let bytes = self.attr_ser.value_at(idx)?;
+            let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
+            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
+        }
+
+        let value = match value_type {
+            AttributeValueType::Str => Value::StringValue(self.attr_str.value_at_or_default(idx)),
+            AttributeValueType::Int => Value::IntValue(self.attr_int.value_at_or_default(idx)),
+            AttributeValueType::Double => {
+                Value::DoubleValue(self.attr_double.value_at_or_default(idx))
+            }
+            AttributeValueType::Bool => Value::BoolValue(self.attr_bool.value_at_or_default(idx)),
+            AttributeValueType::Bytes => {
+                Value::BytesValue(self.attr_bytes.value_at_or_default(idx))
+            }
+            _ => {
+                // silently ignore unknown types to avoid DOS attacks
+                return None;
+            }
+        };
+
+        Some(Ok(AnyValue { value: Some(value) }))
+    }
+}
+
 /// mutable buffer for encoding protobuf bytes
 #[derive(Debug)]
 pub struct ProtoBuffer {
@@ -349,11 +389,21 @@ impl ProtoBuffer {
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
 }
 
 impl AsRef<[u8]> for ProtoBuffer {
     fn as_ref(&self) -> &[u8] {
         &self.buffer
+    }
+}
+
+impl AsMut<[u8]> for ProtoBuffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.buffer
     }
 }
 

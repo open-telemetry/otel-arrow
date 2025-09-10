@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StructArray,
-    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, BinaryArray, Int64Array, RecordBatch, StructArray, TimestampNanosecondArray,
+    UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
-use related_data::RelatedData;
-use snafu::{OptionExt, ResultExt, ensure};
+use prost::Message;
+use snafu::OptionExt;
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
@@ -21,23 +21,21 @@ use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
 };
-use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
     LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
     LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID,
-    LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS,
-    SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS,
+    LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCHEMA_URL,
+    RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
-use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto_encode_len_delimited_unknown_size;
-use crate::schema::{consts, is_id_plain_encoded};
+use crate::schema::consts;
 
-use super::attributes::{cbor, store::AttributeValueType};
+use super::attributes::store::AttributeValueType;
 
 mod related_data;
 
@@ -130,53 +128,21 @@ struct LogBodyArrays<'a> {
     anyval_arrays: AnyValueArrays<'a>,
 }
 
+impl<'a> LogBodyArrays<'a> {
+    fn is_valid(&self, idx: usize) -> bool {
+        self.body.is_valid(idx)
+    }
+}
+
 impl NullableArrayAccessor for LogBodyArrays<'_> {
     type Native = Result<AnyValue>;
 
     fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        if !self.body.is_valid(idx) {
+        if !self.is_valid(idx) {
             return None;
         }
 
-        let value_type =
-            AttributeValueType::try_from(self.anyval_arrays.attr_type.value_at_or_default(idx))
-                .context(error::UnrecognizedAttributeValueTypeSnafu);
-        let value_type = match value_type {
-            Ok(v) => v,
-            Err(err) => {
-                return Some(Err(err));
-            }
-        };
-
-        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self.anyval_arrays.attr_ser.value_at(idx)?;
-            let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
-            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
-        }
-
-        let value = match value_type {
-            AttributeValueType::Str => {
-                Value::StringValue(self.anyval_arrays.attr_str.value_at_or_default(idx))
-            }
-            AttributeValueType::Int => {
-                Value::IntValue(self.anyval_arrays.attr_int.value_at_or_default(idx))
-            }
-            AttributeValueType::Double => {
-                Value::DoubleValue(self.anyval_arrays.attr_double.value_at_or_default(idx))
-            }
-            AttributeValueType::Bool => {
-                Value::BoolValue(self.anyval_arrays.attr_bool.value_at_or_default(idx))
-            }
-            AttributeValueType::Bytes => {
-                Value::BytesValue(self.anyval_arrays.attr_bytes.value_at_or_default(idx))
-            }
-            _ => {
-                // silently ignore unknown types to avoid DOS attacks
-                return None;
-            }
-        };
-
-        Some(Ok(AnyValue { value: Some(value) }))
+        self.anyval_arrays.value_at(idx)
     }
 }
 
@@ -211,195 +177,24 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     }
 }
 
-pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceRequest> {
-    let mut logs = ExportLogsServiceRequest::default();
-    let mut prev_res_id: Option<u16> = None;
-    let mut prev_scope_id: Option<u16> = None;
+pub fn logs_from(mut logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceRequest> {
+    // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
+    // and the buffer, a these structures can be used between requests
+    let mut logs_encoder = LogsProtoBytesEncoder::new();
+    let mut buffer = ProtoBuffer::new();
+    logs_encoder.encode(&mut logs_otap_batch, &mut buffer)?;
 
-    let mut res_id = 0;
-    let mut scope_id = 0;
-
-    let rb = logs_otap_batch
-        .get(ArrowPayloadType::Logs)
-        .context(error::LogRecordNotFoundSnafu)?;
-
-    let mut related_data = RelatedData::try_from(&logs_otap_batch)?;
-
-    let resource_arrays = ResourceArrays::try_from(rb)?;
-    let scope_arrays = ScopeArrays::try_from(rb)?;
-    let logs_arrays = LogsArrays::try_from(rb)?;
-
-    let ids_plain_encoded = is_id_plain_encoded(rb);
-
-    let resource_ids_plain_encoded = rb
-        .column_by_name(consts::RESOURCE)
-        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
-        .and_then(|col_struct| col_struct.fields().find(consts::ID))
-        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
-        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
-        .unwrap_or(false);
-
-    let scope_ids_plain_encoded = rb
-        .column_by_name(consts::SCOPE)
-        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
-        .and_then(|col_struct| col_struct.fields().find(consts::ID))
-        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
-        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
-        .unwrap_or(false);
-
-    for idx in 0..rb.num_rows() {
-        let res_maybe_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
-        if resource_ids_plain_encoded {
-            res_id = res_maybe_delta_id;
-        } else {
-            res_id += res_maybe_delta_id;
+    // TODO should we just expect here? We shouldn't be writing invalid proto to the buffer
+    ExportLogsServiceRequest::decode(buffer.as_ref()).map_err(|e| {
+        error::UnexpectedRecordBatchStateSnafu {
+            reason: format!("error decoding proto serialization: {e:?}"),
         }
-
-        if prev_res_id != Some(res_id) {
-            // new resource id
-            prev_res_id = Some(res_id);
-            let resource_logs = logs.resource_logs.append_and_get();
-            prev_scope_id = None;
-
-            // Update the resource field of the current resource logs
-            let resource = resource_logs.resource.get_or_insert_default();
-            if let Some(dropped_attributes_count) =
-                resource_arrays.dropped_attributes_count.value_at(idx)
-            {
-                resource.dropped_attributes_count = dropped_attributes_count;
-            }
-
-            if let Some(res_id) = resource_arrays.id.value_at(idx) {
-                if let Some(attrs) = related_data.res_attr_map_store.as_mut().and_then(|store| {
-                    if resource_ids_plain_encoded {
-                        store.attribute_by_id(res_id)
-                    } else {
-                        store.attribute_by_delta_id(res_id)
-                    }
-                }) {
-                    resource.attributes = attrs.to_vec();
-                }
-            }
-
-            resource_logs.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
-        }
-
-        let scope_maybe_delta_id_opt = scope_arrays.id.value_at(idx);
-        if scope_ids_plain_encoded {
-            scope_id = scope_maybe_delta_id_opt.unwrap_or_default();
-        } else {
-            scope_id += scope_maybe_delta_id_opt.unwrap_or_default();
-        }
-
-        if prev_scope_id != Some(scope_id) {
-            prev_scope_id = Some(scope_id);
-            let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_maybe_delta_id_opt {
-                if let Some(attrs) = related_data
-                    .scope_attr_map_store
-                    .as_mut()
-                    .and_then(|store| {
-                        if scope_ids_plain_encoded {
-                            store.attribute_by_id(scope_id)
-                        } else {
-                            store.attribute_by_delta_id(scope_id)
-                        }
-                    })
-                {
-                    scope.attributes = attrs.to_vec();
-                }
-            }
-
-            // safety: we must have appended at least one resource logs when reach here
-            let current_scope_logs_slice = &mut logs
-                .resource_logs
-                .last_mut()
-                .expect("At this stage, we should have at least one resource log.")
-                .scope_logs;
-            let scope_logs = current_scope_logs_slice.append_and_get();
-            scope_logs.scope = Some(scope);
-            scope_logs.schema_url = logs_arrays.schema_url.value_at(idx).unwrap_or_default();
-        }
-
-        // safety: we've appended at least one value at each slice when reach here.
-        let current_scope_logs = &mut logs
-            .resource_logs
-            .last_mut()
-            .expect("At this stage, we should have at least one resource log.")
-            .scope_logs
-            .last_mut()
-            .expect("At this stage, we should have added at least one scope log.");
-
-        let current_log_record = current_scope_logs.log_records.append_and_get();
-        let maybe_delta_id = logs_arrays.id.value_at_or_default(idx);
-        let log_id = if ids_plain_encoded {
-            maybe_delta_id
-        } else {
-            related_data.log_record_id_from_delta(maybe_delta_id)
-        };
-
-        current_log_record.time_unix_nano =
-            logs_arrays.time_unix_nano.value_at_or_default(idx) as u64;
-        current_log_record.observed_time_unix_nano =
-            logs_arrays.observed_time_unix_nano.value_at_or_default(idx) as u64;
-
-        if let Some(trace_id_bytes) = logs_arrays.trace_id.value_at(idx) {
-            ensure!(
-                trace_id_bytes.len() == 16,
-                error::InvalidTraceIdSnafu {
-                    message: format!(
-                        "log_id = {log_id}, index = {idx}, trace_id = {trace_id_bytes:?}"
-                    ),
-                }
-            );
-            current_log_record.trace_id = trace_id_bytes
-        }
-
-        if let Some(span_id_bytes) = logs_arrays.span_id.value_at(idx) {
-            ensure!(
-                span_id_bytes.len() == 8,
-                error::InvalidSpanIdSnafu {
-                    message: format!(
-                        "log_id = {log_id}, index = {idx}, span_id = {span_id_bytes:?}"
-                    ),
-                }
-            );
-            current_log_record.span_id = span_id_bytes;
-        }
-
-        current_log_record.severity_number = logs_arrays.severity_number.value_at_or_default(idx);
-        current_log_record.severity_text = logs_arrays.severity_text.value_at_or_default(idx);
-        current_log_record.dropped_attributes_count = logs_arrays
-            .dropped_attributes_count
-            .value_at_or_default(idx);
-        current_log_record.flags = logs_arrays.flags.value_at_or_default(idx);
-        current_log_record.event_name = logs_arrays.event_name.value_at_or_default(idx);
-
-        if let Some(body_val) = logs_arrays.body.value_at(idx) {
-            current_log_record.body = Some(body_val?)
-        }
-
-        if let Some(attrs) = related_data
-            .log_record_attr_map_store
-            .as_mut()
-            .and_then(|store| {
-                if ids_plain_encoded {
-                    store.attribute_by_id(maybe_delta_id)
-                } else {
-                    store.attribute_by_delta_id(maybe_delta_id)
-                }
-            })
-        {
-            current_log_record.attributes = attrs.to_vec()
-        }
-    }
-
-    Ok(logs)
+        .build()
+    })
 }
 
 pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
-    log_body_arrays: LogBodyArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
     resource_arrays: ResourceArrays<'a>,
     log_attrs: Option<AttributeArrays<'a>>,
@@ -445,21 +240,8 @@ impl LogsProtoBytesEncoder {
             .get(ArrowPayloadType::Logs)
             .context(error::LogRecordNotFoundSnafu)?;
 
-        let logs_body = logs_rb
-            .column_by_name(consts::BODY)
-            .with_context(|| error::ColumnNotFoundSnafu { name: consts::BODY })?;
-        let logs_body = logs_body
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::BODY,
-                expect: DataType::Struct(Fields::empty()),
-                actual: logs_body.data_type().clone(),
-            })?;
-
         let logs_data_arrays = LogsDataArrays {
             log_arrays: LogsArrays::try_from(logs_rb)?,
-            log_body_arrays: LogBodyArrays::try_from(logs_body)?,
             scope_arrays: ScopeArrays::try_from(logs_rb)?,
             resource_arrays: ResourceArrays::try_from(logs_rb)?,
             log_attrs: otap_batch
@@ -530,11 +312,10 @@ impl LogsProtoBytesEncoder {
             result_buf
         );
 
+        let index = self.root_cursor.curr_index();
         // encode all `ScopeLog`s for this `ResourceLog`
-        let resource_id = logs_data_arrays
-            .resource_arrays
-            .id
-            .value_at(self.root_cursor.curr_index());
+        let resource_id = logs_data_arrays.resource_arrays.id.value_at(index);
+
         loop {
             proto_encode_len_delimited_unknown_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
@@ -555,6 +336,15 @@ impl LogsProtoBytesEncoder {
                     .value_at(self.root_cursor.curr_index())
             {
                 break;
+            }
+        }
+
+        // encode schema url
+        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
+                result_buf.extend_from_slice(val.as_bytes());
             }
         }
     }
@@ -578,10 +368,9 @@ impl LogsProtoBytesEncoder {
         );
 
         // encode all `LogRecord`s for this `ScopeLog``
-        let scope_id = logs_data_arrays
-            .scope_arrays
-            .id
-            .value_at(self.root_cursor.curr_index());
+        let index = self.root_cursor.curr_index();
+        let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
+
         loop {
             proto_encode_len_delimited_unknown_size!(
                 SCOPE_LOGS_LOG_RECORDS,
@@ -602,6 +391,15 @@ impl LogsProtoBytesEncoder {
                     .value_at(self.root_cursor.curr_index())
             {
                 break;
+            }
+        }
+
+        // encode schema url
+        if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
+                result_buf.extend_from_slice(val.as_bytes());
             }
         }
     }
@@ -636,16 +434,17 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        let log_body_arrays = &logs_data_arrays.log_body_arrays;
-        if log_body_arrays.body.is_valid(index) {
-            let anyval_arrays = &log_body_arrays.anyval_arrays;
-            if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
-                if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                    proto_encode_len_delimited_unknown_size!(
-                        LOG_RECORD_BODY,
-                        encode_any_value(anyval_arrays, index, value_type, result_buf),
-                        result_buf
-                    );
+        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body {
+            if log_body_arrays.is_valid(index) {
+                let anyval_arrays = &log_body_arrays.anyval_arrays;
+                if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
+                    if let Ok(value_type) = AttributeValueType::try_from(value_type) {
+                        proto_encode_len_delimited_unknown_size!(
+                            LOG_RECORD_BODY,
+                            encode_any_value(anyval_arrays, index, value_type, result_buf),
+                            result_buf
+                        );
+                    }
                 }
             }
         }
@@ -722,7 +521,7 @@ impl LogsProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array,
+        RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::NullBuffer;
 

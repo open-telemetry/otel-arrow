@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{RecordBatch, StringArray, UInt16Array};
+use prost::Message;
 use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_u16_array};
@@ -127,8 +128,14 @@ pub(crate) fn encode_any_value(
         }
 
         AttributeValueType::Map | AttributeValueType::Slice => {
-            // TODO need to decode from cbor and handle
-            todo!()
+            // TODO need to to decode from cbor to proto directly
+            // for now, doing something inefficient
+            if let Some(any_val) = attr_arrays.value_at(index) {
+                let any_val = any_val.unwrap();
+                let mut bytes = vec![];
+                any_val.encode(&mut bytes).unwrap();
+                result_buf.extend_from_slice(&bytes);
+            }
         }
         AttributeValueType::Empty => {
             // nothing to do

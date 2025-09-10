@@ -22,8 +22,8 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::ProtoBuffer;
+use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -138,6 +138,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 .accept_compressed(encoding);
         }
 
+        // reuse the encoder and the buffer across pdatas
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::new();
 
@@ -159,14 +160,20 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         // TODO currently this is only implemented for logs, but eventually we'll do
                         // do this for other signal types as well
                         (SignalType::Logs, OtapPdata::OtapArrowRecords(mut otap_batch)) => {
-                            logs_encoder.encode(&mut otap_batch, &mut proto_buffer).map_err(|e| {
-                                self.pdata_metrics.logs_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
-                                }
-                            })?;
-                            _ = logs_client.export(proto_buffer.as_ref().to_vec()).await.map_err(|e| {
+                            proto_buffer.clear();
+                            logs_encoder
+                                .encode(&mut otap_batch, &mut proto_buffer)
+                                .map_err(|e| {
+                                    self.pdata_metrics.logs_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
+                                })?;
+                            // TODO we should try to change the client interfaces to accept a slice
+                            // of bytes to avoid the copy here
+                            let bytes = proto_buffer.as_ref().to_vec();
+                            _ = logs_client.export(bytes).await.map_err(|e| {
                                 self.pdata_metrics.logs_failed.inc();
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
@@ -174,7 +181,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 }
                             })?;
                             self.pdata_metrics.logs_exported.inc();
-                        },
+                        }
                         (_, pdata) => {
                             let service_req: OtlpProtoBytes = pdata
                                 .try_into()
@@ -214,7 +221,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             };
                         }
                     }
-                },
+                }
                 _ => {
                     // ignore unhandled messages
                 }
