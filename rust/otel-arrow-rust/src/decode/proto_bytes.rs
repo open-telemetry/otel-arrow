@@ -37,7 +37,7 @@ pub(crate) fn patch_len_placeholder(
     len_start_pos: usize,
 ) {
     for i in 0..num_bytes {
-        result_buf[len_start_pos + i] += ((len >> (i * 8)) & 0x7f) as u8;
+        result_buf[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
     }
 }
 

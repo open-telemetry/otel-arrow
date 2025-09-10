@@ -831,7 +831,8 @@ mod test {
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, logs_record_batch);
-        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_record_batch);
+        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_record_batch.clone());
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, log_attrs_record_batch);
         let mut result_buf = vec![];
         let mut encoder = LogsProtoBytesEncoder::new();
         encoder.encode(&otap_batch, &mut result_buf).unwrap();
