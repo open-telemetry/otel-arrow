@@ -10,9 +10,15 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::*, resolved_value_mut::*, scalars::*,
-    transform::reduce_map_transform_expression::execute_map_reduce_transform_expression,
-    value_expressions::execute_mutable_value_expression, *,
+    execution_context::*,
+    resolved_value_mut::*,
+    scalars::*,
+    transform::{
+        reduce_map_transform_expression::execute_map_reduce_transform_expression,
+        rename_map_keys_transform_expression::execute_rename_map_keys_transform_expression,
+    },
+    value_expressions::execute_mutable_value_expression,
+    *,
 };
 
 pub fn execute_transform_expression<'a, TRecord: Record>(
@@ -447,6 +453,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                 Ok(())
             }
         },
+        TransformExpression::RenameMapKeys(r) => {
+            execute_rename_map_keys_transform_expression(execution_context, r)
+        }
     }
 }
 

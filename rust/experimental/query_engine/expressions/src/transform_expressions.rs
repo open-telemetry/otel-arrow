@@ -20,6 +20,9 @@ pub enum TransformExpression {
     /// transformation which only operates on top-level keys.
     RemoveMapKeys(RemoveMapKeysTransformExpression),
 
+    /// Rename keys on a target map.
+    RenameMapKeys(RenameMapKeysTransformExpression),
+
     /// Set data transformation.
     Set(SetTransformExpression),
 }
@@ -34,6 +37,7 @@ impl TransformExpression {
             TransformExpression::ReduceMap(r) => r.try_fold(scope),
             TransformExpression::Remove(r) => r.try_fold(scope),
             TransformExpression::RemoveMapKeys(r) => r.try_fold(scope),
+            TransformExpression::RenameMapKeys(r) => r.try_fold(scope),
             TransformExpression::Set(s) => s.try_fold(scope),
         }
     }
@@ -46,6 +50,7 @@ impl Expression for TransformExpression {
             TransformExpression::ReduceMap(r) => r.get_query_location(),
             TransformExpression::Remove(r) => r.get_query_location(),
             TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
+            TransformExpression::RenameMapKeys(r) => r.get_query_location(),
             TransformExpression::Set(s) => s.get_query_location(),
         }
     }
@@ -56,6 +61,7 @@ impl Expression for TransformExpression {
             TransformExpression::ReduceMap(r) => r.get_name(),
             TransformExpression::Remove(_) => "Transform(Remove)",
             TransformExpression::RemoveMapKeys(r) => r.get_name(),
+            TransformExpression::RenameMapKeys(_) => "Transform(RenameMapKeys)",
             TransformExpression::Set(_) => "Transform(Set)",
         }
     }
@@ -446,5 +452,89 @@ impl Expression for MapSelectionExpression {
 
     fn get_name(&self) -> &'static str {
         "MapSelectionExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenameMapKeysTransformExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    keys: Vec<MapKeyRenameSelector>,
+}
+
+impl RenameMapKeysTransformExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+        keys: Vec<MapKeyRenameSelector>,
+    ) -> RenameMapKeysTransformExpression {
+        Self {
+            query_location,
+            target,
+            keys,
+        }
+    }
+
+    pub fn get_target(&self) -> &MutableValueExpression {
+        &self.target
+    }
+
+    pub fn get_keys(&self) -> &[MapKeyRenameSelector] {
+        &self.keys
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.target.try_fold(scope)?;
+
+        for k in &mut self.keys {
+            k.try_fold(scope)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Expression for RenameMapKeysTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "RenameMapKeysTransformExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapKeyRenameSelector {
+    source: ValueAccessor,
+    destination: ValueAccessor,
+}
+
+impl MapKeyRenameSelector {
+    pub fn new(source: ValueAccessor, destination: ValueAccessor) -> MapKeyRenameSelector {
+        Self {
+            source,
+            destination,
+        }
+    }
+
+    pub fn get_source(&self) -> &ValueAccessor {
+        &self.source
+    }
+
+    pub fn get_destination(&self) -> &ValueAccessor {
+        &self.destination
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.source.try_fold(scope)?;
+        self.destination.try_fold(scope)?;
+        Ok(())
     }
 }
