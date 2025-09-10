@@ -17,12 +17,13 @@ use crate::arrays::{
 };
 use crate::decode::proto_bytes::resource::ResourceProtoBytesEncoder;
 use crate::decode::proto_bytes::{
-    RootColumnSorter, encode_field_tag, encode_fixed64, encode_len_placeholder, encode_varint,
+    IdColumnSorter, encode_field_tag, encode_fixed64, encode_len_placeholder, encode_varint,
     patch_len_placeholder,
 };
 use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
+use crate::otlp::attributes::AttributeArrays;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
@@ -381,9 +382,20 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
 }
 
 pub struct LogsProtoBytesEncoder {
-    root_column_sorter: RootColumnSorter,
+    // TODO is name "column" here too explicit
+    id_column_sorter: IdColumnSorter,
     root_columns_indices_sorted: Vec<usize>,
     root_column_sorted_index: usize,
+
+    resource_attrs_sorted_indices: Vec<usize>,
+    resource_attrs_sorted_index: usize,
+
+    scope_attrs_sorted_indices: Vec<usize>,
+    scope_attrs_sorted_index: usize,
+
+    log_attrs_sorted_indices: Vec<usize>,
+    log_attrs_sorted_index: usize,
+
 
     resource_encoder: ResourceProtoBytesEncoder,
 }
@@ -392,12 +404,34 @@ impl LogsProtoBytesEncoder {
     pub fn new() -> Self {
         // TODO -- is there any way to estimate capacity here?
         Self {
-            root_column_sorter: RootColumnSorter::new(),
+            id_column_sorter: IdColumnSorter::new(),
+
+            // TODO -- should abstract this into a struct?
             root_columns_indices_sorted: Vec::new(),
             root_column_sorted_index: 0,
 
+            resource_attrs_sorted_indices: Vec::new(),
+            resource_attrs_sorted_index: 0,
+
+            scope_attrs_sorted_indices: Vec::new(),
+            scope_attrs_sorted_index: 0,
+
+            log_attrs_sorted_indices: Vec::new(),
+            log_attrs_sorted_index: 0,
+
             resource_encoder: ResourceProtoBytesEncoder::new(),
         }
+    }
+
+    fn reset(&mut self) {
+        self.root_columns_indices_sorted.clear();
+        self.root_column_sorted_index = 0;
+        self.resource_attrs_sorted_indices.clear();
+        self.resource_attrs_sorted_index = 0;
+        self.scope_attrs_sorted_indices.clear();
+        self.scope_attrs_sorted_index = 0;
+        self.log_attrs_sorted_indices.clear();
+        self.log_attrs_sorted_index = 0;
     }
 
     /// TODO comments
@@ -409,16 +443,41 @@ impl LogsProtoBytesEncoder {
         // TODO -- do we need to ensure the buf is empty?
 
         // TODO nounwrap
+        // TODO the otap_batch needs to have the IDs materialized
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let logs_arrays = LogsArrays::try_from(logs_rb).unwrap();
         let scope_arrays = ScopeArrays::try_from(logs_rb).unwrap();
         let resource_arrays = ResourceArrays::try_from(logs_rb).unwrap();
 
+        let resource_attrs = otap_batch.get(ArrowPayloadType::ResourceAttrs)
+            .map(AttributeArrays::try_from)
+            .transpose()?;
+        let scope_attrs = otap_batch.get(ArrowPayloadType::ScopeAttrs)
+            .map(AttributeArrays::try_from)
+            .transpose()?;
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs)
+            .map(AttributeArrays::try_from)
+            .transpose()?;
+
+        self.reset();
+
         // get the list of indices in the root record to visit in order
-        self.root_columns_indices_sorted.clear();
-        self.root_column_sorter
-            .set_root_indices_to_visit_in_order(logs_rb, &mut self.root_columns_indices_sorted);
+        self.id_column_sorter
+            .root_indices_sorted(logs_rb, &mut self.root_columns_indices_sorted);
         self.root_column_sorted_index = 0;
+
+        if let Some(resource_attrs) = resource_attrs.as_ref() {
+            self.id_column_sorter
+                .u16_ids_sorted(resource_attrs.parent_id, &mut self.resource_attrs_sorted_indices);
+        }
+        if let Some(scope_attrs) = scope_attrs.as_ref() {
+            self.id_column_sorter
+                .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_sorted_indices);
+        }
+        if let Some(log_attrs) = log_attrs.as_ref() {
+            self.id_column_sorter
+                .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_sorted_indices);
+        }
 
         // encode all `ResourceLog`s for this `LogsData`
         loop {
@@ -430,6 +489,9 @@ impl LogsProtoBytesEncoder {
                     &logs_arrays,
                     &scope_arrays,
                     &resource_arrays,
+                    resource_attrs.as_ref(),
+                    scope_attrs.as_ref(),
+                    log_attrs.as_ref(),
                     result_buf,
                 ),
                 result_buf
@@ -448,6 +510,9 @@ impl LogsProtoBytesEncoder {
         logs_arrays: &LogsArrays<'_>,
         scope_arrays: &ScopeArrays<'_>,
         resource_arrays: &ResourceArrays<'_>,
+        resource_attrs: Option<&AttributeArrays<'_>>,
+        scope_attrs: Option<&AttributeArrays<'_>>,
+        log_attrs: Option<&AttributeArrays<'_>>,
         result_buf: &mut Vec<u8>,
     ) {
         let resource_id = resource_arrays.id.value_at(self.curr_root_rb_index());
@@ -458,7 +523,13 @@ impl LogsProtoBytesEncoder {
             encode_len_delimited_mystery_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
                 num_bytes,
-                self.encode_scope_logs(logs_arrays, scope_arrays, result_buf),
+                self.encode_scope_logs(
+                    logs_arrays,
+                    scope_arrays,
+                    scope_attrs,
+                    log_attrs,
+                    result_buf,
+                ),
                 result_buf
             );
 
@@ -478,6 +549,8 @@ impl LogsProtoBytesEncoder {
         &mut self,
         log_arrays: &LogsArrays<'_>,
         scope_arrays: &ScopeArrays<'_>,
+        scope_attrs: Option<&AttributeArrays<'_>>,
+        log_attrs: Option<&AttributeArrays<'_>>,
         result_buf: &mut Vec<u8>,
     ) {
         let scope_id = scope_arrays.id.value_at(self.curr_root_rb_index());
@@ -488,7 +561,7 @@ impl LogsProtoBytesEncoder {
             encode_len_delimited_mystery_size!(
                 SCOPE_LOGS_LOG_RECORDS,
                 num_bytes,
-                self.encode_log_record(log_arrays, result_buf),
+                self.encode_log_record(log_arrays, log_attrs, result_buf),
                 result_buf
             );
 
@@ -504,7 +577,11 @@ impl LogsProtoBytesEncoder {
         }
     }
 
-    fn encode_log_record(&mut self, log_arrays: &LogsArrays<'_>, result_buf: &mut Vec<u8>) {
+    fn encode_log_record(&mut self,
+        log_arrays: &LogsArrays<'_>, 
+        log_attrs: Option<&AttributeArrays<'_>>,
+        result_buf: &mut Vec<u8>
+    ) {
         let index = self.curr_root_rb_index();
 
         if let Some(col) = log_arrays.time_unix_nano {
