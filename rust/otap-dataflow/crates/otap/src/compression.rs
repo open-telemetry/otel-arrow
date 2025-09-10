@@ -10,15 +10,13 @@ use tonic::codec::CompressionEncoding;
 
 /// Enum to represent various compression methods
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompressionMethod {
     /// Fastest compression
-    #[serde(alias = "zstd")]
     Zstd,
     /// Most compatible compression method
-    #[serde(alias = "gzip")]
     Gzip,
     /// Used for legacy systems
-    #[serde(alias = "deflate")]
     Deflate,
 }
 
@@ -32,5 +30,26 @@ impl CompressionMethod {
             CompressionMethod::Zstd => CompressionEncoding::Zstd,
             CompressionMethod::Deflate => CompressionEncoding::Deflate,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compression_method_accepts_snake_case_only() {
+        // Valid canonical snake_case values
+        let zstd: CompressionMethod = serde_json::from_str("\"zstd\"").unwrap();
+        assert!(matches!(zstd, CompressionMethod::Zstd));
+        let gzip: CompressionMethod = serde_json::from_str("\"gzip\"").unwrap();
+        assert!(matches!(gzip, CompressionMethod::Gzip));
+        let deflate: CompressionMethod = serde_json::from_str("\"deflate\"").unwrap();
+        assert!(matches!(deflate, CompressionMethod::Deflate));
+
+        // Mixed/camel case should fail under strict snake_case
+        assert!(serde_json::from_str::<CompressionMethod>("\"Gzip\"").is_err());
+        assert!(serde_json::from_str::<CompressionMethod>("\"Zstd\"").is_err());
+        assert!(serde_json::from_str::<CompressionMethod>("\"Deflate\"").is_err());
     }
 }

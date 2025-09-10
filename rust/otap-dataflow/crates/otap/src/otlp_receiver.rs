@@ -32,6 +32,7 @@ pub const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
 
 /// Configuration for OTLP Receiver
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,

@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 /// - The hyper-edge configuration determines which downstream nodes are connected,
 ///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
     /// The kind of this node, which determines its role in the pipeline.
     /// 4 kinds are currently specified:
@@ -65,6 +66,7 @@ pub struct NodeUserConfig {
 /// Describes a hyper-edge from a node output port to one or more destination nodes,
 /// and defines the dispatching strategy for this port.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HyperEdgeConfig {
     /// List of downstream node IDs this port connects to.
     ///
@@ -182,5 +184,35 @@ impl NodeUserConfig {
     /// Sets the default output port name used by this node when no explicit port is specified.
     pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
         self.default_out_port = Some(port.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_user_config_unknown_field_is_rejected() {
+        // Includes an extra unknown field "unknown" that should cause an error
+        let json = r#"{
+            "kind": "receiver",
+            "plugin_urn": "urn:example:receiver",
+            "out_ports": {},
+            "config": {},
+            "unknown": 1
+        }"#;
+        assert!(serde_json::from_str::<NodeUserConfig>(json).is_err());
+    }
+
+    #[test]
+    fn node_user_config_minimal_valid() {
+        let json = r#"{
+            "kind": "receiver",
+            "plugin_urn": "urn:example:receiver",
+            "out_ports": {}
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(matches!(cfg.kind, NodeKind::Receiver));
+        assert!(cfg.out_ports.is_empty());
     }
 }
