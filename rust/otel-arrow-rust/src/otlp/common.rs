@@ -5,7 +5,6 @@ use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
     get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
 };
-use crate::decode::proto_bytes::{proto_encode_field_tag, proto_encode_varint};
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::{AttributeArrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
@@ -20,14 +19,14 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, an
 use crate::proto_encode_len_delimited_mystery_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array, UInt8Array
 };
 use arrow::datatypes::{DataType, Field, Fields};
+use arrow::row::{Row, RowConverter, SortField};
 use snafu::OptionExt;
 use std::fmt;
 use std::fmt::Write;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
     pub id: &'a UInt16Array,
@@ -57,8 +56,7 @@ pub(crate) fn proto_encode_resource(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
     resource_attrs_arrays: Option<&AttributeArrays<'_>>,
-    resource_attrs_sorted_indices: &Vec<usize>,
-    resource_attrs_sorted_index: &mut usize,
+    resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut Vec<u8>,
 ) {
     // add attributes
@@ -67,8 +65,7 @@ pub(crate) fn proto_encode_resource(
             let mut attrs_index_iter = ChildIndexIter {
                 parent_id: res_id,
                 parent_id_col: attrs_arrays.parent_id,
-                sorted_indices: resource_attrs_sorted_indices,
-                pos: resource_attrs_sorted_index,
+                cursor: resource_attrs_cursor,
             };
 
             while let Some(attr_index) = attrs_index_iter.next() {
@@ -184,8 +181,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     index: usize,
     scope_arrays: &ScopeArrays<'_>,
     scope_attrs_arrays: Option<&AttributeArrays<'_>>,
-    scope_attrs_sorted_indices: &Vec<usize>,
-    scope_attrs_sorted_index: &mut usize,
+    scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut Vec<u8>,
 ) {
     if let Some(col) = &scope_arrays.name {
@@ -209,8 +205,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
             let mut attrs_index_iter = ChildIndexIter {
                 parent_id: scope_id,
                 parent_id_col: attr_arrays.parent_id,
-                sorted_indices: scope_attrs_sorted_indices,
-                pos: scope_attrs_sorted_index,
+                cursor: scope_attrs_cursor,
             };
 
             while let Some(attr_index) = attrs_index_iter.next() {
@@ -333,12 +328,219 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
+
+// TOOD should this all be moved under crate::otlp ?
+
+pub(crate) fn proto_encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
+    let key = (field_number << 3) | wire_type;
+    proto_encode_varint(key, result_buf);
+}
+
+// todo comment on what is happening
+pub(crate) fn encode_len_placeholder(num_bytes: usize, result_buf: &mut Vec<u8>) {
+    for _ in 0..num_bytes - 1 {
+        result_buf.push(0x80)
+    }
+    result_buf.push(0x00);
+}
+
+pub(crate) fn patch_len_placeholder(
+    num_bytes: usize,
+    result_buf: &mut Vec<u8>,
+    len: usize,
+    len_start_pos: usize,
+) {
+    for i in 0..num_bytes {
+        result_buf[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
+    }
+}
+
+/// Helper for encoding with unknown length. usage:
+/// ```norun
+/// encode_len_delimited_mystery_size!(
+///     1, // field tag
+///     5, // number of bytes to use for len
+///     encode_some_nested_field(&mut result_buf), // fills in the child body
+///     result_buf
+/// )
+/// ```
+#[macro_export]
+macro_rules! proto_encode_len_delimited_mystery_size {
+    ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
+        crate::otlp::common::proto_encode_field_tag(
+            $field_tag,
+            crate::proto::consts::wire_types::LEN,
+            $buf,
+        );
+        let len_start_pos = $buf.len();
+        crate::otlp::common::encode_len_placeholder($placeholder_size, $buf);
+        $encode_fn;
+        let len = $buf.len() - len_start_pos - $placeholder_size;
+        crate::otlp::common::patch_len_placeholder(
+            $placeholder_size,
+            $buf,
+            len,
+            len_start_pos,
+        );
+    }};
+}
+
+/// Encodes a u64 as protobuf varint into `buf`.
+// TODO should this be generic over T so we don't always have to pass a u64
+pub(crate) fn proto_encode_varint(mut value: u64, buf: &mut Vec<u8>) {
+    while value >= 0x80 {
+        buf.push(((value as u8) & 0x7F) | 0x80);
+        value >>= 7;
+    }
+    buf.push(value as u8);
+}
+
+pub(crate) fn encode_fixed64(value: u64, buf: &mut Vec<u8>) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn encode_float64(value: f64, buf: &mut Vec<u8>) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) struct SortedBatchCursor {
+    sorted_indices: Vec<usize>,
+    curr_index: usize
+} 
+
+impl SortedBatchCursor {
+    pub fn new() -> Self {
+        Self {
+            sorted_indices: Vec::new(),
+            curr_index: 0
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.sorted_indices.clear();
+        self.curr_index = 0;
+    }
+
+    pub fn curr_index(&self) -> usize {
+        self.sorted_indices[self.curr_index]
+    }
+
+    pub fn advance(&mut self) {
+        self.curr_index += 1;
+    }
+
+    pub fn finished(&self) -> bool {
+        self.curr_index >= self.sorted_indices.len()
+    }
+}
+
+pub(crate) struct IdColumnSorter {
+    row_converter: RowConverter,
+
+    // TODO comment about reusing the heap allocation for the vec of rows
+    rows: Vec<(usize, Row<'static>)>,
+
+    u16_ids: Vec<(usize, u16)>,
+}
+
+impl IdColumnSorter {
+    pub fn new() -> Self {
+        // safety: these datatypes are sortable
+        let row_converter = RowConverter::new(vec![
+            SortField::new(DataType::UInt16),
+            SortField::new(DataType::UInt16),
+        ])
+        .expect("can create row converter");
+
+        Self {
+            row_converter,
+            rows: Vec::new(),
+            u16_ids: Vec::new(),
+        }
+    }
+
+    /// TODO comment
+    // TODO revisit the return type here
+    pub fn root_indices_sorted(&mut self, record_batch: &RecordBatch, cursor: &mut SortedBatchCursor) {
+        const PLACEHOLDER_ARRAY: LazyLock<ArrayRef> =
+            LazyLock::new(|| Arc::new(UInt8Array::new_null(0)));
+
+        let mut sort_columns = [PLACEHOLDER_ARRAY.clone(), PLACEHOLDER_ARRAY.clone()];
+
+        let mut sort_columns_idx = 0;
+
+        if let Some(resource_col) = record_batch.column_by_name(consts::RESOURCE) {
+            // TODO nounwrap
+            let resource_col = resource_col.as_any().downcast_ref::<StructArray>().unwrap();
+            if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
+                sort_columns[sort_columns_idx] = resource_ids.clone();
+                sort_columns_idx += 1;
+            }
+        }
+
+        if let Some(scope_col) = record_batch.column_by_name(consts::SCOPE) {
+            // TODO nounwrap
+            let scope_col = scope_col.as_any().downcast_ref::<StructArray>().unwrap();
+            if let Some(scope_ids) = scope_col.column_by_name(consts::ID) {
+                sort_columns[sort_columns_idx] = scope_ids.clone();
+                sort_columns_idx += 1;
+            }
+        }
+
+        // TODO see if there's a way to do this without allocating
+        if sort_columns_idx == 2 {
+            // TODO maybe handle error here?
+            // safety: shouldn't happen? I guess if we got an invalid record batch
+            let rows = self
+                .row_converter
+                .convert_columns(&sort_columns)
+                .expect("error converting columns for sorting");
+
+            let mut sort = reuse_rows_vec(std::mem::take(&mut self.rows));
+            sort.extend(rows.iter().enumerate());
+            sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+            cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
+            self.rows = reuse_rows_vec(sort);
+        } else if sort_columns_idx == 1 {
+            let ids = sort_columns[0]
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap();
+            self.u16_ids_sorted(ids, cursor);
+        } else {
+            cursor.sorted_indices.extend(0..record_batch.num_rows());
+        }
+    }
+
+    pub fn u16_ids_sorted(&mut self, ids: &UInt16Array, cursor: &mut SortedBatchCursor) {
+        self.u16_ids.clear();
+        self.u16_ids
+            .extend(ids.values().iter().copied().enumerate());
+
+        if ids.null_count() == 0 {
+            self.u16_ids.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        } else {
+            // sort while considering nulls
+            todo!()
+        }
+
+        cursor.sorted_indices.extend(self.u16_ids.iter().map(|(i, _)| *i));
+    }
+}
+
+// TODO comments
+fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
+    v.clear();
+    v.into_iter().map(|_| unreachable!()).collect()
+}
+
+
+
 /// TODO coment on what this is doing
 pub(crate) struct ChildIndexIter<'a> {
     pub parent_id: u16,
     pub parent_id_col: &'a UInt16Array,
-    pub sorted_indices: &'a Vec<usize>,
-    pub pos: &'a mut usize,
+    pub cursor: &'a mut SortedBatchCursor,
 }
 
 impl Iterator for ChildIndexIter<'_> {
@@ -346,18 +548,17 @@ impl Iterator for ChildIndexIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // we've iterated to the end of the attributes array - no more attributes
-        if *self.pos >= self.sorted_indices.len() {
-            return None;
+        if self.cursor.finished() {
+            return None
         }
 
-        let index = self.sorted_indices[*self.pos];
 
         // TODO there's a bug in here that we actually need to increment pos
         // until it's greater than or equal to parent_id? I guess in case there's
         // a parent ID w/ no attributes or something (e.g. attrs dropped).
-
+        let index = self.cursor.curr_index();
         if Some(self.parent_id) == self.parent_id_col.value_at(index) {
-            *self.pos += 1;
+            self.cursor.advance();
             Some(index)
         } else {
             None

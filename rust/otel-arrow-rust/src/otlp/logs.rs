@@ -14,15 +14,12 @@ use crate::arrays::{
     StringArrayAccessor, StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array,
     get_u32_array_opt,
 };
-use crate::decode::proto_bytes::{
-    IdColumnSorter, encode_fixed64, proto_encode_field_tag, proto_encode_varint,
-};
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{AttributeArrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
-    AnyValueArrays, ChildIndexIter, ResourceArrays, ScopeArrays,
-    proto_encode_instrumentation_scope, proto_encode_resource,
+    IdColumnSorter, encode_fixed64, proto_encode_field_tag, proto_encode_varint,
+    proto_encode_instrumentation_scope, proto_encode_resource, AnyValueArrays, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor
 };
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
@@ -400,22 +397,6 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
     Ok(logs)
 }
 
-pub struct LogsProtoBytesEncoder {
-    // TODO is name "column" here too explicit
-    id_column_sorter: IdColumnSorter,
-    root_columns_indices_sorted: Vec<usize>,
-    root_column_sorted_index: usize,
-
-    resource_attrs_sorted_indices: Vec<usize>,
-    resource_attrs_sorted_index: usize,
-
-    scope_attrs_sorted_indices: Vec<usize>,
-    scope_attrs_sorted_index: usize,
-
-    log_attrs_sorted_indices: Vec<usize>,
-    log_attrs_sorted_index: usize,
-}
-
 pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
     log_body_arrays: LogBodyArrays<'a>,
@@ -426,36 +407,33 @@ pub struct LogsDataArrays<'a> {
     scope_attrs: Option<AttributeArrays<'a>>,
 }
 
+pub struct LogsProtoBytesEncoder {
+    // TODO is name "column" here too explicit
+    id_column_sorter: IdColumnSorter,
+    
+    root_cursor: SortedBatchCursor,
+    resource_attrs_cursor: SortedBatchCursor,
+    scope_attrs_cursor: SortedBatchCursor,
+    log_attrs_cursor: SortedBatchCursor,
+}
+
 impl LogsProtoBytesEncoder {
     pub fn new() -> Self {
         // TODO -- is there any way to estimate capacity here?
         Self {
             id_column_sorter: IdColumnSorter::new(),
-
-            // TODO -- should abstract this into a struct?
-            root_columns_indices_sorted: Vec::new(),
-            root_column_sorted_index: 0,
-
-            resource_attrs_sorted_indices: Vec::new(),
-            resource_attrs_sorted_index: 0,
-
-            scope_attrs_sorted_indices: Vec::new(),
-            scope_attrs_sorted_index: 0,
-
-            log_attrs_sorted_indices: Vec::new(),
-            log_attrs_sorted_index: 0,
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            log_attrs_cursor: SortedBatchCursor::new(),
         }
     }
 
     fn reset(&mut self) {
-        self.root_columns_indices_sorted.clear();
-        self.root_column_sorted_index = 0;
-        self.resource_attrs_sorted_indices.clear();
-        self.resource_attrs_sorted_index = 0;
-        self.scope_attrs_sorted_indices.clear();
-        self.scope_attrs_sorted_index = 0;
-        self.log_attrs_sorted_indices.clear();
-        self.log_attrs_sorted_index = 0;
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.log_attrs_cursor.reset();
     }
 
     /// TODO comments
@@ -505,21 +483,20 @@ impl LogsProtoBytesEncoder {
 
         // get the list of indices in the root record to visit in order
         self.id_column_sorter
-            .root_indices_sorted(logs_rb, &mut self.root_columns_indices_sorted);
-        self.root_column_sorted_index = 0;
+            .root_indices_sorted(logs_rb, &mut self.root_cursor);
 
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
             self.id_column_sorter
-                .u16_ids_sorted(res_attrs.parent_id, &mut self.resource_attrs_sorted_indices);
+                .u16_ids_sorted(res_attrs.parent_id, &mut self.resource_attrs_cursor);
         }
         if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
             self.id_column_sorter
-                .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_sorted_indices);
+                .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
         }
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             self.id_column_sorter
-                .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_sorted_indices);
+                .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_cursor);
         }
 
         // encode all `ResourceLog`s for this `LogsData`
@@ -532,7 +509,7 @@ impl LogsProtoBytesEncoder {
                 result_buf
             );
 
-            if self.root_column_sorted_index >= logs_rb.num_rows() {
+            if self.root_cursor.finished() {
                 break;
             }
         }
@@ -551,11 +528,10 @@ impl LogsProtoBytesEncoder {
             LOGS_DATA_RESOURCE,
             num_bytes,
             proto_encode_resource(
-                self.curr_root_rb_index(),
+                self.root_cursor.curr_index(),
                 &logs_data_arrays.resource_arrays,
                 logs_data_arrays.resource_attrs.as_ref(),
-                &self.resource_attrs_sorted_indices,
-                &mut self.resource_attrs_sorted_index,
+                &mut self.resource_attrs_cursor,
                 result_buf
             ),
             result_buf
@@ -565,7 +541,7 @@ impl LogsProtoBytesEncoder {
         let resource_id = logs_data_arrays
             .resource_arrays
             .id
-            .value_at(self.curr_root_rb_index());
+            .value_at(self.root_cursor.curr_index());
         loop {
             let num_bytes = 5;
             proto_encode_len_delimited_mystery_size!(
@@ -576,7 +552,7 @@ impl LogsProtoBytesEncoder {
             );
 
             // break when we've reached the end of the record batch
-            if self.root_column_sorted_index >= self.root_columns_indices_sorted.len() {
+            if self.root_cursor.finished() {
                 break;
             }
 
@@ -585,7 +561,7 @@ impl LogsProtoBytesEncoder {
                 != logs_data_arrays
                     .resource_arrays
                     .id
-                    .value_at(self.curr_root_rb_index())
+                    .value_at(self.root_cursor.curr_index())
             {
                 break;
             }
@@ -603,11 +579,10 @@ impl LogsProtoBytesEncoder {
             SCOPE_LOG_SCOPE,
             num_bytes,
             proto_encode_instrumentation_scope(
-                self.curr_root_rb_index(),
+                self.root_cursor.curr_index(),
                 &logs_data_arrays.scope_arrays,
                 logs_data_arrays.scope_attrs.as_ref(),
-                &self.scope_attrs_sorted_indices,
-                &mut self.scope_attrs_sorted_index,
+                &mut self.scope_attrs_cursor,
                 result_buf
             ),
             result_buf
@@ -617,7 +592,7 @@ impl LogsProtoBytesEncoder {
         let scope_id = logs_data_arrays
             .scope_arrays
             .id
-            .value_at(self.curr_root_rb_index());
+            .value_at(self.root_cursor.curr_index());
         loop {
             let num_bytes = 5;
             proto_encode_len_delimited_mystery_size!(
@@ -628,7 +603,7 @@ impl LogsProtoBytesEncoder {
             );
 
             // break if we've reached the end of the record batch
-            if self.root_column_sorted_index >= self.root_columns_indices_sorted.len() {
+            if self.root_cursor.finished() {
                 break;
             }
 
@@ -637,7 +612,7 @@ impl LogsProtoBytesEncoder {
                 != logs_data_arrays
                     .scope_arrays
                     .id
-                    .value_at(self.curr_root_rb_index())
+                    .value_at(self.root_cursor.curr_index())
             {
                 break;
             }
@@ -649,7 +624,7 @@ impl LogsProtoBytesEncoder {
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut Vec<u8>,
     ) {
-        let index = self.curr_root_rb_index();
+        let index = self.root_cursor.curr_index();
         let log_arrays = &logs_data_arrays.log_arrays;
 
         // TODO this is considered non Optional (and so is observed timestamp), should we be putting a zero?
@@ -697,8 +672,7 @@ impl LogsProtoBytesEncoder {
                 let mut attrs_index_iter = ChildIndexIter {
                     parent_id: id,
                     parent_id_col: log_attrs.parent_id,
-                    sorted_indices: &self.log_attrs_sorted_indices,
-                    pos: &mut self.log_attrs_sorted_index,
+                    cursor: &mut self.log_attrs_cursor,
                 };
 
                 while let Some(attr_index) = attrs_index_iter.next() {
@@ -767,16 +741,7 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        self.advance_root_rb_index();
-    }
-
-    #[inline]
-    fn curr_root_rb_index(&self) -> usize {
-        self.root_columns_indices_sorted[self.root_column_sorted_index]
-    }
-
-    fn advance_root_rb_index(&mut self) {
-        self.root_column_sorted_index += 1;
+        self.root_cursor.advance();
     }
 }
 

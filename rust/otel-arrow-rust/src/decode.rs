@@ -5,5 +5,4 @@
 #![allow(missing_docs)]
 
 pub mod decoder;
-pub mod proto_bytes;
 pub mod record_message;

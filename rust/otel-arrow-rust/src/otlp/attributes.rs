@@ -5,10 +5,9 @@ use arrow::array::{RecordBatch, StringArray, UInt16Array};
 use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_u16_array};
-use crate::decode::proto_bytes::{encode_float64, proto_encode_field_tag, proto_encode_varint};
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::common::AnyValueArrays;
+use crate::otlp::common::{encode_float64, proto_encode_field_tag, proto_encode_varint, AnyValueArrays};
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
