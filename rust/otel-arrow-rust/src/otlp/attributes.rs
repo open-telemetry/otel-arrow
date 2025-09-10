@@ -6,11 +6,11 @@ use snafu::OptionExt;
 
 
 use crate::arrays::{get_bool_array_opt, get_f64_array_opt, get_u16_array, get_u8_array, MaybeDictArrayAccessor, NullableArrayAccessor};
-use crate::decode::proto_bytes::{encode_field_tag, encode_varint};
+use crate::decode::proto_bytes::{encode_field_tag, encode_fixed64, encode_float64, encode_varint};
 use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::proto::consts::field_num::common::{ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE};
+use crate::proto::consts::field_num::common::{ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE, ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE};
 use crate::proto::consts::wire_types;
 use crate::schema::consts;
 
@@ -106,40 +106,81 @@ pub(crate) fn encode_key_value(
         result_buf.extend_from_slice(key.as_bytes());
     }
 
-    // TODO just guessing the max byte length for attributes is probably the biggest contributor to
-    // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
-    // size guess it's here
-    let num_bytes = 5;
-    encode_len_delimited_mystery_size!(
-        KEY_VALUE_VALUE,
-        num_bytes,
-        encode_any_value(attr_arrays, index, result_buf),
-        result_buf
-    );
+
+    if let Some(value_type) = attr_arrays.attr_type.value_at(index) {
+        // TODO nounwrap
+        let value_type = AttributeValueType::try_from(value_type).unwrap();
+        // TODO just guessing the max byte length for attributes is probably the biggest contributor to
+        // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
+        // size guess it's here
+        let num_bytes = 5;
+        encode_len_delimited_mystery_size!(
+            KEY_VALUE_VALUE,
+            num_bytes,
+            encode_any_value(attr_arrays, index, value_type, result_buf),
+            result_buf
+        );
+    }
 
 }
 
 fn encode_any_value(
     attr_arrays: &AttributeArrays<'_>,
     index: usize,
+    value_type: AttributeValueType,
     result_buf: &mut Vec<u8>
 ) {
-    if let Some(value_type) = attr_arrays.attr_type.value_at(index) {
-        // TODO nounwrap
-        let value_type = AttributeValueType::try_from(value_type).unwrap();
-        match value_type {
-            AttributeValueType::Str => {
-                if let Some(attr_str) = &attr_arrays.attr_str {
-                    if let Some(val) = attr_str.value_at(index) {
-                        encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN, result_buf);
-                        encode_varint(val.len() as u64, result_buf);
-                        result_buf.extend_from_slice(val.as_bytes());
-                    }
+    match value_type {
+        AttributeValueType::Str => {
+            if let Some(attr_str) = &attr_arrays.attr_str {
+                if let Some(val) = attr_str.value_at(index) {
+                    encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN, result_buf);
+                    encode_varint(val.len() as u64, result_buf);
+                    result_buf.extend_from_slice(val.as_bytes());
                 }
-            },
-            _ => {
-                todo!()
             }
+        },
+        AttributeValueType::Bool => {
+            if let Some(attr_bool) = &attr_arrays.attr_bool {
+                if let Some(val) = attr_bool.value_at(index) {
+                    encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT, result_buf);
+                    encode_varint(val as u64, result_buf);
+                }
+            }
+        },
+        AttributeValueType::Int => {
+            if let Some(attr_int) = &attr_arrays.attr_int {
+                if let Some(val) = attr_int.value_at(index) {
+                    encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT, result_buf);
+                    // TODO need to handle if it's a negative integer ...
+                    encode_varint(val as u64, result_buf);
+                }
+            }
+        }
+        AttributeValueType::Double => {
+            if let Some(attr_double) = &attr_arrays.attr_double {
+                if let Some(val) = attr_double.value_at(index) {
+                    encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, result_buf);
+                    encode_float64(val, result_buf);
+                }
+            }
+        }
+        AttributeValueType::Bytes => {
+            if let Some(attr_bytes) = &attr_arrays.attr_bytes {
+                if let Some(val) = attr_bytes.value_at(index) {
+                    encode_field_tag(ANY_VALUE_BYES_VALUE, wire_types::LEN, result_buf);
+                    encode_varint(val.len() as u64, result_buf);
+                    result_buf.extend_from_slice(val.as_ref());
+                }
+            }
+        }
+        
+        AttributeValueType::Map | AttributeValueType::Slice => {
+            // TODO need to decode from cbor and handle
+            todo!()
+        }
+        AttributeValueType::Empty => {
+            // nothing to do
         }
     }
 }

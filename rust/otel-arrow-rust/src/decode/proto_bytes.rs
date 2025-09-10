@@ -73,6 +73,10 @@ pub(crate) fn encode_fixed64(value: u64, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
+pub(crate) fn encode_float64(value: f64, buf: &mut Vec<u8>) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
 pub(crate) struct IdColumnSorter {
     row_converter: RowConverter,
 
