@@ -9,13 +9,10 @@ use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, RecordBatch, StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
-use arrow::compute::sort_to_indices;
 use arrow::datatypes::DataType;
 use arrow::row::{Row, RowConverter, SortField};
 
 // TOOD should this all be moved under crate::otlp ?
-
-pub mod resource;
 
 pub(crate) fn proto_encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
     let key = (field_number << 3) | wire_type;
