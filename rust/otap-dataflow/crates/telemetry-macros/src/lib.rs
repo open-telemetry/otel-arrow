@@ -355,7 +355,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
             }
         }
         let description = if desc_lines.is_empty() {
-            format!("{} field", ident)
+            format!("{ident} field")
         } else {
             desc_lines.join(" ")
         };
@@ -409,7 +409,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                                 } else {
                                     return syn::Error::new(
                                         seg.ident.span(),
-                                        format!("Unsupported attribute field type: {}", ident_ty),
+                                        format!("Unsupported attribute field type: {ident_ty}"),
                                     )
                                     .to_compile_error()
                                     .into();
@@ -417,7 +417,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                             } else {
                                 return syn::Error::new(
                                     seg.ident.span(),
-                                    format!("Unsupported attribute field type: {}", ident_ty),
+                                    format!("Unsupported attribute field type: {ident_ty}"),
                                 )
                                 .to_compile_error()
                                 .into();
