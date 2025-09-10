@@ -532,7 +532,8 @@ fn write_datapoints_detailed(mut report: &mut String, data: &Data, prefix: &str)
             );
             write_exponential_histogram_datapoints_detailed(
                 report,
-                &exponential_histogram.data_points, prefix
+                &exponential_histogram.data_points,
+                prefix,
             );
         }
         Data::Summary(summary) => {
@@ -542,7 +543,11 @@ fn write_datapoints_detailed(mut report: &mut String, data: &Data, prefix: &str)
     }
 }
 
-fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[NumberDataPoint], prefix: &str) {
+fn write_number_datapoints_detailed(
+    mut report: &mut String,
+    datapoints: &[NumberDataPoint],
+    prefix: &str,
+) {
     let attribute_prefix = format!("{prefix}            ->");
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(
@@ -552,8 +557,7 @@ fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[Numbe
         _ = writeln!(
             &mut report,
             "{prefix}      -> Attributes:{attributes}",
-            attributes =
-                attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
+            attributes = attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
         );
         _ = writeln!(
             &mut report,
@@ -580,15 +584,18 @@ fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[Numbe
     }
 }
 
-fn write_histogram_datapoints_detailed(mut report: &mut String, datapoints: &[HistogramDataPoint], prefix: &str) {
-        let attribute_prefix = format!("{prefix}            ->");
+fn write_histogram_datapoints_detailed(
+    mut report: &mut String,
+    datapoints: &[HistogramDataPoint],
+    prefix: &str,
+) {
+    let attribute_prefix = format!("{prefix}            ->");
     for (index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(&mut report, "{prefix}   HistogramDataPoints #{index}");
         _ = writeln!(
             &mut report,
             "{prefix}      -> Attributes:{attributes}",
-            attributes =
-                attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
+            attributes = attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
         );
 
         _ = writeln!(
@@ -637,7 +644,7 @@ fn write_histogram_datapoints_detailed(mut report: &mut String, datapoints: &[Hi
 fn write_exponential_histogram_datapoints_detailed(
     mut report: &mut String,
     datapoints: &[ExponentialHistogramDataPoint],
-    prefix: &str
+    prefix: &str,
 ) {
     let attribute_prefix = format!("{prefix}            ->");
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
@@ -648,8 +655,7 @@ fn write_exponential_histogram_datapoints_detailed(
         _ = writeln!(
             &mut report,
             "{prefix}      -> Attributes:{attributes}",
-            attributes =
-                attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
+            attributes = attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
         );
         _ = writeln!(
             &mut report,
@@ -724,7 +730,11 @@ fn write_exponential_histogram_datapoints_detailed(
     }
 }
 
-fn write_summary_datapoints_detailed(mut report: &mut String, datapoints: &[SummaryDataPoint], prefix: &str) {
+fn write_summary_datapoints_detailed(
+    mut report: &mut String,
+    datapoints: &[SummaryDataPoint],
+    prefix: &str,
+) {
     let attribute_prefix = format!("{prefix}            ->");
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(
@@ -734,8 +744,7 @@ fn write_summary_datapoints_detailed(mut report: &mut String, datapoints: &[Summ
         _ = writeln!(
             &mut report,
             "{prefix}      -> Attributes:{attributes}",
-            attributes =
-                attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
+            attributes = attributes_string_detailed(&datapoint.attributes, &attribute_prefix),
         );
         _ = writeln!(
             &mut report,
@@ -771,7 +780,7 @@ fn write_summary_datapoints_detailed(mut report: &mut String, datapoints: &[Summ
 fn write_exemplars(mut report: &mut String, exemplars: &[Exemplar], prefix: &str) {
     if !exemplars.is_empty() {
         _ = writeln!(&mut report, "{prefix}      -> Exemplars:");
-            let attribute_prefix = format!("{prefix}               ->");
+        let attribute_prefix = format!("{prefix}               ->");
         for (exemplar_index, exemplar) in exemplars.iter().enumerate() {
             _ = writeln!(&mut report, "{prefix}         Exemplar #{exemplar_index}",);
             if let Ok(trace_id) = std::str::from_utf8(&exemplar.trace_id) {
@@ -798,10 +807,8 @@ fn write_exemplars(mut report: &mut String, exemplars: &[Exemplar], prefix: &str
             _ = writeln!(
                 &mut report,
                 "{prefix}            -> FilteredAttributes:{attributes}",
-                attributes = attributes_string_detailed(
-                    &exemplar.filtered_attributes,
-                    &attribute_prefix
-                )
+                attributes =
+                    attributes_string_detailed(&exemplar.filtered_attributes, &attribute_prefix)
             );
         }
     }
@@ -1621,152 +1628,142 @@ mod tests {
         assert_eq!(output_lines[27], "            -> hostname: host2.org");
     }
 
-        #[test]
+    #[test]
     fn test_marshal_metric_signal() {
         let metrics = vec![
-                    Metric::build_gauge(
-                        "system.cpu.time",
-                        Gauge::new(vec![
-                            NumberDataPoint::build_int(1663718400000001400u64, 0i64)
-                                .start_time_unix_nano(1650499200000000100u64)
-                                .flags(1u32)
-                                .finish(),
-                        ]),
-                    )
-                    .description("time cpu has ran")
-                    .unit("s")
-                    .metadata(vec![])
-                    .finish(),
-                    Metric::build_exponential_histogram(
-                        "system.cpu.time",
-                        ExponentialHistogram::new(
-                            4,
-                            vec![
-                                ExponentialHistogramDataPoint::build(
-                                    1663718400000001400u64,
-                                    1,
-                                    Buckets::new(0, vec![0]),
-                                )
-                                .attributes(vec![KeyValue::new(
-                                    "freq",
-                                    AnyValue::new_string("3GHz"),
+            Metric::build_gauge(
+                "system.cpu.time",
+                Gauge::new(vec![
+                    NumberDataPoint::build_int(1663718400000001400u64, 0i64)
+                        .start_time_unix_nano(1650499200000000100u64)
+                        .flags(1u32)
+                        .finish(),
+                ]),
+            )
+            .description("time cpu has ran")
+            .unit("s")
+            .metadata(vec![])
+            .finish(),
+            Metric::build_exponential_histogram(
+                "system.cpu.time",
+                ExponentialHistogram::new(
+                    4,
+                    vec![
+                        ExponentialHistogramDataPoint::build(
+                            1663718400000001400u64,
+                            1,
+                            Buckets::new(0, vec![0]),
+                        )
+                        .attributes(vec![KeyValue::new("freq", AnyValue::new_string("3GHz"))])
+                        .exemplars(vec![
+                            Exemplar::build_double(1663718400000001400u64, 22.2)
+                                .filtered_attributes(vec![KeyValue::new(
+                                    "cpu",
+                                    AnyValue::new_string("0"),
                                 )])
-                                .exemplars(vec![
-                                    Exemplar::build_double(1663718400000001400u64, 22.2)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "cpu",
-                                            AnyValue::new_string("0"),
-                                        )])
-                                        .trace_id(Vec::from(
-                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                        ))
-                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                        .finish(),
-                                ])
-                                .start_time_unix_nano(1650499200000000000u64)
-                                .count(0u64)
-                                .sum(56)
-                                .negative(Buckets::new(0, vec![0]))
-                                .flags(5u32)
-                                .min(12)
-                                .max(100.1)
-                                .zero_threshold(0.0)
+                                .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
+                                .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
                                 .finish(),
-                            ],
-                        ),
-                    )
-                    .description("time cpu has ran")
-                    .unit("s")
-                    .finish(),
-                    Metric::build_histogram(
-                        "system.cpu.time",
-                        Histogram::new(
-                            4,
-                            vec![
-                                HistogramDataPoint::build(
-                                    1663718400000001400u64,
-                                    vec![0],
-                                    vec![94.17542094619048, 65.66722851519177],
-                                )
-                                .attributes(vec![KeyValue::new(
-                                    "freq",
-                                    AnyValue::new_string("3GHz"),
+                        ])
+                        .start_time_unix_nano(1650499200000000000u64)
+                        .count(0u64)
+                        .sum(56)
+                        .negative(Buckets::new(0, vec![0]))
+                        .flags(5u32)
+                        .min(12)
+                        .max(100.1)
+                        .zero_threshold(0.0)
+                        .finish(),
+                    ],
+                ),
+            )
+            .description("time cpu has ran")
+            .unit("s")
+            .finish(),
+            Metric::build_histogram(
+                "system.cpu.time",
+                Histogram::new(
+                    4,
+                    vec![
+                        HistogramDataPoint::build(
+                            1663718400000001400u64,
+                            vec![0],
+                            vec![94.17542094619048, 65.66722851519177],
+                        )
+                        .attributes(vec![KeyValue::new("freq", AnyValue::new_string("3GHz"))])
+                        .start_time_unix_nano(1650499200000000000u64)
+                        .count(0u64)
+                        .exemplars(vec![
+                            Exemplar::build_double(1663718400000001400u64, 22.2)
+                                .filtered_attributes(vec![KeyValue::new(
+                                    "cpu",
+                                    AnyValue::new_string("0"),
                                 )])
-                                .start_time_unix_nano(1650499200000000000u64)
-                                .count(0u64)
-                                .exemplars(vec![
-                                    Exemplar::build_double(1663718400000001400u64, 22.2)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "cpu",
-                                            AnyValue::new_string("0"),
-                                        )])
-                                        .trace_id(Vec::from(
-                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                        ))
-                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                        .finish(),
-                                ])
-                                .sum(56)
-                                .flags(0u32)
-                                .min(12)
-                                .max(100.1)
+                                .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
+                                .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
                                 .finish(),
-                            ],
-                        ),
-                    )
-                    .description("time cpu has ran")
-                    .unit("s")
-                    .finish(),
-                    Metric::build_sum(
-                        "system.cpu.time",
-                        Sum::new(
-                            4,
-                            true,
-                            vec![
-                                NumberDataPoint::build_int(1663718400000001400u64, 0i64)
-                                    .start_time_unix_nano(1650499200000000000u64)
-                                    .attributes(vec![KeyValue::new(
-                                        "cpu_logical_processors",
-                                        AnyValue::new_string("8"),
+                        ])
+                        .sum(56)
+                        .flags(0u32)
+                        .min(12)
+                        .max(100.1)
+                        .finish(),
+                    ],
+                ),
+            )
+            .description("time cpu has ran")
+            .unit("s")
+            .finish(),
+            Metric::build_sum(
+                "system.cpu.time",
+                Sum::new(
+                    4,
+                    true,
+                    vec![
+                        NumberDataPoint::build_int(1663718400000001400u64, 0i64)
+                            .start_time_unix_nano(1650499200000000000u64)
+                            .attributes(vec![KeyValue::new(
+                                "cpu_logical_processors",
+                                AnyValue::new_string("8"),
+                            )])
+                            .exemplars(vec![
+                                Exemplar::build_double(1663718400000001400u64, 22.2)
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "************",
+                                        AnyValue::new_bool(true),
                                     )])
-                                    .exemplars(vec![
-                                        Exemplar::build_double(1663718400000001400u64, 22.2)
-                                            .filtered_attributes(vec![KeyValue::new(
-                                                "************",
-                                                AnyValue::new_bool(true),
-                                            )])
-                                            .trace_id(Vec::from(
-                                                "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                            ))
-                                            .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                            .finish(),
-                                    ])
+                                    .trace_id(Vec::from(
+                                        "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                    ))
+                                    .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
                                     .finish(),
-                            ],
-                        ),
-                    )
-                    .description("time cpu has ran")
-                    .unit("s")
-                    .finish(),
-                    Metric::build_summary(
-                        "system.cpu.time",
-                        Summary::new(vec![
-                            SummaryDataPoint::build(
-                                1663718400000001400u64,
-                                vec![ValueAtQuantile::new(0., 0.)],
-                            )
-                            .attributes(vec![KeyValue::new("cpu_cores", AnyValue::new_string("4"))])
-                            .start_time_unix_nano(1650499200000000100u64)
-                            .count(0u64)
-                            .sum(56.0)
-                            .flags(0u32)
+                            ])
                             .finish(),
-                        ]),
+                    ],
+                ),
+            )
+            .description("time cpu has ran")
+            .unit("s")
+            .finish(),
+            Metric::build_summary(
+                "system.cpu.time",
+                Summary::new(vec![
+                    SummaryDataPoint::build(
+                        1663718400000001400u64,
+                        vec![ValueAtQuantile::new(0., 0.)],
                     )
-                    .description("time cpu has ran")
-                    .unit("s")
+                    .attributes(vec![KeyValue::new("cpu_cores", AnyValue::new_string("4"))])
+                    .start_time_unix_nano(1650499200000000100u64)
+                    .count(0u64)
+                    .sum(56.0)
+                    .flags(0u32)
                     .finish(),
-                ];
+                ]),
+            )
+            .description("time cpu has ran")
+            .unit("s")
+            .finish(),
+        ];
         let marshaler = DetailedViewMarshaler;
         let mut output_lines = Vec::new();
         for (index, metric) in metrics.iter().enumerate() {
@@ -1777,10 +1774,7 @@ mod tests {
         }
         assert_eq!(output_lines[0], "Metric #0");
         assert_eq!(output_lines[1], "   -> Name: system.cpu.time");
-        assert_eq!(
-            output_lines[2],
-            "   -> Description: time cpu has ran"
-        );
+        assert_eq!(output_lines[2], "   -> Description: time cpu has ran");
         assert_eq!(output_lines[3], "   -> Unit: s");
         assert_eq!(output_lines[4], "   -> DataType: Gauge");
         assert_eq!(output_lines[5], "      NumberDataPoints #0");
@@ -1796,20 +1790,11 @@ mod tests {
         assert_eq!(output_lines[9], "         -> Value: 0");
         assert_eq!(output_lines[10], "Metric #1");
         assert_eq!(output_lines[11], "   -> Name: system.cpu.time");
-        assert_eq!(
-            output_lines[12],
-            "   -> Description: time cpu has ran"
-        );
+        assert_eq!(output_lines[12], "   -> Description: time cpu has ran");
         assert_eq!(output_lines[13], "   -> Unit: s");
-        assert_eq!(
-            output_lines[14],
-            "   -> DataType: Exponential Histogram"
-        );
+        assert_eq!(output_lines[14], "   -> DataType: Exponential Histogram");
         assert_eq!(output_lines[15], "   -> AggregationTemporality: 4");
-        assert_eq!(
-            output_lines[16],
-            "      ExponentialHistogramDataPoints #0"
-        );
+        assert_eq!(output_lines[16], "      ExponentialHistogramDataPoints #0");
         assert_eq!(output_lines[17], "         -> Attributes:");
         assert_eq!(output_lines[18], "               -> freq: 3GHz");
         assert_eq!(
@@ -1847,17 +1832,11 @@ mod tests {
             "               -> Timestamp: 1663718400000001400"
         );
         assert_eq!(output_lines[32], "               -> Value: 22.2");
-        assert_eq!(
-            output_lines[33],
-            "               -> FilteredAttributes:"
-        );
+        assert_eq!(output_lines[33], "               -> FilteredAttributes:");
         assert_eq!(output_lines[34], "                  -> cpu: 0");
         assert_eq!(output_lines[35], "Metric #2");
         assert_eq!(output_lines[36], "   -> Name: system.cpu.time");
-        assert_eq!(
-            output_lines[37],
-            "   -> Description: time cpu has ran"
-        );
+        assert_eq!(output_lines[37], "   -> Description: time cpu has ran");
         assert_eq!(output_lines[38], "   -> Unit: s");
         assert_eq!(output_lines[39], "   -> DataType: Histogram");
         assert_eq!(output_lines[40], "   -> AggregationTemporality: 4");
@@ -1900,17 +1879,11 @@ mod tests {
             "               -> Timestamp: 1663718400000001400"
         );
         assert_eq!(output_lines[58], "               -> Value: 22.2");
-        assert_eq!(
-            output_lines[59],
-            "               -> FilteredAttributes:"
-        );
+        assert_eq!(output_lines[59], "               -> FilteredAttributes:");
         assert_eq!(output_lines[60], "                  -> cpu: 0");
         assert_eq!(output_lines[61], "Metric #3");
         assert_eq!(output_lines[62], "   -> Name: system.cpu.time");
-        assert_eq!(
-            output_lines[63],
-            "   -> Description: time cpu has ran"
-        );
+        assert_eq!(output_lines[63], "   -> Description: time cpu has ran");
         assert_eq!(output_lines[64], "   -> Unit: s");
         assert_eq!(output_lines[65], "   -> DataType: Sum");
         assert_eq!(output_lines[66], "   -> IsMonotonic: true");
@@ -1945,20 +1918,11 @@ mod tests {
             "               -> Timestamp: 1663718400000001400"
         );
         assert_eq!(output_lines[79], "               -> Value: 22.2");
-        assert_eq!(
-            output_lines[80],
-            "               -> FilteredAttributes:"
-        );
-        assert_eq!(
-            output_lines[81],
-            "                  -> ************: true"
-        );
+        assert_eq!(output_lines[80], "               -> FilteredAttributes:");
+        assert_eq!(output_lines[81], "                  -> ************: true");
         assert_eq!(output_lines[82], "Metric #4");
         assert_eq!(output_lines[83], "   -> Name: system.cpu.time");
-        assert_eq!(
-            output_lines[84],
-            "   -> Description: time cpu has ran"
-        );
+        assert_eq!(output_lines[84], "   -> Description: time cpu has ran");
         assert_eq!(output_lines[85], "   -> Unit: s");
         assert_eq!(output_lines[86], "   -> DataType: Summary");
         assert_eq!(output_lines[87], "      SummaryDataPoints #0");

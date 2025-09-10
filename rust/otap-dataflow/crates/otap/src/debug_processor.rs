@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_debug_processor_signal_mode() {
-                let test_runtime = TestRuntime::new();
+        let test_runtime = TestRuntime::new();
         let signals = HashSet::from([
             SignalActive::Metrics,
             SignalActive::Logs,

@@ -34,7 +34,6 @@ In `signal` mode the output will output each signal individually
 
 By default mode is set to `batch`
 
-
 ### Signal Selection
 
 Select what signals you want output for, by default the following
