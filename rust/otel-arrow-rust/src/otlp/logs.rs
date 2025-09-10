@@ -18,8 +18,7 @@ use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{AttributeArrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
-    IdColumnSorter, encode_fixed64, proto_encode_field_tag, proto_encode_varint,
-    proto_encode_instrumentation_scope, proto_encode_resource, AnyValueArrays, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor
+   proto_encode_instrumentation_scope, proto_encode_resource, AnyValueArrays, ChildIndexIter, BatchSorter, ProtoBuffer, ResourceArrays, ScopeArrays, SortedBatchCursor
 };
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
@@ -408,9 +407,7 @@ pub struct LogsDataArrays<'a> {
 }
 
 pub struct LogsProtoBytesEncoder {
-    // TODO is name "column" here too explicit
-    id_column_sorter: IdColumnSorter,
-    
+    batch_sorter: BatchSorter,
     root_cursor: SortedBatchCursor,
     resource_attrs_cursor: SortedBatchCursor,
     scope_attrs_cursor: SortedBatchCursor,
@@ -419,9 +416,8 @@ pub struct LogsProtoBytesEncoder {
 
 impl LogsProtoBytesEncoder {
     pub fn new() -> Self {
-        // TODO -- is there any way to estimate capacity here?
         Self {
-            id_column_sorter: IdColumnSorter::new(),
+            batch_sorter: BatchSorter::new(),
             root_cursor: SortedBatchCursor::new(),
             resource_attrs_cursor: SortedBatchCursor::new(),
             scope_attrs_cursor: SortedBatchCursor::new(),
@@ -439,14 +435,14 @@ impl LogsProtoBytesEncoder {
     /// TODO comments
     pub fn encode(
         &mut self,
-        otap_batch: &OtapArrowRecords,
-        result_buf: &mut Vec<u8>,
+        otap_batch: &mut OtapArrowRecords,
+        result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
-        // TODO -- do we need to ensure the buf is empty?
+        otap_batch.decode_transport_optimized_ids()?;
 
-        // TODO nounwrap
-        // TODO the otap_batch needs to have the IDs materialized
-        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
 
         let logs_body = logs_rb
             .column_by_name(consts::BODY)
@@ -482,20 +478,20 @@ impl LogsProtoBytesEncoder {
         self.reset();
 
         // get the list of indices in the root record to visit in order
-        self.id_column_sorter
+        self.batch_sorter
             .root_indices_sorted(logs_rb, &mut self.root_cursor);
 
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
-            self.id_column_sorter
+            self.batch_sorter
                 .u16_ids_sorted(res_attrs.parent_id, &mut self.resource_attrs_cursor);
         }
         if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
-            self.id_column_sorter
+            self.batch_sorter
                 .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
         }
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
-            self.id_column_sorter
+            self.batch_sorter
                 .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_cursor);
         }
 
@@ -520,7 +516,7 @@ impl LogsProtoBytesEncoder {
     fn encode_resource_log(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
-        result_buf: &mut Vec<u8>,
+        result_buf: &mut ProtoBuffer,
     ) {
         // encode the `Resource`
         let num_bytes = 5;
@@ -571,7 +567,7 @@ impl LogsProtoBytesEncoder {
     fn encode_scope_logs(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
-        result_buf: &mut Vec<u8>,
+        result_buf: &mut ProtoBuffer,
     ) {
         // encode the `InstrumentationScope`
         let num_bytes = 5;
@@ -622,31 +618,29 @@ impl LogsProtoBytesEncoder {
     fn encode_log_record(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
-        result_buf: &mut Vec<u8>,
+        result_buf: &mut ProtoBuffer,
     ) {
         let index = self.root_cursor.curr_index();
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        // TODO this is considered non Optional (and so is observed timestamp), should we be putting a zero?
         if let Some(col) = log_arrays.time_unix_nano {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64, result_buf);
-                // TODO this won't handle timestamps before epoch (FIXME)
-                encode_fixed64(val as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
+                result_buf.extend_from_slice(&val.to_le_bytes());
             }
         }
 
         if let Some(col) = &log_arrays.severity_number {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT, result_buf);
-                proto_encode_varint(val as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
             }
         }
 
         if let Some(col) = &log_arrays.severity_text {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN, result_buf);
-                proto_encode_varint(val.len() as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());
             }
         }
@@ -689,54 +683,51 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = log_arrays.dropped_attributes_count {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(
+                result_buf.encode_field_tag(
                     LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
                     wire_types::VARINT,
-                    result_buf,
                 );
-                proto_encode_varint(val as u64, result_buf);
+                result_buf.encode_varint(val as u64);
             }
         }
 
         if let Some(col) = &log_arrays.flags {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32);
                 result_buf.extend_from_slice(&val.to_le_bytes());
             }
         }
 
         if let Some(col) = &log_arrays.trace_id {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_TRACE_ID, wire_types::LEN, result_buf);
-                proto_encode_varint(val.len() as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_TRACE_ID, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(&val);
             }
         }
 
         if let Some(col) = &log_arrays.span_id {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_SPAN_ID, wire_types::LEN, result_buf);
-                proto_encode_varint(val.len() as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_SPAN_ID, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(&val);
             }
         }
 
         if let Some(col) = log_arrays.observed_time_unix_nano {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(
+                result_buf.encode_field_tag(
                     LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
                     wire_types::FIXED64,
-                    result_buf,
                 );
-                // TODO this won't handle timestamps before epoch
-                encode_fixed64(val as u64, result_buf);
+                result_buf.extend_from_slice(&val.to_le_bytes());
             }
         }
 
         if let Some(col) = &log_arrays.event_name {
             if let Some(val) = col.value_at(index) {
-                proto_encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN, result_buf);
-                proto_encode_varint(val.len() as u64, result_buf);
+                result_buf.encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN);
+                result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());
             }
         }
@@ -860,13 +851,12 @@ mod test {
         otap_batch.set(ArrowPayloadType::LogAttrs, attrs_record_batch.clone());
         otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_record_batch.clone());
         otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_record_batch.clone());
-        let mut result_buf = vec![];
+        let mut result_buf = ProtoBuffer::new();
         let mut encoder = LogsProtoBytesEncoder::new();
-        encoder.encode(&otap_batch, &mut result_buf).unwrap();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
 
-        println!("{:?}", result_buf);
         let result = LogsData::decode(result_buf.as_ref()).unwrap();
-
+        // TODO assert on the results
         println!("{:#?}", result);
     }
 }

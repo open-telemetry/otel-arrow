@@ -57,7 +57,7 @@ pub(crate) fn proto_encode_resource(
     resource_arrays: &ResourceArrays<'_>,
     resource_attrs_arrays: Option<&AttributeArrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
-    result_buf: &mut Vec<u8>,
+    result_buf: &mut ProtoBuffer,
 ) {
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays {
@@ -82,12 +82,11 @@ pub(crate) fn proto_encode_resource(
 
     if let Some(col) = resource_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            proto_encode_field_tag(
+            result_buf.encode_field_tag(
                 RESOURCE_DROPPED_ATTRIBUTES_COUNT,
                 wire_types::VARINT,
-                result_buf,
             );
-            proto_encode_varint(val as u64, result_buf);
+            result_buf.encode_varint(val as u64);
         }
     }
 }
@@ -182,20 +181,20 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_arrays: &ScopeArrays<'_>,
     scope_attrs_arrays: Option<&AttributeArrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
-    result_buf: &mut Vec<u8>,
+    result_buf: &mut ProtoBuffer,
 ) {
     if let Some(col) = &scope_arrays.name {
         if let Some(val) = col.value_at(index) {
-            proto_encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN, result_buf);
-            proto_encode_varint(val.len() as u64, result_buf);
+            result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN);
+            result_buf.encode_varint(val.len() as u64);
             result_buf.extend_from_slice(val.as_bytes());
         }
     }
 
     if let Some(col) = &scope_arrays.version {
         if let Some(val) = col.value_at(index) {
-            proto_encode_field_tag(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN, result_buf);
-            proto_encode_varint(val.len() as u64, result_buf);
+            result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN);
+            result_buf.encode_varint(val.len() as u64);
             result_buf.extend_from_slice(val.as_bytes());
         }
     }
@@ -222,12 +221,11 @@ pub(crate) fn proto_encode_instrumentation_scope(
 
     if let Some(col) = scope_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            proto_encode_field_tag(
+            result_buf.encode_field_tag(
                 INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT,
                 wire_types::VARINT,
-                result_buf,
             );
-            proto_encode_varint(val as u64, result_buf);
+            result_buf.encode_varint(val as u64);
         }
     }
 }
@@ -328,32 +326,67 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-
-// TOOD should this all be moved under crate::otlp ?
-
-pub(crate) fn proto_encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
-    let key = (field_number << 3) | wire_type;
-    proto_encode_varint(key, result_buf);
+#[derive(Debug)]
+pub struct ProtoBuffer {
+    buffer: Vec<u8>,
 }
 
-// todo comment on what is happening
-pub(crate) fn encode_len_placeholder(num_bytes: usize, result_buf: &mut Vec<u8>) {
-    for _ in 0..num_bytes - 1 {
-        result_buf.push(0x80)
+impl ProtoBuffer {
+    pub fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+        }
     }
-    result_buf.push(0x00);
-}
 
-pub(crate) fn patch_len_placeholder(
-    num_bytes: usize,
-    result_buf: &mut Vec<u8>,
-    len: usize,
-    len_start_pos: usize,
-) {
-    for i in 0..num_bytes {
-        result_buf[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
+    pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
+        let key = (field_number << 3) | wire_type;
+        self.encode_varint(key);
+    }
+
+    /// Encodes a u64 as protobuf varint into `buf`.
+    // TODO should this be generic over T so we don't always have to pass a u64
+    pub fn encode_varint(&mut self, mut value: u64) {
+        while value >= 0x80 {
+        self.buffer.push(((value as u8) & 0x7F) | 0x80);
+            value >>= 7;
+        }
+        self.buffer.push(value as u8);
+    }
+
+    pub(crate) fn encode_len_placeholder(&mut self, num_bytes: usize) {
+        for _ in 0..num_bytes - 1 {
+            self.buffer.push(0x80)
+        }
+        self.buffer.push(0x00);
+    }
+
+    pub(crate) fn patch_len_placeholder(
+        &mut self, 
+        num_bytes: usize,
+        len: usize,
+        len_start_pos: usize,
+    ) {
+        for i in 0..num_bytes {
+            self.buffer[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
+        }
+    }
+
+    pub fn extend_from_slice(&mut self, slice: &[u8]) {
+        self.buffer.extend_from_slice(slice);
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffer.len()
     }
 }
+
+impl AsRef<[u8]> for ProtoBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.buffer
+    }
+}
+
+
 
 /// Helper for encoding with unknown length. usage:
 /// ```norun
@@ -367,40 +400,20 @@ pub(crate) fn patch_len_placeholder(
 #[macro_export]
 macro_rules! proto_encode_len_delimited_mystery_size {
     ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
-        crate::otlp::common::proto_encode_field_tag(
+        $buf.encode_field_tag(
             $field_tag,
             crate::proto::consts::wire_types::LEN,
-            $buf,
         );
         let len_start_pos = $buf.len();
-        crate::otlp::common::encode_len_placeholder($placeholder_size, $buf);
+        $buf.encode_len_placeholder($placeholder_size);
         $encode_fn;
         let len = $buf.len() - len_start_pos - $placeholder_size;
-        crate::otlp::common::patch_len_placeholder(
+        $buf.patch_len_placeholder(
             $placeholder_size,
-            $buf,
             len,
             len_start_pos,
         );
     }};
-}
-
-/// Encodes a u64 as protobuf varint into `buf`.
-// TODO should this be generic over T so we don't always have to pass a u64
-pub(crate) fn proto_encode_varint(mut value: u64, buf: &mut Vec<u8>) {
-    while value >= 0x80 {
-        buf.push(((value as u8) & 0x7F) | 0x80);
-        value >>= 7;
-    }
-    buf.push(value as u8);
-}
-
-pub(crate) fn encode_fixed64(value: u64, buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&value.to_le_bytes());
-}
-
-pub(crate) fn encode_float64(value: f64, buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&value.to_le_bytes());
 }
 
 pub(crate) struct SortedBatchCursor {
@@ -434,7 +447,7 @@ impl SortedBatchCursor {
     }
 }
 
-pub(crate) struct IdColumnSorter {
+pub(crate) struct BatchSorter {
     row_converter: RowConverter,
 
     // TODO comment about reusing the heap allocation for the vec of rows
@@ -443,7 +456,7 @@ pub(crate) struct IdColumnSorter {
     u16_ids: Vec<(usize, u16)>,
 }
 
-impl IdColumnSorter {
+impl BatchSorter {
     pub fn new() -> Self {
         // safety: these datatypes are sortable
         let row_converter = RowConverter::new(vec![

@@ -7,7 +7,7 @@ use snafu::OptionExt;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_u16_array};
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::common::{encode_float64, proto_encode_field_tag, proto_encode_varint, AnyValueArrays};
+use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
@@ -53,11 +53,11 @@ impl<'a> TryFrom<&'a RecordBatch> for AttributeArrays<'a> {
 pub(crate) fn encode_key_value(
     attr_arrays: &AttributeArrays<'_>,
     index: usize,
-    result_buf: &mut Vec<u8>,
+    result_buf: &mut ProtoBuffer,
 ) {
     if let Some(key) = attr_arrays.attr_key.value_at(index) {
-        proto_encode_field_tag(KEY_VALUE_KEY, wire_types::LEN, result_buf);
-        proto_encode_varint(key.len() as u64, result_buf);
+        result_buf.encode_field_tag(KEY_VALUE_KEY, wire_types::LEN);
+        result_buf.encode_varint(key.len() as u64);
         result_buf.extend_from_slice(key.as_bytes());
     }
 
@@ -81,14 +81,14 @@ pub(crate) fn encode_any_value(
     attr_arrays: &AnyValueArrays<'_>,
     index: usize,
     value_type: AttributeValueType,
-    result_buf: &mut Vec<u8>,
+    result_buf: &mut ProtoBuffer,
 ) {
     match value_type {
         AttributeValueType::Str => {
             if let Some(attr_str) = &attr_arrays.attr_str {
                 if let Some(val) = attr_str.value_at(index) {
-                    proto_encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN, result_buf);
-                    proto_encode_varint(val.len() as u64, result_buf);
+                    result_buf.encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN);
+                    result_buf.encode_varint(val.len() as u64);
                     result_buf.extend_from_slice(val.as_bytes());
                 }
             }
@@ -96,33 +96,33 @@ pub(crate) fn encode_any_value(
         AttributeValueType::Bool => {
             if let Some(attr_bool) = &attr_arrays.attr_bool {
                 if let Some(val) = attr_bool.value_at(index) {
-                    proto_encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT, result_buf);
-                    proto_encode_varint(val as u64, result_buf);
+                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                    result_buf.encode_varint(val as u64)
                 }
             }
         }
         AttributeValueType::Int => {
             if let Some(attr_int) = &attr_arrays.attr_int {
                 if let Some(val) = attr_int.value_at(index) {
-                    proto_encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT, result_buf);
+                    result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
                     // TODO need to handle if it's a negative integer ...
-                    proto_encode_varint(val as u64, result_buf);
+                    result_buf.encode_varint(val as u64);
                 }
             }
         }
         AttributeValueType::Double => {
             if let Some(attr_double) = &attr_arrays.attr_double {
                 if let Some(val) = attr_double.value_at(index) {
-                    proto_encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, result_buf);
-                    encode_float64(val, result_buf);
+                    result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                    result_buf.extend_from_slice(&val.to_le_bytes());
                 }
             }
         }
         AttributeValueType::Bytes => {
             if let Some(attr_bytes) = &attr_arrays.attr_bytes {
                 if let Some(val) = attr_bytes.value_at(index) {
-                    proto_encode_field_tag(ANY_VALUE_BYES_VALUE, wire_types::LEN, result_buf);
-                    proto_encode_varint(val.len() as u64, result_buf);
+                    result_buf.encode_field_tag(ANY_VALUE_BYES_VALUE, wire_types::LEN);
+                    result_buf.encode_varint(val.len() as u64);
                     result_buf.extend_from_slice(val.as_ref());
                 }
             }
