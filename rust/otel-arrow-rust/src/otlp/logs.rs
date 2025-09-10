@@ -760,7 +760,7 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        if let Some(col) = log_arrays.event_name {
+        if let Some(col) = &log_arrays.event_name {
             if let Some(val) = col.value_at(index) {
                 proto_encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN, result_buf);
                 proto_encode_varint(val.len() as u64, result_buf);
