@@ -11,6 +11,8 @@ use arrow::compute::sort_to_indices;
 use arrow::datatypes::DataType;
 use arrow::row::{Row, RowConverter, SortField};
 
+// TOOD should this all be moved under crate::otlp ?
+
 pub mod resource;
 
 pub(crate) fn encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
@@ -37,15 +39,24 @@ pub(crate) fn patch_len_placeholder(
     }
 }
 
+/// Helper for encoding with unknown length. usage:
+/// ```norun
+/// encode_len_delimited_mystery_size!(
+///     1, // field tag
+///     5, // number of bytes to use for len
+///     encode_some_nested_field(&mut result_buf), // fills in the child body
+///     result_buf
+/// )
+/// ```
 #[macro_export]
 macro_rules! encode_len_delimited_mystery_size {
     ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
         encode_field_tag($field_tag, wire_types::LEN, $buf);
         let len_start_pos = $buf.len();
-        encode_len_placeholder($placeholder_size, $buf);
+        crate::decode::proto_bytes::encode_len_placeholder($placeholder_size, $buf);
         $encode_fn;
         let len = $buf.len() - len_start_pos - $placeholder_size;
-        patch_len_placeholder($placeholder_size, $buf, len, len_start_pos);
+        crate::decode::proto_bytes::patch_len_placeholder($placeholder_size, $buf, len, len_start_pos);
     }};
 }
 
