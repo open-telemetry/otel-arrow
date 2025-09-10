@@ -17,9 +17,9 @@ use arrow::row::{Row, RowConverter, SortField};
 
 pub mod resource;
 
-pub(crate) fn encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
+pub(crate) fn proto_encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
     let key = (field_number << 3) | wire_type;
-    encode_varint(key, result_buf);
+    proto_encode_varint(key, result_buf);
 }
 
 // todo comment on what is happening
@@ -51,9 +51,13 @@ pub(crate) fn patch_len_placeholder(
 /// )
 /// ```
 #[macro_export]
-macro_rules! encode_len_delimited_mystery_size {
+macro_rules! proto_encode_len_delimited_mystery_size {
     ($field_tag: expr, $placeholder_size:expr, $encode_fn:expr, $buf:expr) => {{
-        crate::decode::proto_bytes::encode_field_tag($field_tag, crate::proto::consts::wire_types::LEN, $buf);
+        crate::decode::proto_bytes::proto_encode_field_tag(
+            $field_tag,
+            crate::proto::consts::wire_types::LEN,
+            $buf,
+        );
         let len_start_pos = $buf.len();
         crate::decode::proto_bytes::encode_len_placeholder($placeholder_size, $buf);
         $encode_fn;
@@ -69,7 +73,7 @@ macro_rules! encode_len_delimited_mystery_size {
 
 /// Encodes a u64 as protobuf varint into `buf`.
 // TODO should this be generic over T so we don't always have to pass a u64
-pub(crate) fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
+pub(crate) fn proto_encode_varint(mut value: u64, buf: &mut Vec<u8>) {
     while value >= 0x80 {
         buf.push(((value as u8) & 0x7F) | 0x80);
         value >>= 7;

@@ -5,13 +5,19 @@ use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
     get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
 };
-use crate::decode::proto_bytes::{encode_field_tag, encode_varint};
-use crate::encode_len_delimited_mystery_size;
+use crate::decode::proto_bytes::{proto_encode_field_tag, proto_encode_varint};
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::{encode_key_value, AttributeArrays};
-use crate::proto::consts::field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT};
+use crate::otlp::attributes::{AttributeArrays, encode_key_value};
+use crate::proto::consts::field_num::common::{
+    INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
+    INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
+};
+use crate::proto::consts::field_num::resource::{
+    RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT,
+};
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
+use crate::proto_encode_len_delimited_mystery_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
@@ -47,7 +53,7 @@ impl ResourceArrays<'_> {
     }
 }
 
-pub(crate) fn encode_resource(
+pub(crate) fn proto_encode_resource(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
     resource_attrs_arrays: Option<&AttributeArrays<'_>>,
@@ -67,7 +73,7 @@ pub(crate) fn encode_resource(
 
             while let Some(attr_index) = attrs_index_iter.next() {
                 let num_bytes = 5;
-                encode_len_delimited_mystery_size!(
+                proto_encode_len_delimited_mystery_size!(
                     RESOURCE_ATTRIBUTES,
                     num_bytes,
                     encode_key_value(attrs_arrays, attr_index, result_buf),
@@ -79,8 +85,12 @@ pub(crate) fn encode_resource(
 
     if let Some(col) = resource_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT, result_buf);
-            encode_varint(val as u64, result_buf);
+            proto_encode_field_tag(
+                RESOURCE_DROPPED_ATTRIBUTES_COUNT,
+                wire_types::VARINT,
+                result_buf,
+            );
+            proto_encode_varint(val as u64, result_buf);
         }
     }
 }
@@ -167,6 +177,63 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
                 .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
             id: struct_col_accessor.primitive_column_op(consts::ID)?,
         })
+    }
+}
+
+pub(crate) fn proto_encode_instrumentation_scope(
+    index: usize,
+    scope_arrays: &ScopeArrays<'_>,
+    scope_attrs_arrays: Option<&AttributeArrays<'_>>,
+    scope_attrs_sorted_indices: &Vec<usize>,
+    scope_attrs_sorted_index: &mut usize,
+    result_buf: &mut Vec<u8>,
+) {
+    if let Some(col) = &scope_arrays.name {
+        if let Some(val) = col.value_at(index) {
+            proto_encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN, result_buf);
+            proto_encode_varint(val.len() as u64, result_buf);
+            result_buf.extend_from_slice(val.as_bytes());
+        }
+    }
+
+    if let Some(col) = &scope_arrays.version {
+        if let Some(val) = col.value_at(index) {
+            proto_encode_field_tag(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN, result_buf);
+            proto_encode_varint(val.len() as u64, result_buf);
+            result_buf.extend_from_slice(val.as_bytes());
+        }
+    }
+
+    if let Some(attr_arrays) = scope_attrs_arrays {
+        if let Some(scope_id) = scope_arrays.id.value_at(index) {
+            let mut attrs_index_iter = ChildIndexIter {
+                parent_id: scope_id,
+                parent_id_col: attr_arrays.parent_id,
+                sorted_indices: scope_attrs_sorted_indices,
+                pos: scope_attrs_sorted_index,
+            };
+
+            while let Some(attr_index) = attrs_index_iter.next() {
+                let num_bytes = 5;
+                proto_encode_len_delimited_mystery_size!(
+                    INSTRUMENTATION_SCOPE_ATTRIBUTES,
+                    num_bytes,
+                    encode_key_value(attr_arrays, attr_index, result_buf),
+                    result_buf
+                );
+            }
+        }
+    }
+
+    if let Some(col) = scope_arrays.dropped_attributes_count {
+        if let Some(val) = col.value_at(index) {
+            proto_encode_field_tag(
+                INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT,
+                wire_types::VARINT,
+                result_buf,
+            );
+            proto_encode_varint(val as u64, result_buf);
+        }
     }
 }
 
