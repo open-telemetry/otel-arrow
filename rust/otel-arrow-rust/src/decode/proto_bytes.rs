@@ -6,7 +6,9 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::schema::consts;
-use arrow::array::{Array, ArrayRef, RecordBatch, StructArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::array::{
+    Array, ArrayRef, RecordBatch, StructArray, UInt8Array, UInt16Array, UInt32Array,
+};
 use arrow::compute::sort_to_indices;
 use arrow::datatypes::DataType;
 use arrow::row::{Row, RowConverter, SortField};
@@ -56,7 +58,12 @@ macro_rules! encode_len_delimited_mystery_size {
         crate::decode::proto_bytes::encode_len_placeholder($placeholder_size, $buf);
         $encode_fn;
         let len = $buf.len() - len_start_pos - $placeholder_size;
-        crate::decode::proto_bytes::patch_len_placeholder($placeholder_size, $buf, len, len_start_pos);
+        crate::decode::proto_bytes::patch_len_placeholder(
+            $placeholder_size,
+            $buf,
+            len,
+            len_start_pos,
+        );
     }};
 }
 
@@ -104,11 +111,7 @@ impl IdColumnSorter {
 
     /// TODO comment
     // TODO revisit the return type here
-    pub fn root_indices_sorted(
-        &mut self,
-        record_batch: &RecordBatch,
-        result_buf: &mut Vec<usize>,
-    ) {
+    pub fn root_indices_sorted(&mut self, record_batch: &RecordBatch, result_buf: &mut Vec<usize>) {
         const PLACEHOLDER_ARRAY: LazyLock<ArrayRef> =
             LazyLock::new(|| Arc::new(UInt8Array::new_null(0)));
 
@@ -149,20 +152,20 @@ impl IdColumnSorter {
             result_buf.extend(sort.iter().map(|(i, _)| *i));
             self.rows = reuse_rows_vec(sort);
         } else if sort_columns_idx == 1 {
-            let ids = sort_columns[0].as_any().downcast_ref::<UInt16Array>().unwrap();
+            let ids = sort_columns[0]
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap();
             self.u16_ids_sorted(ids, result_buf);
         } else {
             result_buf.extend(0..record_batch.num_rows());
         }
     }
 
-    pub fn u16_ids_sorted(
-        &mut self,
-        ids: &UInt16Array,
-        result_buf: &mut Vec<usize>,
-    ) {
+    pub fn u16_ids_sorted(&mut self, ids: &UInt16Array, result_buf: &mut Vec<usize>) {
         self.u16_ids.clear();
-        self.u16_ids.extend(ids.values().iter().copied().enumerate());
+        self.u16_ids
+            .extend(ids.values().iter().copied().enumerate());
 
         if ids.null_count() == 0 {
             self.u16_ids.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
@@ -180,5 +183,3 @@ fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)>
     v.clear();
     v.into_iter().map(|_| unreachable!()).collect()
 }
-
-
