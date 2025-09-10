@@ -922,7 +922,7 @@ mod telemetry_tests {
 
         // 4) Build a minimal OTLP logs request that has a signal-level attribute 'a'
         let input_bytes = {
-            use otap_df_otlp::proto::opentelemetry::{
+            use otel_arrow_rust::proto::opentelemetry::{
                 collector::logs::v1::ExportLogsServiceRequest,
                 common::v1::{
                     AnyValue, InstrumentationScope, KeyValue, any_value::Value as AnyVal,
@@ -988,11 +988,9 @@ mod telemetry_tests {
                 *collector_handle_rt.lock().unwrap() = Some(handle);
 
                 // Process one message
-                ctx.process(Message::PData(OtapPdata::from(
-                    OtlpProtoBytes::ExportLogsRequest(input_bytes),
-                )))
-                .await
-                .expect("pdata");
+                let pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(input_bytes).into());
+                ctx.process(Message::PData(pdata)).await.expect("pdata");
 
                 // Trigger telemetry snapshot
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
