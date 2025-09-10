@@ -180,7 +180,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break;
                                                         },
@@ -223,7 +223,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                                     return; // Break out of the entire task
                                                                 }
                                                             }
@@ -232,7 +232,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break; // ToDo: Handle read error properly
                                                         }
@@ -248,7 +248,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                             return; // Break out of the entire task
                                                         }
                                                     }
@@ -318,7 +318,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
+                                        effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                                     }
                                 },
                                 Err(e) => {
@@ -336,7 +336,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
+                                effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                             }
                         },
                     }
@@ -350,6 +350,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pdata::OtapPayload;
     use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -509,10 +510,11 @@ mod tests {
                 let message1_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for first message")
-                    .expect("No first message received");
+                    .expect("No first message received")
+                    .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -627,10 +629,11 @@ mod tests {
                 let message1_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for first message")
-                    .expect("No first message received");
+                    .expect("No first message received")
+                    .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -749,7 +752,8 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPdata::OtapArrowRecords(arrow_records) = message else {
+                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            else {
                                 panic!("Expected OtapArrowRecords variant")
                             };
 

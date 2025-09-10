@@ -18,7 +18,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::{
     otap_exporter::OTAPExporter,
-    pdata::OtapPdata,
+    pdata::{Context, OtapPdata},
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
 use otel_arrow_rust::{
@@ -393,9 +393,9 @@ fn bench_exporter(c: &mut Criterion) {
                     .expect("can consume BAR"),
             ));
 
-            otap_signals.push(OtapPdata::from(trace_records));
-            otap_signals.push(OtapPdata::from(log_records));
-            otap_signals.push(OtapPdata::from(metrics_records));
+            otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
+            otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
+            otap_signals.push(OtapPdata::new(Context::default(), metrics_records.into()));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());

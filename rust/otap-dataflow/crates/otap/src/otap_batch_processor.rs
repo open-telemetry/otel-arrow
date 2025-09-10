@@ -308,7 +308,7 @@ impl OtapBatchProcessor {
             if max_val <= MIN_SEND_BATCH_SIZE {
                 // Bypass upstream splitter for degenerate max; just forward each record
                 for records in input {
-                    let pdata: OtapPdata = records.into();
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 // Always reset counter in the degenerate path
@@ -354,7 +354,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata: OtapPdata = records.into();
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -385,13 +385,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is (avoids upstream edge-cases)
                         for records in input {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -426,7 +426,7 @@ impl OtapBatchProcessor {
             let max_val = self.config.send_batch_max_size;
             if max_val <= MIN_SEND_BATCH_SIZE {
                 for records in input {
-                    let pdata: OtapPdata = records.into();
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 self.rows_metrics = 0;
@@ -464,7 +464,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata: OtapPdata = records.into();
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -494,13 +494,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is
                         for records in input {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -537,7 +537,7 @@ impl OtapBatchProcessor {
             let max_val = self.config.send_batch_max_size;
             if max_val <= MIN_SEND_BATCH_SIZE {
                 for records in input {
-                    let pdata: OtapPdata = records.into();
+                    let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
                 self.rows_traces = 0;
@@ -575,7 +575,7 @@ impl OtapBatchProcessor {
                     }
 
                     for records in output_batches {
-                        let pdata: OtapPdata = records.into();
+                        let pdata = OtapPdata::new_todo_context(records.into());
                         effect.send_message(pdata).await?;
                     }
 
@@ -605,13 +605,13 @@ impl OtapBatchProcessor {
                             }
                         };
                         for records in output_batches {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     } else {
                         // Single record: forward as-is
                         for records in input {
-                            let pdata: OtapPdata = records.into();
+                            let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
                         }
                     }
@@ -714,9 +714,14 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                     | otap_df_engine::control::NodeControlMsg::Nack { .. } => Ok(()),
                 }
             }
-            Message::PData(data) => {
+            Message::PData(request) => {
                 let max = self.config.send_batch_max_size;
-                match OtapArrowRecords::try_from(data.clone()) {
+                let signal_type = request.signal_type();
+
+                // Note: Context is dropped.
+                let (_ctx, data) = request.into_parts();
+
+                match OtapArrowRecords::try_from(data) {
                     Ok(rec) => {
                         let rows = rec.batch_length();
                         // Per-signal policy: drop zero-row; pre-flush if exceeding max; append rows; flush on max or send_batch_size.
@@ -850,7 +855,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         if let Some(metrics) = &mut self.metrics {
                             metrics.dropped_conversion.inc();
                         }
-                        match data.signal_type() {
+                        match signal_type {
                             SignalType::Logs => {
                                 effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
                                 Ok(())
@@ -1230,18 +1235,18 @@ mod tests {
 
         // run scenario
         let validation = phase.run_test(|mut ctx| async move {
-            let pdata1: OtapPdata = one_trace_record().into();
+            let pdata1 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata1))
                 .await
                 .expect("process 1");
-            let pdata2: OtapPdata = one_trace_record().into();
+            let pdata2 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata2))
                 .await
                 .expect("process 2");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(emitted.len(), 1, "flush expected once at max boundary");
 
-            let pdata3: OtapPdata = one_trace_record().into();
+            let pdata3 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata3))
                 .await
                 .expect("process 3");
@@ -1293,7 +1298,7 @@ mod tests {
 
         let validation = phase.run_test(|mut ctx| async move {
             // Process a single small record (below thresholds)
-            let pdata: OtapPdata = one_trace_record().into();
+            let pdata = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata)).await.expect("process 1");
 
             // No flush before timer
@@ -1336,7 +1341,7 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            let pdata: OtapPdata = one_trace_record().into();
+            let pdata = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata)).await.expect("process 1");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
@@ -1404,7 +1409,8 @@ mod tests {
 
         let validation = phase.run_test(|mut ctx| async move {
             // Metrics OTLP bytes are not yet supported for conversion -> should be dropped
-            let pdata = OtapPdata::from(OtlpProtoBytes::ExportMetricsRequest(vec![1, 2, 3]));
+            let pdata =
+                OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(vec![1, 2, 3]).into());
             ctx.process(Message::PData(pdata)).await.expect("process 1");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
@@ -1438,7 +1444,8 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            let pdata = OtapPdata::from(OtlpProtoBytes::ExportMetricsRequest(vec![9, 9, 9]));
+            let pdata =
+                OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(vec![9, 9, 9]).into());
             ctx.process(Message::PData(pdata)).await.expect("process");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(emitted.len(), 0, "no flush before shutdown");
@@ -1481,7 +1488,7 @@ mod tests {
             assert_eq!(rec.batch_length(), 5, "test precondition: 5 rows");
 
             // Process it
-            let pdata: OtapPdata = rec.into();
+            let pdata = OtapPdata::new_default(rec.into());
             ctx.process(Message::PData(pdata)).await.expect("process");
 
             // With the guard, a single oversize record should NOT be split; we forward as-is.
@@ -1491,7 +1498,7 @@ mod tests {
                 1,
                 "single oversize record should be forwarded unsplit due to guard"
             );
-            let first = emitted.into_iter().next().unwrap();
+            let first = emitted.into_iter().next().unwrap().payload();
             let first_rec: OtapArrowRecords = first.try_into().unwrap();
             assert_eq!(
                 first_rec.batch_length(),
@@ -1612,12 +1619,12 @@ mod timer_flush_behavior_tests {
 
         let validation = phase.run_test(|mut ctx| async move {
             // First push: 1 row -> below thresholds, nothing emitted
-            let pdata1: OtapPdata = test_helpers::one_trace_record().into();
+            let pdata1 = OtapPdata::new_default(test_helpers::one_trace_record().into());
             ctx.process(Message::PData(pdata1)).await.expect("p1");
             assert!(ctx.drain_pdata().await.is_empty());
 
             // Second push: another 1 row -> rows=2 triggers size flush, fully drained (no remainder)
-            let pdata2: OtapPdata = test_helpers::one_trace_record().into();
+            let pdata2 = OtapPdata::new_default(test_helpers::one_trace_record().into());
             ctx.process(Message::PData(pdata2)).await.expect("p2");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
@@ -1627,7 +1634,7 @@ mod timer_flush_behavior_tests {
             );
 
             // Third push: 1 row, below thresholds -> timer should NOT flush (dirty cleared on size flush)
-            let pdata3: OtapPdata = test_helpers::one_trace_record().into();
+            let pdata3 = OtapPdata::new_default(test_helpers::one_trace_record().into());
             ctx.process(Message::PData(pdata3)).await.expect("p3");
             assert!(ctx.drain_pdata().await.is_empty());
 
