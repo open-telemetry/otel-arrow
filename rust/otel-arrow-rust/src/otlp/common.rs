@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor, get_required_array,
+    MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
+    get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
 };
-use crate::error;
+use crate::decode::proto_bytes::{encode_field_tag, encode_varint};
+use crate::encode_len_delimited_mystery_size;
+use crate::error::{self, Error, Result};
+use crate::otlp::attributes::{encode_key_value, AttributeArrays};
+use crate::proto::consts::field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT};
+use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
 use crate::schema::consts;
-use arrow::array::{Array, RecordBatch, StructArray, UInt16Array, UInt32Array};
+use arrow::array::{
+    Array, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    StructArray, UInt8Array, UInt16Array, UInt32Array,
+};
 use arrow::datatypes::{DataType, Field, Fields};
 use snafu::OptionExt;
 use std::fmt;
@@ -38,10 +47,48 @@ impl ResourceArrays<'_> {
     }
 }
 
-impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
-    type Error = error::Error;
+pub(crate) fn encode_resource(
+    index: usize,
+    resource_arrays: &ResourceArrays<'_>,
+    resource_attrs_arrays: Option<&AttributeArrays<'_>>,
+    resource_attrs_sorted_indices: &Vec<usize>,
+    resource_attrs_sorted_index: &mut usize,
+    result_buf: &mut Vec<u8>,
+) {
+    // add attributes
+    if let Some(attrs_arrays) = resource_attrs_arrays {
+        if let Some(res_id) = resource_arrays.id.value_at(index) {
+            let mut attrs_index_iter = ChildIndexIter {
+                parent_id: res_id,
+                parent_id_col: attrs_arrays.parent_id,
+                sorted_indices: resource_attrs_sorted_indices,
+                pos: resource_attrs_sorted_index,
+            };
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self, Self::Error> {
+            while let Some(attr_index) = attrs_index_iter.next() {
+                let num_bytes = 5;
+                encode_len_delimited_mystery_size!(
+                    RESOURCE_ATTRIBUTES,
+                    num_bytes,
+                    encode_key_value(attrs_arrays, attr_index, result_buf),
+                    result_buf
+                );
+            }
+        }
+    }
+
+    if let Some(col) = resource_arrays.dropped_attributes_count {
+        if let Some(val) = col.value_at(index) {
+            encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT, result_buf);
+            encode_varint(val as u64, result_buf);
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
+    type Error = Error;
+
+    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         let struct_array = get_required_array(rb, consts::RESOURCE)?;
         let struct_array = struct_array
             .as_any()
@@ -99,9 +146,9 @@ impl ScopeArrays<'_> {
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
-    type Error = error::Error;
+    type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self, Self::Error> {
+    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         let struct_array = get_required_array(rb, consts::SCOPE)?;
         let scope_array = struct_array
             .as_any()
@@ -169,5 +216,84 @@ impl fmt::Display for AnyValue {
             write!(f, "")?;
         }
         Ok(())
+    }
+}
+
+pub(crate) struct AnyValueArrays<'a> {
+    pub attr_type: &'a UInt8Array,
+    // TODO should these just be StringArrayAccessor, etc.
+    pub attr_str: Option<MaybeDictArrayAccessor<'a, StringArray>>,
+    pub attr_int: Option<MaybeDictArrayAccessor<'a, Int64Array>>,
+    pub attr_double: Option<&'a Float64Array>,
+    pub attr_bool: Option<&'a BooleanArray>,
+    pub attr_bytes: Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
+    pub attr_ser: Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
+}
+
+impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
+    type Error = Error;
+
+    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+        let attr_type = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
+        let attr_str = rb
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .map(MaybeDictArrayAccessor::<StringArray>::try_new)
+            .transpose()?;
+        let attr_int = rb
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .map(MaybeDictArrayAccessor::<Int64Array>::try_new)
+            .transpose()?;
+        let attr_double = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
+        let attr_bool = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
+        let attr_bytes = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+            .transpose()?;
+        let attr_ser = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+            .transpose()?;
+
+        Ok(Self {
+            attr_type,
+            attr_str,
+            attr_int,
+            attr_double,
+            attr_bool,
+            attr_bytes,
+            attr_ser,
+        })
+    }
+}
+
+/// TODO coment on what this is doing
+pub(crate) struct ChildIndexIter<'a> {
+    pub parent_id: u16,
+    pub parent_id_col: &'a UInt16Array,
+    pub sorted_indices: &'a Vec<usize>,
+    pub pos: &'a mut usize,
+}
+
+impl Iterator for ChildIndexIter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // we've iterated to the end of the attributes array - no more attributes
+        if *self.pos >= self.sorted_indices.len() {
+            return None;
+        }
+
+        let index = self.sorted_indices[*self.pos];
+
+        // TODO there's a bug in here that we actually need to increment pos
+        // until it's greater than or equal to parent_id? I guess in case there's
+        // a parent ID w/ no attributes or something (e.g. attrs dropped).
+
+        if Some(self.parent_id) == self.parent_id_col.value_at(index) {
+            *self.pos += 1;
+            Some(index)
+        } else {
+            None
+        }
     }
 }

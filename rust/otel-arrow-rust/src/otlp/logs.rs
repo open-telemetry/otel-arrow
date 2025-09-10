@@ -1,10 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::thread::Scope;
-
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
+    Array, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StructArray,
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
@@ -12,25 +10,20 @@ use related_data::RelatedData;
 use snafu::{OptionExt, ResultExt, ensure};
 
 use crate::arrays::{
-    ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
+    ByteArrayAccessor, Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+    StringArrayAccessor, StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array,
+    get_u32_array_opt,
 };
 use crate::decode::proto_bytes::resource::ResourceProtoBytesEncoder;
-use crate::decode::proto_bytes::{
-    IdColumnSorter, encode_field_tag, encode_fixed64, encode_len_placeholder, encode_varint,
-    patch_len_placeholder,
-};
+use crate::decode::proto_bytes::{IdColumnSorter, encode_field_tag, encode_fixed64, encode_varint};
 use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{AttributeArrays, AttributesIter, encode_key_value};
-use crate::otlp::common::{ResourceArrays, ScopeArrays};
+use crate::otlp::attributes::{encode_any_value, encode_key_value, AttributeArrays};
+use crate::otlp::common::{encode_resource, AnyValueArrays, ChildIndexIter, ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::consts::field_num::logs::{
-    LOG_RECORD_ATTRIBUTES, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
-    LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
-    LOG_RECORD_SPAN_ID, LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE,
-    RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
+    LOGS_DATA_RESOURCE, LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID, LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -129,15 +122,7 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
 
 struct LogBodyArrays<'a> {
     body: &'a StructArray,
-    value_type: &'a UInt8Array,
-    str: Option<StringArrayAccessor<'a>>,
-    int: Option<&'a Int64Array>,
-    double: Option<&'a Float64Array>,
-    bool: Option<&'a BooleanArray>,
-    bytes: Option<ByteArrayAccessor<'a>>,
-
-    // ser is for serialized value type of AnyValue including "kvlist" and "array"
-    ser: Option<ByteArrayAccessor<'a>>,
+    anyval_arrays: AnyValueArrays<'a>,
 }
 
 impl NullableArrayAccessor for LogBodyArrays<'_> {
@@ -148,8 +133,9 @@ impl NullableArrayAccessor for LogBodyArrays<'_> {
             return None;
         }
 
-        let value_type = AttributeValueType::try_from(self.value_type.value_at_or_default(idx))
-            .context(error::UnrecognizedAttributeValueTypeSnafu);
+        let value_type =
+            AttributeValueType::try_from(self.anyval_arrays.attr_type.value_at_or_default(idx))
+                .context(error::UnrecognizedAttributeValueTypeSnafu);
         let value_type = match value_type {
             Ok(v) => v,
             Err(err) => {
@@ -158,17 +144,27 @@ impl NullableArrayAccessor for LogBodyArrays<'_> {
         };
 
         if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self.ser.value_at(idx)?;
+            let bytes = self.anyval_arrays.attr_ser.value_at(idx)?;
             let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
             return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
         }
 
         let value = match value_type {
-            AttributeValueType::Str => Value::StringValue(self.str.value_at_or_default(idx)),
-            AttributeValueType::Int => Value::IntValue(self.int.value_at_or_default(idx)),
-            AttributeValueType::Double => Value::DoubleValue(self.double.value_at_or_default(idx)),
-            AttributeValueType::Bool => Value::BoolValue(self.bool.value_at_or_default(idx)),
-            AttributeValueType::Bytes => Value::BytesValue(self.bytes.value_at_or_default(idx)),
+            AttributeValueType::Str => {
+                Value::StringValue(self.anyval_arrays.attr_str.value_at_or_default(idx))
+            }
+            AttributeValueType::Int => {
+                Value::IntValue(self.anyval_arrays.attr_int.value_at_or_default(idx))
+            }
+            AttributeValueType::Double => {
+                Value::DoubleValue(self.anyval_arrays.attr_double.value_at_or_default(idx))
+            }
+            AttributeValueType::Bool => {
+                Value::BoolValue(self.anyval_arrays.attr_bool.value_at_or_default(idx))
+            }
+            AttributeValueType::Bytes => {
+                Value::BytesValue(self.anyval_arrays.attr_bytes.value_at_or_default(idx))
+            }
             _ => {
                 // silently ignore unknown types to avoid DOS attacks
                 return None;
@@ -184,15 +180,28 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
 
     fn try_from(body: &'a StructArray) -> Result<Self> {
         let column_accessor = StructColumnAccessor::new(body);
+
         Ok(Self {
             body,
-            value_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
-            str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
-            int: column_accessor.primitive_column_op(consts::ATTRIBUTE_INT)?,
-            double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
-            bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-            bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-            ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
+            anyval_arrays: AnyValueArrays {
+                attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
+                attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
+                attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
+                attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
+                // TODO should we also have similar helpers to above for these types:
+                attr_int: body
+                    .column_by_name(consts::ATTRIBUTE_INT)
+                    .map(MaybeDictArrayAccessor::<Int64Array>::try_new)
+                    .transpose()?,
+                attr_bytes: body
+                    .column_by_name(consts::ATTRIBUTE_BYTES)
+                    .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+                    .transpose()?,
+                attr_ser: body
+                    .column_by_name(consts::ATTRIBUTE_SER)
+                    .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+                    .transpose()?,
+            },
         })
     }
 }
@@ -401,6 +410,16 @@ pub struct LogsProtoBytesEncoder {
     resource_encoder: ResourceProtoBytesEncoder,
 }
 
+pub struct LogsDataArrays<'a> {
+    log_arrays: LogsArrays<'a>,
+    log_body_arrays: LogBodyArrays<'a>,
+    scope_arrays: ScopeArrays<'a>,
+    resource_arrays: ResourceArrays<'a>,
+    log_attrs: Option<AttributeArrays<'a>>,
+    resource_attrs: Option<AttributeArrays<'a>>,
+    scope_attrs: Option<AttributeArrays<'a>>,
+}
+
 impl LogsProtoBytesEncoder {
     pub fn new() -> Self {
         // TODO -- is there any way to estimate capacity here?
@@ -446,22 +465,37 @@ impl LogsProtoBytesEncoder {
         // TODO nounwrap
         // TODO the otap_batch needs to have the IDs materialized
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-        let logs_arrays = LogsArrays::try_from(logs_rb).unwrap();
-        let scope_arrays = ScopeArrays::try_from(logs_rb).unwrap();
-        let resource_arrays = ResourceArrays::try_from(logs_rb).unwrap();
 
-        let resource_attrs = otap_batch
-            .get(ArrowPayloadType::ResourceAttrs)
-            .map(AttributeArrays::try_from)
-            .transpose()?;
-        let scope_attrs = otap_batch
-            .get(ArrowPayloadType::ScopeAttrs)
-            .map(AttributeArrays::try_from)
-            .transpose()?;
-        let log_attrs = otap_batch
-            .get(ArrowPayloadType::LogAttrs)
-            .map(AttributeArrays::try_from)
-            .transpose()?;
+        let logs_body = logs_rb.column_by_name(consts::BODY)
+            .with_context(|| error::ColumnNotFoundSnafu { name: consts::BODY })?;
+        let logs_body = logs_body
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                name: consts::BODY,
+                expect: DataType::Struct(Fields::empty()),
+                actual: logs_body.data_type().clone()
+            })?;
+            
+
+        let logs_data_arrays = LogsDataArrays {
+            log_arrays: LogsArrays::try_from(logs_rb)?,
+            log_body_arrays: LogBodyArrays::try_from(logs_body)?,
+            scope_arrays: ScopeArrays::try_from(logs_rb)?,
+            resource_arrays: ResourceArrays::try_from(logs_rb)?,
+            log_attrs: otap_batch
+                .get(ArrowPayloadType::LogAttrs)
+                .map(AttributeArrays::try_from)
+                .transpose()?,
+            scope_attrs: otap_batch
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(AttributeArrays::try_from)
+                .transpose()?,
+            resource_attrs: otap_batch
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(AttributeArrays::try_from)
+                .transpose()?
+        };
 
         self.reset();
 
@@ -470,17 +504,16 @@ impl LogsProtoBytesEncoder {
             .root_indices_sorted(logs_rb, &mut self.root_columns_indices_sorted);
         self.root_column_sorted_index = 0;
 
-        if let Some(resource_attrs) = resource_attrs.as_ref() {
-            self.id_column_sorter.u16_ids_sorted(
-                resource_attrs.parent_id,
-                &mut self.resource_attrs_sorted_indices,
-            );
+        // get the lists of child indices for attributes to visit in oder:
+        if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
+            self.id_column_sorter
+                .u16_ids_sorted(res_attrs.parent_id, &mut self.resource_attrs_sorted_indices);
         }
-        if let Some(scope_attrs) = scope_attrs.as_ref() {
+        if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
             self.id_column_sorter
                 .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_sorted_indices);
         }
-        if let Some(log_attrs) = log_attrs.as_ref() {
+        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             self.id_column_sorter
                 .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_sorted_indices);
         }
@@ -491,15 +524,7 @@ impl LogsProtoBytesEncoder {
             encode_len_delimited_mystery_size!(
                 LOGS_DATA_RESOURCE,
                 num_bytes,
-                self.encode_resource_log(
-                    &logs_arrays,
-                    &scope_arrays,
-                    &resource_arrays,
-                    resource_attrs.as_ref(),
-                    scope_attrs.as_ref(),
-                    log_attrs.as_ref(),
-                    result_buf,
-                ),
+                self.encode_resource_log(&logs_data_arrays, result_buf),
                 result_buf
             );
 
@@ -513,29 +538,32 @@ impl LogsProtoBytesEncoder {
 
     fn encode_resource_log(
         &mut self,
-        logs_arrays: &LogsArrays<'_>,
-        scope_arrays: &ScopeArrays<'_>,
-        resource_arrays: &ResourceArrays<'_>,
-        resource_attrs: Option<&AttributeArrays<'_>>,
-        scope_attrs: Option<&AttributeArrays<'_>>,
-        log_attrs: Option<&AttributeArrays<'_>>,
+        logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut Vec<u8>,
     ) {
-        let resource_id = resource_arrays.id.value_at(self.curr_root_rb_index());
+        let num_bytes = 5;
+        encode_len_delimited_mystery_size!(
+            LOGS_DATA_RESOURCE,
+            num_bytes,
+            encode_resource(
+                self.curr_root_rb_index(),
+                &logs_data_arrays.resource_arrays,
+                logs_data_arrays.resource_attrs.as_ref(), 
+                &self.resource_attrs_sorted_indices, 
+                &mut self.resource_attrs_sorted_index, 
+                result_buf
+            ),
+            result_buf
+        );
 
         // encode all `ScopeLog`s for this `ResourceLog`
+        let resource_id = logs_data_arrays.resource_arrays.id.value_at(self.curr_root_rb_index());
         loop {
             let num_bytes = 5;
             encode_len_delimited_mystery_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
                 num_bytes,
-                self.encode_scope_logs(
-                    logs_arrays,
-                    scope_arrays,
-                    scope_attrs,
-                    log_attrs,
-                    result_buf,
-                ),
+                self.encode_scope_logs(logs_data_arrays, result_buf),
                 result_buf
             );
 
@@ -545,7 +573,7 @@ impl LogsProtoBytesEncoder {
             }
 
             // check if we've found a new scope ID. If so, break
-            if resource_id != resource_arrays.id.value_at(self.curr_root_rb_index()) {
+            if resource_id != logs_data_arrays.resource_arrays.id.value_at(self.curr_root_rb_index()) {
                 break;
             }
         }
@@ -553,13 +581,10 @@ impl LogsProtoBytesEncoder {
 
     fn encode_scope_logs(
         &mut self,
-        log_arrays: &LogsArrays<'_>,
-        scope_arrays: &ScopeArrays<'_>,
-        scope_attrs: Option<&AttributeArrays<'_>>,
-        log_attrs: Option<&AttributeArrays<'_>>,
+        logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut Vec<u8>,
     ) {
-        let scope_id = scope_arrays.id.value_at(self.curr_root_rb_index());
+        let scope_id = logs_data_arrays.scope_arrays.id.value_at(self.curr_root_rb_index());
 
         // encode all `LogRecord`s for this `ScopeLog``
         loop {
@@ -567,7 +592,7 @@ impl LogsProtoBytesEncoder {
             encode_len_delimited_mystery_size!(
                 SCOPE_LOGS_LOG_RECORDS,
                 num_bytes,
-                self.encode_log_record(log_arrays, log_attrs, result_buf),
+                self.encode_log_record(logs_data_arrays, result_buf),
                 result_buf
             );
 
@@ -577,7 +602,7 @@ impl LogsProtoBytesEncoder {
             }
 
             // check if we've found a new scope ID. If so, break
-            if scope_id != scope_arrays.id.value_at(self.curr_root_rb_index()) {
+            if scope_id != logs_data_arrays.scope_arrays.id.value_at(self.curr_root_rb_index()) {
                 break;
             }
         }
@@ -585,11 +610,11 @@ impl LogsProtoBytesEncoder {
 
     fn encode_log_record(
         &mut self,
-        log_arrays: &LogsArrays<'_>,
-        log_attrs: Option<&AttributeArrays<'_>>,
+        logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut Vec<u8>,
     ) {
         let index = self.curr_root_rb_index();
+        let log_arrays = &logs_data_arrays.log_arrays;
 
         // TODO this is considered non Optional (and so is observed timestamp), should we be putting a zero?
         if let Some(col) = log_arrays.time_unix_nano {
@@ -615,18 +640,32 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        // TODO body
+        let log_body_arrays = &logs_data_arrays.log_body_arrays;
+        if log_body_arrays.body.is_valid(index) {
+            let anyval_arrays = &log_body_arrays.anyval_arrays;
+            if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
+                // TODO nounwrap
+                let value_type = AttributeValueType::try_from(value_type).unwrap();
+                let num_bytes = 5;
+                encode_len_delimited_mystery_size!(
+                    LOG_RECORD_BODY,
+                    num_bytes,
+                    encode_any_value(anyval_arrays, index, value_type, result_buf),
+                    result_buf
+                );
+            }
+        }
 
-        if let Some(log_attrs) = log_attrs {
+        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             if let Some(id) = log_arrays.id.value_at(index) {
-                let mut attrs_iter = AttributesIter {
+                let mut attrs_index_iter = ChildIndexIter {
                     parent_id: id,
-                    attr_arrays: log_attrs,
-                    parent_id_sorted_indices: &self.log_attrs_sorted_indices,
-                    pos: self.log_attrs_sorted_index,
+                    parent_id_col: log_attrs.parent_id,
+                    sorted_indices: &self.log_attrs_sorted_indices,
+                    pos: &mut self.log_attrs_sorted_index,
                 };
 
-                while let Some(attr_index) = attrs_iter.next() {
+                while let Some(attr_index) = attrs_index_iter.next() {
                     let num_bytes = 5;
                     encode_len_delimited_mystery_size!(
                         LOG_RECORD_ATTRIBUTES,
@@ -635,9 +674,6 @@ impl LogsProtoBytesEncoder {
                         result_buf
                     );
                 }
-
-                // update the pointed to sorted log attrs from the iter
-                self.log_attrs_sorted_index = attrs_iter.pos;
             }
         }
 
@@ -705,6 +741,7 @@ mod test {
     use arrow::array::{
         RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array,
     };
+    use arrow::buffer::NullBuffer;
 
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::schema::consts;
@@ -720,6 +757,10 @@ mod test {
     #[test]
     fn albert_smoke_test() {
         let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+        let body_struct_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]);
 
         let logs_record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
@@ -736,6 +777,7 @@ mod test {
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(consts::BODY, DataType::Struct(body_struct_fields.clone()), true),
             ])),
             vec![
                 Arc::new(StructArray::new(
@@ -753,6 +795,17 @@ mod test {
                 Arc::new(StringArray::from_iter_values(vec![
                     "ERROR", "INFO", "DEBUG",
                 ])),
+                Arc::new(StructArray::new(
+                    body_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            AttributeValueType::Str as u8,
+                            3
+                        ))),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"]))
+                    ],
+                    Some(NullBuffer::from_iter(vec![true, true, false]))
+                ))
             ],
         )
         .unwrap();
