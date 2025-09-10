@@ -1045,13 +1045,13 @@ mod tests {
             // so the processor treats it as empty and increments dropped_empty_records.
             // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
             // OtapArrowRecords::batch_length handles logs), switch assertions to consumed_items_logs.
-            let pdata_logs: OtapPdata = logs_record_with_n_entries(3).into();
+            let pdata_logs: OtapPdata = OtapPdata::new_default(logs_record_with_n_entries(3).into());
             ctx.process(Message::PData(pdata_logs))
                 .await
                 .expect("process logs");
 
             // 2) Process a non-empty traces record to exercise positive row counting
-            let pdata_traces: OtapPdata = one_trace_record().into();
+            let pdata_traces: OtapPdata = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata_traces))
                 .await
                 .expect("process traces");
