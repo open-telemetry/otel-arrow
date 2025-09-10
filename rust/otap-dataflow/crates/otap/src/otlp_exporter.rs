@@ -1,10 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::otap_grpc::OtapArrowBytes;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
+use crate::otap_grpc::OtapArrowBytes;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
@@ -21,8 +21,8 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::decode::proto_bytes::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otap::OtapArrowRecords;
+use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -152,14 +152,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let signal_type = pdata.signal_type();
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    if  SignalType::Logs == signal_type {
+                    if SignalType::Logs == signal_type {
                         let otap_batch: OtapArrowRecords = pdata.try_into()?;
                         let mut bytes = vec![];
                         logs_encoder.encode(&otap_batch, &mut bytes).unwrap();
                         _ = logs_client.export(bytes).await.unwrap();
-                        continue
+                        continue;
                     }
-
 
                     let service_req: OtlpProtoBytes = pdata
                         .try_into()

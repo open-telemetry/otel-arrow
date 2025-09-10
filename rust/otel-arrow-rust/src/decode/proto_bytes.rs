@@ -13,19 +13,6 @@ use arrow::row::{Row, RowConverter, SortField};
 
 pub mod resource;
 
-// TODO don't duplicate this
-/// Protobuf wire types
-pub mod wire_types {
-    /// Varint (int32, int64, uint32, uint64, sint32, sint64, bool)
-    pub const VARINT: u64 = 0;
-    /// 64-bit (fixed64, sfixed64, double)
-    pub const FIXED64: u64 = 1;
-    /// Length-delimited (string, bytes, embedded messages)
-    pub const LEN: u64 = 2;
-    /// 32-bit (fixed32, sfixed32, float)
-    pub const FIXED32: u64 = 5;
-}
-
 pub(crate) fn encode_field_tag(field_number: u64, wire_type: u64, result_buf: &mut Vec<u8>) {
     let key = (field_number << 3) | wire_type;
     encode_varint(key, result_buf);

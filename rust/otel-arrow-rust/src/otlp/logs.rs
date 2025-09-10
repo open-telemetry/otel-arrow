@@ -18,13 +18,18 @@ use crate::arrays::{
 use crate::decode::proto_bytes::resource::ResourceProtoBytesEncoder;
 use crate::decode::proto_bytes::{
     RootColumnSorter, encode_field_tag, encode_fixed64, encode_len_placeholder, encode_varint,
-    patch_len_placeholder, wire_types,
+    patch_len_placeholder,
 };
 use crate::encode_len_delimited_mystery_size;
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
+use crate::proto::consts::field_num::logs::{
+    LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_TIME_UNIX_NANO, LOGS_DATA_RESOURCE,
+    RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
+};
+use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
@@ -419,7 +424,7 @@ impl LogsProtoBytesEncoder {
         loop {
             let num_bytes = 5;
             encode_len_delimited_mystery_size!(
-                1,
+                LOGS_DATA_RESOURCE,
                 num_bytes,
                 self.encode_resource_log(
                     &logs_arrays,
@@ -451,7 +456,7 @@ impl LogsProtoBytesEncoder {
         loop {
             let num_bytes = 5;
             encode_len_delimited_mystery_size!(
-                2,
+                RESOURCE_LOGS_SCOPE_LOGS,
                 num_bytes,
                 self.encode_scope_logs(logs_arrays, scope_arrays, result_buf),
                 result_buf
@@ -481,7 +486,7 @@ impl LogsProtoBytesEncoder {
         loop {
             let num_bytes = 5;
             encode_len_delimited_mystery_size!(
-                2,
+                SCOPE_LOGS_LOG_RECORDS,
                 num_bytes,
                 self.encode_log_record(log_arrays, result_buf),
                 result_buf
@@ -504,14 +509,14 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = log_arrays.time_unix_nano {
             if let Some(val) = col.value_at(index) {
-                encode_field_tag(1, wire_types::FIXED64, result_buf);
+                encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64, result_buf);
                 encode_fixed64(val as u64, result_buf);
             }
         }
 
         if let Some(col) = &log_arrays.severity_text {
             if let Some(val) = col.value_at(index) {
-                encode_field_tag(3, wire_types::LEN, result_buf);
+                encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN, result_buf);
                 encode_varint(val.len() as u64, result_buf);
                 result_buf.extend_from_slice(val.as_bytes());
             }

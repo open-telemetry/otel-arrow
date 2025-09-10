@@ -18,6 +18,8 @@
     unused_results
 )]
 
+pub mod consts;
+
 #[path = "."]
 #[rustfmt::skip]
 pub mod opentelemetry {
