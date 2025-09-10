@@ -423,7 +423,7 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
 fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
-        .map(|ms| format!(" {}", ms))
+        .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
 
     for g in groups {
@@ -449,7 +449,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
             let _ = write!(&mut fields, "{}={}i", escape_lp_field_key(fname), val);
         }
         if !fields.is_empty() {
-            let _ = writeln!(&mut out, "{}{} {}{}", measurement, tags, fields, ts_suffix);
+            let _ = writeln!(&mut out, "{measurement}{tags} {fields}{ts_suffix}");
         }
     }
 
@@ -459,7 +459,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
 fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
-        .map(|ms| format!(" {}", ms))
+        .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -507,15 +507,14 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                         Instrument::Gauge => "gauge",
                         Instrument::Histogram => "histogram",
                     };
-                    let _ = writeln!(&mut out, "# TYPE {} {}", metric_name, prom_type);
+                    let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
                 }
                 if base_labels.is_empty() {
-                    let _ = writeln!(&mut out, "{} {}{}", metric_name, value, ts_suffix);
+                    let _ = writeln!(&mut out, "{metric_name} {value}{ts_suffix}");
                 } else {
                     let _ = writeln!(
                         &mut out,
-                        "{}{{{}}} {}{}",
-                        metric_name, base_labels, value, ts_suffix
+                        "{metric_name}{{{base_labels}}} {value}{ts_suffix}"
                     );
                 }
             }
@@ -654,7 +653,7 @@ fn format_line_protocol(
 ) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
-        .map(|ms| format!(" {}", ms))
+        .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
@@ -697,7 +696,7 @@ fn format_line_protocol(
         }
 
         if !fields.is_empty() {
-            let _ = writeln!(&mut out, "{}{} {}{}", measurement, tags, fields, ts_suffix);
+            let _ = writeln!(&mut out, "{measurement}{tags} {fields}{ts_suffix}");
         }
     };
 
@@ -717,7 +716,7 @@ fn format_prometheus_text(
 ) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
-        .map(|ms| format!(" {}", ms))
+        .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -764,16 +763,15 @@ fn format_prometheus_text(
                     Instrument::Gauge => "gauge",
                     Instrument::Histogram => "gauge",
                 };
-                let _ = writeln!(&mut out, "# TYPE {} {}", metric_name, prom_type);
+                let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
             }
 
             if base_labels.is_empty() {
-                let _ = writeln!(&mut out, "{} {}{}", metric_name, value, ts_suffix);
+                let _ = writeln!(&mut out, "{metric_name} {value}{ts_suffix}");
             } else {
                 let _ = writeln!(
                     &mut out,
-                    "{}{{{}}} {}{}",
-                    metric_name, base_labels, value, ts_suffix
+                    "{metric_name}{{{base_labels}}} {value}{ts_suffix}"
                 );
             }
         }
