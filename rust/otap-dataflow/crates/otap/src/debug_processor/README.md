@@ -9,9 +9,16 @@ This crate will contain the implementation of the debug processor.
 ```yaml
 config:
     verbosity: normal
+    signals:
+      - metrics
+      - logs
+      - spans
 ```
 
 Valid levels of verbosity are: `basic`, `normal`, and `detailed`
+
+Select what signals you want output for, by default the following
+signals will be displayed `metrics`, `logs`, and `spans`
 
 ## Example Output => Basic Verbosity
 

@@ -46,7 +46,7 @@ pub struct LogsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
     trace_id: FixedSizeBinaryArrayBuilder,
     span_id: FixedSizeBinaryArrayBuilder,
-    // TODO event_name https://github.com/open-telemetry/otel-arrow/issues/422ame
+    event_name: StringArrayBuilder,
 }
 
 impl LogsRecordBatchBuilder {
@@ -113,6 +113,11 @@ impl LogsRecordBatchBuilder {
                 },
                 8,
             ),
+            event_name: StringArrayBuilder::new(ArrayOptions {
+                optional: true,
+                dictionary_options: Some(DictionaryOptions::dict8()),
+                ..Default::default()
+            }),
         }
     }
 
@@ -204,6 +209,15 @@ impl LogsRecordBatchBuilder {
         } else {
             self.span_id.append_null();
             Ok(())
+        }
+    }
+
+    /// append a value to the `event_name` array
+    pub fn append_event_name(&mut self, val: Option<&str>) {
+        if let Some(val) = val {
+            self.event_name.append_str(val);
+        } else {
+            self.event_name.append_null();
         }
     }
 
@@ -306,6 +320,15 @@ impl LogsRecordBatchBuilder {
 
         if let Some(array) = self.flags.finish() {
             fields.push(Field::new(consts::FLAGS, array.data_type().clone(), true));
+            columns.push(array);
+        }
+
+        if let Some(array) = self.event_name.finish() {
+            fields.push(Field::new(
+                consts::EVENT_NAME,
+                array.data_type().clone(),
+                true,
+            ));
             columns.push(array);
         }
 

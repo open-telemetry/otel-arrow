@@ -8,14 +8,14 @@ pub struct ExportLogsServiceRequest {
 }
 #[crate::pdata::otlp::qualified("opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse")]
 #[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportLogsServiceResponse {
     #[prost(message, optional, tag="1")]
     pub partial_success: ::core::option::Option<ExportLogsPartialSuccess>,
 }
 #[crate::pdata::otlp::qualified("opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess")]
 #[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportLogsPartialSuccess {
     #[prost(int64, tag="1")]
     pub rejected_log_records: i64,
@@ -132,7 +132,7 @@ pub mod logs_service_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
             );
@@ -279,7 +279,7 @@ pub mod logs_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExportSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
