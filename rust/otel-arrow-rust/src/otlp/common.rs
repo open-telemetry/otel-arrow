@@ -303,7 +303,7 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
             .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
             .transpose()?;
         let attr_ser = rb
-            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .column_by_name(consts::ATTRIBUTE_SER)
             .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
             .transpose()?;
 

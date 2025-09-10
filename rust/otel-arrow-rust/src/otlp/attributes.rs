@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::any;
+use std::str::Matches;
+
 use arrow::array::{RecordBatch, StringArray, UInt16Array};
 use prost::Message;
 use snafu::OptionExt;
@@ -10,10 +13,13 @@ use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
-    ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
-    ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
+    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE,
+    ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY,
+    KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
+use crate::proto::opentelemetry::common::v1::AnyValue;
+use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
@@ -127,14 +133,30 @@ pub(crate) fn encode_any_value(
             }
         }
 
-        AttributeValueType::Map | AttributeValueType::Slice => {
-            // TODO need to to decode from cbor to proto directly
-            // for now, doing something inefficient
+        AttributeValueType::Map => {
             if let Some(any_val) = attr_arrays.value_at(index) {
                 let any_val = any_val.unwrap();
-                let mut bytes = vec![];
-                any_val.encode(&mut bytes).unwrap();
-                result_buf.extend_from_slice(&bytes);
+                println!("any_val = {:?}", any_val);
+                if let Some(Value::KvlistValue(kv_list)) = any_val.value {
+                    let mut bytes = vec![];
+                    kv_list.encode(&mut bytes).unwrap();
+                    result_buf.encode_field_tag(ANY_VALUE_KVLIST_VALUE, wire_types::LEN);
+                    result_buf.encode_varint(bytes.len() as u64);
+                    result_buf.extend_from_slice(&bytes);
+                }
+            }
+        }
+        AttributeValueType::Slice => {
+            if let Some(any_val) = attr_arrays.value_at(index) {
+                let any_val = any_val.unwrap();
+                println!("any_val = {:?}", any_val);
+                if let Some(Value::ArrayValue(list)) = any_val.value {
+                    let mut bytes = vec![];
+                    list.encode(&mut bytes).unwrap();
+                    result_buf.encode_field_tag(ANY_VALUE_ARRAY_VALUE, wire_types::LEN);
+                    result_buf.encode_varint(bytes.len() as u64);
+                    result_buf.extend_from_slice(&bytes);
+                }
             }
         }
         AttributeValueType::Empty => {
