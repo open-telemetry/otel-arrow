@@ -125,7 +125,7 @@ impl Decoder for OtapBatchDecoder {
             Signal::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
         };
         src.advance(buf.len());
-        Ok(Some(result.into()))
+        Ok(Some(OtapPdata::new_todo_context(result.into())))
     }
 }
 

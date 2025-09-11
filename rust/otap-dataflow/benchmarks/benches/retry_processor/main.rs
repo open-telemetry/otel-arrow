@@ -42,7 +42,7 @@ use otap_df_engine::{
     message::Message,
     testing::test_node,
 };
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
 use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
 use std::collections::HashMap;
@@ -82,7 +82,10 @@ fn create_processor_with_pending(
 }
 
 fn create_test_data() -> OtapPdata {
-    OtapArrowRecords::Logs(Logs::default()).into()
+    OtapPdata::new(
+        Context::default(),
+        OtapArrowRecords::Logs(Logs::default()).into(),
+    )
 }
 
 /// Benchmark 1: Individual message operations

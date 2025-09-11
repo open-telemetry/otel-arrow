@@ -12,10 +12,13 @@ use tonic::codec::CompressionEncoding;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompressionMethod {
     /// Fastest compression
+    #[serde(alias = "zstd")]
     Zstd,
     /// Most compatible compression method
+    #[serde(alias = "gzip")]
     Gzip,
     /// Used for legacy systems
+    #[serde(alias = "deflate")]
     Deflate,
 }
 

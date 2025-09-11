@@ -34,6 +34,8 @@ uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
 tonic = { workspace = true }
+tonic-middleware = { workspace = true }
+tonic-prost = { workspace = true }
 prost = { workspace = true }
 
 otap-df-engine = { path = "../engine" }
@@ -61,3 +63,4 @@ portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
 url.workspace = true
+tokio-util.workspace = true

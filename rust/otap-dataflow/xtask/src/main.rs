@@ -94,7 +94,7 @@ fn test_all() -> anyhow::Result<()> {
 
 fn compile_proto() -> anyhow::Result<()> {
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .out_dir("crates/otap/src/proto")
         .compile_protos(
             &[
@@ -113,8 +113,8 @@ fn compile_proto() -> anyhow::Result<()> {
                 "proto/experimental/arrow/v1/arrow_service.proto",
             ],
             &[
-                format!("{base}/../../../proto/opentelemetry-proto"),
-                format!("{base}/../../../proto/opentelemetry"),
+                format!("{base}/../../../proto/opentelemetry-proto").as_str(),
+                format!("{base}/../../../proto/opentelemetry").as_str(),
             ],
         )
         .expect("Failed to compile protos.");

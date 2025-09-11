@@ -162,7 +162,7 @@ where
 /// return the range of the positions in the byte slice containing values. The range is determined
 /// from the wire type.
 #[inline]
-fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, usize)> {
+pub(crate) fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, usize)> {
     let range = match wire_type {
         wire_types::VARINT => {
             // /// TODO this could maybe be read_variant bytes for faster perf

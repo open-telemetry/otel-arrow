@@ -312,7 +312,7 @@ where
                         range_end_exclusive,
                     )?;
 
-                    ResolvedValue::Slice(Slice::String(StringSlice::new(
+                    ResolvedValue::Slice(Slice::String(StringSlice::from_char_range(
                         string_value,
                         range_start_inclusive,
                         range_end_exclusive,
