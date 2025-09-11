@@ -98,7 +98,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
-    control::NodeControlMsg,
+    control::{NackMsg, NodeControlMsg},
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -108,7 +108,7 @@ use otap_df_engine::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::Instant;
+use std::time::Instant;
 use tonic::Code;
 
 /// URN for the RetryProcessor processor
@@ -200,24 +200,25 @@ impl RetryProcessor {
 
 #[derive(Debug)]
 struct RetryState {
-    retries: usize, // r0
+    retries: usize, // register
 }
 
-// impl From<RetryState> for ReplyState {
-//     fn from(value: RetryState) -> Self {
-//         Self::new(value.retries.into())
-//     }
-// }
+impl From<RetryState> for ContextData {
+    fn from(value: RetryState) -> Self {
+        Self::new(value.retries)
+    }
+}
 
-// impl TryFrom<ReplyState> for RetryState {
-//     type Error = crate::pdata::error::Error;
+//impl From<OtapArrowRecords> for OtapPayload {
+//    fn from(value: OtapArrowRecords) -> Self {
 
-//     fn try_from(value: ReplyState) -> Result<Self, Self::Error> {
-//         Ok(Self {
-//             retries: value.r0.try_into()?,
-//         })
-//     }
-// }
+impl From<ContextData> for RetryState {
+    fn from(value: ContextData) -> Self {
+        Self {
+            retries: value.register0(),
+        }
+    }
+}
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for RetryProcessor {
@@ -233,29 +234,33 @@ impl Processor<OtapPdata> for RetryProcessor {
                     effect_handler.processor_id().index(),
                     ContextData::new(0),
                 ) {
-                    Ok(pdata) => {
+                    (data, None) => {
                         effect_handler.send_message(data).await?;
                         Ok(())
                     }
-                    Err(err) => Ok(()),
+                    (data, Some(err)) => {
+                        effect_handler
+                            .reply_nack(
+                                data.return_node_id(),
+                                NackMsg::new(data, err.to_string(), false, None),
+                            )
+                            .await?;
+                        Ok(())
+                    }
                 }
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack(mut ack) => {
+                NodeControlMsg::Ack(_) => {
+                    // This component does not subscribe to Acks, they pass directly
+                    // to the next interested component.
                     unreachable!();
                 }
                 NodeControlMsg::Nack(mut nack) => {
                     // Backward path: NACK processing - PEEK at retry state to decide action
-                    let mut rstate: RetryState = nack.refused.pop_stack().try_into()?;
-
-                    // PEEK at the next recipient (return sender responsibility)
-                    let node_id =
-                        nack.refused
-                            .return_node_id()
-                            .ok_or_else(|| Error::ProcessorError {
-                                processor: effect_handler.processor_id(),
-                                error: "retry with missing return_to".into(),
-                            })?;
+                    let reply = nack.refused.take_reply();
+                    let frame = reply
+                        .ok_or_else(|| effect_handler.internal_error("missing reply state"))?;
+                    let mut rstate: RetryState = frame.data.into();
 
                     // If the error is permanent or too many retries.
                     // If the payload is empty: the effect is also
@@ -267,7 +272,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     } else if rstate.retries >= self.config.max_retries {
                         nack.reason = format!("max retries reached: {}", nack.reason);
                         true
-                    } else if nack.request.is_empty() {
+                    } else if nack.refused.is_empty() {
                         nack.reason = format!("retry internal error: {}", nack.reason);
                         nack.permanent = true;
                         nack.code = Some(Code::Internal as i32);
@@ -275,9 +280,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                     } else {
                         false
                     };
+                    let return_node_id = nack.refused.return_node_id();
+
                     if has_failed {
                         // Permanent failure: forward NACK upstream (originator will POP state)
-                        effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
+                        effect_handler.reply_nack(return_node_id, nack).await?;
                         return Ok(());
                     }
 
@@ -294,47 +301,44 @@ impl Processor<OtapPdata> for RetryProcessor {
                         as u64;
 
                     let next_retry_time = now + Duration::from_millis(delay_ms);
+                    let deadline = nack.refused.deadline();
 
-                    // Note that the Go component has a "max_elapsed" configuration,
-                    // we don't here.
-                    let expired = nack
-                        .request
-                        .context
-                        .deadline
-                        // duration_since asks "how long after", how long
-                        // is deadline after retry time. zero indicates expired.
-                        .map(|dead| {
-                            Instant::from_std(dead)
-                                .duration_since(next_retry_time)
-                                .is_zero()
-                        })
+                    let expired = deadline
+                        .map(|dead| dead <= next_retry_time)
                         .unwrap_or(false);
 
                     if expired {
-                        // Deadline expired: forward NACK upstream (originator will POP state)
+                        // Deadline expired: forward NACK upstream. Not permanent.
                         nack.reason = format!("final retry: {}", nack.reason);
-                        effect_handler.reply(node_id, AckOrNack::Nack(nack)).await?;
+                        effect_handler.reply_nack(return_node_id, nack).await?;
                         return Ok(());
                     }
 
-                    let mut request = nack.request;
-
-                    // PUSH updated RetryState back onto context for retry attempt
-                    request
-                        .mut_context()
-                        .reply_to(effect_handler.processor_id().index(), rstate.into());
-
-                    effect_handler
-                        .delay_message(request, next_retry_time)
-                        .await?;
-
-                    Ok(())
+                    // Updated RetryState back onto context for retry attempt
+                    match nack.refused.with_reply_to(
+                        Interest::NackOnly,
+                        effect_handler.processor_id().index(),
+                        rstate.into(),
+                    ) {
+                        (repeat_request, None) => {
+                            effect_handler
+                                .send_delayed(
+                                    effect_handler.processor_id().index(),
+                                    repeat_request,
+                                    next_retry_time,
+                                )
+                                .await
+                        }
+                        (repeat_request, Some(err)) => {
+                            effect_handler
+                                .reply_nack(
+                                    repeat_request.return_node_id(),
+                                    NackMsg::new(repeat_request, err.to_string(), false, None),
+                                )
+                                .await
+                        }
+                    }
                 }
-                // NodeControlMsg::DelayedData { data } => {
-                //     // Delayed retry: forward the message (RetryState already on stack)
-                //     effect_handler.send_message(*data).await?;
-                //     Ok(())
-                // }
                 NodeControlMsg::TimerTick { .. } => {
                     // Nothing
                     Ok(())

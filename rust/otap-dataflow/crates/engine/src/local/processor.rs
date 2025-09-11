@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
@@ -40,7 +41,7 @@ use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -128,6 +129,14 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
+    /// Construct a general processor error.
+    pub fn internal_error<T: Into<String>>(&self, msg: T) -> Error {
+        Error::ProcessorError {
+            processor: self.processor_id(),
+            error: msg.into(),
+        }
+    }
+
     /// Returns the list of connected out ports for this processor.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
@@ -203,6 +212,30 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Reply in failure
+    pub async fn reply_nack(
+        &self,
+        node_id: Option<usize>,
+        nack: NackMsg<PData>,
+    ) -> Result<(), Error> {
+        self.core.reply_nack(node_id, nack).await
+    }
+
+    /// Reply in success
+    pub async fn reply_ack(&self, node_id: Option<usize>, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.reply_ack(node_id, ack).await
+    }
+
+    /// Delay a message
+    pub async fn send_delayed(
+        &self,
+        sender_id: usize,
+        data: PData,
+        when: Instant,
+    ) -> Result<(), Error> {
+        self.core.send_delayed(sender_id, data, when).await
     }
 
     // More methods will be added in the future as needed.

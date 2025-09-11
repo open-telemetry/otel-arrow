@@ -89,14 +89,19 @@ use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 #[derive(Clone, Debug)]
 pub struct ContextData {
     /// Placeholder, e.g., number of retries.
-    register: i32,
+    register: usize,
 }
 
 impl ContextData {
-    /// Context data is a PLACEHOLDER currently an i32 used for retry count
+    /// Context data is a PLACEHOLDER currently an usize used for retry count
     /// in the retry processor.
-    pub fn new(register: i32) -> Self {
+    pub fn new(register: usize) -> Self {
         Self { register }
+    }
+
+    /// Returns the PLACEHOLDER register.
+    pub fn register0(&self) -> usize {
+        self.register
     }
 }
 
@@ -114,8 +119,9 @@ pub enum Interest {
 /// Frame of interest.
 #[derive(Clone, Debug)]
 pub struct Frame {
-    /// Which responses matter
-    interest: Interest,
+    /// Which responses matter.  TODO: Used in a future PR when
+    /// pipeline_ctrl.rs actually routes Ack/Nacks.
+    _interest: Interest,
 
     /// Which node created this frame.
     node_id: usize,
@@ -127,7 +133,14 @@ pub struct Frame {
     dead: Option<Duration>,
 
     /// Data for this frame.
-    data: ContextData,
+    pub data: ContextData,
+}
+
+impl Frame {
+    /// Deadline
+    pub fn deadline(&self) -> Option<Instant> {
+        self.dead.map(|d| self.when.checked_add(d)).flatten()
+    }
 }
 
 /// Context for OTAP requests
@@ -138,11 +151,17 @@ pub struct Context {
 }
 
 impl Context {
+    /// The deadline is the optional point at which this request has
+    /// exceeded its lifetime.
     pub fn deadline(&self) -> Option<Instant> {
         let last = self.stack.last();
-        last.map(|f| f.dead.map(|d| f.when.checked_add(d)))
-            .flatten()
-            .flatten()
+        last.map(|f| f.deadline()).flatten()
+    }
+
+    /// Return NodeID is the upstream component ID.
+    pub fn return_node_id(&self) -> Option<usize> {
+        let last = self.stack.last();
+        last.map(|f| f.node_id)
     }
 }
 
@@ -158,9 +177,13 @@ pub mod error {
             error: String,
         },
 
-        /// Request already timed out
-        #[error("Request timed out")]
-        AlreadyTimedOut,
+        /// Request has timed out
+        #[error("Deadline exceeded")]
+        DeadlineExceeded,
+
+        /// Pipeline error (internal)
+        #[error("Pipeline error")]
+        PipelineError,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -271,8 +294,10 @@ impl OtapPdata {
         (self.context, self.payload)
     }
 
-    /// Reply @@@ what about timeout
-    pub fn take_reply_data(self) -> (Self, ContextData) {}
+    /// Reply state returns a context
+    pub fn take_reply(&mut self) -> Option<Frame> {
+        self.context.stack.pop()
+    }
 
     /// Reply
     pub fn with_reply_to(
@@ -280,27 +305,37 @@ impl OtapPdata {
         interest: Interest,
         node_id: usize,
         data: ContextData,
-    ) -> Result<Self, error::Error> {
-        let mut context = self.context;
+    ) -> (Self, Option<error::Error>) {
+        let (mut context, payload) = self.into_parts();
         let now = Instant::now();
         let dead = context.deadline();
-        let remain = dead.map(|t| now - t);
-        if let Some(timeout) = remain {
-            // TODO @@@ nope
-            // effect_handler.reply
+        let remain = dead.map(|timeout| timeout.duration_since(now));
+        let expired = remain.map(|t| t.is_zero()).unwrap_or(false);
+        if expired {
+            (
+                Self { context, payload },
+                Some(error::Error::DeadlineExceeded),
+            )
+        } else {
+            context.stack.push(Frame {
+                _interest: interest,
+                node_id,
+                when: now,
+                dead: remain,
+                data,
+            });
+            (Self { context, payload }, None)
         }
+    }
 
-        context.stack.push(Frame {
-            interest,
-            node_id,
-            when: now,
-            dead: dead.map(|d| d.checked_sub(now)),
-            data,
-        });
-        Ok(Self {
-            context,
-            payload: self.payload,
-        })
+    /// The deadline on this request.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.context.deadline()
+    }
+
+    /// Return the origin node_id for routing Ack/Nack.
+    pub fn return_node_id(&self) -> Option<usize> {
+        self.context.return_node_id()
     }
 
     /// Returns the number of items of the primary signal (spans, data

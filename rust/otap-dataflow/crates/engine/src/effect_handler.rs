@@ -3,12 +3,12 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
 /// Common implementation of all effect handlers.
@@ -199,6 +199,44 @@ impl EffectHandlerCore {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
+    }
+
+    /// Reply in failure
+    pub async fn reply_nack<PData>(
+        &self,
+        _node_id: Option<usize>,
+        _nack: NackMsg<PData>,
+    ) -> Result<(), Error> {
+        // TODO Future PR: Need to add <PData> to this struct and PipelineCtrlMsgSender first.
+        // Note node_id is Option<_> to avoid repetitive error checking.
+        Ok(())
+    }
+
+    /// Reply in success
+    pub async fn reply_ack<PData>(
+        &self,
+        _node_id: Option<usize>,
+        _ack: AckMsg<PData>,
+    ) -> Result<(), Error> {
+        // TODO Future PR: Need to add <PData> to this struct and PipelineCtrlMsgSender first.
+        Ok(())
+    }
+
+    /// Delay a request
+    pub async fn send_delayed<PData>(
+        &self,
+        _sender_id: usize,
+        _data: PData,
+        _when: Instant,
+    ) -> Result<(), Error> {
+        // TODO Future PR: Need the above and a delay mechanism in pipeline_ctrl.rs first.
+        // When the pipeline controller resumes this request, it will signal _this_ component
+        // which decides which port to send and how to handle failure. Eventually we'll have
+        // a new NodeControlMsg for returning the delayed data to the sender. The sender has the
+        // proper channel to send the message, the pipeline_ctrl.rs logic does not, otherwise
+        // we might consider having the pipeline controller deliver this as if by send_message
+        // or send_mesage_to after the delay.
+        Ok(())
     }
 }
 
