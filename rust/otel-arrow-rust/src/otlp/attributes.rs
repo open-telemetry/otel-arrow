@@ -1,9 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any;
-use std::str::Matches;
-
 use arrow::array::{RecordBatch, StringArray, UInt16Array};
 use prost::Message;
 use snafu::OptionExt;
@@ -18,7 +15,6 @@ use crate::proto::consts::field_num::common::{
     KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
@@ -61,7 +57,7 @@ pub(crate) fn encode_key_value(
     attr_arrays: &AttributeArrays<'_>,
     index: usize,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     if let Some(key) = attr_arrays.attr_key.value_at(index) {
         result_buf.encode_field_tag(KEY_VALUE_KEY, wire_types::LEN);
         result_buf.encode_varint(key.len() as u64);
@@ -70,16 +66,18 @@ pub(crate) fn encode_key_value(
 
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
         if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-            // TODO just guessing the max byte length for attributes is probably the biggest contributor to
-            // wasting space when doing this encoding. if there's anywhere we want to optimize the mystery
-            // size guess it's here
+            // TODO try to compute the length of the value here. This would probably be
+            // straight forward for most types for all cases except map/slice, and even then
+            // we could maybe guess order of magnitude by looking at the CBOR representation
             proto_encode_len_delimited_unknown_size!(
                 KEY_VALUE_VALUE,
-                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf),
+                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)?,
                 result_buf
             );
         }
     }
+
+    Ok(())
 }
 
 pub(crate) fn encode_any_value(
@@ -87,7 +85,7 @@ pub(crate) fn encode_any_value(
     index: usize,
     value_type: AttributeValueType,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     match value_type {
         AttributeValueType::Str => {
             if let Some(attr_str) = &attr_arrays.attr_str {
@@ -110,7 +108,6 @@ pub(crate) fn encode_any_value(
             if let Some(attr_int) = &attr_arrays.attr_int {
                 if let Some(val) = attr_int.value_at(index) {
                     result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                    // TODO need to handle if it's a negative integer ...
                     result_buf.encode_varint(val as u64);
                 }
             }
@@ -133,13 +130,13 @@ pub(crate) fn encode_any_value(
             }
         }
 
+        // TODO for Map and Slice, we should be encoding directly from cbor to proto instead
+        // of going through the intermediate prost struct like we're currently doing below:
         AttributeValueType::Map => {
             if let Some(any_val) = attr_arrays.value_at(index) {
-                let any_val = any_val.unwrap();
-                println!("any_val = {:?}", any_val);
-                if let Some(Value::KvlistValue(kv_list)) = any_val.value {
+                if let Some(Value::KvlistValue(kv_list)) = any_val?.value {
                     let mut bytes = vec![];
-                    kv_list.encode(&mut bytes).unwrap();
+                    kv_list.encode(&mut bytes).expect("buffer has capacity");
                     result_buf.encode_field_tag(ANY_VALUE_KVLIST_VALUE, wire_types::LEN);
                     result_buf.encode_varint(bytes.len() as u64);
                     result_buf.extend_from_slice(&bytes);
@@ -148,11 +145,9 @@ pub(crate) fn encode_any_value(
         }
         AttributeValueType::Slice => {
             if let Some(any_val) = attr_arrays.value_at(index) {
-                let any_val = any_val.unwrap();
-                println!("any_val = {:?}", any_val);
-                if let Some(Value::ArrayValue(list)) = any_val.value {
+                if let Some(Value::ArrayValue(list)) = any_val?.value {
                     let mut bytes = vec![];
-                    list.encode(&mut bytes).unwrap();
+                    list.encode(&mut bytes).expect("buffer has capacity");
                     result_buf.encode_field_tag(ANY_VALUE_ARRAY_VALUE, wire_types::LEN);
                     result_buf.encode_varint(bytes.len() as u64);
                     result_buf.extend_from_slice(&bytes);
@@ -163,4 +158,6 @@ pub(crate) fn encode_any_value(
             // nothing to do
         }
     }
+
+    Ok(())
 }

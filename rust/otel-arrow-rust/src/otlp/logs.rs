@@ -2,17 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, BinaryArray, Int64Array, RecordBatch, StructArray, TimestampNanosecondArray,
-    UInt16Array, UInt32Array,
+    Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
-use prost::Message;
 use snafu::OptionExt;
 
 use crate::arrays::{
-    ByteArrayAccessor, Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
-    StringArrayAccessor, StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array,
-    get_u32_array_opt,
+    ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
+    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -30,14 +27,11 @@ use crate::proto::consts::field_num::logs::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
 use super::attributes::store::AttributeValueType;
-
-mod related_data;
 
 struct LogsArrays<'a> {
     id: &'a UInt16Array,
@@ -159,38 +153,12 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
                 attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
                 attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
                 attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-                // TODO should we also have similar helpers to above for these types:
-                attr_int: body
-                    .column_by_name(consts::ATTRIBUTE_INT)
-                    .map(MaybeDictArrayAccessor::<Int64Array>::try_new)
-                    .transpose()?,
-                attr_bytes: body
-                    .column_by_name(consts::ATTRIBUTE_BYTES)
-                    .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
-                    .transpose()?,
-                attr_ser: body
-                    .column_by_name(consts::ATTRIBUTE_SER)
-                    .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
-                    .transpose()?,
+                attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
+                attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
+                attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
             },
         })
     }
-}
-
-pub fn logs_from(mut logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceRequest> {
-    // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
-    // and the buffer, a these structures can be used between requests
-    let mut logs_encoder = LogsProtoBytesEncoder::new();
-    let mut buffer = ProtoBuffer::new();
-    logs_encoder.encode(&mut logs_otap_batch, &mut buffer)?;
-
-    // TODO should we just expect here? We shouldn't be writing invalid proto to the buffer
-    ExportLogsServiceRequest::decode(buffer.as_ref()).map_err(|e| {
-        error::UnexpectedRecordBatchStateSnafu {
-            reason: format!("error decoding proto serialization: {e:?}"),
-        }
-        .build()
-    })
 }
 
 pub struct LogsDataArrays<'a> {
@@ -210,7 +178,14 @@ pub struct LogsProtoBytesEncoder {
     log_attrs_cursor: SortedBatchCursor,
 }
 
+impl Default for LogsProtoBytesEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogsProtoBytesEncoder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             batch_sorter: BatchSorter::new(),
@@ -228,7 +203,7 @@ impl LogsProtoBytesEncoder {
         self.log_attrs_cursor.reset();
     }
 
-    /// TODO comments
+    /// encode the OTAP batch into a proto serialized `LogData`/`ExportLogsServiceRequest` message
     pub fn encode(
         &mut self,
         otap_batch: &mut OtapArrowRecords,
@@ -284,7 +259,7 @@ impl LogsProtoBytesEncoder {
         loop {
             proto_encode_len_delimited_unknown_size!(
                 LOGS_DATA_RESOURCE,
-                self.encode_resource_log(&logs_data_arrays, result_buf),
+                self.encode_resource_log(&logs_data_arrays, result_buf)?,
                 result_buf
             );
 
@@ -300,7 +275,7 @@ impl LogsProtoBytesEncoder {
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) {
+    ) -> Result<()> {
         // encode the `Resource`
         proto_encode_len_delimited_unknown_size!(
             LOGS_DATA_RESOURCE,
@@ -310,7 +285,7 @@ impl LogsProtoBytesEncoder {
                 logs_data_arrays.resource_attrs.as_ref(),
                 &mut self.resource_attrs_cursor,
                 result_buf
-            ),
+            )?,
             result_buf
         );
 
@@ -321,7 +296,7 @@ impl LogsProtoBytesEncoder {
         loop {
             proto_encode_len_delimited_unknown_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
-                self.encode_scope_logs(logs_data_arrays, result_buf),
+                self.encode_scope_logs(logs_data_arrays, result_buf)?,
                 result_buf
             );
 
@@ -349,13 +324,15 @@ impl LogsProtoBytesEncoder {
                 result_buf.extend_from_slice(val.as_bytes());
             }
         }
+
+        Ok(())
     }
 
     fn encode_scope_logs(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) {
+    ) -> Result<()> {
         // encode the `InstrumentationScope`
         proto_encode_len_delimited_unknown_size!(
             SCOPE_LOG_SCOPE,
@@ -365,7 +342,7 @@ impl LogsProtoBytesEncoder {
                 logs_data_arrays.scope_attrs.as_ref(),
                 &mut self.scope_attrs_cursor,
                 result_buf
-            ),
+            )?,
             result_buf
         );
 
@@ -376,7 +353,7 @@ impl LogsProtoBytesEncoder {
         loop {
             proto_encode_len_delimited_unknown_size!(
                 SCOPE_LOGS_LOG_RECORDS,
-                self.encode_log_record(logs_data_arrays, result_buf),
+                self.encode_log_record(logs_data_arrays, result_buf)?,
                 result_buf
             );
 
@@ -404,13 +381,15 @@ impl LogsProtoBytesEncoder {
                 result_buf.extend_from_slice(val.as_bytes());
             }
         }
+
+        Ok(())
     }
 
     fn encode_log_record(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) {
+    ) -> Result<()> {
         let index = self.root_cursor.curr_index();
         let log_arrays = &logs_data_arrays.log_arrays;
 
@@ -443,7 +422,7 @@ impl LogsProtoBytesEncoder {
                     if let Ok(value_type) = AttributeValueType::try_from(value_type) {
                         proto_encode_len_delimited_unknown_size!(
                             LOG_RECORD_BODY,
-                            encode_any_value(anyval_arrays, index, value_type, result_buf),
+                            encode_any_value(anyval_arrays, index, value_type, result_buf)?,
                             result_buf
                         );
                     }
@@ -453,16 +432,12 @@ impl LogsProtoBytesEncoder {
 
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             if let Some(id) = log_arrays.id.value_at(index) {
-                let mut attrs_index_iter = ChildIndexIter {
-                    parent_id: id,
-                    parent_id_col: log_attrs.parent_id,
-                    cursor: &mut self.log_attrs_cursor,
-                };
-
-                while let Some(attr_index) = attrs_index_iter.next() {
+                let attrs_index_iter =
+                    ChildIndexIter::new(id, log_attrs.parent_id, &mut self.log_attrs_cursor);
+                for attr_index in attrs_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         LOG_RECORD_ATTRIBUTES,
-                        encode_key_value(log_attrs, attr_index, result_buf),
+                        encode_key_value(log_attrs, attr_index, result_buf)?,
                         result_buf
                     );
                 }
@@ -517,6 +492,7 @@ impl LogsProtoBytesEncoder {
         }
 
         self.root_cursor.advance();
+        Ok(())
     }
 }
 

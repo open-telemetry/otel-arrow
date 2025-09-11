@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
-    get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
+    ByteArrayAccessor, Int64ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
+    StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
@@ -20,15 +20,15 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, an
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, BooleanArray, Float64Array, RecordBatch, StructArray, UInt8Array, UInt16Array,
+    UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 use std::fmt;
 use std::fmt::Write;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
     pub id: &'a UInt16Array,
@@ -60,20 +60,16 @@ pub(crate) fn proto_encode_resource(
     resource_attrs_arrays: Option<&AttributeArrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays {
         if let Some(res_id) = resource_arrays.id.value_at(index) {
-            let mut attrs_index_iter = ChildIndexIter {
-                parent_id: res_id,
-                parent_id_col: attrs_arrays.parent_id,
-                cursor: resource_attrs_cursor,
-            };
-
-            while let Some(attr_index) = attrs_index_iter.next() {
+            for attr_index in
+                ChildIndexIter::new(res_id, attrs_arrays.parent_id, resource_attrs_cursor)
+            {
                 proto_encode_len_delimited_unknown_size!(
                     RESOURCE_ATTRIBUTES,
-                    encode_key_value(attrs_arrays, attr_index, result_buf),
+                    encode_key_value(attrs_arrays, attr_index, result_buf)?,
                     result_buf
                 );
             }
@@ -86,6 +82,8 @@ pub(crate) fn proto_encode_resource(
             result_buf.encode_varint(val as u64);
         }
     }
+
+    Ok(())
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
@@ -179,7 +177,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_arrays: Option<&AttributeArrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     if let Some(col) = &scope_arrays.name {
         if let Some(val) = col.value_at(index) {
             result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN);
@@ -198,16 +196,12 @@ pub(crate) fn proto_encode_instrumentation_scope(
 
     if let Some(attr_arrays) = scope_attrs_arrays {
         if let Some(scope_id) = scope_arrays.id.value_at(index) {
-            let mut attrs_index_iter = ChildIndexIter {
-                parent_id: scope_id,
-                parent_id_col: attr_arrays.parent_id,
-                cursor: scope_attrs_cursor,
-            };
-
-            while let Some(attr_index) = attrs_index_iter.next() {
+            for attr_index in
+                ChildIndexIter::new(scope_id, attr_arrays.parent_id, scope_attrs_cursor)
+            {
                 proto_encode_len_delimited_unknown_size!(
                     INSTRUMENTATION_SCOPE_ATTRIBUTES,
-                    encode_key_value(attr_arrays, attr_index, result_buf),
+                    encode_key_value(attr_arrays, attr_index, result_buf)?,
                     result_buf
                 );
             }
@@ -221,6 +215,8 @@ pub(crate) fn proto_encode_instrumentation_scope(
             result_buf.encode_varint(val as u64);
         }
     }
+
+    Ok(())
 }
 
 // display implementation to use for debug processor
@@ -274,13 +270,12 @@ impl fmt::Display for AnyValue {
 
 pub(crate) struct AnyValueArrays<'a> {
     pub attr_type: &'a UInt8Array,
-    // TODO should these just be StringArrayAccessor, etc.
-    pub attr_str: Option<MaybeDictArrayAccessor<'a, StringArray>>,
-    pub attr_int: Option<MaybeDictArrayAccessor<'a, Int64Array>>,
+    pub attr_str: Option<StringArrayAccessor<'a>>,
+    pub attr_int: Option<Int64ArrayAccessor<'a>>,
     pub attr_double: Option<&'a Float64Array>,
     pub attr_bool: Option<&'a BooleanArray>,
-    pub attr_bytes: Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
-    pub attr_ser: Option<MaybeDictArrayAccessor<'a, BinaryArray>>,
+    pub attr_bytes: Option<ByteArrayAccessor<'a>>,
+    pub attr_ser: Option<ByteArrayAccessor<'a>>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
@@ -290,21 +285,21 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
         let attr_type = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
         let attr_str = rb
             .column_by_name(consts::ATTRIBUTE_STR)
-            .map(MaybeDictArrayAccessor::<StringArray>::try_new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
         let attr_int = rb
             .column_by_name(consts::ATTRIBUTE_INT)
-            .map(MaybeDictArrayAccessor::<Int64Array>::try_new)
+            .map(Int64ArrayAccessor::try_new)
             .transpose()?;
         let attr_double = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
         let attr_bool = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
         let attr_bytes = rb
             .column_by_name(consts::ATTRIBUTE_BYTES)
-            .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+            .map(ByteArrayAccessor::try_new)
             .transpose()?;
         let attr_ser = rb
             .column_by_name(consts::ATTRIBUTE_SER)
-            .map(MaybeDictArrayAccessor::<BinaryArray>::try_new)
+            .map(ByteArrayAccessor::try_new)
             .transpose()?;
 
         Ok(Self {
@@ -359,12 +354,13 @@ impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
 }
 
 /// mutable buffer for encoding protobuf bytes
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProtoBuffer {
     buffer: Vec<u8>,
 }
 
 impl ProtoBuffer {
+    #[must_use]
     pub fn new() -> Self {
         Self { buffer: Vec::new() }
     }
@@ -386,8 +382,14 @@ impl ProtoBuffer {
         self.buffer.extend_from_slice(slice);
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
     }
 
     pub fn clear(&mut self) {
@@ -439,12 +441,12 @@ impl AsMut<[u8]> for ProtoBuffer {
 macro_rules! proto_encode_len_delimited_unknown_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
         let num_bytes = 8;
-        $buf.encode_field_tag($field_tag, crate::proto::consts::wire_types::LEN);
+        $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
-        crate::otlp::common::encode_len_placeholder($buf, num_bytes);
+        $crate::otlp::common::encode_len_placeholder($buf, num_bytes);
         $encode_fn;
         let len = $buf.len() - len_start_pos - num_bytes;
-        crate::otlp::common::patch_len_placeholder($buf, num_bytes, len, len_start_pos);
+        $crate::otlp::common::patch_len_placeholder($buf, num_bytes, len, len_start_pos);
     }};
 }
 
@@ -548,12 +550,8 @@ impl BatchSorter {
         record_batch: &RecordBatch,
         cursor: &mut SortedBatchCursor,
     ) -> Result<()> {
-        const PLACEHOLDER_ARRAY: LazyLock<ArrayRef> =
-            LazyLock::new(|| Arc::new(UInt8Array::new_null(0)));
-
         let mut sort_columns_idx = 0;
-        let mut sort_columns = [PLACEHOLDER_ARRAY.clone(), PLACEHOLDER_ARRAY.clone()];
-
+        let mut sort_columns = [None, None];
         for col_name in [consts::RESOURCE, consts::SCOPE] {
             if let Some(resource_col) = record_batch.column_by_name(col_name) {
                 let resource_col = resource_col
@@ -565,47 +563,56 @@ impl BatchSorter {
                         actual: resource_col.data_type().clone(),
                     })?;
                 if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
-                    sort_columns[sort_columns_idx] = resource_ids.clone();
+                    sort_columns[sort_columns_idx] = Some(resource_ids.clone());
                     sort_columns_idx += 1;
                 }
             }
         }
 
-        if sort_columns_idx == 2 {
+        match sort_columns {
             // use row-sorter if we need to sort by both columns
-            let rows = self
-                .row_converter
-                .convert_columns(&sort_columns)
-                .map_err(|e| {
-                    error::UnexpectedRecordBatchStateSnafu {
-                        reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
-                    }
-                    .build()
-                })?;
-            let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
-            sort.extend(rows.iter().enumerate());
-            sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+            [Some(resource_ids), Some(scope_ids)] => {
+                let rows = self
+                    .row_converter
+                    .convert_columns(&[resource_ids, scope_ids])
+                    .map_err(|e| {
+                        error::UnexpectedRecordBatchStateSnafu {
+                            reason: format!(
+                                "unexpected resource/scope ID columns for sorting: {e:?}"
+                            ),
+                        }
+                        .build()
+                    })?;
+                let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
+                sort.extend(rows.iter().enumerate());
+                sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+                // populate the cursor
+                cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
 
-            // populate the cursor
-            cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
+                // save the rows vec allocation for next batch needs sorting
+                self.rows = Self::reuse_rows_vec(sort);
+            }
 
-            // save the rows vec allocation for next batch needs sorting
-            self.rows = Self::reuse_rows_vec(sort);
-        } else if sort_columns_idx == 1 {
             //there's only one ID column, so we'll visit in the order of this column.
-            let ids = sort_columns[0]
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                    name: consts::ID,
-                    expect: DataType::UInt16,
-                    actual: sort_columns[0].data_type().clone(),
-                })?;
-            self.init_cursor_for_u16_id_column(ids, cursor);
-        } else {
+            [Some(ids), None] => {
+                let ids = ids
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                        name: consts::ID,
+                        expect: DataType::UInt16,
+                        actual: ids.data_type().clone(),
+                    })?;
+                self.init_cursor_for_u16_id_column(ids, cursor);
+            }
+
             // no scope/resource ID columns....
             // just configure cursor to visit the root record batch in order
-            cursor.sorted_indices.extend(0..record_batch.num_rows());
+            [None, None] => {
+                cursor.sorted_indices.extend(0..record_batch.num_rows());
+            }
+
+            _ => unreachable!(),
         }
 
         Ok(())
@@ -644,6 +651,20 @@ pub(crate) struct ChildIndexIter<'a> {
     pub parent_id: u16,
     pub parent_id_col: &'a UInt16Array,
     pub cursor: &'a mut SortedBatchCursor,
+}
+
+impl<'a> ChildIndexIter<'a> {
+    pub fn new(
+        parent_id: u16,
+        parent_id_col: &'a UInt16Array,
+        cursor: &'a mut SortedBatchCursor,
+    ) -> Self {
+        Self {
+            parent_id,
+            parent_id_col,
+            cursor,
+        }
+    }
 }
 
 impl Iterator for ChildIndexIter<'_> {

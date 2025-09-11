@@ -571,6 +571,16 @@ impl<'a> StructColumnAccessor<'a> {
             .map(Int32ArrayAccessor::try_new)
             .transpose()
     }
+
+    pub fn int64_column_op(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<Int64ArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(Int64ArrayAccessor::try_new)
+            .transpose()
+    }
 }
 
 #[cfg(test)]
