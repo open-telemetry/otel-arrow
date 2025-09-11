@@ -85,6 +85,7 @@ tonic = { version = "0.14", default-features = false, features = [
     "gzip",
     "deflate",
 ] }
+tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 prost = "0.14"
 

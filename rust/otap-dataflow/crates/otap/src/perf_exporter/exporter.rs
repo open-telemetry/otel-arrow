@@ -142,7 +142,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let batch: OtapArrowRecords = match pdata.try_into() {
+                    // Context is unused
+                    let (_ctx, data) = pdata.into_parts();
+
+                    let batch: OtapArrowRecords = match data.try_into() {
                         Ok(batch) => batch,
                         Err(_) => {
                             self.pdata_metrics.inc_failed(signal_type);
@@ -305,15 +308,21 @@ mod tests {
                     );
 
                     // Send a data message
-                    ctx.send_pdata(OtapArrowRecords::Traces(trace_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowRecords::Logs(logs_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowRecords::Metrics(metrics_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Traces(trace_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Logs(logs_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Metrics(metrics_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
                 }
 
                 // TODO ADD DELAY BETWEEN HERE
