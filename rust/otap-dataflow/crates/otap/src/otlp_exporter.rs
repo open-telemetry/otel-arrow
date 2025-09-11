@@ -5,7 +5,7 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::pdata::{OtapPayload, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
@@ -155,17 +155,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     // TODO(#1098): Note context is dropped.
                     let (_context, payload) = pdata.into_parts();
-
                     self.pdata_metrics.inc_consumed(signal_type);
-                    let service_req: OtlpProtoBytes = payload
-                        .try_into()
-                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
-                    match (signal_type, pdata) {
+                    match (signal_type, payload) {
                         // use optimized direct encoding OTAP -> OTLP directly
                         // TODO currently this is only implemented for logs, but eventually we'll do
                         // do this for other signal types as well
-                        (SignalType::Logs, OtapPdata::OtapArrowRecords(mut otap_batch)) => {
+                        (SignalType::Logs, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
                             proto_buffer.clear();
                             logs_encoder
                                 .encode(&mut otap_batch, &mut proto_buffer)
@@ -188,8 +184,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             })?;
                             self.pdata_metrics.logs_exported.inc();
                         }
-                        (_, pdata) => {
-                            let service_req: OtlpProtoBytes = pdata
+                        (_, payload) => {
+                            let service_req: OtlpProtoBytes = payload
                                 .try_into()
                                 .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
