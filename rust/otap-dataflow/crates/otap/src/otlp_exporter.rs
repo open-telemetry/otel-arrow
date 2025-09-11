@@ -4,7 +4,6 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::OtapArrowBytes;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
@@ -21,7 +20,6 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use serde::Deserialize;

@@ -79,8 +79,8 @@ use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::ProtoBuffer;
+use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::{metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
 
@@ -239,7 +239,9 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
 
                 // Fast path direct OTAP -> OTLP for Logs. Eventually we'll implement this for
                 // other signal types
-                logs_encoder.encode(&mut value, &mut buffer).map_err(map_otlp_conversion_error)?;
+                logs_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
                 let bytes = buffer.as_ref().to_vec();
                 Ok(Self::ExportLogsRequest(bytes))
             }

@@ -133,8 +133,10 @@ mod tests {
     use super::*;
     use crate::syslog_cef_receiver::parser::parse;
     use otel_arrow_rust::{
-        otlp::{logs::LogsProtoBytesEncoder, ProtoBuffer}, 
-        proto::opentelemetry::{collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value},
+        otlp::{ProtoBuffer, logs::LogsProtoBytesEncoder},
+        proto::opentelemetry::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        },
     };
 
     use chrono::{DateTime, Datelike, Local, TimeZone};
@@ -183,7 +185,9 @@ mod tests {
     fn otlp_logs_to_otap(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut buffer = ProtoBuffer::new();
-        logs_encoder.encode(&mut logs_otap_batch, &mut buffer).unwrap();
+        logs_encoder
+            .encode(&mut logs_otap_batch, &mut buffer)
+            .unwrap();
         ExportLogsServiceRequest::decode(buffer.as_ref()).unwrap()
     }
 

@@ -26,6 +26,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
+use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
 use std::sync::LazyLock;
@@ -522,6 +523,10 @@ impl SortedBatchCursor {
 /// filling in the cursors indices to visit based on the sorted ID column.
 pub(crate) struct BatchSorter {
     row_converter: RowConverter,
+
+    // when we sort the record batch, to it's indices we put the ID columns into these Vecs before
+    // transferring the indices to the cursor. We keep these on instance of the [`BatchSorter`] so
+    // we can reuse the allocations for multiple batches.
     rows: Vec<(usize, Row<'static>)>,
     u16_ids: Vec<(usize, u16)>,
 }
@@ -540,6 +545,16 @@ impl BatchSorter {
             rows: Vec::new(),
             u16_ids: Vec::new(),
         }
+    }
+
+    /// This helper function exists so we can the heap allocation of the `rows` vec associated with
+    /// this [`BatchSorter`]. We effectively just shuffle the vec between having the lifetime of
+    /// the borrowed rows while we're sorting, and the static lifetime when we're done
+    fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
+        v.clear();
+        // there's a compiler optimization that happens here where it will just recognize that the
+        // vec we're creating has the same type/alignment as the source, and reuse the allocation
+        v.into_iter().map(|_| unreachable!()).collect()
     }
 
     /// Initializes the cursor to visit the root [`RecordBatch`] in the OTAP batch in order of
@@ -628,25 +643,27 @@ impl BatchSorter {
             .extend(ids.values().iter().copied().enumerate());
 
         if ids.null_count() == 0 {
+            // fast path, no null IDs
             self.u16_ids.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
         } else {
-            // sort while considering nulls
-            todo!()
+            // sort nulls last
+            self.u16_ids.sort_unstable_by(|(ia, a), (ib, b)| {
+                match (ids.is_valid(*ia), ids.is_valid(*ib)) {
+                    (true, true) => a.cmp(b),
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => Ordering::Equal,
+                }
+            });
         }
 
         cursor
             .sorted_indices
             .extend(self.u16_ids.iter().map(|(i, _)| *i));
     }
-
-    // TODO comments
-    fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
-        v.clear();
-        v.into_iter().map(|_| unreachable!()).collect()
-    }
 }
 
-/// TODO coment on what this is doing
+/// Iterates the indices of some child record batch
 pub(crate) struct ChildIndexIter<'a> {
     pub parent_id: u16,
     pub parent_id_col: &'a UInt16Array,
@@ -671,20 +688,123 @@ impl Iterator for ChildIndexIter<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // we've iterated to the end of the attributes array - no more attributes
-        if self.cursor.finished() {
-            return None;
+        // advance the cursor until we either find the parent ID we're looking for, or pass it
+        while !self.cursor.finished() {
+            let index = self.cursor.curr_index();
+            if let Some(curr_parent_id) = self.parent_id_col.value_at(index) {
+                if curr_parent_id < self.parent_id {
+                    self.cursor.advance();
+                }
+
+                if curr_parent_id == self.parent_id {
+                    self.cursor.advance();
+                    return Some(index);
+                }
+
+                if curr_parent_id > self.parent_id {
+                    return None;
+                }
+            } else {
+                // skip the null values
+                self.cursor.advance();
+            }
         }
 
-        // TODO there's a bug in here that we actually need to increment pos
-        // until it's greater than or equal to parent_id? I guess in case there's
-        // a parent ID w/ no attributes or something (e.g. attrs dropped).
-        let index = self.cursor.curr_index();
-        if Some(self.parent_id) == self.parent_id_col.value_at(index) {
-            self.cursor.advance();
-            Some(index)
-        } else {
-            None
+        // we've iterated the cursor until the end and didn't find what we were looking for:
+        None
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::array::UInt16Array;
+
+    use crate::otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor};
+
+    #[test]
+    fn test_child_index_iter_shuffled_order() {
+        let mut cursor = SortedBatchCursor::new();
+        let parent_ids = UInt16Array::from_iter_values(vec![2, 1, 2, 0]);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+        assert_eq!(cursor.sorted_indices, vec![3, 1, 0, 2]);
+
+        {
+            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            assert_eq!(id_0_iter.next(), Some(3));
+            assert_eq!(id_0_iter.next(), None)
+        }
+
+        {
+            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            assert_eq!(id_1_iter.next(), Some(1));
+            assert_eq!(id_1_iter.next(), None)
+        }
+
+        {
+            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(0));
+            assert_eq!(id_2_iter.next(), Some(2));
+            assert_eq!(id_2_iter.next(), None)
+        }
+
+        {
+            // check we don't try to iterate past the end
+            let mut id_3_iter = ChildIndexIter::new(3, &parent_ids, &mut cursor);
+            assert_eq!(id_3_iter.next(), None)
+        }
+    }
+
+    #[test]
+    fn test_child_index_iter_with_skipped_values() {
+        let mut cursor = SortedBatchCursor::new();
+        let parent_ids = UInt16Array::from_iter_values(vec![0, 2, 0, 2]);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+        assert_eq!(cursor.sorted_indices, vec![0, 2, 1, 3]);
+
+        {
+            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            assert_eq!(id_0_iter.next(), Some(0));
+            assert_eq!(id_0_iter.next(), Some(2));
+            assert_eq!(id_0_iter.next(), None)
+        }
+
+        {
+            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            assert_eq!(id_1_iter.next(), None)
+        }
+
+        {
+            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(1));
+            assert_eq!(id_2_iter.next(), Some(3));
+            assert_eq!(id_2_iter.next(), None)
+        }
+    }
+
+    #[test]
+    fn test_child_index_iter_with_nulls() {
+        let mut cursor = SortedBatchCursor::new();
+        let parent_ids = UInt16Array::from_iter(vec![Some(0), Some(2), None, Some(0), Some(1)]);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+        assert_eq!(cursor.sorted_indices, vec![0, 3, 4, 1, 2]);
+
+        {
+            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            assert_eq!(id_0_iter.next(), Some(0));
+            assert_eq!(id_0_iter.next(), Some(3));
+            assert_eq!(id_0_iter.next(), None)
+        }
+
+        {
+            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            assert_eq!(id_1_iter.next(), Some(4));
+            assert_eq!(id_1_iter.next(), None)
+        }
+
+        {
+            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(1));
+            assert_eq!(id_2_iter.next(), None)
         }
     }
 }

@@ -498,27 +498,35 @@ impl LogsProtoBytesEncoder {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+
     use arrow::array::{
         RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::NullBuffer;
-
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use crate::schema::consts;
-    use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
     use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use pretty_assertions::assert_eq;
     use prost::Message;
     use std::sync::Arc;
 
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::schema::{FieldExt, consts};
     use crate::{otap::Logs, proto::opentelemetry::logs::v1::LogsData};
-
-    use super::*;
+    use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
 
     #[test]
-    fn albert_smoke_test() {
-        let res_struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+    fn test_proto_encode() {
+        // simple smoke test for proto encoding. This doesn't test every field, but those are
+        // tested in other test suites in this project that encode/decode OTAP -> OTLP
+
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
         let scope_struct_fields = Fields::from(vec![
-            Field::new(consts::ID, DataType::UInt16, true),
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
             Field::new(consts::NAME, DataType::Utf8, true),
         ]);
         let body_struct_fields = Fields::from(vec![
@@ -538,7 +546,7 @@ mod test {
                     DataType::Struct(scope_struct_fields.clone()),
                     true,
                 ),
-                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::TIME_UNIX_NANO,
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -579,7 +587,7 @@ mod test {
                             AttributeValueType::Str as u8,
                             3,
                         ))),
-                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"])),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", ""])),
                     ],
                     Some(NullBuffer::from_iter(vec![true, true, false])),
                 )),
@@ -616,7 +624,66 @@ mod test {
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
 
         let result = LogsData::decode(result_buf.as_ref()).unwrap();
-        // TODO assert on the results
-        println!("{:#?}", result);
+
+        let id_0_attrs = vec![KeyValue::new("ka", AnyValue::new_string("va"))];
+        let id_1_attrs = vec![
+            KeyValue::new("ka", AnyValue::new_string("va")),
+            KeyValue::new("kb", AnyValue::new_string("vb")),
+        ];
+
+        let expected = LogsData::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: id_0_attrs.clone(),
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope0".to_string(),
+                    attributes: id_0_attrs.clone(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 1,
+                    severity_text: "ERROR".to_string(),
+                    body: Some(AnyValue::new_string("a")),
+                    attributes: id_0_attrs.clone(),
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: id_1_attrs.clone(),
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope1".to_string(),
+                    attributes: id_1_attrs.clone(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 2,
+                    severity_text: "INFO".to_string(),
+                    body: Some(AnyValue::new_string("b")),
+                    attributes: id_1_attrs,
+                    ..Default::default()
+                }])
+                .finish(),
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope2".to_string(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 3,
+                    severity_text: "DEBUG".to_string(),
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        assert_eq!(result, expected);
     }
 }
