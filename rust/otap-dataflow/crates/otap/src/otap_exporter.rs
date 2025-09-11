@@ -633,7 +633,7 @@ mod tests {
     fn test_from_config_success() {
         let json_config = json!({
             "grpc_endpoint": "http://localhost:4317",
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn test_from_config_missing_required_field() {
         let json_config = json!({
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test

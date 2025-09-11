@@ -38,6 +38,7 @@ pub enum SignalActive {
 
 /// Defines the settings of the debug processor, controls the level of verbosity the processor outputs
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
