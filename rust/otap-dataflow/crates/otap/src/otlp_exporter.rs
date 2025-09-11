@@ -28,6 +28,7 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The gRPC endpoint to connect to
     pub grpc_endpoint: String,

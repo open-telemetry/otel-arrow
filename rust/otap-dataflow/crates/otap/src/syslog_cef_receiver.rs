@@ -33,6 +33,7 @@ const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 enum Protocol {
     /// TCP protocol
@@ -43,6 +44,7 @@ enum Protocol {
 
 /// config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages

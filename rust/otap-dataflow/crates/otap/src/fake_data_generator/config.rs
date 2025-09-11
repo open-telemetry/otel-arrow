@@ -28,6 +28,7 @@ pub enum OTLPSignal {
 }
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     // Configuration of the traffic to generate
     traffic_config: TrafficConfig,
@@ -37,6 +38,7 @@ pub struct Config {
 
 /// Configuration to describe the traffic being sent
 #[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrafficConfig {
     #[serde(default = "default_signals_per_second")]
     signals_per_second: Option<usize>,
