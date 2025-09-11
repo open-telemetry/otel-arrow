@@ -1483,15 +1483,15 @@ struct SmallCardinalityEstimator<'parent> {
 
 impl<'parent> SmallCardinalityEstimator<'parent> {
     fn new(arrays: &'parent [ArrayRef], smallest_key_type: &'parent DataType) -> Option<Self> {
-        let total_elements: usize = arrays.iter().map(|v| v.len() - v.null_count()).sum();
-        let elements_seen = 0;
-        let bitmap = roaring::RoaringBitmap::new();
-
         let element_width_bytes = bitmap_data_type_width(arrays.first()?.data_type())?;
         // Because we're using RoaringBitmap, we're limited to `u32` and smaller types....
         if element_width_bytes > 4 {
             return None;
         }
+
+        let total_elements: usize = arrays.iter().map(|v| v.len() - v.null_count()).sum();
+        let elements_seen = 0;
+        let bitmap = roaring::RoaringBitmap::new();
 
         Some(SmallCardinalityEstimator {
             arrays,

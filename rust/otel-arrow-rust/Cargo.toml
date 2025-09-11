@@ -40,7 +40,6 @@ tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync"
 itertools = "0.14.0"
 smallvec = { version = "1.15.1", features = ["union"] }
 roaring = "0.11.2"
-zerocopy = "0.8.27"
 
 [[bench]]
 name = "attribute_transform"
