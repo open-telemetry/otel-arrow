@@ -13,6 +13,7 @@ use std::collections::HashMap;
 /// Configuration for a single pipeline group.
 /// Contains group-specific settings and all its pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineGroupConfig {
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
@@ -75,6 +76,7 @@ impl Default for PipelineGroupConfig {
 
 /// Pipeline group quota configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Quota {
     /// CPU core allocation strategy for this pipeline group.
     #[serde(default)]
