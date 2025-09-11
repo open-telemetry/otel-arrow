@@ -142,7 +142,6 @@ impl KqlAttributesProcessor {
 
     /// Creates a new KqlKqlAttributesProcessor with the given parsed
     /// configuration.
-    #[must_use]
     fn new(config: Config) -> Result<Self, ConfigError> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
@@ -192,7 +191,7 @@ impl KqlAttributesProcessor {
                     TransformExpression::Move(move_expr) => {
                         match (
                             Self::extract_from_mutable_value(move_expr.get_source()),
-                            Self::extract_from_mutable_value(move_expr.get_destination())
+                            Self::extract_from_mutable_value(move_expr.get_destination()),
                         ) {
                             (Some(src_key), Some(dst_key)) => {
                                 let _ = renames.insert(src_key, dst_key);
@@ -201,7 +200,7 @@ impl KqlAttributesProcessor {
                                 return Err(ConfigError::InvalidUserConfig {
                                     error: format!(
                                         "Unsupported source or destination in move expression: {:?} -> {:?}",
-                                        move_expr.get_source(), 
+                                        move_expr.get_source(),
                                         move_expr.get_destination()
                                     ),
                                 });
@@ -212,7 +211,7 @@ impl KqlAttributesProcessor {
                         for key_selector in rename_keys_expr.get_keys() {
                             match (
                                 Self::extract_from_value_accessor(key_selector.get_source()),
-                                Self::extract_from_value_accessor(key_selector.get_destination())
+                                Self::extract_from_value_accessor(key_selector.get_destination()),
                             ) {
                                 (Some(src_key), Some(dst_key)) => {
                                     let _ = renames.insert(src_key, dst_key);
@@ -221,7 +220,7 @@ impl KqlAttributesProcessor {
                                     return Err(ConfigError::InvalidUserConfig {
                                         error: format!(
                                             "Unsupported source or destination in rename map keys expression: {:?} -> {:?}",
-                                            key_selector.get_source(), 
+                                            key_selector.get_source(),
                                             key_selector.get_destination()
                                         ),
                                     });
@@ -270,8 +269,9 @@ impl KqlAttributesProcessor {
         if selectors.len() == 2 {
             if let (
                 ScalarExpression::Static(StaticScalarExpression::String(map_name)),
-                ScalarExpression::Static(StaticScalarExpression::String(field_name))
-            ) = (&selectors[0], &selectors[1]) {
+                ScalarExpression::Static(StaticScalarExpression::String(field_name)),
+            ) = (&selectors[0], &selectors[1])
+            {
                 if map_name.get_value() == "Attributes" {
                     Some(field_name.get_value().to_string())
                 } else {
@@ -601,18 +601,18 @@ mod tests {
         let parsed = KqlAttributesProcessor::from_config(&cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
-        
+
         let rename_map = parsed.transform.rename.as_ref().unwrap();
         assert_eq!(rename_map.get("a.bar"), Some(&"b.foo".to_string()));
         assert_eq!(rename_map.get("c"), Some(&"d".to_string()));
         assert_eq!(rename_map.len(), 2);
-        
+
         let delete_set = parsed.transform.delete.as_ref().unwrap();
         assert!(delete_set.contains("x.fizz"));
         assert!(delete_set.contains("y.buzz"));
         assert!(delete_set.contains("z"));
         assert_eq!(delete_set.len(), 3);
-        
+
         // default apply_to should include Signal
         assert!(parsed.domains.contains(&ApplyDomain::Signal));
         // and not necessarily Resource/Scope unless specified
