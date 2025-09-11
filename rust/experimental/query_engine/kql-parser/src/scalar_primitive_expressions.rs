@@ -567,7 +567,7 @@ pub(crate) fn parse_accessor_expression(
                                 format!(
                                     "Cannot access into key '{}' which is defined as a '{:?}' type",
                                     root_accessor_identity.get_value(),
-                                    key.get_value_type()
+                                    key.get_value_type().unwrap()
                                 ),
                             ));
                         }
