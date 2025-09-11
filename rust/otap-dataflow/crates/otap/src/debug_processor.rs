@@ -466,6 +466,26 @@ mod tests {
     fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("Processor failed on TimerTick");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Config event.
+                ctx.process(Message::config_ctrl_msg(Value::Null))
+                    .await
+                    .expect("Processor failed on Config");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Shutdown event.
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
+                .await
+                .expect("Processor failed on Shutdown");
+                assert!(ctx.drain_pdata().await.is_empty());
+
                 let logs_data = LogsData::new(vec![
                     ResourceLogs::build(Resource::default())
                         .scope_logs(vec![
