@@ -52,10 +52,18 @@ where
             if selectors.is_empty() {
                 let variables = execution_context.get_variables().get_local_variables_mut();
 
-                return Ok(Some(ResolvedValueMut::MapKey {
+                let value = Some(ResolvedValueMut::MapKey {
                     map: variables,
                     key: ResolvedStringValue::Value(v.get_name()),
-                }));
+                });
+
+                log_mutable_value_expression_evaluated(
+                    execution_context,
+                    mutable_value_expression,
+                    &value,
+                );
+
+                return Ok(value);
             }
 
             let variable = RefMut::filter_map(
