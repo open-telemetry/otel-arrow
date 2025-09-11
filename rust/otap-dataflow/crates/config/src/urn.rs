@@ -3,8 +3,11 @@
 
 //! Plugin URN parsing and validation helpers.
 //!
-//! Uses the `urn` crate for RFC 8141 parsing, then applies project-specific
+//! Uses the `urn` crate for RFC 8141 parsing (see RFC 8141), then applies project-specific
 //! rules for plugin URNs.
+//!
+//! References:
+//! - RFC 8141: https://datatracker.ietf.org/doc/html/rfc8141
 
 use crate::error::Error;
 use crate::node::NodeKind;
@@ -119,13 +122,25 @@ mod tests {
 
     #[test]
     fn accepts_known_patterns() {
+        // Upper/lowercase scheme and NID accepted
         assert!(validate_plugin_urn("urn:otel:otlp:receiver", NodeKind::Receiver).is_ok());
         assert!(validate_plugin_urn("URN:otel:otlp:receiver", NodeKind::Receiver).is_ok());
+        assert!(validate_plugin_urn("urn:OTEL:otlp:receiver", NodeKind::Receiver).is_ok());
+
+        // Typical valid forms
         assert!(validate_plugin_urn("urn:otel:debug:processor", NodeKind::Processor).is_ok());
-        assert!(validate_plugin_urn("urn:otap:processor:batch", NodeKind::Processor).is_ok());
         assert!(validate_plugin_urn("urn:otel:otap:exporter", NodeKind::Exporter).is_ok());
         assert!(validate_plugin_urn("urn:otel:otap:parquet:exporter", NodeKind::Exporter).is_ok());
         assert!(validate_plugin_urn("urn:otel:syslog_cef:receiver", NodeKind::Receiver).is_ok());
+
+        // otap processor with a (possibly hierarchical) name
+        assert!(validate_plugin_urn("urn:otap:processor:batch", NodeKind::Processor).is_ok());
+        assert!(validate_plugin_urn("urn:OTAP:processor:batch", NodeKind::Processor).is_ok());
+        assert!(validate_plugin_urn("urn:otap:processor:batch:v2", NodeKind::Processor).is_ok());
+
+        // Hyphen and dot allowed in NSS segments
+        assert!(validate_plugin_urn("urn:otel:otlp-http:receiver", NodeKind::Receiver).is_ok());
+        assert!(validate_plugin_urn("urn:otel:debug.log:processor", NodeKind::Processor).is_ok());
     }
 
     #[test]
@@ -140,6 +155,9 @@ mod tests {
 
         // Missing family for otel
         assert!(validate_plugin_urn("urn:otel:receiver", NodeKind::Receiver).is_err());
+
+        // otap: missing name
+        assert!(validate_plugin_urn("urn:otap:processor", NodeKind::Processor).is_err());
 
         // Uppercase NSS rejected
         assert!(validate_plugin_urn("urn:otel:OTLP:receiver", NodeKind::Receiver).is_err());
