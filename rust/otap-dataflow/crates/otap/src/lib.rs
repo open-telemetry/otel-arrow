@@ -61,8 +61,10 @@ mod fixtures;
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
-/// Attributes processor (OTAP-based)
+/// Attributes processors (OTAP-based)
 pub mod attributes_processor;
+pub mod kql_attributes_processor;
+
 /// compression formats
 pub mod compression;
 mod metrics;

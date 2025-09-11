@@ -1,38 +1,45 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Attributes processor for OTAP pipelines.
+//! KQL-based attributes processor for OTAP pipelines.
 //!
-//! This processor provides attribute transformations for telemetry data. It operates
-//! on OTAP Arrow payloads (OtapArrowRecords and OtapArrowBytes) and can convert OTLP
-//! bytes to OTAP for processing.
+//! This processor provides attribute transformations for telemetry data using
+//! KQL (Kusto Query Language) configuration. It operates on OTAP Arrow payloads
+//! (OtapArrowRecords and OtapArrowBytes) and can convert OTLP bytes to OTAP for
+//! processing.
 //!
-//! Supported actions (current subset):
-//! - `rename`: Renames an attribute key (non-standard deviation from the Go collector).
-//! - `delete`: Removes an attribute by key.
+//! The processor parses KQL expressions and converts them to the same
+//! transformation operations currently supported by the attributes_processor:
+//! - `project-rename`: Renames an attribute key
+//! - `project-away`: Removes an attribute by key
 //!
-//! Unsupported actions are ignored if present in the config:
-//! `insert`, `upsert`, `update` (value update), `hash`, `extract`, `convert`.
-//! We may add support for them later.
-//!
-//! Example configuration (YAML):
-//! You can optionally scope the transformation using `apply_to`. Valid values: signal, resource, scope.
-//! If omitted, defaults to [signal].
+//! Example KQL configurations: //! You can optionally scope the transformation
+//! using `apply_to`. Valid values: signal, resource, scope. If omitted,
+//! defaults to [signal]. Rename an attribute:
 //! ```yaml
-//! actions:
-//!   - action: "rename"
-//!     source_key: "http.method"
-//!     destination_key: "rpc.method"       # Renames http.method to rpc.method
-//!   - key: "db.statement"
-//!     action: "delete"       # Removes db.statement attribute
-//!   # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
+//! kql: source | project-rename rpc.method = http.method
+//! # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
 //! ```
 //!
-//! Implementation uses otel_arrow_rust::otap::transform::transform_attributes for
-//! efficient batch processing of Arrow record batches.
+//! Delete an attribute:
+//! ```yaml
+//! kql: source | project-away http.method
+//! # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
+//! ```
+//!
+//! Multiple actions can be chained in a single KQL expression:
+//! ```yaml
+//! kql: source | project-rename rpc.method = http.method | project-away http.status_code
+//! # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
+//! ```
+//!
+//! Implementation uses otel_arrow_rust::otap::transform::transform_attributes
+//! for efficient batch processing of Arrow record batches.
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
+use data_engine_expressions::*;
+use data_engine_kql_parser::{KqlParser, Parser, ParserMapSchema, ParserOptions};
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::experimental::SignalType;
@@ -55,17 +62,17 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
-pub(crate) mod metrics;
-use self::metrics::AttributesProcessorMetrics;
+use crate::attributes_processor::metrics::AttributesProcessorMetrics;
 
-/// URN for the AttributesProcessor
-pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otap:processor:attributes_processor";
+/// URN for the KqlAttributesProcessor
+pub const KQL_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otap:processor:kql_attributes_processor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum Action {
-    /// Rename an existing attribute key (non-standard; deviates from Go config).
+    /// Rename an existing attribute key (non-standard; deviates from Go
+    /// config).
     Rename {
         /// The source key to rename from.
         source_key: String,
@@ -79,24 +86,25 @@ pub enum Action {
         key: String,
     },
 
-    /// Other actions are accepted for forward-compatibility but ignored.
-    /// These variants allow deserialization of Go-style configs without effect.
+    /// Other actions are accepted for forward-compatibility but ignored. These
+    /// variants allow deserialization of Go-style configs without effect.
     #[serde(other)]
     Unsupported,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-/// Configuration for the AttributesProcessor.
+/// Configuration for the KqlAttributesProcessor.
 ///
-/// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Supported actions: rename (deviation), delete. Others are ignored.
+/// Accepts configuration in the same format as the OpenTelemetry Collector's
+/// attributes processor. Supported actions: rename (deviation), delete. Others
+/// are ignored.
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
 pub struct Config {
-    /// List of actions to apply in order.
+    /// KQL query string for attribute transformations
     #[serde(default)]
-    pub actions: Vec<Action>,
+    pub kql: String,
 
     /// Attribute domains to apply transforms to. Defaults to ["signal"].
     #[serde(default)]
@@ -105,11 +113,11 @@ pub struct Config {
 
 /// Processor that applies attribute transformations to OTAP attribute batches.
 ///
-/// Implements the OpenTelemetry Collector's attributes processor functionality using
-/// efficient Arrow operations. Supports `update` (rename) and `delete` operations
-/// across all attribute types (resource, scope, and signal-specific attributes)
-/// for logs, metrics, and traces telemetry.
-pub struct AttributesProcessor {
+/// Implements the OpenTelemetry Collector's attributes processor functionality
+/// using efficient Arrow operations. Supports `update` (rename) and `delete`
+/// operations across all attribute types (resource, scope, and signal-specific
+/// attributes) for logs, metrics, and traces telemetry.
+pub struct KqlAttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
     // Selected attribute domains to transform
@@ -118,39 +126,113 @@ pub struct AttributesProcessor {
     metrics: Option<MetricSet<AttributesProcessorMetrics>>,
 }
 
-impl AttributesProcessor {
-    /// Creates a new AttributesProcessor from configuration.
+impl KqlAttributesProcessor {
+    /// Creates a new KqlAttributesProcessor from configuration.
     ///
-    /// Transforms the Go collector-style configuration into the operations
-    /// supported by the underlying Arrow attribute transform API.
-    #[must_use = "AttributesProcessor creation may fail and return a ConfigError"]
+    /// Parses the KQL query and converts it into the operations supported by
+    /// the underlying Arrow attribute transform API.
+    #[must_use = "KqlAttributesProcessor creation may fail and return a ConfigError"]
     pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse AttributesProcessor configuration: {e}"),
+                error: format!("Failed to parse KqlAttributesProcessor configuration: {e}"),
             })?;
-        Ok(Self::new(cfg))
+        Self::new(cfg)
     }
 
-    /// Creates a new AttributesProcessor with the given parsed configuration.
+    /// Creates a new KqlKqlAttributesProcessor with the given parsed
+    /// configuration.
     #[must_use]
-    fn new(config: Config) -> Self {
+    fn new(config: Config) -> Result<Self, ConfigError> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
 
-        for action in config.actions {
-            match action {
-                Action::Delete { key } => {
-                    let _ = deletes.insert(key);
+        // In the KQL grammar, dot syntax normally indicates nested fields in a
+        // dynamic, so something like 'rpc.method' would be interpreted as a
+        // field 'method' inside a nested field 'rpc'. To circumvent this and
+        // treat the entire string as a single key, we can provide a specific
+        // schema with a default map configured. This results in the parser
+        // assuming all field accesses are within a map named "Attributes".
+        let options = ParserOptions::new()
+            .with_source_map_schema(ParserMapSchema::new().set_default_map_key("Attributes"));
+        let pipeline = KqlParser::parse_with_options(&config.kql, options).map_err(|errors| {
+            ConfigError::InvalidUserConfig {
+                error: format!("Failed to parse KQL query: {:?}", errors),
+            }
+        })?;
+
+        // Extract supported expressions from the pipeline
+        for expression in pipeline.get_expressions() {
+            if let DataExpression::Transform(transform) = expression {
+                match transform {
+                    // Handle project-away
+                    TransformExpression::RemoveMapKeys(remove_keys_expr) => {
+                        match remove_keys_expr {
+                            RemoveMapKeysTransformExpression::Remove(map_key_list) => {
+                                for key_expr in map_key_list.get_keys() {
+                                    if let Some(key) = Self::extract_from_scalar(key_expr) {
+                                        let _ = deletes.insert(key);
+                                    } else {
+                                        return Err(ConfigError::InvalidUserConfig {
+                                            error: format!(
+                                                "Unsupported key expression in remove map keys: {:?}",
+                                                key_expr
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                            RemoveMapKeysTransformExpression::Retain(_) => {
+                                // Not directly mapped yet to attributes_processor capability
+                                // This is used by KQL 'project' which is actually a discard of everything not mentioned
+                            }
+                        }
+                    }
+                    // Handle project-rename
+                    TransformExpression::Move(move_expr) => {
+                        match (
+                            Self::extract_from_mutable_value(move_expr.get_source()),
+                            Self::extract_from_mutable_value(move_expr.get_destination())
+                        ) {
+                            (Some(src_key), Some(dst_key)) => {
+                                let _ = renames.insert(src_key, dst_key);
+                            }
+                            _ => {
+                                return Err(ConfigError::InvalidUserConfig {
+                                    error: format!(
+                                        "Unsupported source or destination in move expression: {:?} -> {:?}",
+                                        move_expr.get_source(), 
+                                        move_expr.get_destination()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    TransformExpression::RenameMapKeys(rename_keys_expr) => {
+                        for key_selector in rename_keys_expr.get_keys() {
+                            match (
+                                Self::extract_from_value_accessor(key_selector.get_source()),
+                                Self::extract_from_value_accessor(key_selector.get_destination())
+                            ) {
+                                (Some(src_key), Some(dst_key)) => {
+                                    let _ = renames.insert(src_key, dst_key);
+                                }
+                                _ => {
+                                    return Err(ConfigError::InvalidUserConfig {
+                                        error: format!(
+                                            "Unsupported source or destination in rename map keys expression: {:?} -> {:?}",
+                                            key_selector.get_source(), 
+                                            key_selector.get_destination()
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Not directly mapped yet to attributes_processor capability
+                    }
                 }
-                Action::Rename {
-                    source_key,
-                    destination_key,
-                } => {
-                    let _ = renames.insert(source_key, destination_key);
-                }
-                // Unsupported actions are ignored for now
-                Action::Unsupported => {}
             }
         }
 
@@ -163,7 +245,7 @@ impl AttributesProcessor {
         //   application of transforms when a composed map would be invalid.
         // For now, we compose a single transform and let transform_attributes
         // enforce validity (which may error for conflicting maps).
-        Self {
+        Ok(Self {
             transform: AttributesTransform {
                 rename: if renames.is_empty() {
                     None
@@ -178,12 +260,60 @@ impl AttributesProcessor {
             },
             domains,
             metrics: None,
+        })
+    }
+
+    /// Extract attribute name from a ValueAccessor, assuming "Attributes" map prefix.
+    fn extract_from_value_accessor(accessor: &ValueAccessor) -> Option<String> {
+        let selectors = accessor.get_selectors();
+        // Expect map access with prefix: ["Attributes", "field_name"]
+        if selectors.len() == 2 {
+            if let (
+                ScalarExpression::Static(StaticScalarExpression::String(map_name)),
+                ScalarExpression::Static(StaticScalarExpression::String(field_name))
+            ) = (&selectors[0], &selectors[1]) {
+                if map_name.get_value() == "Attributes" {
+                    Some(field_name.get_value().to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Extract attribute name from a MutableValueExpression.
+    fn extract_from_mutable_value(mutable_value: &MutableValueExpression) -> Option<String> {
+        match mutable_value {
+            MutableValueExpression::Source(source_expr) => {
+                Self::extract_from_value_accessor(source_expr.get_value_accessor())
+            }
+            MutableValueExpression::Variable(_) => {
+                // Variables are not supported for attribute extraction
+                None
+            }
+        }
+    }
+
+    /// Extract a column name from a scalar expression.
+    fn extract_from_scalar(scalar: &ScalarExpression) -> Option<String> {
+        match scalar {
+            ScalarExpression::Source(source_expr) => {
+                Self::extract_from_value_accessor(source_expr.get_value_accessor())
+            }
+            ScalarExpression::Static(StaticScalarExpression::String(string_expr)) => {
+                Some(string_expr.get_value().to_string())
+            }
+            _ => None,
         }
     }
 }
 
 #[async_trait(?Send)]
-impl local::Processor<OtapPdata> for AttributesProcessor {
+impl local::Processor<OtapPdata> for KqlAttributesProcessor {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -225,7 +355,8 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
-                // Update domain counters (count once per message when domains are enabled)
+                // Update domain counters (count once per message when domains
+                // are enabled)
                 if let Some(m) = self.metrics.as_mut() {
                     if self.domains.contains(&ApplyDomain::Signal) {
                         m.domains_signal.inc();
@@ -237,7 +368,8 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         m.domains_scope.inc();
                     }
                 }
-                // Apply transform across selected domains and collect exact stats
+                // Apply transform across selected domains and collect exact
+                // stats
                 match apply_transform_with_stats(
                     &mut records,
                     signal,
@@ -330,7 +462,8 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
                         let _ = set.insert(ApplyDomain::Scope);
                     }
                     _ => {
-                        // Unknown entry: ignore for now; could return config error in future
+                        // Unknown entry: ignore for now; could return config
+                        // error in future
                     }
                 }
             }
@@ -381,17 +514,18 @@ fn engine_err(msg: &str) -> EngineError {
     }
 }
 
-/// Factory function to create an AttributesProcessor.
+/// Factory function to create an KqlAttributesProcessor.
 ///
-/// Accepts configuration in OpenTelemetry Collector attributes processor format.
-/// See the module documentation for configuration examples and supported operations.
+/// Accepts configuration in OpenTelemetry Collector attributes processor
+/// format. See the module documentation for configuration examples and
+/// supported operations.
 pub fn create_attributes_processor(
     pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let mut proc = AttributesProcessor::from_config(&node_config.config)?;
+    let mut proc = KqlAttributesProcessor::from_config(&node_config.config)?;
     proc.metrics = Some(pipeline_ctx.register_metrics::<AttributesProcessorMetrics>());
     Ok(ProcessorWrapper::local(
         proc,
@@ -401,12 +535,12 @@ pub fn create_attributes_processor(
     ))
 }
 
-/// Register AttributesProcessor as an OTAP processor factory
+/// Register KqlAttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
+pub static KQL_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
-        name: ATTRIBUTES_PROCESSOR_URN,
+        name: KQL_ATTRIBUTES_PROCESSOR_URN,
         create: |pipeline_ctx: PipelineContext,
                  node: NodeId,
                  node_config: Arc<NodeUserConfig>,
@@ -462,14 +596,23 @@ mod tests {
     #[test]
     fn test_config_from_json_parses_actions_and_apply_to_default() {
         let cfg = json!({
-            "actions": [
-                {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
-            ]
+            "kql": "source | project-rename b.foo = a.bar, d = c | project-away x.fizz, y.buzz, z"
         });
-        let parsed = AttributesProcessor::from_config(&cfg).expect("config parse");
+        let parsed = KqlAttributesProcessor::from_config(&cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
+        
+        let rename_map = parsed.transform.rename.as_ref().unwrap();
+        assert_eq!(rename_map.get("a.bar"), Some(&"b.foo".to_string()));
+        assert_eq!(rename_map.get("c"), Some(&"d".to_string()));
+        assert_eq!(rename_map.len(), 2);
+        
+        let delete_set = parsed.transform.delete.as_ref().unwrap();
+        assert!(delete_set.contains("x.fizz"));
+        assert!(delete_set.contains("y.buzz"));
+        assert!(delete_set.contains("z"));
+        assert_eq!(delete_set.len(), 3);
+        
         // default apply_to should include Signal
         assert!(parsed.domains.contains(&ApplyDomain::Signal));
         // and not necessarily Resource/Scope unless specified
@@ -490,9 +633,7 @@ mod tests {
         );
 
         let cfg = json!({
-            "actions": [
-                {"action": "rename", "source_key": "a", "destination_key": "b"}
-            ]
+            "kql": "source | project-rename b = a | project-away x"
         });
 
         // Create a proper pipeline context for the test
@@ -504,7 +645,7 @@ mod tests {
         // Set up processor test runtime and run one message
         let node = test_node("attributes-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc =
             create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
@@ -572,9 +713,7 @@ mod tests {
         );
 
         let cfg = json!({
-            "actions": [
-                {"action": "delete", "key": "a"}
-            ]
+            "kql": "source | project-away a"
         });
 
         // Create a proper pipeline context for the test
@@ -585,7 +724,7 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc =
             create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
@@ -626,7 +765,8 @@ mod tests {
                     .unwrap()
                     .attributes;
                 assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
-                // Log attrs should have deleted "a" but still contain other keys
+                // Log attrs should have deleted "a" but still contain other
+                // keys
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
                 assert!(log_attrs.iter().any(|kv| {
@@ -642,7 +782,8 @@ mod tests {
 
     #[test]
     fn test_delete_scoped_to_resource_only_logs() {
-        // Resource has 'a', scope has 'a', log has 'a' and another key to keep batch non-empty
+        // Resource has 'a', scope has 'a', log has 'a' and another key to keep
+        // batch non-empty
         let input = build_logs_with_attrs(
             vec![
                 KeyValue::new("a", AnyValue::new_string("rv")),
@@ -656,7 +797,7 @@ mod tests {
         );
 
         let cfg = json!({
-            "actions": [ {"action": "delete", "key": "a"} ],
+            "kql": "source | project-away a",
             "apply_to": ["resource"]
         });
 
@@ -668,7 +809,7 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc =
             create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
@@ -717,7 +858,8 @@ mod tests {
 
     #[test]
     fn test_delete_scoped_to_scope_only_logs() {
-        // Resource has 'a', scope has 'a' plus another key, log has 'a' and another key to keep batches non-empty
+        // Resource has 'a', scope has 'a' plus another key, log has 'a' and
+        // another key to keep batches non-empty
         let input = build_logs_with_attrs(
             vec![KeyValue::new("a", AnyValue::new_string("rv"))],
             vec![
@@ -731,7 +873,7 @@ mod tests {
         );
 
         let cfg = json!({
-            "actions": [ {"action": "delete", "key": "a"} ],
+            "kql": "source | project-away a",
             "apply_to": ["scope"]
         });
 
@@ -743,7 +885,7 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-scope");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc =
             create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
@@ -793,7 +935,8 @@ mod tests {
     #[test]
     fn test_delete_scoped_to_signal_and_resource() {
         // Resource has 'a' and 'r', scope has 'a' and 's', log has 'a' and 'b'
-        // Deleting 'a' for [signal, resource] should remove it from resource and logs, keep in scope.
+        // Deleting 'a' for [signal, resource] should remove it from resource
+        // and logs, keep in scope.
         let input = build_logs_with_attrs(
             vec![
                 KeyValue::new("a", AnyValue::new_string("rv")),
@@ -810,7 +953,7 @@ mod tests {
         );
 
         let cfg = json!({
-            "actions": [ {"action": "delete", "key": "a"} ],
+            "kql": "source | project-away a",
             "apply_to": ["signal", "resource"]
         });
 
@@ -822,7 +965,7 @@ mod tests {
 
         let node = test_node("attributes-processor-delete-signal-and-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc =
             create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
@@ -892,12 +1035,14 @@ mod telemetry_tests {
     fn test_metrics_collect_telemetry_reports_counters() {
         use std::sync::{Arc, Mutex};
 
-        // 1) Telemetry system (no async yet); we will start the collector inside the test runtime
+        // 1) Telemetry system (no async yet); we will start the collector
+        //    inside the test runtime
         let metrics_system = MetricsSystem::default();
         let registry = metrics_system.registry();
         let reporter = metrics_system.reporter();
 
-        // Shared place to store the collector JoinHandle started inside the runtime
+        // Shared place to store the collector JoinHandle started inside the
+        // runtime
         let collector_handle: Arc<
             Mutex<Option<tokio::task::JoinHandle<Result<(), otap_df_telemetry::error::Error>>>>,
         > = Arc::new(Mutex::new(None));
@@ -906,21 +1051,20 @@ mod telemetry_tests {
         let controller = ControllerContext::new(registry.clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
-        // 3) Build processor with simple rename+delete (applies to signal domain by default)
+        // 3) Build processor with simple rename+delete (applies to signal
+        //    domain by default)
         let cfg = json!({
-            "actions": [
-                {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
-            ]
+            "kql": "source | project-rename b = a | project-away x"
         });
-        let mut node_cfg = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        let mut node_cfg = NodeUserConfig::new_processor_config(KQL_ATTRIBUTES_PROCESSOR_URN);
         node_cfg.config = cfg;
         let proc_cfg = ProcessorConfig::new("attr_proc");
         let node = test_node(proc_cfg.name.clone());
         let proc = create_attributes_processor(pipeline_ctx, node, Arc::new(node_cfg), &proc_cfg)
             .expect("create processor");
 
-        // 4) Build a minimal OTLP logs request that has a signal-level attribute 'a'
+        // 4) Build a minimal OTLP logs request that has a signal-level
+        //    attribute 'a'
         let input_bytes = {
             use otel_arrow_rust::proto::opentelemetry::{
                 collector::logs::v1::ExportLogsServiceRequest,
@@ -971,7 +1115,8 @@ mod telemetry_tests {
             bytes
         };
 
-        // 5) Drive processor with TestRuntime; start collector inside and then request a telemetry snapshot
+        // 5) Drive processor with TestRuntime; start collector inside and then
+        //    request a telemetry snapshot
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let phase = rt.set_processor(proc);
 
@@ -983,7 +1128,8 @@ mod telemetry_tests {
 
         phase
             .run_test(|mut ctx| async move {
-                // Start collector inside the runtime with a cancellation token to ensure shutdown
+                // Start collector inside the runtime with a cancellation token
+                // to ensure shutdown
                 let handle = tokio::spawn(metrics_system_rt.run(cancel_for_rt));
                 *collector_handle_rt.lock().unwrap() = Some(handle);
 
@@ -1003,7 +1149,8 @@ mod telemetry_tests {
                 // Allow the collector to pull from the channel
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-                // Inspect current metrics; fields with non-zero values should be present
+                // Inspect current metrics; fields with non-zero values should
+                // be present
                 let mut found_consumed = false;
                 let mut found_forwarded = false;
                 let mut found_renamed_entries = false;
