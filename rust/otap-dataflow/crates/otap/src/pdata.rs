@@ -86,7 +86,7 @@ use std::time::{Duration, Instant};
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
 /// Context data per node
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ContextData {
     /// Placeholder, e.g., number of retries.
     register: i32,
@@ -101,6 +101,7 @@ impl ContextData {
 }
 
 /// Interest allows pipeline controller to route by Ack or Nack.
+#[derive(Clone, Debug)]
 pub enum Interest {
     /// Only cares for Ack responses (???).
     AckOnly,
@@ -111,6 +112,7 @@ pub enum Interest {
 }
 
 /// Frame of interest.
+#[derive(Clone, Debug)]
 pub struct Frame {
     /// Which responses matter
     interest: Interest,
@@ -269,6 +271,9 @@ impl OtapPdata {
         (self.context, self.payload)
     }
 
+    /// Reply @@@ what about timeout
+    pub fn take_reply_data(self) -> (Self, ContextData) {}
+
     /// Reply
     pub fn with_reply_to(
         self,
@@ -279,16 +284,17 @@ impl OtapPdata {
         let mut context = self.context;
         let now = Instant::now();
         let dead = context.deadline();
-        if let Some(timeout) = dead {
-            if now >= timeout {
-                return Err(error::Error::AlreadyTimedOut);
-            }
+        let remain = dead.map(|t| now - t);
+        if let Some(timeout) = remain {
+            // TODO @@@ nope
+            // effect_handler.reply
         }
+
         context.stack.push(Frame {
             interest,
             node_id,
             when: now,
-            dead,
+            dead: dead.map(|d| d.checked_sub(now)),
             data,
         });
         Ok(Self {

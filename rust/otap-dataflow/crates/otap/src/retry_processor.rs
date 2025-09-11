@@ -246,11 +246,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                 }
                 NodeControlMsg::Nack(mut nack) => {
                     // Backward path: NACK processing - PEEK at retry state to decide action
-                    let mut rstate: RetryState = nack.request.pop_stack().try_into()?;
+                    let mut rstate: RetryState = nack.refused.pop_stack().try_into()?;
 
                     // PEEK at the next recipient (return sender responsibility)
                     let node_id =
-                        nack.request
+                        nack.refused
                             .return_node_id()
                             .ok_or_else(|| Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
@@ -330,11 +330,11 @@ impl Processor<OtapPdata> for RetryProcessor {
 
                     Ok(())
                 }
-                NodeControlMsg::DelayedData { data } => {
-                    // Delayed retry: forward the message (RetryState already on stack)
-                    effect_handler.send_message(*data).await?;
-                    Ok(())
-                }
+                // NodeControlMsg::DelayedData { data } => {
+                //     // Delayed retry: forward the message (RetryState already on stack)
+                //     effect_handler.send_message(*data).await?;
+                //     Ok(())
+                // }
                 NodeControlMsg::TimerTick { .. } => {
                     // Nothing
                     Ok(())
