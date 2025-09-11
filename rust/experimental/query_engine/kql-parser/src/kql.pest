@@ -251,6 +251,7 @@ extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expre
 project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
 project_keep_expression = { "project-keep" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
 project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
+project_rename_expression = { "project-rename" ~ assignment_expression ~ ("," ~ assignment_expression)* }
 where_expression = { "where" ~ logical_expression }
 
 average_aggregate_expression = {
@@ -298,6 +299,7 @@ tabular_expressions = _{
     | project_expression
     | project_keep_expression
     | project_away_expression
+    | project_rename_expression
     | where_expression
     | summarize_expression
 }

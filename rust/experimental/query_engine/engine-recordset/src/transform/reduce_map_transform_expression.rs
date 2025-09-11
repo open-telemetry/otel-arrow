@@ -258,7 +258,7 @@ impl Display for MapReduction<'_> {
 }
 
 #[derive(Debug)]
-enum MapReductionKey<'a> {
+pub(crate) enum MapReductionKey<'a> {
     Key(&'a str),
     Resolved(ResolvedStringValue<'a>),
 }
