@@ -262,20 +262,22 @@ impl LogsProtoBytesEncoder {
 
         // get the list of indices in the root record to visit in order
         self.batch_sorter
-            .root_indices_sorted(logs_rb, &mut self.root_cursor);
+            .init_cursor_for_root_batch(logs_rb, &mut self.root_cursor)?;
 
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
-            self.batch_sorter
-                .u16_ids_sorted(res_attrs.parent_id, &mut self.resource_attrs_cursor);
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                res_attrs.parent_id,
+                &mut self.resource_attrs_cursor,
+            );
         }
         if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
             self.batch_sorter
-                .u16_ids_sorted(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
+                .init_cursor_for_u16_id_column(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
         }
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             self.batch_sorter
-                .u16_ids_sorted(log_attrs.parent_id, &mut self.log_attrs_cursor);
+                .init_cursor_for_u16_id_column(log_attrs.parent_id, &mut self.log_attrs_cursor);
         }
 
         // encode all `ResourceLog`s for this `LogsData`

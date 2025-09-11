@@ -466,12 +466,26 @@ pub(crate) fn patch_len_placeholder(
     }
 }
 
+/// Used to iterate over OTAP [`RecordBatch`] in a particular order.
+///
+/// There are certain use cases where we want to visit all the rows in some record batch that are
+/// associated with some logical OTel message. For example, visit all the rows for a given
+/// `ResourceLog` in a `Logs` OTAP batch, followed by all logs for the next resource, etc.
+/// Similar for attributes -- visit the `LogAttrs` record batch in order of the parent_id column
+/// to iterate through attributes for the logical `LogRecord` message.
+///
+/// This is the data-structure that allows to traverse an associated record batch in this natural
+/// order by calling the `curr_index()` and `advance()` methods.
+///
+/// The motivation behind using this cursor is that it will hopefully be more efficient to
+/// initialize this than sorting the entire [`RecordBatch`].
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
     curr_index: usize,
 }
 
 impl SortedBatchCursor {
+    /// Create a new instance of [`SortedBatchCursor`]
     pub fn new() -> Self {
         Self {
             sorted_indices: Vec::new(),
@@ -479,24 +493,31 @@ impl SortedBatchCursor {
         }
     }
 
+    /// Reset the cursor. Typically this would be called before the cursor is then reinitialized.
     pub fn reset(&mut self) {
         self.sorted_indices.clear();
         self.curr_index = 0;
     }
 
+    /// Get the current index to visit
     pub fn curr_index(&self) -> usize {
         self.sorted_indices[self.curr_index]
     }
 
+    /// Advance the cursor
     pub fn advance(&mut self) {
         self.curr_index += 1;
     }
 
+    /// Check if the cursor has finished. This will return true once we've iterated to the end of
+    /// the record batch that was used to initialize this cursor.
     pub fn finished(&self) -> bool {
         self.curr_index >= self.sorted_indices.len()
     }
 }
 
+/// This is used to initialize the [`SortedBatchCursor`]. It does this by sorting the IDs and then
+/// filling in the cursors indices to visit based on the sorted ID column.
 pub(crate) struct BatchSorter {
     row_converter: RowConverter,
     rows: Vec<(usize, Row<'static>)>,
@@ -519,64 +540,82 @@ impl BatchSorter {
         }
     }
 
-    /// TODO comment
-    // TODO revisit the return type here
-    pub fn root_indices_sorted(
+    /// Initializes the cursor to visit the root [`RecordBatch`] in the OTAP batch in order of
+    /// ascending Resource ID & Scope ID. This allows the caller to easily iterate the root
+    /// [`RecordBatch`] in a depth-first traversal for each Resource -> Scope -> Log/Span/etc.
+    pub fn init_cursor_for_root_batch(
         &mut self,
         record_batch: &RecordBatch,
         cursor: &mut SortedBatchCursor,
-    ) {
+    ) -> Result<()> {
         const PLACEHOLDER_ARRAY: LazyLock<ArrayRef> =
             LazyLock::new(|| Arc::new(UInt8Array::new_null(0)));
 
+        let mut sort_columns_idx = 0;
         let mut sort_columns = [PLACEHOLDER_ARRAY.clone(), PLACEHOLDER_ARRAY.clone()];
 
-        let mut sort_columns_idx = 0;
-
-        if let Some(resource_col) = record_batch.column_by_name(consts::RESOURCE) {
-            // TODO nounwrap
-            let resource_col = resource_col.as_any().downcast_ref::<StructArray>().unwrap();
-            if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
-                sort_columns[sort_columns_idx] = resource_ids.clone();
-                sort_columns_idx += 1;
+        for col_name in [consts::RESOURCE, consts::SCOPE] {
+            if let Some(resource_col) = record_batch.column_by_name(col_name) {
+                let resource_col = resource_col
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                        name: col_name,
+                        expect: DataType::Struct(Fields::empty()),
+                        actual: resource_col.data_type().clone(),
+                    })?;
+                if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
+                    sort_columns[sort_columns_idx] = resource_ids.clone();
+                    sort_columns_idx += 1;
+                }
             }
         }
 
-        if let Some(scope_col) = record_batch.column_by_name(consts::SCOPE) {
-            // TODO nounwrap
-            let scope_col = scope_col.as_any().downcast_ref::<StructArray>().unwrap();
-            if let Some(scope_ids) = scope_col.column_by_name(consts::ID) {
-                sort_columns[sort_columns_idx] = scope_ids.clone();
-                sort_columns_idx += 1;
-            }
-        }
-
-        // TODO see if there's a way to do this without allocating
         if sort_columns_idx == 2 {
-            // TODO maybe handle error here?
-            // safety: shouldn't happen? I guess if we got an invalid record batch
+            // use row-sorter if we need to sort by both columns
             let rows = self
                 .row_converter
                 .convert_columns(&sort_columns)
-                .expect("error converting columns for sorting");
-
-            let mut sort = reuse_rows_vec(std::mem::take(&mut self.rows));
+                .map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
+                    }
+                    .build()
+                })?;
+            let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
             sort.extend(rows.iter().enumerate());
             sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+
+            // populate the cursor
             cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
-            self.rows = reuse_rows_vec(sort);
+
+            // save the rows vec allocation for next batch needs sorting
+            self.rows = Self::reuse_rows_vec(sort);
         } else if sort_columns_idx == 1 {
+            //there's only one ID column, so we'll visit in the order of this column.
             let ids = sort_columns[0]
                 .as_any()
                 .downcast_ref::<UInt16Array>()
-                .unwrap();
-            self.u16_ids_sorted(ids, cursor);
+                .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                    name: consts::ID,
+                    expect: DataType::UInt16,
+                    actual: sort_columns[0].data_type().clone(),
+                })?;
+            self.init_cursor_for_u16_id_column(ids, cursor);
         } else {
+            // no scope/resource ID columns....
+            // just configure cursor to visit the root record batch in order
             cursor.sorted_indices.extend(0..record_batch.num_rows());
         }
+
+        Ok(())
     }
 
-    pub fn u16_ids_sorted(&mut self, ids: &UInt16Array, cursor: &mut SortedBatchCursor) {
+    pub fn init_cursor_for_u16_id_column(
+        &mut self,
+        ids: &UInt16Array,
+        cursor: &mut SortedBatchCursor,
+    ) {
         self.u16_ids.clear();
         self.u16_ids
             .extend(ids.values().iter().copied().enumerate());
@@ -592,12 +631,12 @@ impl BatchSorter {
             .sorted_indices
             .extend(self.u16_ids.iter().map(|(i, _)| *i));
     }
-}
 
-// TODO comments
-fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
-    v.clear();
-    v.into_iter().map(|_| unreachable!()).collect()
+    // TODO comments
+    fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
+        v.clear();
+        v.into_iter().map(|_| unreachable!()).collect()
+    }
 }
 
 /// TODO coment on what this is doing
