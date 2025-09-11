@@ -434,9 +434,8 @@ impl AsMut<[u8]> for ProtoBuffer {
 /// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
 /// between encoded size and CPU needed to compute the size ofr the length.
 ///
-/// TODO: currently we're always allocating 8 bytes, which should be able hold 2^(7*8) bytes
-/// which is ~72GB. This is clearly too much, but we over-allocate to be safe. Eventually we should
-/// maybe allow a size hint here and allocate fewer bytes.
+/// TODO: currently we're always allocating 8 byte. This is clearly too much, but we over-allocate
+/// to be safe. Eventually we should maybe allow a size hint here and allocate fewer bytes.
 ///
 #[macro_export]
 macro_rules! proto_encode_len_delimited_unknown_size {
