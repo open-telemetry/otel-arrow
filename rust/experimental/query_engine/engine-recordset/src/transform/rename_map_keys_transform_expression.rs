@@ -691,5 +691,39 @@ mod tests {
             record.get("new_key2").unwrap().to_value().to_string()
         );
         assert!(record.contains_key("key1"));
+
+        // Note: In this test the map at key1 is moved into the array at key2 in
+        // the first index.
+        let record = run_test(TransformExpression::RenameMapKeys(
+            RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![MapKeyRenameSelector::new(
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                    )]),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )),
+                    ]),
+                )],
+            ),
+        ));
+
+        assert_eq!(1, record.len());
+        assert_eq!(
+            "[{\"subkey1\":\"hello\",\"subkey2\":\"world\",\"subkey3\":\"goodbye\"},2,3]",
+            record.get("key2").unwrap().to_value().to_string()
+        );
     }
 }
