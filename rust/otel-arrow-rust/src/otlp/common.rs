@@ -180,7 +180,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     if let Some(col) = &scope_arrays.name {
-        if let Some(val) = col.value_at(index) {
+        if let Some(val) = col.str_at(index) {
             result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN);
             result_buf.encode_varint(val.len() as u64);
             result_buf.extend_from_slice(val.as_bytes());
@@ -188,7 +188,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     }
 
     if let Some(col) = &scope_arrays.version {
-        if let Some(val) = col.value_at(index) {
+        if let Some(val) = col.str_at(index) {
             result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN);
             result_buf.encode_varint(val.len() as u64);
             result_buf.extend_from_slice(val.as_bytes());

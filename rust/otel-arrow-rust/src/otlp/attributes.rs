@@ -58,7 +58,7 @@ pub(crate) fn encode_key_value(
     index: usize,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(key) = attr_arrays.attr_key.value_at(index) {
+    if let Some(key) = attr_arrays.attr_key.str_at(index) {
         result_buf.encode_field_tag(KEY_VALUE_KEY, wire_types::LEN);
         result_buf.encode_varint(key.len() as u64);
         result_buf.extend_from_slice(key.as_bytes());
@@ -89,7 +89,7 @@ pub(crate) fn encode_any_value(
     match value_type {
         AttributeValueType::Str => {
             if let Some(attr_str) = &attr_arrays.attr_str {
-                if let Some(val) = attr_str.value_at(index) {
+                if let Some(val) = attr_str.str_at(index) {
                     result_buf.encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN);
                     result_buf.encode_varint(val.len() as u64);
                     result_buf.extend_from_slice(val.as_bytes());

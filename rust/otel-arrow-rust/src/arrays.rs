@@ -440,6 +440,22 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     }
 }
 
+impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        match self {
+            Self::Dictionary16(dict) => dict.str_at(idx),
+            Self::Dictionary8(dict) => dict.str_at(idx),
+            Self::Native(str_arr) => {
+                if str_arr.is_valid(idx) {
+                    Some(str_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
 pub type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
 pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
@@ -485,10 +501,27 @@ where
     }
 }
 
+impl<'a, K> DictionaryArrayAccessor<'a, K, StringArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
 /// Helper for accessing columns of a struct array
 ///
 /// Methods return various errors into this crate's Error type if
-/// if callers requirments for the struct columns are not met (for
+/// if callers requirements for the struct columns are not met (for
 /// example `ColumnDataTypeMismatchSnafu`)
 pub struct StructColumnAccessor<'a> {
     inner: &'a StructArray,

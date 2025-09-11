@@ -408,7 +408,7 @@ impl LogsProtoBytesEncoder {
         }
 
         if let Some(col) = &log_arrays.severity_text {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.str_at(index) {
                 result_buf.encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());
@@ -484,7 +484,7 @@ impl LogsProtoBytesEncoder {
         }
 
         if let Some(col) = &log_arrays.event_name {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.str_at(index) {
                 result_buf.encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());
