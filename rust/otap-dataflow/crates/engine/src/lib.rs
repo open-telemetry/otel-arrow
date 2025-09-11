@@ -455,7 +455,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
-        // Validate plugin URN structure during registration (PR #2 of #1099)
+        // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Receiver,
@@ -497,7 +497,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
-        // Validate plugin URN structure during registration (PR #2 of #1099)
+        // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Processor,
@@ -544,7 +544,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
-        // Validate plugin URN structure during registration (PR #2 of #1099)
+        // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Exporter,

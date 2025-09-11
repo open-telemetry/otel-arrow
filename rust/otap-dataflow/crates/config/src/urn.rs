@@ -12,6 +12,8 @@ use urn::Urn;
 
 /// Minimum required NSS segments for `urn:otap:processor:<name>`
 const MIN_OTAP_PROCESSOR_NSS_SEGMENTS: usize = 2;
+/// Minimum required NSS segments for `urn:otel:<family>(:<subfamily>...):<kind>`
+const MIN_OTEL_NSS_SEGMENTS: usize = 2;
 
 /// Parse a raw URN string.
 pub fn parse_urn(raw: &str) -> Result<Urn, Error> {
@@ -32,23 +34,32 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<(), Err
     let urn = parse_urn(raw)?;
     let nid = urn.nid().to_ascii_lowercase();
     let nss = urn.nss();
-    let segs: Vec<&str> = nss.split(':').filter(|s| !s.is_empty()).collect();
+    let segs: Vec<&str> = nss.split(':').collect();
 
-    // All segments must be lowercase a-z, 0-9, or underscore
-    if segs
-        .iter()
-        .any(|s| !s.chars().all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_')))
-    {
+    // NSS must have non-empty segments separated by ':'
+    if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
         return Err(Error::InvalidUserConfig {
             error: format!(
-                "invalid plugin URN `{raw}`: NSS segments must be [a-z0-9_] separated by ':'"
+                "invalid plugin URN `{raw}`: NSS must have non-empty segments separated by ':'"
             ),
+        });
+    }
+
+    // All segments must be lowercase a-z, 0-9, underscore, hyphen, or dot
+    fn is_valid_segment(seg: &str) -> bool {
+        seg.chars()
+            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
+    }
+    if segs.iter().any(|s| !is_valid_segment(s)) {
+        return Err(Error::InvalidUserConfig {
+            error: format!("invalid plugin URN `{raw}`: NSS segments must match [a-z0-9._-]"),
         });
     }
 
     match nid.as_str() {
         // otap processors: urn:otap:processor:<name>
         "otap" => {
+            // Expect at least: processor:<name>, allow deeper names
             if !(segs.first().copied() == Some("processor")
                 && segs.len() >= MIN_OTAP_PROCESSOR_NSS_SEGMENTS)
             {
@@ -69,10 +80,11 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<(), Err
         }
         // otel family: require trailing kind suffix
         "otel" => {
-            if segs.is_empty() {
+            // Require at least family + kind
+            if segs.len() < MIN_OTEL_NSS_SEGMENTS {
                 return Err(Error::InvalidUserConfig {
                     error: format!(
-                        "invalid plugin URN `{raw}`: expected trailing kind (receiver|processor|exporter)"
+                        "invalid plugin URN `{raw}`: expected `urn:otel:<family>(:<subfamily>...):<receiver|processor|exporter>`"
                     ),
                 });
             }
@@ -87,7 +99,7 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<(), Err
             if last != expected_suffix {
                 return Err(Error::InvalidUserConfig {
                     error: format!(
-                        "invalid plugin URN `{raw}`: expected to end with `{expected_suffix}` for `{expected_kind:?}`"
+                        "invalid plugin URN `{raw}`: expected suffix `{expected_suffix}`, found `{last}`"
                     ),
                 });
             }
@@ -118,10 +130,27 @@ mod tests {
 
     #[test]
     fn rejects_mismatches_and_invalids() {
-        assert!(validate_plugin_urn("urn:otap:receiver", NodeKind::Receiver).is_err());
-        assert!(validate_plugin_urn("urn:otap:processor", NodeKind::Processor).is_err());
+        // Unknown namespace
+        assert!(validate_plugin_urn("urn:example:x", NodeKind::Receiver).is_err());
+
+        // Empty NSS segments
+        assert!(validate_plugin_urn("urn:otel::otlp:receiver", NodeKind::Receiver).is_err());
+        assert!(validate_plugin_urn("urn:otel:otlp::receiver", NodeKind::Receiver).is_err());
+        assert!(validate_plugin_urn("urn:otel::receiver", NodeKind::Receiver).is_err());
+
+        // Missing family for otel
+        assert!(validate_plugin_urn("urn:otel:receiver", NodeKind::Receiver).is_err());
+
+        // Uppercase NSS rejected
+        assert!(validate_plugin_urn("urn:otel:OTLP:receiver", NodeKind::Receiver).is_err());
+
+        // Percent-encoding not supported by policy
+        assert!(validate_plugin_urn("urn:otel:my%2Ffamily:receiver", NodeKind::Receiver).is_err());
+
+        // Wrong kind mapping
         assert!(validate_plugin_urn("urn:otel:otlp:exporter", NodeKind::Receiver).is_err());
-        assert!(validate_plugin_urn("urn:otel:otlp", NodeKind::Receiver).is_err());
+
+        // Unknown URN entirely
         assert!(validate_plugin_urn("not_a_urn", NodeKind::Receiver).is_err());
     }
 }
