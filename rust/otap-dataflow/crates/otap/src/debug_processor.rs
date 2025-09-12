@@ -29,9 +29,9 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::LogsData,
-    metrics::v1::{MetricsData, metric::Data},
-    trace::v1::TracesData,
+    logs::v1::{LogRecord, LogsData},
+    metrics::v1::{Metric, MetricsData, metric::Data},
+    trace::v1::{Span, TracesData},
 };
 use prost::Message as _;
 use serde_json::Value;
@@ -245,7 +245,7 @@ async fn push_metric(
     let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
-    let mut metric_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
+    let mut metric_signals: Option<Vec<Metric>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_metrics in &metric_request.resource_metrics {
         for scope_metrics in &resource_metrics.scope_metrics {
             metrics += scope_metrics.metrics.len();
@@ -319,7 +319,7 @@ async fn push_trace(
     let mut spans = 0;
     let mut events = 0;
     let mut links = 0;
-    let mut span_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
+    let mut span_signals: Option<Vec<Span>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
@@ -370,7 +370,7 @@ async fn push_log(
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
-    let mut log_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
+    let mut log_signals: Option<Vec<LogRecord>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
