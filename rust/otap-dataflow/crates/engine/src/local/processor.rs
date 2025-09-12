@@ -234,7 +234,7 @@ impl<PData> EffectHandler<PData> {
         sender_id: usize,
         data: PData,
         when: Instant,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TypedError<PData>> {
         self.core.send_delayed(sender_id, data, when).await
     }
 

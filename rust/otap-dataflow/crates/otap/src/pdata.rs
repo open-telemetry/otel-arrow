@@ -299,32 +299,30 @@ impl OtapPdata {
         self.context.stack.pop()
     }
 
-    /// Reply
-    pub fn with_reply_to(
-        self,
+    /// Reply with certain interest to this node_id (the usize index)
+    /// to and node-specific context data.
+    pub fn push_reply_to(
+        &mut self,
         interest: Interest,
         node_id: usize,
         data: ContextData,
-    ) -> (Self, Option<error::Error>) {
-        let (mut context, payload) = self.into_parts();
+    ) -> Result<(), error::Error> {
         let now = Instant::now();
-        let dead = context.deadline();
+        let dead = self.context.deadline();
         let remain = dead.map(|timeout| timeout.duration_since(now));
         let expired = remain.map(|t| t.is_zero()).unwrap_or(false);
+
         if expired {
-            (
-                Self { context, payload },
-                Some(error::Error::DeadlineExceeded),
-            )
+            Err(error::Error::DeadlineExceeded)
         } else {
-            context.stack.push(Frame {
+            self.context.stack.push(Frame {
                 _interest: interest,
                 node_id,
                 when: now,
                 dead: remain,
                 data,
             });
-            (Self { context, payload }, None)
+            Ok(())
         }
     }
 

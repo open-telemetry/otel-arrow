@@ -99,7 +99,7 @@ use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
     control::{NackMsg, NodeControlMsg},
-    error::Error,
+    error::{Error, TypedError},
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
@@ -228,17 +228,19 @@ impl Processor<OtapPdata> for RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::PData(data) => {
-                match data.with_reply_to(
+            Message::PData(mut data) => {
+                match data.push_reply_to(
                     Interest::NackOnly,
                     effect_handler.processor_id().index(),
                     ContextData::new(0),
                 ) {
-                    (data, None) => {
+                    Ok(_) => {
+                        // Reply_to pushed
                         effect_handler.send_message(data).await?;
                         Ok(())
                     }
-                    (data, Some(err)) => {
+                    Err(err) => {
+                        // Reply_to not pushed, e.g., deadline already exceeded.
                         effect_handler
                             .reply_nack(
                                 data.return_node_id(),
@@ -315,27 +317,29 @@ impl Processor<OtapPdata> for RetryProcessor {
                     }
 
                     // Updated RetryState back onto context for retry attempt
-                    match nack.refused.with_reply_to(
+                    match nack.refused.push_reply_to(
                         Interest::NackOnly,
                         effect_handler.processor_id().index(),
                         rstate.into(),
                     ) {
-                        (repeat_request, None) => {
+                        Ok(_) => {
                             effect_handler
                                 .send_delayed(
                                     effect_handler.processor_id().index(),
-                                    repeat_request,
+                                    *nack.refused,
                                     next_retry_time,
                                 )
-                                .await
+                                .await?;
+                            Ok(())
                         }
-                        (repeat_request, Some(err)) => {
+                        Err(err) => {
+                            // The likely cause would be deadline exceeded, though
+                            // unlikely since we already checked expiration.
+                            nack.reason = format!("{}: {}", err.to_string(), nack.reason);
                             effect_handler
-                                .reply_nack(
-                                    repeat_request.return_node_id(),
-                                    NackMsg::new(repeat_request, err.to_string(), false, None),
-                                )
-                                .await
+                                .reply_nack(nack.refused.return_node_id(), nack)
+                                .await?;
+                            Ok(())
                         }
                     }
                 }

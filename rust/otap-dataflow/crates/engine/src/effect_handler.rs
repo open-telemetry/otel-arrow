@@ -4,7 +4,7 @@
 //! Common foundation of all effect handlers.
 
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
@@ -226,9 +226,9 @@ impl EffectHandlerCore {
     pub async fn send_delayed<PData>(
         &self,
         _sender_id: usize,
-        _data: PData,
+        data: PData,
         _when: Instant,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TypedError<PData>> {
         // TODO Future PR: Need the above and a delay mechanism in pipeline_ctrl.rs first.
         // When the pipeline controller resumes this request, it will signal _this_ component
         // which decides which port to send and how to handle failure. Eventually we'll have
@@ -236,7 +236,7 @@ impl EffectHandlerCore {
         // proper channel to send the message, the pipeline_ctrl.rs logic does not, otherwise
         // we might consider having the pipeline controller deliver this as if by send_message
         // or send_mesage_to after the delay.
-        Ok(())
+        Err(TypedError::ChannelSendError(SendError::Full(data)))
     }
 }
 
