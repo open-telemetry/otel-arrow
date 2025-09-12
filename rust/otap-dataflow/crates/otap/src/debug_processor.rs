@@ -245,11 +245,13 @@ async fn push_metric(
     let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
-    let mut metric_signals = vec![];
+    let mut metric_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
     for resource_metrics in &metric_request.resource_metrics {
         for scope_metrics in &resource_metrics.scope_metrics {
             metrics += scope_metrics.metrics.len();
-            metric_signals.append(&mut scope_metrics.metrics.clone());
+            if let Some(ref mut metric_signals) = metric_signals {
+                metric_signals.append(&mut scope_metrics.metrics.clone());
+            }
             for metric in &scope_metrics.metrics {
                 if let Some(data) = &metric.data {
                     match data {
@@ -293,6 +295,8 @@ async fn push_metric(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
+            // safety: this should be initialized above if the mode is Signal
+            let metric_signals = metric_signals.expect("metric_signals not None");
             for (index, metric) in metric_signals.iter().enumerate() {
                 let report = marshaler.marshal_metric_signal(metric, index);
                 writer.write(&format!("{report}\n")).await?;
@@ -315,11 +319,13 @@ async fn push_trace(
     let mut spans = 0;
     let mut events = 0;
     let mut links = 0;
-    let mut span_signals = vec![];
+    let mut span_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
-            span_signals.append(&mut scope_span.spans.clone());
+            if let Some(ref mut span_signals) = span_signals {
+                span_signals.append(&mut scope_span.spans.clone());
+            }
             for span in &scope_span.spans {
                 events += span.events.len();
                 links += span.links.len();
@@ -344,6 +350,7 @@ async fn push_trace(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
+            let span_signals = span_signals.expect("metric_signals not None");
             for (index, span) in span_signals.iter().enumerate() {
                 let report = marshaler.marshal_span_signal(span, index);
                 writer.write(&format!("{report}\n")).await?;
@@ -363,11 +370,13 @@ async fn push_log(
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
-    let mut log_signals = vec![];
+    let mut log_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
-            log_signals.append(&mut scope_log.log_records.clone());
+            if let Some(ref mut log_signals) = log_signals {
+                log_signals.append(&mut scope_log.log_records.clone());
+            }
             for log_record in &scope_log.log_records {
                 if !log_record.event_name.is_empty() {
                     events += 1;
@@ -392,6 +401,7 @@ async fn push_log(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
+            let log_signals = log_signals.expect("metric_signals not None");
             for (index, log_record) in log_signals.iter().enumerate() {
                 let report = marshaler.marshal_log_signal(log_record, index);
                 writer.write(&format!("{report}\n")).await?;
