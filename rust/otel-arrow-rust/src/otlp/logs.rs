@@ -276,11 +276,16 @@ impl LogsProtoBytesEncoder {
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
         // encode the `Resource`
         proto_encode_len_delimited_unknown_size!(
             LOGS_DATA_RESOURCE,
             proto_encode_resource(
-                self.root_cursor.curr_index(),
+                index,
                 &logs_data_arrays.resource_arrays,
                 logs_data_arrays.resource_attrs.as_ref(),
                 &mut self.resource_attrs_cursor,
@@ -289,7 +294,6 @@ impl LogsProtoBytesEncoder {
             result_buf
         );
 
-        let index = self.root_cursor.curr_index();
         // encode all `ScopeLog`s for this `ResourceLog`
         let resource_id = logs_data_arrays.resource_arrays.id.value_at(index);
 
@@ -306,12 +310,8 @@ impl LogsProtoBytesEncoder {
             }
 
             // check if we've found a new scope ID. If so, break
-            if resource_id
-                != logs_data_arrays
-                    .resource_arrays
-                    .id
-                    .value_at(self.root_cursor.curr_index())
-            {
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+            if resource_id != logs_data_arrays.resource_arrays.id.value_at(next_index) {
                 break;
             }
         }
@@ -333,11 +333,15 @@ impl LogsProtoBytesEncoder {
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
         // encode the `InstrumentationScope`
         proto_encode_len_delimited_unknown_size!(
             SCOPE_LOG_SCOPE,
             proto_encode_instrumentation_scope(
-                self.root_cursor.curr_index(),
+                index,
                 &logs_data_arrays.scope_arrays,
                 logs_data_arrays.scope_attrs.as_ref(),
                 &mut self.scope_attrs_cursor,
@@ -347,7 +351,6 @@ impl LogsProtoBytesEncoder {
         );
 
         // encode all `LogRecord`s for this `ScopeLog``
-        let index = self.root_cursor.curr_index();
         let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
 
         loop {
@@ -363,12 +366,9 @@ impl LogsProtoBytesEncoder {
             }
 
             // check if we've found a new scope ID. If so, break
-            if scope_id
-                != logs_data_arrays
-                    .scope_arrays
-                    .id
-                    .value_at(self.root_cursor.curr_index())
-            {
+            // Safety: we've just checked above that cursor isn't finished
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+            if scope_id != logs_data_arrays.scope_arrays.id.value_at(next_index) {
                 break;
             }
         }
@@ -390,7 +390,11 @@ impl LogsProtoBytesEncoder {
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
-        let index = self.root_cursor.curr_index();
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
         let log_arrays = &logs_data_arrays.log_arrays;
 
         if let Some(col) = log_arrays.time_unix_nano {

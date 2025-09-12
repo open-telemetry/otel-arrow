@@ -502,8 +502,8 @@ impl SortedBatchCursor {
     }
 
     /// Get the current index to visit
-    pub fn curr_index(&self) -> usize {
-        self.sorted_indices[self.curr_index]
+    pub fn curr_index(&self) -> Option<usize> {
+        (!self.finished()).then(|| self.sorted_indices[self.curr_index])
     }
 
     /// Advance the cursor
@@ -689,7 +689,9 @@ impl Iterator for ChildIndexIter<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         // advance the cursor until we either find the parent ID we're looking for, or pass it
         while !self.cursor.finished() {
-            let index = self.cursor.curr_index();
+            // safety: we've just checked that cursor is not finished
+            let index = self.cursor.curr_index().expect("cursor not finished");
+
             if let Some(curr_parent_id) = self.parent_id_col.value_at(index) {
                 if curr_parent_id < self.parent_id {
                     self.cursor.advance();
