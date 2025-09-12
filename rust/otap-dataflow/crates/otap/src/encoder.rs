@@ -3780,6 +3780,42 @@ mod test {
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
     }
 
+    #[test]
+    fn test_encode_logs_batch_length_counts_rows() {
+        use otel_arrow_rust::otap::OtapArrowRecords;
+        use otel_arrow_rust::proto::opentelemetry::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue,
+        };
+        use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+        };
+        use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+
+        // Build logs with at least one attribute per record so log ids are set
+        let logs: Vec<LogRecord> = (0..3)
+            .map(|i| {
+                LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}"))
+                    .attributes(vec![KeyValue::new("k", AnyValue::new_string("v"))])
+                    .finish()
+            })
+            .collect();
+
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("lib"))
+                        .log_records(logs)
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+
+        let rec = encode_logs_otap_batch(&logs_data).expect("encode logs");
+        assert!(matches!(rec, OtapArrowRecords::Logs(_)));
+        let n = rec.batch_length();
+        assert!(n >= 3, "expected at least 3 log rows, got {n}");
+    }
+
     fn _generate_traces_data_all_fields() -> TracesData {
         let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
