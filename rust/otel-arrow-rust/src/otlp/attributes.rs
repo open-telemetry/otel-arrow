@@ -10,7 +10,7 @@ use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
-    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE,
+    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
     ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY,
     KEY_VALUE_VALUE,
 };
@@ -123,7 +123,7 @@ pub(crate) fn encode_any_value(
         AttributeValueType::Bytes => {
             if let Some(attr_bytes) = &attr_arrays.attr_bytes {
                 if let Some(val) = attr_bytes.slice_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_BYES_VALUE, wire_types::LEN);
+                    result_buf.encode_field_tag(ANY_VALUE_BYTES_VALUE, wire_types::LEN);
                     result_buf.encode_varint(val.len() as u64);
                     result_buf.extend_from_slice(val.as_ref());
                 }
