@@ -9,13 +9,32 @@ This crate will contain the implementation of the debug processor.
 ```yaml
 config:
     verbosity: normal
+    mode: batch
     signals:
       - metrics
       - logs
       - spans
 ```
 
+### Verbosity
+
 Valid levels of verbosity are: `basic`, `normal`, and `detailed`
+
+By default the verbosity is set to `normal`
+
+### Modes
+
+You can alter how the output should be sent, via the `mode` setting.
+
+This setting can switch between `batch` and `signal`
+
+In `batch` mode the output will dump the entire batch at once
+
+In `signal` mode the output will output each signal individually
+
+By default mode is set to `batch`
+
+### Signal Selection
 
 Select what signals you want output for, by default the following
 signals will be displayed `metrics`, `logs`, and `spans`

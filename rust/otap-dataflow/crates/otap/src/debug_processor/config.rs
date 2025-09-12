@@ -18,6 +18,15 @@ pub enum Verbosity {
     Basic,
 }
 
+/// Enum that describes how the output should be handled
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    /// output the whole batch at once
+    Batch,
+    /// output per signal
+    Signal,
+}
 /// Enum that defines which signals to debug for
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Hash, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +42,8 @@ pub enum SignalActive {
 pub struct Config {
     #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
+    #[serde(default = "default_output_mode")]
+    mode: OutputMode,
     #[serde(default = "default_active_signal")]
     signals: HashSet<SignalActive>,
 }
@@ -48,11 +59,20 @@ fn default_active_signal() -> HashSet<SignalActive> {
         SignalActive::Spans,
     ])
 }
+
+fn default_output_mode() -> OutputMode {
+    OutputMode::Batch
+}
+
 impl Config {
     /// Create a new Config object
     #[must_use]
-    pub fn new(verbosity: Verbosity, signals: HashSet<SignalActive>) -> Self {
-        Self { verbosity, signals }
+    pub fn new(verbosity: Verbosity, mode: OutputMode, signals: HashSet<SignalActive>) -> Self {
+        Self {
+            verbosity,
+            mode,
+            signals,
+        }
     }
     /// get the verbosity level
     #[must_use]
@@ -65,12 +85,18 @@ impl Config {
     pub const fn signals(&self) -> &HashSet<SignalActive> {
         &self.signals
     }
+
+    #[must_use]
+    pub const fn mode(&self) -> OutputMode {
+        self.mode
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             verbosity: default_verbosity(),
+            mode: default_output_mode(),
             signals: default_active_signal(),
         }
     }
