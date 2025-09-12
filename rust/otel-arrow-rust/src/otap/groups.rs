@@ -6,22 +6,21 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
-    ops::{Add, Range, RangeFrom, RangeInclusive},
+    ops::{Add, ControlFlow, Range, RangeFrom, RangeInclusive},
     sync::Arc,
 };
 
 use ahash::AHashSet;
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, FixedSizeBinaryArray,
-        GenericByteArray, PrimitiveArray, RecordBatch, StringArray, StructArray, UInt16Array,
-        UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
+        StructArray, UInt16Array, UInt32Array,
     },
     buffer::NullBuffer,
     compute::cast,
     datatypes::{
-        ArrowNativeTypeOp, ByteArrayType, DataType, Field, Fields, Float32Type, Float64Type,
-        Int32Type, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+        ArrowNativeType, ArrowNativeTypeOp, DataType, Field, Fields, Float64Type,
+        GenericBinaryType, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt64Type,
     },
 };
 use itertools::Itertools;
@@ -1352,7 +1351,7 @@ impl UnifiedDictionaryTypeSelector {
     }
 
     fn visit_dict_array(&mut self, maybe_dict_column_arr: &ArrayRef) -> Result<()> {
-        self.total_batch_size += maybe_dict_column_arr.len();
+        self.total_batch_size += maybe_dict_column_arr.len() - maybe_dict_column_arr.null_count();
 
         // access the array containing the dictionary values ...
         let values_arr = match maybe_dict_column_arr.data_type() {
@@ -1410,144 +1409,386 @@ impl UnifiedDictionaryTypeSelector {
             return Ok(selected_type);
         }
 
-        // iterate the values until we've either visited them all, or at least enough of them that
-        // we can decide what the datatype should be.
-        let mut total_values_visited = 0;
-        let mut dedup: AHashSet<&[u8]> = AHashSet::with_capacity(u16::MAX as usize); // TODO, is this too big?
-        for values_arr in &self.values_arrays {
-            for i in 0..values_arr.len() {
-                let value = access_array_bytes(values_arr, i)?;
-                _ = match value {
-                    Some(value) => dedup.insert(value),
-                    None => continue,
-                };
-
-                // check early termination conditions
-                if dedup.len() > u16::MAX as usize {
-                    let selected_type = UnifiedDictionaryType::Native;
-                    self.selected_type = Some(selected_type.clone());
-                    return Ok(selected_type);
-                }
-
-                total_values_visited += 1;
-                let duplicates_visited = total_values_visited - dedup.len();
-                let possible_max_cardinality = self.total_batch_size - duplicates_visited;
-
-                // if we can determine that the values would fit in the desired key size, we can return early
-                if possible_max_cardinality < u16::MAX as usize
-                    && self.smallest_key_type == DataType::UInt16
-                {
-                    let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
-                    self.selected_type = Some(selected_type.clone());
-                    return Ok(selected_type);
-                }
-
-                if possible_max_cardinality <= u8::MAX as usize {
-                    let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt8);
-                    self.selected_type = Some(selected_type.clone());
-                    return Ok(selected_type);
-                }
-            }
-        }
-
-        // we've now visited all the values, so make the determination of key type based on the
-        // total cardinality
-        let selected_type = if dedup.len() <= u8::MAX as usize {
-            UnifiedDictionaryType::Dictionary(self.smallest_key_type.clone())
-        } else if dedup.len() <= u16::MAX as usize {
-            UnifiedDictionaryType::Dictionary(DataType::UInt16)
+        // None of the easy cases applied so we have to iterate through some values to estimate
+        // cardinality. For primitive element types with size less than or equal to a `u32`, we'll
+        // use Roaring Bitmaps; for everything else, we'll use an `AHashSet`.
+        let selected_type = if let Some(mut estimator) =
+            SmallCardinalityEstimator::new(&self.values_arrays, &self.smallest_key_type)
+        {
+            estimator.select_column_data_type()
         } else {
-            UnifiedDictionaryType::Native
+            let mut estimator =
+                LargeCardinalityEstimator::new(&self.values_arrays, &self.smallest_key_type);
+            estimator.select_column_data_type()
         };
         self.selected_type = Some(selected_type.clone());
-
         Ok(selected_type)
     }
 }
 
-macro_rules! visit_prim_arm {
-    ($ty:ty, $values_arr:ident, $val:expr) => {{
-        let prim_array = $values_arr
-            .as_any()
-            .downcast_ref::<PrimitiveArray<$ty>>()
-            .expect("can cast array to data type");
-        Ok(access_primitive_dict_values(prim_array, $val))
-    }};
-}
-
-fn access_array_bytes(array: &ArrayRef, index: usize) -> Result<Option<&[u8]>> {
-    match array.data_type() {
-        DataType::Utf8 => {
-            let str_array = array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("can cast array to data type");
-            Ok(access_bytes_dict_values(str_array, index))
-        }
-        DataType::Binary => {
-            let bin_array = array
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .expect("can cast array to data type");
-            Ok(access_bytes_dict_values(bin_array, index))
-        }
-        DataType::FixedSizeBinary(_) => {
-            let fsb_array = array
-                .as_any()
-                .downcast_ref::<FixedSizeBinaryArray>()
-                .expect("can cast array to data type");
-            Ok(access_fsb_dict_values(fsb_array, index))
-        }
-        DataType::UInt16 => visit_prim_arm!(UInt16Type, array, index),
-        DataType::UInt32 => visit_prim_arm!(UInt32Type, array, index),
-        DataType::UInt64 => visit_prim_arm!(UInt64Type, array, index),
-        DataType::Int32 => visit_prim_arm!(Int32Type, array, index),
-        DataType::Int64 => visit_prim_arm!(Int64Type, array, index),
-        DataType::Float32 => visit_prim_arm!(Float32Type, array, index),
-        DataType::Float64 => visit_prim_arm!(Float64Type, array, index),
-        value_type => Err(error::UnsupportedDictionaryValueTypeSnafu {
-            expect_oneof: vec![
-                DataType::Binary,
-                DataType::Utf8,
-                DataType::FixedSizeBinary(16),
-                DataType::FixedSizeBinary(8),
-                DataType::UInt16,
-                DataType::UInt32,
-                DataType::UInt64,
-                DataType::Int32,
-                DataType::Int64,
-                DataType::Float32,
-                DataType::Float64,
-            ],
-            actual: value_type.clone(),
-        }
-        .build()),
+fn bitmap_data_type_width(dt: &DataType) -> Option<usize> {
+    // FIXME: consider supporting 64-bit quantities including `Duration`, but that requires using
+    // `RoaringTreemap` instead of `RoaringBitmap`.
+    if let DataType::Dictionary(_key, value) = dt {
+        value.primitive_width()
+    } else {
+        dt.primitive_width()
     }
 }
 
-fn access_bytes_dict_values<T: ByteArrayType>(
-    byte_array: &GenericByteArray<T>,
-    index: usize,
-) -> Option<&[u8]> {
-    byte_array
-        .is_valid(index)
-        .then(|| byte_array.value(index).as_ref())
+/// I estimate cardinality for arrays of small elements (the size of a `u32` or smaller) using a
+/// `RoaringBitmap`. I support all the early termination features as my big sibling; the only
+/// difference is that I amortize early termination checking so that it doesn't happen for each
+/// element. This is because unlike a `HashSet` where `len()` is stored, computing cardinality for a
+/// `RoaringBitmap` takes some work; in addition, for tiny elements, the cost of `RoaringBitmap`
+/// insertion should be smaller than storing a slice in a `HashSet` so we don't mind doing some
+/// extra work there.
+struct SmallCardinalityEstimator<'parent> {
+    // these two are immutable inputs
+    arrays: &'parent [ArrayRef],
+    smallest_key_type: &'parent DataType,
+
+    // these are immutable after construction time
+    total_elements: usize, // Note: we only consider non-null items!
+    element_width_bytes: usize,
+
+    // and these are mutable state variables
+    elements_seen: usize,
+    bitmap: roaring::RoaringBitmap,
 }
 
-fn access_fsb_dict_values(fsb_array: &FixedSizeBinaryArray, index: usize) -> Option<&[u8]> {
-    fsb_array.is_valid(index).then(|| fsb_array.value(index))
+impl<'parent> SmallCardinalityEstimator<'parent> {
+    fn new(arrays: &'parent [ArrayRef], smallest_key_type: &'parent DataType) -> Option<Self> {
+        let element_width_bytes = bitmap_data_type_width(arrays.first()?.data_type())?;
+        // Because we're using RoaringBitmap, we're limited to `u32` and smaller types....
+        if element_width_bytes > 4 {
+            return None;
+        }
+
+        let total_elements: usize = arrays.iter().map(|v| v.len() - v.null_count()).sum();
+        let elements_seen = 0;
+        let bitmap = roaring::RoaringBitmap::new();
+
+        Some(SmallCardinalityEstimator {
+            arrays,
+            smallest_key_type,
+            total_elements,
+            element_width_bytes,
+            elements_seen,
+            bitmap,
+        })
+    }
+
+    fn select_column_data_type(&mut self) -> UnifiedDictionaryType {
+        let cf = match self.element_width_bytes {
+            1 => self.visit_arrays::<u8>(),
+            2 => self.visit_arrays::<u16>(),
+            4 => self.visit_arrays::<u32>(),
+            _ => unreachable!(),
+        };
+        match cf {
+            ControlFlow::Break(result) => result,
+            _ => {
+                // we've now visited all the values, so make the determination of key type based on the
+                // total cardinality
+                let bitmap_len = self.bitmap.len();
+                if bitmap_len <= u8::MAX as u64 {
+                    UnifiedDictionaryType::Dictionary(self.smallest_key_type.clone())
+                } else if bitmap_len <= u16::MAX as u64 {
+                    UnifiedDictionaryType::Dictionary(DataType::UInt16)
+                } else {
+                    UnifiedDictionaryType::Native
+                }
+            }
+        }
+    }
+
+    // All the code from here on down is internal only; the methods above are the public interface.
+
+    fn visit_arrays<T>(&mut self) -> ControlFlow<UnifiedDictionaryType>
+    where
+        T: ArrowNativeType + Into<u32>,
+    {
+        for array in self.arrays {
+            visit_primitive_array(array, |values: &[T]| self.visit_slice(values))?;
+            _ = self.bitmap.optimize();
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn visit_slice<T>(&mut self, elements: &[T]) -> ControlFlow<UnifiedDictionaryType>
+    where
+        T: ArrowNativeType + Into<u32>,
+    {
+        // `CHUNK_SIZE` controls how often we check for early termination in large contiguous blocks
+        // of non-null values. Since early termination checks involve some branching and computation
+        // (note that RoaringBitmap::len is not constant time since it must traverse a sequence of
+        // internal containers), we try and amortize the cost of checking over larger batches. Stick
+        // to a power of 2 to make the division/remainder math used for chunking doable with bit
+        // shifting and masking instead of slow integer division operations.
+        const CHUNK_SIZE: usize = 256;
+
+        // FIXME: it would be better to use `slice::as_chunks` but that only gets stabalized in
+        // version 1.88; switch to this code once we update our MSRV to that version.
+        // let (chunks, tail) = elements.as_chunks::<CHUNK_SIZE>();
+        // for chunk in chunks {
+        //     self.scan_chunk(chunk)?;
+        // }
+        // self.scan_chunk(tail)
+
+        for chunk in elements.chunks(CHUNK_SIZE) {
+            self.visit_chunk(chunk)?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn visit_chunk<T>(&mut self, elements: &[T]) -> ControlFlow<UnifiedDictionaryType>
+    where
+        T: ArrowNativeType + Into<u32>,
+    {
+        // `elements` is a slice of non-null primitive values!
+        self.elements_seen += elements.len();
+        self.bitmap
+            .extend(elements.iter().copied().map(|value| value.into()));
+
+        // check early termination conditions
+        let bitmap_len = self.bitmap.len() as usize;
+        if bitmap_len > u16::MAX as usize {
+            return ControlFlow::Break(UnifiedDictionaryType::Native);
+        }
+
+        let duplicates_visited = self.elements_seen - bitmap_len;
+        let possible_max_cardinality = self.total_elements - duplicates_visited;
+
+        // if we can determine that the values would fit in the desired key size, we can return early
+        if possible_max_cardinality < u16::MAX as usize
+            && *self.smallest_key_type == DataType::UInt16
+        {
+            return ControlFlow::Break(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+        }
+
+        if possible_max_cardinality <= u8::MAX as usize {
+            return ControlFlow::Break(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+        }
+
+        ControlFlow::Continue(())
+    }
 }
 
-fn access_primitive_dict_values<T: ArrowPrimitiveType>(
-    array: &PrimitiveArray<T>,
-    index: usize,
-) -> Option<&[u8]> {
-    array.is_valid(index).then(|| {
-        let size = size_of::<T::Native>();
-        let values_buffer = array.values().inner();
-        let offset = index * size;
-        &values_buffer[offset..offset + size]
-    })
+/// Apply the supplied mutable `visitor` to contiguous slices of non-null values in the primitive
+/// array `array` after interpreting the array as an array of elements of type `T`. This
+/// reinterpretation is zero-copy.
+///
+/// This function is very specific and has some requirements, most of which are verified at runtime:
+/// * `array` must be a `PrimitiveArray`
+/// * type `T` must be exactly the same size and of compatible alignment as the underlying primitive
+///   type of `array`
+/// * both type `T` and the underlying element type must impl `ArrowNativeType` since that ensures
+///   that our reinterpretation is safe
+fn visit_primitive_array<T, F>(
+    array: &ArrayRef,
+    mut visitor: F,
+) -> ControlFlow<UnifiedDictionaryType>
+where
+    T: ArrowNativeType,
+    F: FnMut(&[T]) -> ControlFlow<UnifiedDictionaryType>,
+{
+    assert!(array.data_type().is_primitive());
+    assert_eq!(
+        size_of::<T>(),
+        bitmap_data_type_width(array.data_type()).unwrap_or(usize::MAX)
+    );
+
+    // Why the `to_data` conversion? I think this is the only safe way to allow us to
+    // interpret the underlying byte array as an array of another type with the same size
+    // and compatible alignment. Doing that means we only need to cover three cases (1-byte,
+    // 2-bytes, 4-bytes) instead of many more cases.
+    let data = array.to_data();
+    // We're relying on the fact that `PrimitiveArray`s have one and only one buffer, so it
+    // is safe to just look at buffer 0. They kind of have to since `values()` returns a
+    // single `ScalarBuffer` that behaves likes a `[T]` so Arrow can't change the
+    // `PrimitiveArray` has only one buffer property without an API break.
+    assert_eq!(data.buffers().len(), 1);
+    let values = data.buffer::<T>(0);
+    match (array.null_count(), array.nulls()) {
+        (0, _) => {
+            visitor(values)?;
+        }
+        (_, Some(nulls)) => {
+            for (start, end) in nulls.valid_slices() {
+                let range = start..end;
+                visitor(&values[range])?;
+            }
+        }
+        (1.., None) => unreachable!(),
+    }
+    ControlFlow::Continue(())
+}
+
+struct LargeCardinalityEstimator<'parent> {
+    // these two are immutable inputs
+    arrays: &'parent [ArrayRef],
+    smallest_key_type: &'parent DataType,
+
+    // these are immutable after construction time
+    total_elements: usize, // Note: we only consider non-null items!
+
+    // and these are mutable state variables
+    elements_seen: usize,
+    dedup: AHashSet<&'parent [u8]>,
+}
+
+impl<'parent> LargeCardinalityEstimator<'parent> {
+    fn new(arrays: &'parent [ArrayRef], smallest_key_type: &'parent DataType) -> Self {
+        let total_elements: usize = arrays.iter().map(|v| v.len() - v.null_count()).sum();
+        let elements_seen = 0;
+
+        let dedup = AHashSet::with_capacity(if total_elements <= u8::MAX as usize {
+            u8::MAX as usize
+        } else {
+            // TODO, is this too big?
+            u16::MAX as usize
+        });
+
+        LargeCardinalityEstimator {
+            arrays,
+            smallest_key_type,
+            total_elements,
+
+            elements_seen,
+            dedup,
+        }
+    }
+
+    fn select_column_data_type(&mut self) -> UnifiedDictionaryType {
+        let cf = self.visit_arrays();
+        match cf {
+            ControlFlow::Break(result) => result,
+            _ => {
+                // we've now visited all the values, so make the determination of key type based on the
+                // total cardinality
+                let dedup_len = self.dedup.len();
+                if dedup_len <= u8::MAX as usize {
+                    UnifiedDictionaryType::Dictionary(self.smallest_key_type.clone())
+                } else if dedup_len <= u16::MAX as usize {
+                    UnifiedDictionaryType::Dictionary(DataType::UInt16)
+                } else {
+                    UnifiedDictionaryType::Native
+                }
+            }
+        }
+    }
+
+    // All the code from here on down is internal only; the methods above are the public interface.
+    fn visit_arrays(&mut self) -> ControlFlow<UnifiedDictionaryType> {
+        use arrow::array::AsArray;
+        for array in self.arrays {
+            let null_count = array.null_count();
+            let nulls = array.nulls();
+            match array.data_type() {
+                DataType::UInt64 => {
+                    let slice = array.as_primitive::<UInt64Type>().values().inner();
+                    self.visit_fixed_size_array::<8>(null_count, nulls, slice)?
+                }
+                DataType::Int64 => {
+                    let slice = array.as_primitive::<Int64Type>().values().inner();
+                    self.visit_fixed_size_array::<8>(null_count, nulls, slice)?
+                }
+                DataType::Float64 => {
+                    let slice = array.as_primitive::<Float64Type>().values().inner();
+                    self.visit_fixed_size_array::<8>(null_count, nulls, slice)?
+                }
+                DataType::FixedSizeBinary(8) => self.visit_fixed_size_array::<8>(
+                    null_count,
+                    nulls,
+                    array.as_fixed_size_binary().values(),
+                )?,
+                DataType::FixedSizeBinary(16) => self.visit_fixed_size_array::<16>(
+                    null_count,
+                    nulls,
+                    array.as_fixed_size_binary().values(),
+                )?,
+                DataType::Utf8 => self.visit_byte_slices(
+                    array
+                        .as_string::<i32>()
+                        .iter()
+                        .flatten()
+                        .map(|s| s.as_bytes()),
+                )?,
+                DataType::LargeUtf8 => self.visit_byte_slices(
+                    array
+                        .as_string::<i64>()
+                        .iter()
+                        .flatten()
+                        .map(|s| s.as_bytes()),
+                )?,
+                DataType::LargeBinary => self.visit_byte_slices(
+                    array.as_bytes::<GenericBinaryType<i64>>().iter().flatten(),
+                )?,
+                t => unreachable!("unexpected type: {t:?}"),
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn visit_fixed_size_array<const ELEMENT_WIDTH: usize>(
+        &mut self,
+        null_count: usize,
+        nulls: Option<&NullBuffer>,
+        elements: &'parent [u8],
+    ) -> ControlFlow<UnifiedDictionaryType> {
+        // This method covers both the `PrimitiveArray` and the `FixedSizeBinaryArray` cases.
+        assert_eq!(elements.len() % ELEMENT_WIDTH, 0);
+
+        match (null_count, nulls) {
+            (0, _) => self.visit_byte_slices(elements.chunks_exact(ELEMENT_WIDTH))?,
+            (_, Some(nulls)) => {
+                for (start, end) in nulls.valid_slices() {
+                    let range = start * ELEMENT_WIDTH..end * ELEMENT_WIDTH;
+                    self.visit_byte_slices(elements[range].chunks_exact(ELEMENT_WIDTH))?;
+                }
+            }
+            (1.., None) => unreachable!(),
+        };
+        ControlFlow::Continue(())
+    }
+
+    fn visit_byte_slices(
+        &mut self,
+        iter: impl Iterator<Item = &'parent [u8]>,
+    ) -> ControlFlow<UnifiedDictionaryType> {
+        // This method covers the `LargeStringArray` and `LargeBinaryArray` cases.
+        for slice in iter {
+            self.visit_byte_slice(slice)?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn visit_byte_slice(&mut self, element: &'parent [u8]) -> ControlFlow<UnifiedDictionaryType> {
+        _ = self.dedup.insert(element);
+        self.elements_seen += 1;
+
+        // check early termination conditions
+        if self.dedup.len() > u16::MAX as usize {
+            return ControlFlow::Break(UnifiedDictionaryType::Native);
+        }
+
+        let duplicates_visited = self.elements_seen - self.dedup.len();
+        let possible_max_cardinality = self.total_elements - duplicates_visited;
+
+        // if we can determine that the values would fit in the desired key size, we can return early
+        if possible_max_cardinality < u16::MAX as usize
+            && *self.smallest_key_type == DataType::UInt16
+        {
+            return ControlFlow::Break(UnifiedDictionaryType::Dictionary(DataType::UInt16));
+        }
+
+        if possible_max_cardinality <= u8::MAX as usize {
+            return ControlFlow::Break(UnifiedDictionaryType::Dictionary(DataType::UInt8));
+        }
+
+        ControlFlow::Continue(())
+    }
 }
 
 fn try_discover_dictionaries(
