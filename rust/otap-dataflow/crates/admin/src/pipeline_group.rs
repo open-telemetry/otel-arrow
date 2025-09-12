@@ -52,6 +52,7 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
             sender
                 .try_send(PipelineControlMsg::Shutdown {
                     reason: "admin requested shutdown".to_owned(), // ToDo we probably need to codify reasons in the future
+                    _temp: std::marker::PhantomData,
                 })
                 .err()
         })

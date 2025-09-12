@@ -30,14 +30,14 @@ struct AppState {
     metrics_registry: MetricsRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender<PData>>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
     observed_store: ObservedStateHandle,
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
+    ctrl_msg_senders: Vec<PipelineCtrlMsgSender<PData>>,
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
