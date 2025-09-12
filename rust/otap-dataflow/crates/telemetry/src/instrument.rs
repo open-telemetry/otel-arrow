@@ -44,7 +44,7 @@ impl<T: Copy + Default> Counter<T> {
 
     /// Returns the current value of the counter.
     #[inline]
-    pub fn get(&self) -> T {
+    pub const fn get(&self) -> T {
         self.0
     }
 }
@@ -132,7 +132,7 @@ where
 
     /// Returns the current value of the counter.
     #[inline]
-    pub fn get(&self) -> T {
+    pub const fn get(&self) -> T {
         self.0
     }
 
@@ -250,7 +250,7 @@ where
 
     /// Returns the current value of the gauge.
     #[inline]
-    pub fn get(&self) -> T {
+    pub const fn get(&self) -> T {
         self.0
     }
 }
