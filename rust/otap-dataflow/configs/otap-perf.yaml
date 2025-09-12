@@ -1,5 +1,6 @@
 settings:
-  default_control_channel_size: 100
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
 
 nodes:
