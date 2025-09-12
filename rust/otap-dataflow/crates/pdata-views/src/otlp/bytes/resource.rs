@@ -9,16 +9,16 @@ use std::{cell::Cell, num::NonZeroUsize};
 use crate::{
     otlp::bytes::{
         common::{KeyValueIter, RawKeyValue},
-        consts::{
-            field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
-            wire_types,
-        },
         decode::{
             FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
             from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
         },
     },
     views::resource::ResourceView,
+};
+use otel_arrow_rust::proto::consts::{
+    field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
+    wire_types,
 };
 
 /// Implementation of `ResourceView` backed by protobuf serialized `Resource` message

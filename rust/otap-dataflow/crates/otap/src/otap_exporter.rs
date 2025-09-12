@@ -8,7 +8,6 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
@@ -27,6 +26,7 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::Producer;
+use otel_arrow_rust::encode::producer::ProducerOptions;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
@@ -34,7 +34,6 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,12 +44,8 @@ use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
 
-/// Configuration for the OTAP Exporter
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    grpc_endpoint: String,
-    compression_method: Option<CompressionMethod>,
-}
+pub mod config;
+use config::Config;
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
@@ -169,11 +164,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ipc_compression = matches!(
+            self.config.arrow.payload_compression,
+            Some(config::ArrowPayloadCompression::Zstd)
+        )
+        .then(|| arrow_ipc::CompressionType::ZSTD);
 
         // TODO check if we can expose/use spawn_local method in the effect handler
         let logs_handle = tokio::spawn(stream_arrow_batches(
             arrow_logs_client,
             SignalType::Logs,
+            ipc_compression,
             logs_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
@@ -181,6 +182,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let metrics_handle = tokio::spawn(stream_arrow_batches(
             arrow_metrics_client,
             SignalType::Metrics,
+            ipc_compression,
             metrics_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
@@ -188,6 +190,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let traces_handle = tokio::spawn(stream_arrow_batches(
             arrow_traces_client,
             SignalType::Traces,
+            ipc_compression,
             traces_receiver,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
@@ -219,7 +222,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-                        let message: OtapArrowRecords = pdata
+            let (_context, payload) = pdata.into_parts();
+
+            // TODO(#1098): Note context is dropped.
+                        let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
@@ -297,6 +303,7 @@ enum PDataMetricsUpdate {
 async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
     signal_type: SignalType,
+    ipc_compression: Option<arrow_ipc::CompressionType>,
     otap_batches_rx: Receiver<OtapArrowRecords>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -326,7 +333,13 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 };
 
                 // create the request stream
-                let req_stream = create_req_stream(first_batch, otap_batches_rx.clone(), signal_type, pdata_metrics_tx.clone());
+                let req_stream = create_req_stream(
+                    first_batch,
+                    otap_batches_rx.clone(),
+                    signal_type,
+                    ipc_compression,
+                    pdata_metrics_tx.clone()
+                );
                 match client.handle_req_stream(req_stream).await {
                     Ok(res) => {
                         // reset the reconnect timeout backoff
@@ -361,10 +374,13 @@ fn create_req_stream(
     mut first_batch: OtapArrowRecords,
     remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<OtapArrowRecords>>>,
     signal_type: SignalType,
+    ipc_compression: Option<arrow_ipc::CompressionType>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
-        let mut producer = Producer::new();
+        let mut producer = Producer::new_with_options(ProducerOptions {
+            ipc_compression
+        });
 
         // send the first batch
         match producer.produce_bar(&mut first_batch) {
@@ -426,6 +442,7 @@ async fn handle_res_stream(
 mod tests {
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
+    use crate::otap_exporter::config::ArrowPayloadCompression;
     use crate::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
@@ -469,17 +486,17 @@ mod tests {
                 // Send a data message
                 let metric_message =
                     create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
-                ctx.send_pdata(metric_message.into())
+                ctx.send_pdata(OtapPdata::new_default(metric_message.into()))
                     .await
                     .expect("Failed to send metric message");
 
                 let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                ctx.send_pdata(log_message.into())
+                ctx.send_pdata(OtapPdata::new_default(log_message.into()))
                     .await
                     .expect("Failed to send log message");
 
                 let trace_message = create_otap_batch(TRACE_BATCH_ID, ArrowPayloadType::Spans);
-                ctx.send_pdata(trace_message.into())
+                ctx.send_pdata(OtapPdata::new_default(trace_message.into()))
                     .await
                     .expect("Failed to send trace message");
 
@@ -508,6 +525,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -521,6 +539,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
@@ -532,6 +551,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
+                        .payload()
                         .try_into()
                         .expect("Could convert pdata to OTAPData");
 
@@ -587,6 +607,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
+            "compression_method": "none"
         });
         // Create a proper pipeline context for the benchmark
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -612,7 +633,7 @@ mod tests {
     fn test_from_config_success() {
         let json_config = json!({
             "grpc_endpoint": "http://localhost:4317",
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test
@@ -637,7 +658,7 @@ mod tests {
     #[test]
     fn test_from_config_missing_required_field() {
         let json_config = json!({
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test
@@ -653,5 +674,64 @@ mod tests {
             let err_msg = format!("{err}");
             assert!(err_msg.contains("missing field `grpc_endpoint`"));
         }
+    }
+
+    #[test]
+    fn test_double_compression_enabled_by_default() {
+        let json_config = json!({
+            "grpc_endpoint": "localhost:4317"
+        });
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let exporter =
+            OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
+
+        assert!(
+            matches!(
+                exporter.config.compression_method,
+                Some(CompressionMethod::Zstd)
+            ),
+            "expected Some(Zstd) received {:?}",
+            exporter.config.compression_method
+        );
+        assert!(
+            matches!(
+                exporter.config.arrow.payload_compression,
+                Some(ArrowPayloadCompression::Zstd)
+            ),
+            "expected Some(Zstd) received {:?}",
+            exporter.config.arrow.payload_compression
+        );
+    }
+
+    #[test]
+    fn test_can_manually_disable_compression_via_config() {
+        let json_config = json!({
+            "grpc_endpoint": "localhost:4317",
+            "compression_method": "none",
+            "arrow": {
+                "payload_compression": "none"
+            }
+        });
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let exporter =
+            OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
+        assert!(
+            exporter.config.compression_method.is_none(),
+            "expected None received {:?}",
+            exporter.config.compression_method
+        );
+        assert!(
+            exporter.config.arrow.payload_compression.is_none(),
+            "expected None received {:?}",
+            exporter.config.arrow.payload_compression
+        );
     }
 }

@@ -365,6 +365,15 @@ where
                 }
 
                 for log_record in log_records_slice {
+                    logs.append_event_name(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .event_name(),
+                    );
+                }
+
+                for log_record in log_records_slice {
                     if let Some(body) = log_record
                         .as_ref()
                         .expect("LogRecord should not be None")
@@ -2496,6 +2505,11 @@ mod test {
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, false),
                 Field::new("flags", DataType::UInt32, true),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -2651,6 +2665,11 @@ mod test {
                 Arc::new(UInt32Array::from(vec![
                     LogRecordFlags::TraceFlagsMask as u32,
                 ])) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event1"])),
+                )),
             ],
         )
         .unwrap();
@@ -2967,6 +2986,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(StructArray::from(vec![
@@ -3023,6 +3047,11 @@ mod test {
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event"])),
                 )) as ArrayRef,
             ],
         )
@@ -3151,6 +3180,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -3211,6 +3245,11 @@ mod test {
                     UInt8Array::from(vec![0, 1, 0]),
                     Arc::new(Int32Array::from(vec![5, 9, 5])),
                 )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 0, 0]),
+                    Arc::new(StringArray::from(vec!["event"])),
+                )),
             ],
         )
         .unwrap();
@@ -3739,6 +3778,42 @@ mod test {
         let mut logs_data_bytes = vec![];
         logs_data.encode(&mut logs_data_bytes).unwrap();
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
+    }
+
+    #[test]
+    fn test_encode_logs_batch_length_counts_rows() {
+        use otel_arrow_rust::otap::OtapArrowRecords;
+        use otel_arrow_rust::proto::opentelemetry::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue,
+        };
+        use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+        };
+        use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+
+        // Build logs with at least one attribute per record so log ids are set
+        let logs: Vec<LogRecord> = (0..3)
+            .map(|i| {
+                LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}"))
+                    .attributes(vec![KeyValue::new("k", AnyValue::new_string("v"))])
+                    .finish()
+            })
+            .collect();
+
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("lib"))
+                        .log_records(logs)
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+
+        let rec = encode_logs_otap_batch(&logs_data).expect("encode logs");
+        assert!(matches!(rec, OtapArrowRecords::Logs(_)));
+        let n = rec.batch_length();
+        assert!(n >= 3, "expected at least 3 log rows, got {n}");
     }
 
     fn _generate_traces_data_all_fields() -> TracesData {

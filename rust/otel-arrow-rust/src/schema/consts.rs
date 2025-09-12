@@ -16,6 +16,7 @@ pub const SEVERITY_TEXT: &str = "severity_text";
 pub const DROPPED_ATTRIBUTES_COUNT: &str = "dropped_attributes_count";
 pub const DROPPED_EVENTS_COUNT: &str = "dropped_events_count";
 pub const DROPPED_LINKS_COUNT: &str = "dropped_links_count";
+pub const EVENT_NAME: &str = "event_name";
 pub const FLAGS: &str = "flags";
 pub const TRACE_ID: &str = "trace_id";
 pub const TRACE_STATE: &str = "trace_state";

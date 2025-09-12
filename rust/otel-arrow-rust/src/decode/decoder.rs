@@ -4,7 +4,8 @@
 use crate::decode::record_message::RecordMessage;
 use crate::error;
 use crate::otap::{OtapArrowRecords, from_record_messages};
-use crate::otlp::logs::logs_from;
+use crate::otlp::ProtoBuffer;
+use crate::otlp::logs::LogsProtoBytesEncoder;
 use crate::otlp::metrics::metrics_from;
 use crate::otlp::traces::traces_from;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
@@ -14,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use prost::Message;
 use snafu::{ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -47,6 +49,8 @@ impl StreamConsumer {
 #[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
+    logs_proto_encoder: LogsProtoBytesEncoder,
+    proto_buffer: ProtoBuffer,
 }
 
 impl Consumer {
@@ -133,8 +137,16 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
-                logs_from(otap_batch)
+                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
+                self.logs_proto_encoder
+                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+                ExportLogsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("error decoding proto serialization: {e:?}"),
+                    }
+                    .build()
+                })
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

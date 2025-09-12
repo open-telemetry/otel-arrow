@@ -133,10 +133,14 @@ mod tests {
     use super::*;
     use crate::syslog_cef_receiver::parser::parse;
     use otel_arrow_rust::{
-        otlp::logs::logs_from, proto::opentelemetry::common::v1::any_value::Value,
+        otlp::{ProtoBuffer, logs::LogsProtoBytesEncoder},
+        proto::opentelemetry::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        },
     };
 
     use chrono::{DateTime, Datelike, Local, TimeZone};
+    use prost::Message;
 
     /// Custom enum for attribute values that provides stronger type assertions
     /// than using String for all values
@@ -176,6 +180,15 @@ mod tests {
             observed_time >= start_time && observed_time <= end_time,
             "OTLP observed timestamp {observed_time} should be between {start_time} and {end_time}"
         );
+    }
+
+    fn otlp_logs_to_otap(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
+        let mut logs_encoder = LogsProtoBytesEncoder::new();
+        let mut buffer = ProtoBuffer::new();
+        logs_encoder
+            .encode(&mut logs_otap_batch, &mut buffer)
+            .unwrap();
+        ExportLogsServiceRequest::decode(buffer.as_ref()).unwrap()
     }
 
     #[test]
@@ -2085,7 +2098,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = logs_from(arrow_records).unwrap();
+        let export_request = otlp_logs_to_otap(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2326,7 +2339,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = logs_from(arrow_records).unwrap();
+        let export_request = otlp_logs_to_otap(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2582,7 +2595,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = logs_from(arrow_records).unwrap();
+        let export_request = otlp_logs_to_otap(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2845,7 +2858,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = logs_from(arrow_records).unwrap();
+        let export_request = otlp_logs_to_otap(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);

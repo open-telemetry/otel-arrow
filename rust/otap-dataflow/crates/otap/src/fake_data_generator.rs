@@ -40,7 +40,7 @@ pub mod fake_signal;
 pub mod metrics;
 
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -397,15 +397,15 @@ impl TryFrom<OTLPSignal> for OtapPdata {
         Ok(match value {
             OTLPSignal::Logs(logs_data) => {
                 logs_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportLogsRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
             OTLPSignal::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportMetricsRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
             OTLPSignal::Traces(trace_data) => {
                 trace_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportTracesRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
     }
@@ -446,8 +446,10 @@ mod tests {
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
-            let otlp_bytes: OtlpProtoBytes =
-                value.try_into().expect("can convert signal to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = value
+                .payload()
+                .try_into()
+                .expect("can convert signal to otlp bytes");
             match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                     Self::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
