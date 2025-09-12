@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1757622878150,
+  "lastUpdate": 1757638239450,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "8164192+clhain@users.noreply.github.com",
-            "name": "clhain",
-            "username": "clhain"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "b809272531f3cda61bf2b6de2352ad3301b2a5f1",
-          "message": "[otap-dataflow] move otap datagen test files to fixtures.rs and perf exporter test refactor (#932)\n\nFixes #927.\n\nThis PR moves the parquet_exporter/test/datagen.rs code into the main\notap library for shared test fixtures.\n\n- Added header generation via options to all\ncreate_simple_*_arrow_record_batches functions\n- Added config option for timestamp header generation (default true)\n- Refactor of the perf_exporter tests to leverage the new fixtures.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-08-14T16:17:26Z",
-          "tree_id": "d3ea11eb1115662277196c5506bda67108f81b56",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/b809272531f3cda61bf2b6de2352ad3301b2a5f1"
-        },
-        "date": 1755188726841,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 740833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22225000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22225000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.68,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.76,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 171.27,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 203.04,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 734166.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22025000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22025000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.63,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.67,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 123.29,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 148.35,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 195.74,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "david@ddahl.com",
+            "name": "David Dahl",
+            "username": "daviddahl"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ef5b9e19c2767b1919b6570b1d63f53530b1e423",
+          "message": "Config: RFC-compliant URN validation and canonical plugin URNs (#1113)\n\nThis PR introduces centralized, RFC 8141–based URN validation and\nupdates all plugin URNs to a canonical, consistent form.\n\nHighlights\n• Add config::urn module using the urn crate (RFC 8141 parsing) with\nproject-specific rules\n• Enforce URN validation during node factory registration\n(receiver/processor/exporter)\n• Canonicalize all plugin URNs in code and sample configs (single-colon,\nexplicit kind suffix)\n•  Define clear URN patterns:\n• otel: urn:otel:<family>(:<subfamily>...):<receiver|processor|exporter>\n•  otap: urn:otap:processor:<name>(:<subname>...)\n• Segment policy: lowercase [a-z0-9._-], non-empty segments separated by\n“:”\n•  Improve error messages (e.g., expected suffix vs found suffix)\n• Tests for valid/invalid forms (empty segments, missing family,\nuppercase NSS, percent-encoding, wrong kind)\n\nWhy\n•  Fail fast and consistently on malformed plugin identifiers\n•  Avoid accepting invalid legacy forms (e.g., double colon)\n•  Make plugin types explicit and discoverable\n\nNotes\n•  NID is case-insensitive per RFC (URN/urn, OTEL/otel accepted)\n•  NSS must be lowercase and match [a-z0-9._-]\n•  Reference: RFC 8141 (https://datatracker.ietf.org/doc/html/rfc8141)\n\nFixes one task on #1099",
+          "timestamp": "2025-09-12T00:38:19Z",
+          "tree_id": "1eadde747ce02a07194fc93e7cbf36227b428f1a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ef5b9e19c2767b1919b6570b1d63f53530b1e423"
+        },
+        "date": 1757638237313,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 736166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22085000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22085000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.58,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.62,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 114.71,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 134.29,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 726166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21785000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21785000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.61,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.68,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 160.78,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 187.93,
             "unit": "MiB"
           }
         ]
