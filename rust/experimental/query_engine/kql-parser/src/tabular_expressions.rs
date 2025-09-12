@@ -595,6 +595,7 @@ fn get_root_map_key_from_source_scalar_expression(
     None
 }
 
+#[derive(Debug, PartialEq)]
 enum IdentifierOrPattern {
     Identifier(StringScalarExpression),
     Map {
@@ -645,13 +646,25 @@ fn parse_identifier_or_pattern_literal(
             Ok(Some(IdentifierOrPattern::Identifier(
                 StringScalarExpression::new(location, &value),
             )))
-        } else if let Some(d) = schema.get_default_map_key() {
-            Ok(Some(IdentifierOrPattern::Map {
-                name: StringScalarExpression::new(location.clone(), d),
-                key: ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(location, &value),
-                )),
-            }))
+        } else if let Some((key, schema)) = schema.get_default_map() {
+            if let Some(schema) = schema
+                && let None = schema.get_schema_for_key(&value)
+            {
+                Err(ParserError::QueryLanguageDiagnostic {
+                    location,
+                    diagnostic_id: "KS109",
+                    message: format!(
+                        "The name '{value}' does not refer to any known column, table, variable or function",
+                    ),
+                })
+            } else {
+                Ok(Some(IdentifierOrPattern::Map {
+                    name: StringScalarExpression::new(location.clone(), key),
+                    key: ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(location, &value),
+                    )),
+                }))
+            }
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
@@ -857,7 +870,7 @@ fn push_map_transformation_expression(
 
         if !reduction.patterns.is_empty() {
             if let Some(schema) = scope.get_source_schema() {
-                let default_source_map = schema.get_default_map_key();
+                let default_source_map = schema.get_default_map();
                 let mut default_source_map_matched_regex = false;
 
                 // Note: If we have schema we can apply the regex patterns ahead
@@ -865,8 +878,8 @@ fn push_map_transformation_expression(
                 foreach_source_schema_key(schema, |k| {
                     for p in &reduction.patterns {
                         if p.get_value().is_match(k) {
-                            if let Some(d) = default_source_map
-                                && k == d
+                            if let Some((default_source_map_key, _)) = default_source_map
+                                && k == default_source_map_key
                             {
                                 default_source_map_matched_regex = true;
                                 if retain {
@@ -881,23 +894,63 @@ fn push_map_transformation_expression(
                     }
                 });
 
-                if let Some(d) = default_source_map {
+                if let Some((default_source_map_key, default_source_map_schema)) =
+                    default_source_map
+                {
+                    // Note: We need to handle the default source map keys
+                    // which may match the regex as well. When we are in
+                    // remove mode if we already added the
+                    // default_source_map_key we can skip this because the
+                    // whole map will be removed.
                     if retain || !default_source_map_matched_regex {
-                        // Note: We add selectors for the default_source_map_key
-                        // which will run the regex for its keys. When we are in
-                        // remove mode if we already added the
-                        // default_source_map_key we can skip this because the
-                        // whole map will be removed.
-                        for p in reduction.patterns {
-                            reduction.selectors.push(SourceScalarExpression::new(
-                                query_location.clone(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(query_location.clone(), d),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::Regex(p)),
-                                ]),
-                            ));
+                        if let Some(schema) = default_source_map_schema {
+                            //Note: If we have schema we can run the regex ahead of time.
+                            foreach_source_schema_key(schema, |k| {
+                                for p in &reduction.patterns {
+                                    if p.get_value().is_match(k) {
+                                        reduction.selectors.push(SourceScalarExpression::new(
+                                            query_location.clone(),
+                                            ValueAccessor::new_with_selectors(vec![
+                                                ScalarExpression::Static(
+                                                    StaticScalarExpression::String(
+                                                        StringScalarExpression::new(
+                                                            query_location.clone(),
+                                                            default_source_map_key,
+                                                        ),
+                                                    ),
+                                                ),
+                                                ScalarExpression::Static(
+                                                    StaticScalarExpression::String(
+                                                        StringScalarExpression::new(
+                                                            query_location.clone(),
+                                                            k,
+                                                        ),
+                                                    ),
+                                                ),
+                                            ]),
+                                        ));
+                                        break;
+                                    }
+                                }
+                            });
+                        } else {
+                            // Note: If we don't have schema we add selectors
+                            // for the default_source_map_key which will run the
+                            // regex for its keys.
+                            for p in reduction.patterns {
+                                reduction.selectors.push(SourceScalarExpression::new(
+                                    query_location.clone(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                query_location.clone(),
+                                                default_source_map_key,
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::Regex(p)),
+                                    ]),
+                                ));
+                            }
                         }
                     }
                 }
@@ -970,6 +1023,101 @@ mod tests {
     use crate::KqlPestParser;
 
     use super::*;
+
+    #[test]
+    fn test_parse_identifier_or_pattern_literal() {
+        let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new().with_key_definition(
+                                        "int_value",
+                                        ParserMapKeySchema::Integer,
+                                    ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let expression = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new().with_key_definition(
+                                        "int_value",
+                                        ParserMapKeySchema::Integer,
+                                    ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let error = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "int_value",
+            Some(IdentifierOrPattern::Map {
+                name: StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                key: ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                )),
+            }),
+        );
+
+        run_test_failure(
+            "unknown",
+            "KS109",
+            "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
 
     #[test]
     fn test_parse_extend_expression() {
@@ -1959,6 +2107,108 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_project_keep_expression_with_schema() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-keep int*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
+        );
+
+        run_test_failure(
+            "project-keep attributes['unknown']",
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+    }
+
+    #[test]
     fn test_parse_project_away_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
             let mut state = ParserState::new_with_options(
@@ -2264,6 +2514,108 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_project_away_expression_with_schema() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-away int*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
+        );
+
+        run_test_failure(
+            "project-away attributes['unknown']",
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+    }
+
+    #[test]
     fn test_parse_project_rename_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
             let mut state = ParserState::new(input);
@@ -2514,7 +2866,7 @@ mod tests {
                         ParserMapSchema::new()
                             .with_key_definition("a", ParserMapKeySchema::Any)
                             .with_key_definition("c", ParserMapKeySchema::Any)
-                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map(None))
                             .set_default_map_key("Attributes"),
                     )
                     .with_attached_data_names(&["resource"]),
@@ -2543,7 +2895,7 @@ mod tests {
                         ParserMapSchema::new()
                             .with_key_definition("a", ParserMapKeySchema::Any)
                             .with_key_definition("c", ParserMapKeySchema::Any)
-                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map(None))
                             .set_default_map_key("Attributes"),
                     )
                     .with_attached_data_names(&["resource"]),

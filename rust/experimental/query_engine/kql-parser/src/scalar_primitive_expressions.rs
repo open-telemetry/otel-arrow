@@ -548,28 +548,34 @@ pub(crate) fn parse_accessor_expression(
             }
         }
 
+        let mut resolved_value_type = None;
+
         if let Some(schema) = scope.get_source_schema() {
             match schema.get_schema_for_key(root_accessor_identity.get_value()) {
                 Some(key) => {
                     if value_accessor.has_selectors() {
-                        // Note: If we are selecting a well-defined key on the
-                        // source we can do some validation. If there are child
-                        // selectors they are only valid for maps and arrays.
-                        // This logic could be improved further to inspect the
-                        // next selector and see if it is a string (parent must
-                        // be a map) or an int (parent must be an array).
-                        if !matches!(
-                            key.get_value_type(),
-                            Some(ValueType::Map) | Some(ValueType::Array) | None
-                        ) {
-                            return Err(ParserError::SyntaxError(
-                                root_accessor_identity.get_query_location().clone(),
-                                format!(
-                                    "Cannot access into key '{}' which is defined as a '{:?}' type",
-                                    root_accessor_identity.get_value(),
-                                    key.get_value_type().unwrap()
-                                ),
-                            ));
+                        match key {
+                            ParserMapKeySchema::Map(inner_schema) => {
+                                if let Some(schema) = inner_schema {
+                                    resolved_value_type =
+                                        schema.validate(value_accessor.get_selectors())?;
+                                }
+                            }
+                            ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
+                                // todo: Implement validation for arrays
+                            }
+                            _ => {
+                                return Err(ParserError::SyntaxError(
+                                    root_accessor_identity.get_query_location().clone(),
+                                    format!(
+                                        "Cannot access into key '{}' which is defined as a '{:?}' type",
+                                        root_accessor_identity.get_value(),
+                                        key.get_value_type()
+                                            .map(|v| format!("{v:?}"))
+                                            .unwrap_or("Unknown".into())
+                                    ),
+                                ));
+                            }
                         }
                     }
 
@@ -581,7 +587,7 @@ pub(crate) fn parse_accessor_expression(
                     );
                 }
                 None => {
-                    if let Some(default_map_key) = schema.get_default_map_key() {
+                    if let Some((default_map_key, default_map_schema)) = schema.get_default_map() {
                         // Note: If the root is not found and we have a default
                         // map we insert it into the expression. Let's say
                         // default_source_map_key=attributes. And we have keys
@@ -624,6 +630,11 @@ pub(crate) fn parse_accessor_expression(
                             );
                         }
 
+                        if let Some(schema) = default_map_schema {
+                            resolved_value_type =
+                                schema.validate(value_accessor.get_selectors())?;
+                        }
+
                         value_accessor.insert_selector(
                             0,
                             ScalarExpression::Static(StaticScalarExpression::String(
@@ -649,7 +660,7 @@ pub(crate) fn parse_accessor_expression(
             );
         }
 
-        let value_type = get_value_type(scope, &value_accessor);
+        let value_type = resolved_value_type.or(get_value_type(scope, &value_accessor));
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
@@ -1995,6 +2006,270 @@ mod tests {
                     )),
                 ]),
             )),
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_with_map_schema() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .set_default_map_key("map")
+                        .with_key_definition(
+                            "map",
+                            ParserMapKeySchema::Map(Some(
+                                ParserMapSchema::new()
+                                    .with_key_definition("double_value", ParserMapKeySchema::Double)
+                                    .with_key_definition("array_value", ParserMapKeySchema::Array)
+                                    .with_key_definition("any_value", ParserMapKeySchema::Any)
+                                    .with_key_definition(
+                                        "map_value_no_schema",
+                                        ParserMapKeySchema::Map(None),
+                                    )
+                                    .with_key_definition(
+                                        "map_value_with_schema",
+                                        ParserMapKeySchema::Map(Some(
+                                            ParserMapSchema::new().with_key_definition(
+                                                "int_value",
+                                                ParserMapKeySchema::Integer,
+                                            ),
+                                        )),
+                                    ),
+                            )),
+                        ),
+                ),
+            );
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &state, false).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .set_default_map_key("map")
+                        .with_key_definition(
+                            "map",
+                            ParserMapKeySchema::Map(Some(
+                                ParserMapSchema::new()
+                                    .with_key_definition("double_value", ParserMapKeySchema::Double)
+                                    .with_key_definition("array_value", ParserMapKeySchema::Array)
+                                    .with_key_definition("any_value", ParserMapKeySchema::Any)
+                                    .with_key_definition(
+                                        "map_value_no_schema",
+                                        ParserMapKeySchema::Map(None),
+                                    )
+                                    .with_key_definition(
+                                        "map_value_with_schema",
+                                        ParserMapKeySchema::Map(Some(
+                                            ParserMapSchema::new().with_key_definition(
+                                                "int_value",
+                                                ParserMapKeySchema::Integer,
+                                            ),
+                                        )),
+                                    ),
+                            )),
+                        ),
+                ),
+            );
+
+            let error =
+                parse_accessor_expression(result.next().unwrap(), &state, true).unwrap_err();
+
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "map.double_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "double_value"),
+                    )),
+                ]),
+                Some(ValueType::Double),
+            )),
+        );
+
+        run_test_success(
+            "map.any_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "any_value"),
+                    )),
+                ]),
+                None,
+            )),
+        );
+
+        run_test_success(
+            "map.any_value.inner",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "any_value"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "inner"),
+                    )),
+                ]),
+                None,
+            )),
+        );
+
+        run_test_success(
+            "array_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "array_value"),
+                    )),
+                ]),
+                Some(ValueType::Array),
+            )),
+        );
+
+        run_test_success(
+            "map.array_value[0]",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "array_value"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                    )),
+                ]),
+                None,
+            )),
+        );
+
+        run_test_success(
+            "map_value_with_schema",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "map_value_with_schema",
+                        ),
+                    )),
+                ]),
+                Some(ValueType::Map),
+            )),
+        );
+
+        run_test_success(
+            "map.map_value_no_schema.unknown",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "map_value_no_schema",
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "unknown"),
+                    )),
+                ]),
+                None,
+            )),
+        );
+
+        run_test_success(
+            "map['map_value_with_schema']['int_value']",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "map_value_with_schema",
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                    )),
+                ]),
+                Some(ValueType::Integer),
+            )),
+        );
+
+        run_test_failure(
+            "map.unknown",
+            None,
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+
+        run_test_failure(
+            "map.map_value_with_schema.unknown",
+            None,
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+
+        run_test_failure(
+            "map.double_value[0]",
+            None,
+            "Cannot access into key 'double_value' which is defined as a 'Double' type",
         );
     }
 }

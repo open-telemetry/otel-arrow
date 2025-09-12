@@ -26,7 +26,7 @@ pub fn parse_kql_query_into_pipeline(query: &str) -> Result<PipelineExpression, 
                 .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
                 .with_key_definition("SeverityText", ParserMapKeySchema::String)
                 .with_key_definition("Body", ParserMapKeySchema::Any)
-                .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                .with_key_definition("Attributes", ParserMapKeySchema::Map(None))
                 .with_key_definition("TraceId", ParserMapKeySchema::Array)
                 .with_key_definition("SpanId", ParserMapKeySchema::Array)
                 .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
