@@ -26,13 +26,14 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn::otel::syslog_cef::receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
 const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 enum Protocol {
     /// TCP protocol
@@ -43,6 +44,7 @@ enum Protocol {
 
 /// config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages

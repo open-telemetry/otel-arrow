@@ -7,23 +7,29 @@
 use std::{cell::Cell, num::NonZeroUsize};
 
 use otel_arrow_rust::{
-    proto::opentelemetry::trace::v1::{span::SpanKind, status::StatusCode},
+    proto::{
+        consts::{
+            field_num::traces::{
+                RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
+                SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
+                SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
+                SPAN_END_TIME_UNIX_NANO, SPAN_EVENT_ATTRIBUTES,
+                SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO,
+                SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_LINK_ATTRIBUTES,
+                SPAN_LINK_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_FLAGS, SPAN_LINK_SPAN_ID,
+                SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE, SPAN_LINKS, SPAN_NAME,
+                SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_STATUS,
+                SPAN_STATUS_CODE, SPAN_STATUS_MESSAGE, SPAN_TRACE_ID, SPAN_TRACE_STATE,
+                TRACES_DATA_RESOURCE_SPANS,
+            },
+            wire_types,
+        },
+        opentelemetry::trace::v1::{span::SpanKind, status::StatusCode},
+    },
     schema::{SpanId, TraceId},
 };
 
 use crate::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
-use crate::otlp::bytes::consts::field_num::traces::{
-    RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
-    SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
-    SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
-    SPAN_END_TIME_UNIX_NANO, SPAN_EVENT_ATTRIBUTES, SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS,
-    SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND,
-    SPAN_LINK_ATTRIBUTES, SPAN_LINK_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_FLAGS, SPAN_LINK_SPAN_ID,
-    SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE, SPAN_LINKS, SPAN_NAME, SPAN_PARENT_SPAN_ID,
-    SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_STATUS, SPAN_STATUS_CODE, SPAN_STATUS_MESSAGE,
-    SPAN_TRACE_ID, SPAN_TRACE_STATE, TRACES_DATA_RESOURCE_SPANS,
-};
-use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,

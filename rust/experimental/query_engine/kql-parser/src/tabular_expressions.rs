@@ -263,6 +263,67 @@ pub(crate) fn parse_project_away_expression(
     Ok(expressions)
 }
 
+pub(crate) fn parse_project_rename_expression(
+    project_rename_expression_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&project_rename_expression_rule);
+
+    let project_rename_rules = project_rename_expression_rule.into_inner();
+
+    let mut expressions = Vec::new();
+
+    for rule in project_rename_rules {
+        match rule.as_rule() {
+            Rule::assignment_expression => {
+                let e = parse_source_assignment_expression(rule, scope)?;
+                if let ScalarExpression::Source(s) = e.1 {
+                    expressions.push((e.0, s, e.2));
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        e.0.clone(),
+                        format!(
+                            "To be valid in a project-rename expression '{}' should be an accessor expression which refers to data on the source",
+                            scope.get_query_slice(&e.0).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_rename_expression: {rule}"),
+        }
+    }
+
+    if expressions.len() == 1 {
+        let (location, source, destination) = expressions.drain(..).next().unwrap();
+
+        Ok(TransformExpression::Move(MoveTransformExpression::new(
+            location,
+            MutableValueExpression::Source(source),
+            MutableValueExpression::Source(destination),
+        )))
+    } else {
+        let mut keys = Vec::with_capacity(expressions.len());
+
+        for (_, source, destination) in expressions.drain(..) {
+            keys.push(MapKeyRenameSelector::new(
+                source.get_value_accessor().clone(),
+                destination.get_value_accessor().clone(),
+            ));
+        }
+
+        Ok(TransformExpression::RenameMapKeys(
+            RenameMapKeysTransformExpression::new(
+                query_location.clone(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    ValueAccessor::new(),
+                )),
+                keys,
+            ),
+        ))
+    }
+}
+
 pub(crate) fn parse_where_expression(
     where_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
@@ -502,6 +563,9 @@ pub(crate) fn parse_tabular_expression_rule(
                 expressions.push(DataExpression::Transform(e));
             }
         }
+        Rule::project_rename_expression => expressions.push(DataExpression::Transform(
+            parse_project_rename_expression(tabular_expression_rule, scope)?,
+        )),
         Rule::where_expression => {
             expressions.push(parse_where_expression(tabular_expression_rule, scope)?)
         }
@@ -2197,6 +2261,194 @@ mod tests {
             "To be valid in a project-away expression 'const_str' should be an accessor expression which refers to data on the source",
         );
         /* ************** */
+    }
+
+    #[test]
+    fn test_parse_project_rename_expression() {
+        let run_test_success = |input: &str, expected: TransformExpression| {
+            let mut state = ParserState::new(input);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlPestParser::parse(Rule::project_rename_expression, input).unwrap();
+
+            let expression =
+                parse_project_rename_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlPestParser::parse(Rule::project_rename_expression, input).unwrap();
+
+            let error =
+                parse_project_rename_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-rename A = B",
+            TransformExpression::Move(MoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "B",
+                        )),
+                    )]),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "A",
+                        )),
+                    )]),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "project-rename Attributes['key2'] = Attributes['key1']",
+            TransformExpression::Move(MoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        )),
+                    ]),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                        )),
+                    ]),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "project-rename A = B, Attributes['C'] = Attributes['D']",
+            TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "B",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "A",
+                            )),
+                        )]),
+                    ),
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "D"),
+                            )),
+                        ]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "C"),
+                            )),
+                        ]),
+                    ),
+                ],
+            )),
+        );
+
+        run_test_success(
+            "project-rename Body[0] = B, Body[1] = C",
+            TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "B",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "Body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                            )),
+                        ]),
+                    ),
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "C",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "Body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                        ]),
+                    ),
+                ],
+            )),
+        );
+
+        run_test_failure(
+            "project-rename A = variable",
+            "To be valid in a project-rename expression 'A = variable' should be an accessor expression which refers to data on the source",
+        );
     }
 
     #[test]

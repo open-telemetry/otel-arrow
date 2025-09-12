@@ -40,7 +40,7 @@ pub mod fake_signal;
 pub mod metrics;
 
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {

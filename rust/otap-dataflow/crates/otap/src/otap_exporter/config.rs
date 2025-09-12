@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer};
 
 /// Configuration for the OTAP Exporter
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The grpc endpoint to which OTAP service requests will be sent
     pub grpc_endpoint: String,
@@ -27,6 +28,7 @@ pub struct Config {
 
 /// Configuration for the arrow payloads produced by the [`OtapExporter`]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArrowConfig {
     /// Compression to use for IPC serialized payloads within the BatchArrowMessages
     ///
@@ -47,9 +49,9 @@ pub struct ArrowConfig {
 
 /// Compression options for arrow payloads
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ArrowPayloadCompression {
     /// Zstd compression
-    #[serde(alias = "zstd")]
     Zstd,
 }
 

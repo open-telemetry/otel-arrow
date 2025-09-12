@@ -32,10 +32,10 @@ impl ObservedEventReporter {
     pub fn report(&self, event: ObservedEvent) {
         match self.sender.send_timeout(event, self.timeout) {
             Err(flume::SendTimeoutError::Timeout(event)) => {
-                eprintln!("Timeout sending observed event: {:?}", event)
+                eprintln!("Timeout sending observed event: {event:?}")
             }
             Err(flume::SendTimeoutError::Disconnected(event)) => {
-                eprintln!("Disconnected event: {:?}", event)
+                eprintln!("Disconnected event: {event:?}")
             }
             Ok(_) => {}
         }

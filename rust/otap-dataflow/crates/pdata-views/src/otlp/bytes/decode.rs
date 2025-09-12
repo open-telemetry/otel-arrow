@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
-use crate::otlp::bytes::consts::wire_types;
+use otel_arrow_rust::proto::consts::wire_types;
 
 /// Clones the parser, sharing the underlying buffer and interior-mutability state.
 /// The cloned instance will share offsets and position with the original.
