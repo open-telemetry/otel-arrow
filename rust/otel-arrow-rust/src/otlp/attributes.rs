@@ -122,7 +122,7 @@ pub(crate) fn encode_any_value(
         }
         AttributeValueType::Bytes => {
             if let Some(attr_bytes) = &attr_arrays.attr_bytes {
-                if let Some(val) = attr_bytes.value_at(index) {
+                if let Some(val) = attr_bytes.slice_at(index) {
                     result_buf.encode_field_tag(ANY_VALUE_BYES_VALUE, wire_types::LEN);
                     result_buf.encode_varint(val.len() as u64);
                     result_buf.extend_from_slice(val.as_ref());

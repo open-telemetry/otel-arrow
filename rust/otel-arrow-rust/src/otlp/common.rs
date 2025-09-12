@@ -329,8 +329,11 @@ impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
         };
 
         if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self.attr_ser.value_at(idx)?;
-            let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
+            let bytes = self
+                .attr_ser
+                .as_ref()
+                .and_then(|byte_arr| byte_arr.slice_at(idx))?;
+            let decode_result = cbor::decode_pcommon_val(bytes).transpose()?;
             return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
         }
 

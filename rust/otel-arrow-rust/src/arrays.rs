@@ -307,6 +307,15 @@ impl NullableArrayAccessor for ByteArrayAccessor<'_> {
     }
 }
 
+impl<'a> ByteArrayAccessor<'a> {
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Binary(b) => b.slice_at(idx),
+            Self::FixedSizeBinary(b) => b.slice_at(idx),
+        }
+    }
+}
+
 /// Wrapper around an array that might be a dictionary or it might just be an unencoded
 /// array of the base type
 pub enum MaybeDictArrayAccessor<'a, V> {
@@ -419,11 +428,39 @@ impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(bin_arr) => {
+                if bin_arr.is_valid(idx) {
+                    Some(bin_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
     pub fn try_new(arr: &'a ArrayRef, dims: i32) -> error::Result<Self> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
+    }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(fsb_arr) => {
+                if fsb_arr.is_valid(idx) {
+                    Some(fsb_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -438,9 +475,7 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
-}
 
-impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     pub fn str_at(&self, idx: usize) -> Option<&str> {
         match self {
             Self::Dictionary16(dict) => dict.str_at(idx),
@@ -495,6 +530,40 @@ where
                 .key(idx)
                 .expect("dictionary should be valid at index");
             self.value.value_at(offset)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, BinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, FixedSizeBinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
         } else {
             None
         }

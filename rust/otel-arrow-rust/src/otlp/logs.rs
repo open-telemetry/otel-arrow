@@ -460,18 +460,18 @@ impl LogsProtoBytesEncoder {
         }
 
         if let Some(col) = &log_arrays.trace_id {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.slice_at(index) {
                 result_buf.encode_field_tag(LOG_RECORD_TRACE_ID, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(&val);
+                result_buf.extend_from_slice(val);
             }
         }
 
         if let Some(col) = &log_arrays.span_id {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.slice_at(index) {
                 result_buf.encode_field_tag(LOG_RECORD_SPAN_ID, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(&val);
+                result_buf.extend_from_slice(val);
             }
         }
 
