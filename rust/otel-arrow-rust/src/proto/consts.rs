@@ -29,7 +29,7 @@ pub mod field_num {
         pub const ANY_VALUE_DOUBLE_VALUE: u64 = 4;
         pub const ANY_VALUE_ARRAY_VALUE: u64 = 5;
         pub const ANY_VALUE_KVLIST_VALUE: u64 = 6;
-        pub const ANY_VALUE_BYES_VALUE: u64 = 7;
+        pub const ANY_VALUE_BYTES_VALUE: u64 = 7;
 
         pub const KEY_VALUE_LIST_VALUES: u64 = 1;
         pub const ARRAY_VALUE_VALUES: u64 = 1;
