@@ -245,7 +245,7 @@ async fn push_metric(
     let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
-    let mut metric_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
+    let mut metric_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
     for resource_metrics in &metric_request.resource_metrics {
         for scope_metrics in &resource_metrics.scope_metrics {
             metrics += scope_metrics.metrics.len();
@@ -319,7 +319,7 @@ async fn push_trace(
     let mut spans = 0;
     let mut events = 0;
     let mut links = 0;
-    let mut span_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
+    let mut span_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
@@ -370,7 +370,7 @@ async fn push_log(
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
-    let mut log_signals = matches!(mode, OutputMode::Signal).then(|| vec![]);
+    let mut log_signals = matches!(mode, OutputMode::Signal).then(|| Vec::new());
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
