@@ -12,6 +12,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -83,7 +84,7 @@ pub enum NodeControlMsg<PData> {
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg {
+pub enum PipelineControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -109,6 +110,9 @@ pub enum PipelineControlMsg {
     CancelTelemetryTimer {
         /// Identifier of the node for which the telemetry timer is being canceled.
         node_id: usize,
+
+        /// Temporarily placed, see #1083. Placement is arbitrary.
+        _temp: PhantomData<PData>,
     },
     /// Requests shutdown of the pipeline.
     Shutdown {
@@ -140,12 +144,12 @@ impl<PData> NodeControlMsg<PData> {
 /// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender = SharedSender<PipelineControlMsg>;
+pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
 
 /// Type alias for the channel receiver used by the pipeline engine to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
+pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
 ///
@@ -159,9 +163,9 @@ pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel(
+pub fn pipeline_ctrl_msg_channel<PData>(
     capacity: usize,
-) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
+) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),
