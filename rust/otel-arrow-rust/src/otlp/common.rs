@@ -411,7 +411,7 @@ impl AsMut<[u8]> for ProtoBuffer {
 }
 
 /// Helper for encoding with unknown length. Usage:
-/// ```norun
+/// ```ignore
 /// proto_encode_len_delimited_unknown_size!(
 ///     1, // field tag
 ///     encode_some_nested_field(&mut result_buf), // fills in the child body
@@ -425,36 +425,33 @@ impl AsMut<[u8]> for ProtoBuffer {
 /// appending the encoded child.
 ///
 /// The workaround is that we set aside a fixed length number of bytes, and create a zero-padded
-/// varint. For example, the varint 5, encoded in 8 bytes would be. Observe that in all bytes, the
+/// varint. For example, the varint 5, encoded in 4 bytes would be. Observe that in all bytes, the
 /// continuation bit (msb) is set:
 /// ```text
-/// 0x85 0x80 0x80 0x80 0x80 0x80 0x80 0x00
+/// 0x85 0x80 0x80 0x00
 /// ```
 ///
 /// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
 /// between encoded size and CPU needed to compute the size of the length.
 ///
-/// TODO: currently we're always allocating 8 byte. This is clearly too much, but we over-allocate
+/// TODO: currently we're always allocating 4 byte. This may often be too much but we over-allocate
 /// to be safe. Eventually we should maybe allow a size hint here and allocate fewer bytes.
 ///
 #[macro_export]
 macro_rules! proto_encode_len_delimited_unknown_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
-        let num_bytes = 8;
+        let num_bytes = 4; // placeholder length
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
-        $crate::otlp::common::encode_len_placeholder($buf, num_bytes);
+        $crate::otlp::common::encode_len_placeholder($buf);
         $encode_fn;
         let len = $buf.len() - len_start_pos - num_bytes;
         $crate::otlp::common::patch_len_placeholder($buf, num_bytes, len, len_start_pos);
     }};
 }
 
-pub(crate) fn encode_len_placeholder(buf: &mut ProtoBuffer, num_bytes: usize) {
-    for _ in 0..num_bytes - 1 {
-        buf.buffer.push(0x80)
-    }
-    buf.buffer.push(0x00);
+pub(crate) fn encode_len_placeholder(buf: &mut ProtoBuffer) {
+    buf.buffer.extend_from_slice(&[0x80, 0x80, 0x80, 0x00]);
 }
 
 pub(crate) fn patch_len_placeholder(
