@@ -432,7 +432,7 @@ impl AsMut<[u8]> for ProtoBuffer {
 /// ```
 ///
 /// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
-/// between encoded size and CPU needed to compute the size ofr the length.
+/// between encoded size and CPU needed to compute the size of the length.
 ///
 /// TODO: currently we're always allocating 8 byte. This is clearly too much, but we over-allocate
 /// to be safe. Eventually we should maybe allow a size hint here and allocate fewer bytes.
