@@ -68,7 +68,7 @@ impl RecordsGroup {
         for records in records {
             match records {
                 OtapArrowRecords::Logs(logs) => {
-                    let batches = shrink(logs.into_batches());
+                    let batches = logs.into_batches();
                     if primary_table(&batches)
                         .map(|batch| batch.num_rows() > 0)
                         .unwrap_or(false)
@@ -86,7 +86,7 @@ impl RecordsGroup {
                     }
                 }
                 OtapArrowRecords::Traces(traces) => {
-                    let batches = shrink(traces.into_batches());
+                    let batches = traces.into_batches();
                     if primary_table(&batches)
                         .map(|batch| batch.num_rows() > 0)
                         .unwrap_or(false)
@@ -218,27 +218,6 @@ fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&
             unreachable!()
         }
     }
-}
-
-/// In order to make `into_batches()` work, it has to return the maximally sized array of
-/// `Option<RecordBatch>` padding out the end with `None`s. This function undoes that for
-/// reintegrating the data into a generic context where we know exactly how big the array should be.
-fn shrink<T, const BIGGER: usize, const SMALLER: usize>(
-    array: [Option<T>; BIGGER],
-) -> [Option<T>; SMALLER] {
-    // Because the T we actually care about doesn't impl Copy, I think this is the simplest way to
-    // verify that the tail is all None.
-    for none in array[SMALLER..].iter() {
-        assert!(none.is_none());
-    }
-
-    assert!(SMALLER < BIGGER);
-    let mut iter = array.into_iter();
-    // SAFETY: we've already verified that the iterator won't run out with the assert above.
-    std::array::from_fn(|_| {
-        iter.next()
-            .expect("we will have the right number of elements")
-    })
 }
 
 // Code for splitting batches
