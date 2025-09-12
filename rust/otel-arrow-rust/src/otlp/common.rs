@@ -713,9 +713,17 @@ impl Iterator for ChildIndexIter<'_> {
 
 #[cfg(test)]
 mod test {
-    use arrow::array::UInt16Array;
+    use std::sync::Arc;
 
-    use crate::otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor};
+    use arrow::{
+        array::{RecordBatch, StructArray, UInt16Array},
+        datatypes::{DataType, Field, Fields, Schema},
+    };
+
+    use crate::{
+        otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
+        schema::consts,
+    };
 
     #[test]
     fn test_child_index_iter_shuffled_order() {
@@ -802,5 +810,55 @@ mod test {
             assert_eq!(id_2_iter.next(), Some(1));
             assert_eq!(id_2_iter.next(), None)
         }
+    }
+
+    #[test]
+    fn test_batch_sorter_reuse_rows_alloc() {
+        // test that we're able to reuse the batch sorter's 'rows' heap allocation
+        // between sortings -- e.g. we're trying to test the functionality of
+        // BatchSorter::reuse_rows
+
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    false,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(struct_fields.clone()),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values(vec![2, 1, 2, 0]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields,
+                    vec![Arc::new(UInt16Array::from_iter_values(vec![1, 0, 1, 0]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        let mut cursor = SortedBatchCursor::new();
+        let mut batch_sorter = BatchSorter::new();
+        // call once ot allocate the vec
+        batch_sorter
+            .init_cursor_for_root_batch(&record_batch, &mut cursor)
+            .unwrap();
+
+        // the vec should have enough capacity not to get reallocated and we reuse it
+        let rows_ptr_before = batch_sorter.rows.as_ptr();
+        batch_sorter
+            .init_cursor_for_root_batch(&record_batch, &mut cursor)
+            .unwrap();
+        assert_eq!(rows_ptr_before, batch_sorter.rows.as_ptr());
     }
 }
