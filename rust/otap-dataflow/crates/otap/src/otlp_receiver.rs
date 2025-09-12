@@ -28,7 +28,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 /// URN for the OTLP Receiver
-pub const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 
 /// Configuration for OTLP Receiver
 #[derive(Debug, Deserialize)]
