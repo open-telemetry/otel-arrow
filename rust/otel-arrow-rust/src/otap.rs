@@ -383,17 +383,18 @@ fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
         Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()
-            .map(|batch| batch.num_rows())
-            .unwrap_or(0),
+            .map_or(0, |batch| batch.num_rows()),
         Metrics::COUNT => DATA_POINTS_TYPES
             .iter()
-            .flat_map(|dpt| batches[POSITION_LOOKUP[*dpt as usize]].as_ref())
-            .map(|batch| batch.num_rows())
+            .map(|&dpt| {
+                batches[POSITION_LOOKUP[dpt as usize]]
+                    .as_ref()
+                    .map_or(0, |batch| batch.num_rows())
+            })
             .sum(),
         Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]]
             .as_ref()
-            .map(|batch| batch.num_rows())
-            .unwrap_or(0),
+            .map_or(0, |batch| batch.num_rows()),
         _ => {
             unreachable!()
         }
