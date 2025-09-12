@@ -64,7 +64,7 @@ pub struct InstrumentationScope {
 }
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.EntityRef")]
 #[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EntityRef {
     #[prost(string, tag="1")]
     pub schema_url: ::prost::alloc::string::String,

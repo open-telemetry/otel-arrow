@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use regex::Regex;
+
 use crate::*;
 
 #[derive(Debug)]
@@ -16,7 +18,7 @@ pub enum ResolvedStaticScalarExpression<'a> {
 }
 
 impl ResolvedStaticScalarExpression<'_> {
-    pub fn try_fold(self) -> Option<StaticScalarExpression> {
+    pub(crate) fn try_fold(self) -> Option<StaticScalarExpression> {
         match self {
             ResolvedStaticScalarExpression::Computed(c) => Some(c),
             ResolvedStaticScalarExpression::Reference(_) => {
@@ -26,6 +28,52 @@ impl ResolvedStaticScalarExpression<'_> {
                 None
             }
             ResolvedStaticScalarExpression::FoldEligibleReference(r) => Some(r.clone()),
+        }
+    }
+
+    pub(crate) fn try_resolve_static_regex<'a>(
+        scalar: &'a mut ScalarExpression,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<&'a RegexScalarExpression>, ExpressionError> {
+        scalar.try_resolve_static(scope)?;
+
+        match scalar {
+            ScalarExpression::Static(StaticScalarExpression::Regex(r)) => Ok(Some(r)),
+            ScalarExpression::Static(value) => {
+                if !value.foldable() {
+                    return Ok(None);
+                }
+
+                let mut result = None;
+
+                value.to_value().convert_to_string(&mut |s| {
+                    result = Some(Regex::new(s));
+                });
+
+                match result {
+                    Some(Ok(r)) => {
+                        let r = RegexScalarExpression::new(value.get_query_location().clone(), r);
+
+                        *scalar = ScalarExpression::Static(StaticScalarExpression::Regex(r));
+
+                        if let ScalarExpression::Static(StaticScalarExpression::Regex(r)) = scalar {
+                            Ok(Some(r))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    Some(Err(e)) => Err(ExpressionError::ParseError(
+                        value.get_query_location().clone(),
+                        format!("Failed to parse Regex from pattern: {e}"),
+                    )),
+                    None => {
+                        panic!(
+                            "Encountered a Value which does not correctly implement convert_to_string"
+                        )
+                    }
+                }
+            }
+            _ => Ok(None),
         }
     }
 }

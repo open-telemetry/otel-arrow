@@ -9,10 +9,10 @@ use otap_df_engine_macros::pipeline_factory;
 
 /// Code for encoding OTAP batch from pdata view
 pub mod encoder;
-/// gRPC service implementation
-pub mod grpc;
 /// Implementation of OTAP Exporter that implements the exporter trait
 pub mod otap_exporter;
+/// gRPC service implementation
+pub mod otap_grpc;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
 
@@ -22,6 +22,9 @@ pub mod otlp_receiver;
 
 /// Implementation of OTLP exporter that implements the exporter trait
 pub mod otlp_exporter;
+
+// OTAP batch processor
+pub mod otap_batch_processor;
 
 // Retry processor that is aware of the OTAP PData/context.
 pub mod retry_processor;
@@ -48,7 +51,9 @@ pub mod noop_exporter;
 
 /// testing utilities
 #[cfg(test)]
-mod mock;
+mod otap_mock;
+#[cfg(test)]
+mod otlp_mock;
 
 #[cfg(test)]
 mod fixtures;
@@ -58,7 +63,11 @@ pub mod signal_type_router;
 
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
+/// compression formats
+pub mod compression;
 mod metrics;
+/// gRPC service implementation
+pub mod otlp_grpc;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

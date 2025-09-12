@@ -10,25 +10,34 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "debug.processor.pdata.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct DebugPdataMetrics {
-    /// Number of logs seen
+    /// Number of log signals consumed
     #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
-    /// Number of events (structured logs) seen
+    pub log_signals_consumed: Counter<u64>,
+    /// Number of events (structured logs) consumed
     #[metric(unit = "{event}")]
-    pub events: Counter<u64>,
-    /// Number of spans seen
+    pub events_consumed: Counter<u64>,
+    /// Number of span signals consumed
     #[metric(unit = "{span}")]
-    pub spans: Counter<u64>,
-    /// number of span links seen
+    pub span_signals_consumed: Counter<u64>,
+    /// number of span links consumed
     #[metric(unit = "{link}")]
-    pub span_links: Counter<u64>,
-    /// number of span events (structured logs) seen
+    pub span_links_consumed: Counter<u64>,
+    /// number of span events (structured logs) consumed
     #[metric(unit = "{event}")]
-    pub span_events: Counter<u64>,
-    /// Number of metrics seen
+    pub span_events_consumed: Counter<u64>,
+    /// Number of metrics consumed
     #[metric(unit = "{metric}")]
-    pub metrics: Counter<u64>,
-    /// number of metric datapoints seen
+    pub metric_signals_consumed: Counter<u64>,
+    /// number of metric datapoints consumed
     #[metric(unit = "{datapoint}")]
-    pub metric_datapoints: Counter<u64>,
+    pub metric_datapoints_consumed: Counter<u64>,
+    /// number of metrics (batches) consumed
+    #[metric(unit = "{msg}")]
+    pub metrics_consumed: Counter<u64>,
+    /// number of logs (batches) consumed
+    #[metric(unit = "{msg}")]
+    pub logs_consumed: Counter<u64>,
+    /// number of traces (batches) consumed
+    #[metric(unit = "{msg}")]
+    pub traces_consumed: Counter<u64>,
 }

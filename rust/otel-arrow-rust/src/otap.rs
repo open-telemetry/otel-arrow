@@ -133,20 +133,27 @@ impl OtapArrowRecords {
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-trait OtapBatchStore: Sized + Default + Clone {
-    // Internally, implementers should use a bitmask for the types they support.
-    // The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
+pub trait OtapBatchStore: Default + Clone {
+    /// Internally, implementers should use a bitmask for the types they support.
+    /// The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
 
     /// The number of `RecordBatch`es needed for this kind of telemetry.
     const COUNT: usize;
 
+    /// The type of array used to store the record batches.
+    type BatchArray;
+
     /// Mutable access to the batch array. The array the implementer returns
     /// should be the size of the number of types it supports, and it should expect
     /// that types to be positioned in the array according to the POSITION_LOOKUP array.
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
+
+    /// return the list of batches
     fn batches(&self) -> &[Option<RecordBatch>];
-    fn into_batches(self) -> [Option<RecordBatch>; Metrics::COUNT];
+
+    /// convert this into a list of batches
+    fn into_batches(self) -> Self::BatchArray;
 
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
@@ -161,6 +168,8 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// relationship whose IDs may be changed during encoding.
     fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
+    /// create a new instance of this [`OtapBatchStore`]
+    #[must_use]
     fn new() -> Self {
         Self::default()
     }
@@ -168,16 +177,19 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// Check if the given payload type is valid for this store.
     /// This is done by checking if the bitmask for the type is set in the
     /// implementer's TYPE_MASK.
+    #[must_use]
     fn is_valid_type(payload_type: ArrowPayloadType) -> bool {
         Self::TYPE_MASK & (1 << payload_type as u64) != 0
     }
 
+    /// Set the record batch for the given payload type
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
         if Self::is_valid_type(payload_type) {
             self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = Some(record_batch);
         }
     }
 
+    /// Get the record batch for the given payload type
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
         if !Self::is_valid_type(payload_type) {
             None
@@ -186,6 +198,9 @@ trait OtapBatchStore: Sized + Default + Clone {
         }
     }
 
+    /// Get the number of items in the batch. Counts using Otel semantics where logs/traces are
+    /// the number log records and spans respectively, whereas for metrics it's the count of
+    /// data points.
     fn batch_length(&self) -> usize;
 }
 
@@ -272,6 +287,8 @@ impl OtapBatchStore for Logs {
 
     const COUNT: usize = 4;
 
+    type BatchArray = [Option<RecordBatch>; Logs::COUNT];
+
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
         &mut self.batches
     }
@@ -280,7 +297,7 @@ impl OtapBatchStore for Logs {
         &self.batches
     }
 
-    fn into_batches(self) -> [Option<RecordBatch>; Metrics::COUNT] {
+    fn into_batches(self) -> Self::BatchArray {
         let mut iter = self.batches.into_iter();
         std::array::from_fn(|_| iter.next().unwrap_or_default())
     }
@@ -412,6 +429,8 @@ impl OtapBatchStore for Metrics {
 
     const COUNT: usize = 19;
 
+    type BatchArray = [Option<RecordBatch>; Metrics::COUNT];
+
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
         &mut self.batches
     }
@@ -420,7 +439,7 @@ impl OtapBatchStore for Metrics {
         &self.batches
     }
 
-    fn into_batches(self) -> [Option<RecordBatch>; Metrics::COUNT] {
+    fn into_batches(self) -> Self::BatchArray {
         self.batches
     }
 
@@ -644,6 +663,8 @@ impl OtapBatchStore for Traces {
 
     const COUNT: usize = 8;
 
+    type BatchArray = [Option<RecordBatch>; Traces::COUNT];
+
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
         &mut self.batches
     }
@@ -652,7 +673,7 @@ impl OtapBatchStore for Traces {
         &self.batches
     }
 
-    fn into_batches(self) -> [Option<RecordBatch>; Metrics::COUNT] {
+    fn into_batches(self) -> Self::BatchArray {
         let mut iter = self.batches.into_iter();
         std::array::from_fn(|_| iter.next().unwrap_or_default())
     }
@@ -3067,6 +3088,184 @@ mod test {
         ] {
             let result_exemplar_attrs_rb = batch.get(payload_type).unwrap();
             assert_eq!(result_exemplar_attrs_rb, &expected_exemplar_attrs_rb);
+        }
+    }
+
+    // Tests to catch trait implementation issues
+    #[test]
+    fn test_logs_trait_implementation() {
+        let mut logs = Logs::new();
+
+        assert_eq!(Logs::COUNT, 4); // Logs should have 4 batches
+
+        // Test batches() and batches_mut()
+        assert_eq!(logs.batches().len(), Logs::COUNT);
+        assert_eq!(logs.batches_mut().len(), Logs::COUNT);
+
+        // Test into_batches() - this would have caught the original compilation error
+        let batches = logs.clone().into_batches();
+        assert_eq!(batches.len(), Logs::COUNT);
+    }
+
+    #[test]
+    fn test_metrics_trait_implementation() {
+        let mut metrics = Metrics::new();
+
+        assert_eq!(Metrics::COUNT, 19); // Metrics should have 19 batches
+
+        // Test batches() and batches_mut()
+        assert_eq!(metrics.batches().len(), Metrics::COUNT);
+        assert_eq!(metrics.batches_mut().len(), Metrics::COUNT);
+
+        // Test into_batches() - this would have caught the original compilation error
+        let batches = metrics.clone().into_batches();
+        assert_eq!(batches.len(), Metrics::COUNT);
+    }
+
+    #[test]
+    fn test_traces_trait_implementation() {
+        let mut traces = Traces::new();
+
+        assert_eq!(Traces::COUNT, 8); // Traces should have 8 batches
+
+        // Test batches() and batches_mut()
+        assert_eq!(traces.batches().len(), Traces::COUNT);
+        assert_eq!(traces.batches_mut().len(), Traces::COUNT);
+
+        // Test into_batches() - this would have caught the original compilation error
+        let batches = traces.clone().into_batches();
+        assert_eq!(batches.len(), Traces::COUNT);
+    }
+
+    #[test]
+    fn test_service_type_validation_comprehensive() {
+        use ArrowPayloadType::*;
+        struct SignalTestCase {
+            signal_name: &'static str,
+            valid_types: &'static [ArrowPayloadType],
+            invalid_types: &'static [ArrowPayloadType],
+        }
+
+        let test_cases = [
+            SignalTestCase {
+                signal_name: "Logs",
+                valid_types: &[ResourceAttrs, ScopeAttrs, Logs, LogAttrs],
+                invalid_types: &[
+                    Unknown,
+                    UnivariateMetrics,
+                    NumberDataPoints,
+                    SummaryDataPoints,
+                    HistogramDataPoints,
+                    ExpHistogramDataPoints,
+                    NumberDpAttrs,
+                    SummaryDpAttrs,
+                    HistogramDpAttrs,
+                    ExpHistogramDpAttrs,
+                    NumberDpExemplars,
+                    HistogramDpExemplars,
+                    ExpHistogramDpExemplars,
+                    NumberDpExemplarAttrs,
+                    HistogramDpExemplarAttrs,
+                    ExpHistogramDpExemplarAttrs,
+                    MultivariateMetrics,
+                    MetricAttrs,
+                    Spans,
+                    SpanAttrs,
+                    SpanEvents,
+                    SpanLinks,
+                    SpanEventAttrs,
+                    SpanLinkAttrs,
+                ],
+            },
+            SignalTestCase {
+                signal_name: "Traces",
+                valid_types: &[
+                    ResourceAttrs,
+                    ScopeAttrs,
+                    Spans,
+                    SpanAttrs,
+                    SpanEvents,
+                    SpanLinks,
+                    SpanEventAttrs,
+                    SpanLinkAttrs,
+                ],
+                invalid_types: &[
+                    Unknown,
+                    UnivariateMetrics,
+                    NumberDataPoints,
+                    SummaryDataPoints,
+                    HistogramDataPoints,
+                    ExpHistogramDataPoints,
+                    NumberDpAttrs,
+                    SummaryDpAttrs,
+                    HistogramDpAttrs,
+                    ExpHistogramDpAttrs,
+                    NumberDpExemplars,
+                    HistogramDpExemplars,
+                    ExpHistogramDpExemplars,
+                    NumberDpExemplarAttrs,
+                    HistogramDpExemplarAttrs,
+                    ExpHistogramDpExemplarAttrs,
+                    MultivariateMetrics,
+                    MetricAttrs,
+                    Logs,
+                    LogAttrs,
+                ],
+            },
+            SignalTestCase {
+                signal_name: "Metrics",
+                valid_types: &[
+                    ResourceAttrs,
+                    ScopeAttrs,
+                    UnivariateMetrics,
+                    NumberDataPoints,
+                    SummaryDataPoints,
+                    HistogramDataPoints,
+                    ExpHistogramDataPoints,
+                    NumberDpAttrs,
+                    SummaryDpAttrs,
+                    HistogramDpAttrs,
+                    ExpHistogramDpAttrs,
+                    NumberDpExemplars,
+                    HistogramDpExemplars,
+                    ExpHistogramDpExemplars,
+                    NumberDpExemplarAttrs,
+                    HistogramDpExemplarAttrs,
+                    ExpHistogramDpExemplarAttrs,
+                    MultivariateMetrics,
+                    MetricAttrs,
+                ],
+                invalid_types: &[
+                    Unknown,
+                    Logs,
+                    LogAttrs,
+                    Spans,
+                    SpanAttrs,
+                    SpanEvents,
+                    SpanLinks,
+                    SpanEventAttrs,
+                    SpanLinkAttrs,
+                ],
+            },
+        ];
+
+        for case in test_cases {
+            for &valid_type in case.valid_types {
+                assert!(is_valid_for_service(case.signal_name, valid_type));
+            }
+
+            for &invalid_type in case.invalid_types {
+                assert!(!is_valid_for_service(case.signal_name, invalid_type));
+            }
+        }
+
+        fn is_valid_for_service(service: &str, payload_type: ArrowPayloadType) -> bool {
+            match service {
+                "Logs" => super::Logs::is_valid_type(payload_type),
+                "Traces" => Traces::is_valid_type(payload_type),
+                "Metrics" => Metrics::is_valid_type(payload_type),
+                _ => unreachable!("Unknown service name"),
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{error::Error, local::receiver as local};
+use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,13 +26,14 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn::otel::syslog_cef::receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
 const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 enum Protocol {
     /// TCP protocol
@@ -40,34 +42,50 @@ enum Protocol {
     Udp,
 }
 
-/// Syslog CEF receiver that can listen on TCP or UDP
-#[allow(dead_code)]
-struct SyslogCefReceiver {
+/// config for a syslog cef receiver
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages
     protocol: Protocol,
+}
+
+impl Config {
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+        Self {
+            listening_addr,
+            protocol,
+        }
+    }
+}
+
+/// Syslog CEF receiver that can listen on TCP or UDP
+#[allow(dead_code)]
+struct SyslogCefReceiver {
+    config: Config,
 }
 
 impl SyslogCefReceiver {
     /// Creates a new SyslogCefReceiver with the specified listening address.
     #[must_use]
     #[allow(dead_code)]
-    fn new(listening_addr: SocketAddr) -> Self {
-        SyslogCefReceiver {
-            listening_addr,
-            protocol: Protocol::Udp,
-        }
+    fn new(config: Config) -> Self {
+        SyslogCefReceiver { config }
     }
 
     /// Creates a new SyslogCefReceiver from a configuration object
-    #[must_use]
     #[allow(dead_code)]
-    fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
-        SyslogCefReceiver {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            protocol: Protocol::Udp,
-        }
+    fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        Ok(SyslogCefReceiver {
+            config: serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
+        })
     }
 }
 
@@ -81,7 +99,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
-            SyslogCefReceiver::from_config(&node_config.config),
+            SyslogCefReceiver::from_config(&node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -96,9 +114,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match self.protocol {
+        match self.config.protocol {
             Protocol::Tcp => {
-                let listener = effect_handler.tcp_listener(self.listening_addr)?;
+                let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
 
                 loop {
                     tokio::select! {
@@ -164,7 +182,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break;
                                                         },
@@ -207,7 +225,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                                     return; // Break out of the entire task
                                                                 }
                                                             }
@@ -216,7 +234,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                                let _ = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                             }
                                                             break; // ToDo: Handle read error properly
                                                         }
@@ -232,7 +250,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
                                                             return; // Break out of the entire task
                                                         }
                                                     }
@@ -250,7 +268,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
             Protocol::Udp => {
-                let socket = effect_handler.udp_socket(self.listening_addr)?;
+                let socket = effect_handler.udp_socket(self.config.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
@@ -302,7 +320,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
+                                        effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                                     }
                                 },
                                 Err(e) => {
@@ -320,7 +338,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
+                                effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await?;
                             }
                         },
                     }
@@ -334,6 +352,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pdata::OtapPayload;
     use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -493,10 +512,11 @@ mod tests {
                 let message1_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for first message")
-                    .expect("No first message received");
+                    .expect("No first message received")
+                    .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -611,10 +631,11 @@ mod tests {
                 let message1_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for first message")
-                    .expect("No first message received");
+                    .expect("No first message received")
+                    .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -733,7 +754,8 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPdata::OtapArrowRecords(arrow_records) = message else {
+                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            else {
                                 panic!("Expected OtapArrowRecords variant")
                             };
 
@@ -854,10 +876,11 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Udp);
         // create our UDP receiver
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
-            SyslogCefReceiver::new(listening_addr),
+            SyslogCefReceiver::new(config),
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -878,9 +901,9 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Tcp);
         // create our TCP receiver - we need to modify the receiver to support TCP
-        let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::Tcp;
+        let receiver = SyslogCefReceiver::new(config);
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
@@ -905,9 +928,9 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
+        let config = Config::new(listening_addr, Protocol::Tcp);
         // create our TCP receiver
-        let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::Tcp;
+        let receiver = SyslogCefReceiver::new(config);
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(

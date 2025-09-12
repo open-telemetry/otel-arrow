@@ -1,12 +1,36 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
+
 use chrono::TimeDelta;
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
+
+pub(crate) fn parse_type_expression(
+    type_expression_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, ParserError> {
+    let type_expression_rule = type_expression_rule.into_inner().next().unwrap();
+
+    Ok(match type_expression_rule.as_rule() {
+        Rule::null_literal => parse_standard_null_literal(type_expression_rule),
+        Rule::real_expression => parse_real_expression(type_expression_rule)?,
+        Rule::datetime_expression => parse_datetime_expression(type_expression_rule)?,
+        Rule::time_expression => parse_timespan_expression(type_expression_rule)?,
+        Rule::regex_expression => parse_regex_expression(type_expression_rule)?,
+        Rule::dynamic_expression => parse_dynamic_expression(type_expression_rule)?,
+        Rule::true_literal | Rule::false_literal => {
+            parse_standard_bool_literal(type_expression_rule)
+        }
+        Rule::double_literal => parse_standard_double_literal(type_expression_rule, None)?,
+        Rule::integer_literal => parse_standard_integer_literal(type_expression_rule)?,
+        Rule::string_literal => parse_string_literal(type_expression_rule),
+        _ => panic!("Unexpected rule in type_expression_rule: {type_expression_rule}"),
+    })
+}
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
@@ -28,9 +52,7 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
         let mut current_char = c.unwrap();
         let mut skip_push = false;
 
-        if position == 1 || current_char == '\\' {
-            skip_push = true;
-        } else if last_char == '\\' {
+        if last_char == '\\' {
             match current_char {
                 '"' => current_char = '"',
                 '\'' => current_char = '\'',
@@ -40,9 +62,15 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
                 't' => current_char = '\t',
                 _ => panic!("Unexpected escape character"),
             }
+            last_char = '\0';
+        } else {
+            if position == 1 || current_char == '\\' {
+                skip_push = true;
+            }
+
+            last_char = current_char;
         }
 
-        last_char = current_char;
         position += 1;
 
         c = chars.next();
@@ -200,6 +228,88 @@ pub(crate) fn parse_timespan_expression(
         }
 
         if negate { -nanos } else { nanos }
+    }
+}
+
+pub(crate) fn parse_regex_expression(
+    regex_expression_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, ParserError> {
+    let query_location = to_query_location(&regex_expression_rule);
+
+    let mut inner_rules = regex_expression_rule.into_inner();
+
+    let pattern = parse_standard_string_literal(inner_rules.next().unwrap());
+
+    let options = inner_rules.next().map(|r| parse_standard_string_literal(r));
+
+    let regex = Value::parse_regex(
+        &query_location,
+        &pattern.to_value(),
+        options.as_ref().map(|v| v.to_value()).as_ref(),
+    )
+    .map_err(|e| ParserError::from(&e))?;
+
+    Ok(StaticScalarExpression::Regex(RegexScalarExpression::new(
+        query_location,
+        regex,
+    )))
+}
+
+pub(crate) fn parse_dynamic_expression(
+    dynamic_expression_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, ParserError> {
+    return parse_dynamic_inner_expression(dynamic_expression_rule.into_inner().next().unwrap());
+
+    fn parse_dynamic_inner_expression(
+        dynamic_inner_expression_rule: Pair<Rule>,
+    ) -> Result<StaticScalarExpression, ParserError> {
+        let query_location = to_query_location(&dynamic_inner_expression_rule);
+
+        match dynamic_inner_expression_rule.as_rule() {
+            Rule::type_expression => Ok(parse_type_expression(dynamic_inner_expression_rule)?),
+            Rule::dynamic_array_expression => {
+                let mut values = Vec::new();
+
+                for array_rule in dynamic_inner_expression_rule.into_inner() {
+                    values.push(parse_dynamic_inner_expression(array_rule)?);
+                }
+
+                Ok(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                    query_location,
+                    values,
+                )))
+            }
+            Rule::dynamic_map_expression => {
+                let mut values = HashMap::new();
+
+                for dynamic_map_item_expression in dynamic_inner_expression_rule.into_inner() {
+                    let mut dynamic_map_item_expression_rules =
+                        dynamic_map_item_expression.into_inner();
+
+                    let key = parse_standard_string_literal(
+                        dynamic_map_item_expression_rules.next().unwrap(),
+                    );
+
+                    let value = parse_dynamic_inner_expression(
+                        dynamic_map_item_expression_rules.next().unwrap(),
+                    )?;
+
+                    if let StaticScalarExpression::String(s) = key {
+                        values.insert(s.get_value().into(), value);
+                    } else {
+                        panic!(
+                            "Unexpected rule in dynamic_map_item_expression: {dynamic_map_item_expression_rules}"
+                        );
+                    }
+                }
+
+                Ok(StaticScalarExpression::Map(MapScalarExpression::new(
+                    query_location,
+                    values,
+                )))
+            }
+            _ => panic!("Unexpected rule in dynamic_expression: {dynamic_inner_expression_rule}"),
+        }
     }
 }
 
@@ -457,7 +567,7 @@ pub(crate) fn parse_accessor_expression(
                                 format!(
                                     "Cannot access into key '{}' which is defined as a '{:?}' type",
                                     root_accessor_identity.get_value(),
-                                    key.get_value_type()
+                                    key.get_value_type().unwrap()
                                 ),
                             ));
                         }
@@ -607,6 +717,7 @@ mod tests {
         run_test("'Hello world'", "Hello world");
         run_test("'Hello \" world'", "Hello \" world");
         run_test("'Hello \\' world'", "Hello ' world");
+        run_test("'(\\\\w*)'", "(\\w*)");
     }
 
     #[test]
@@ -1045,6 +1156,140 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_regex_expression() {
+        let run_test_success = |input: &str, test: &str| {
+            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+
+            let d = parse_regex_expression(result.next().unwrap()).unwrap();
+
+            match d {
+                StaticScalarExpression::Regex(r) => assert!(r.get_value().is_match(test)),
+                _ => panic!("Unexpected type retured from parse_regex_expression"),
+            }
+        };
+
+        let run_test_failure = |input: &str| {
+            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+
+            let d = parse_regex_expression(result.next().unwrap());
+
+            assert!(d.is_err());
+        };
+
+        run_test_success("regex('^hello$')", "hello");
+
+        run_test_success("regex('^hello$', 'i')", "HELLO");
+
+        run_test_failure("regex('(')");
+    }
+
+    #[test]
+    fn test_parse_dynamic_expression() {
+        let run_test = |input: &str, expected: StaticScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::dynamic_expression, input).unwrap();
+
+            let actual = parse_dynamic_expression(result.next().unwrap()).unwrap();
+
+            assert_eq!(expected, actual);
+        };
+
+        run_test(
+            "dynamic(1)",
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                1,
+            )),
+        );
+
+        run_test(
+            "dynamic(real(1))",
+            StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.0,
+            )),
+        );
+
+        run_test(
+            "dynamic('hello world')",
+            StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+        );
+
+        run_test(
+            "dynamic([])",
+            StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+        );
+
+        run_test(
+            "dynamic([1, [18], dynamic({})])",
+            StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Array(ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
+                        )],
+                    )),
+                    StaticScalarExpression::Map(MapScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        HashMap::new(),
+                    )),
+                ],
+            )),
+        );
+
+        run_test(
+            "dynamic({})",
+            StaticScalarExpression::Map(MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+        );
+
+        run_test(
+            "dynamic({'key1':1, 'key2':[1], 'key3':{}})",
+            StaticScalarExpression::Map(MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    ),
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::Array(ArrayScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )],
+                        )),
+                    ),
+                    (
+                        "key3".into(),
+                        StaticScalarExpression::Map(MapScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            HashMap::new(),
+                        )),
+                    ),
+                ]),
+            )),
+        );
+    }
+
+    #[test]
     fn test_pest_parse_real_expression_rule() {
         pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::real_expression,
@@ -1170,6 +1415,7 @@ mod tests {
                 (Rule::identifier_literal, "abc"),
                 (Rule::minus_token, "-"),
                 (Rule::scalar_expression, "'name'"),
+                (Rule::type_expression, "'name'"),
                 (Rule::string_literal, "'name'"),
             ],
         );

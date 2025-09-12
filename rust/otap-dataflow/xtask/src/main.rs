@@ -32,8 +32,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
             "compile-proto" => {
-                compile_proto_otlp()?;
-                compile_proto_otap()?;
+                compile_proto()?;
                 Ok(())
             }
             "structure-check" => structure_check::run(),
@@ -93,12 +92,13 @@ fn test_all() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn compile_proto_otlp() -> anyhow::Result<()> {
+fn compile_proto() -> anyhow::Result<()> {
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    tonic_build::configure()
-        .out_dir("crates/otlp/src/proto")
+    tonic_prost_build::configure()
+        .out_dir("crates/otap/src/proto")
         .compile_protos(
             &[
+                // OTLP
                 "opentelemetry/proto/common/v1/common.proto",
                 "opentelemetry/proto/resource/v1/resource.proto",
                 "opentelemetry/proto/profiles/v1development/profiles.proto",
@@ -109,22 +109,15 @@ fn compile_proto_otlp() -> anyhow::Result<()> {
                 "opentelemetry/proto/collector/trace/v1/trace_service.proto",
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
                 "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
+                // OTAP
+                "proto/experimental/arrow/v1/arrow_service.proto",
             ],
-            &[format!("{base}/../../../proto/opentelemetry-proto")],
+            &[
+                format!("{base}/../../../proto/opentelemetry-proto").as_str(),
+                format!("{base}/../../../proto/opentelemetry").as_str(),
+            ],
         )
-        .expect("Failed to compile OTLP protos.");
-    Ok(())
-}
-
-fn compile_proto_otap() -> anyhow::Result<()> {
-    let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    tonic_build::configure()
-        .out_dir("crates/otap/src/proto")
-        .compile_protos(
-            &["proto/experimental/arrow/v1/arrow_service.proto"],
-            &[format!("{base}/../../../proto/opentelemetry")],
-        )
-        .expect("Failed to compile OTLP protos.");
+        .expect("Failed to compile protos.");
     Ok(())
 }
 

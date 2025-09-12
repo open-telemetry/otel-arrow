@@ -48,6 +48,7 @@ var (
 		}...), Nullable: true},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.EventName, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
 	}, nil)
 )
 
@@ -79,6 +80,7 @@ type LogsBuilder struct {
 
 	dacb *builder.Uint32Builder // `dropped_attributes_count` builder
 	fb   *builder.Uint32Builder // `flags` builder
+	evb  *builder.StringBuilder // `event_name` builder
 
 	optimizer *LogsOptimizer
 	analyzer  *LogsAnalyzer
@@ -155,6 +157,7 @@ func (b *LogsBuilder) init() error {
 
 	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
 	b.fb = b.builder.Uint32Builder(constants.Flags)
+	b.evb = b.builder.StringBuilder(constants.EventName)
 
 	return nil
 }
@@ -403,6 +406,8 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 		b.dacb.Append(log.DroppedAttributesCount())
 
 		b.fb.Append(uint32(log.Flags()))
+
+		b.evb.AppendNonEmpty(log.EventName())
 	}
 	return nil
 }
