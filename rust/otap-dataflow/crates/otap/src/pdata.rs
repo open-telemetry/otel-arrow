@@ -74,12 +74,17 @@
 //!                                      │                         │                                          
 //!                                      └─────────────────────────┘                                          
 //! ```
+// ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
+// directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
+// this diagram may need to be updated (https://github.com/open-telemetry/otel-arrow/issues/1095)
 
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
-use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
+use otel_arrow_rust::otlp::ProtoBuffer;
+use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_rust::otlp::{metrics::metrics_from, traces::traces_from};
 use prost::{EncodeError, Message};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
@@ -417,7 +422,7 @@ impl TryFrom<OtapPayload> for OtlpProtoBytes {
 impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
     type Error = error::Error;
 
-    fn try_from(value: OtapArrowRecords) -> Result<Self, Self::Error> {
+    fn try_from(mut value: OtapArrowRecords) -> Result<Self, Self::Error> {
         let map_otlp_conversion_error =
             |error: otel_arrow_rust::error::Error| error::Error::ConversionError {
                 error: format!("error generating OTLP request: {error}"),
@@ -429,11 +434,17 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
 
         match value {
             OtapArrowRecords::Logs(_) => {
-                let export_logs_svc_req = logs_from(value).map_err(map_otlp_conversion_error)?;
-                let mut bytes = vec![];
-                export_logs_svc_req
-                    .encode(&mut bytes)
-                    .map_err(map_prost_encode_error)?;
+                // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
+                // and the buffer, a these structures can be used between requests
+                let mut logs_encoder = LogsProtoBytesEncoder::new();
+                let mut buffer = ProtoBuffer::new();
+
+                // Fast path direct OTAP -> OTLP for Logs. Eventually we'll implement this for
+                // other signal types
+                logs_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
+                let bytes = buffer.as_ref().to_vec();
                 Ok(Self::ExportLogsRequest(bytes))
             }
             OtapArrowRecords::Metrics(_) => {
