@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1757697070956,
+  "lastUpdate": 1757698637721,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "4a51d1968e215a429e279dce166241979a779dc2",
-          "message": "[query-engine] Diagnostic improvements (#942)\n\n## Changes\n\n* Adds a few missing warning diagnostics for invalid input conditions",
-          "timestamp": "2025-08-14T19:44:43Z",
-          "tree_id": "4c2d0e51116849a082d9c2762bbc7b96a4eeceeb",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/4a51d1968e215a429e279dce166241979a779dc2"
-        },
-        "date": 1755201145625,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 752500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22575000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22575000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.85,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.83,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 165.1,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 192.03,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 747666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22430000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22430000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.78,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.93,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 128.34,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 149.17,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 194.19,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cb81a65cd8dfedf0fdd16a119f1ad5a8ecdaae29",
+          "message": "fix(deps): update rust crate schemars to v1 (#1089)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [schemars](https://graham.cool/schemars/)\n([source](https://redirect.github.com/GREsau/schemars)) | dependencies |\nmajor | `0.9.0` -> `1.0.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>GREsau/schemars (schemars)</summary>\n\n###\n[`v1.0.4`](https://redirect.github.com/GREsau/schemars/blob/HEAD/CHANGELOG.md#104---2025-07-06)\n\n[Compare\nSource](https://redirect.github.com/GREsau/schemars/compare/v1.0.3...v1.0.4)\n\n##### Fixed\n\n- Fix `JsonSchema` impl on\n[atomic](https://doc.rust-lang.org/std/sync/atomic/) types being ignored\non non-nightly compilers due to a buggy `cfg` check\n([#&#8203;453](https://redirect.github.com/GREsau/schemars/issues/453))\n- Fix compatibility with minimal dependency versions, e.g. old(-ish)\nversions of `syn`\n([#&#8203;450](https://redirect.github.com/GREsau/schemars/issues/450))\n- Fix derive for empty tuple variants\n([#&#8203;455](https://redirect.github.com/GREsau/schemars/issues/455))\n\n###\n[`v1.0.3`](https://redirect.github.com/GREsau/schemars/blob/HEAD/CHANGELOG.md#103---2025-06-28)\n\n[Compare\nSource](https://redirect.github.com/GREsau/schemars/compare/v1.0.2...v1.0.3)\n\n##### Fixed\n\n- Fix compile error when a doc comment is set on both a `transparent`\n(or newtype) struct and its field\n([#&#8203;446](https://redirect.github.com/GREsau/schemars/issues/446))\n- Fix `json_schema!()` macro compatibility when used from pre-2021 rust\neditions\n([#&#8203;447](https://redirect.github.com/GREsau/schemars/pull/447))\n\n###\n[`v1.0.2`](https://redirect.github.com/GREsau/schemars/blob/HEAD/CHANGELOG.md#102---2025-06-26)\n\n[Compare\nSource](https://redirect.github.com/GREsau/schemars/compare/v1.0.1...v1.0.2)\n\n##### Fixed\n\n- Fix schema properties being incorrectly reordered during serialization\n([#&#8203;444](https://redirect.github.com/GREsau/schemars/issues/444))\n\n###\n[`v1.0.1`](https://redirect.github.com/GREsau/schemars/blob/HEAD/CHANGELOG.md#101---2025-06-24)\n\n[Compare\nSource](https://redirect.github.com/GREsau/schemars/compare/v1.0.0...v1.0.1)\n\n##### Fixed\n\n- Deriving `JsonSchema` with `no_std` broken due to\n`std::borrow::ToOwned` trait not being in scope\n([#&#8203;441](https://redirect.github.com/GREsau/schemars/issues/441))\n\n###\n[`v1.0.0`](https://redirect.github.com/GREsau/schemars/blob/HEAD/CHANGELOG.md#100---2025-06-23)\n\n[Compare\nSource](https://redirect.github.com/GREsau/schemars/compare/v0.9.0...v1.0.0)\n\nThis is a major release with many additions, fixes and changes since 0.8\n(but not many since 0.9). While the basic usage (deriving `JsonSchema`\nand using `schema_for!()` or `SchemaGenerator`) is mostly unchanged, you\nmay wish to consult the [migration\nguide](https://graham.cool/schemars/migrating/) which covers some of the\nmost significant changes.\n\nChanges since 1.0.0-rc.2:\n\n##### Added\n\n- `#[schemars(bound = ...)]` attributes are now used from fields as well\nas containers\n- The\n[`Schema::pointer(...)`](https://docs.rs/schemars/1.0.0/schemars/struct.Schema.html#method.pointer)\nmethod now works when given a JSON pointer in URI Fragment\nrepresentation with a leading `#` character. In particular, this means\nthat you can now lookup a schema from a `$ref` value using that method.\n\n##### Fixed\n\n- Schema names that contain special characters are now correctly encoded\nwhen used inside a `$ref` value\n([#&#8203;436](https://redirect.github.com/GREsau/schemars/pull/436))\n- Optimise type param usage in `SchemaGenerator::subschema_for`,\nreducing LLVM line count and improving compile times\n([#&#8203;439](https://redirect.github.com/GREsau/schemars/pull/439))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0MS45MS4xIiwidXBkYXRlZEluVmVyIjoiNDEuOTcuMTAiLCJ0YXJnZXRCcmFuY2giOiJtYWluIiwibGFiZWxzIjpbImRlcGVuZGVuY2llcyJdfQ==-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2025-09-12T17:25:00Z",
+          "tree_id": "507873b69196a8f487b7de6357409f6f39492a7c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cb81a65cd8dfedf0fdd16a119f1ad5a8ecdaae29"
+        },
+        "date": 1757698635058,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 738000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22140000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22140000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.69,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.82,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 122.85,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 145.15,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 737666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22130000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22130000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.82,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.94,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 171.87,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 202.81,
             "unit": "MiB"
           }
         ]
