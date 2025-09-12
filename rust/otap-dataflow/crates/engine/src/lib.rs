@@ -455,6 +455,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
+        // Validate plugin URN structure during registration
+        otap_df_config::urn::validate_plugin_urn(
+            node_config.plugin_urn.as_ref(),
+            otap_df_config::node::NodeKind::Receiver,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
         let factory = self
             .get_receiver_factory_map()
             .get(node_config.plugin_urn.as_ref())
@@ -490,6 +497,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
+        // Validate plugin URN structure during registration
+        otap_df_config::urn::validate_plugin_urn(
+            node_config.plugin_urn.as_ref(),
+            otap_df_config::node::NodeKind::Processor,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
         let factory = self
             .get_processor_factory_map()
             .get(node_config.plugin_urn.as_ref())
@@ -530,6 +544,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error> {
+        // Validate plugin URN structure during registration
+        otap_df_config::urn::validate_plugin_urn(
+            node_config.plugin_urn.as_ref(),
+            otap_df_config::node::NodeKind::Exporter,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
         let factory = self
             .get_exporter_factory_map()
             .get(node_config.plugin_urn.as_ref())
