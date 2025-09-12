@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
-use self::config::{Config, SignalActive, Verbosity};
+use self::config::{Config, OutputMode, SignalActive, Verbosity};
 use self::detailed_marshaler::DetailedViewMarshaler;
 use self::marshaler::ViewMarshaler;
 use self::normal_marshaler::NormalViewMarshaler;
@@ -29,9 +29,9 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::LogsData,
-    metrics::v1::{MetricsData, metric::Data},
-    trace::v1::TracesData,
+    logs::v1::{LogRecord, LogsData},
+    metrics::v1::{Metric, MetricsData, metric::Data},
+    trace::v1::{Span, TracesData},
 };
 use prost::Message as _;
 use serde_json::Value;
@@ -138,7 +138,11 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // create a marshaler to take the otlp objects and extract various data to report
-        let marshaler: Box<dyn ViewMarshaler> = if self.config.verbosity() == Verbosity::Normal {
+        let active_signals = self.config.signals();
+        let verbosity = self.config.verbosity();
+        let mode = self.config.mode();
+
+        let marshaler: Box<dyn ViewMarshaler> = if verbosity == Verbosity::Normal {
             Box::new(NormalViewMarshaler)
         } else {
             Box::new(DetailedViewMarshaler)
@@ -147,8 +151,6 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         // get a writer to write to stdout or to a file
         let raw_writer = get_writer(&self.output).await;
         let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
-
-        let active_signals = self.config.signals();
 
         match msg {
             Message::Control(control) => {
@@ -182,8 +184,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_log(&self.config.verbosity(), req, &*marshaler, &mut writer)
-                                .await?;
+                            push_log(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
                         }
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
@@ -193,8 +194,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytesf: {e}"),
                                 }
                             })?;
-                            push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer)
-                                .await?;
+                            push_metric(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
                         }
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
@@ -204,8 +204,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer)
-                                .await?;
+                            push_trace(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
                         }
                     }
                 }
@@ -237,6 +236,7 @@ async fn push_metric(
     verbosity: &Verbosity,
     metric_request: MetricsData,
     marshaler: &dyn ViewMarshaler,
+    mode: &OutputMode,
     writer: &mut OutputWriter,
 ) -> Result<(), Error> {
     // collect number of resource metrics
@@ -245,9 +245,13 @@ async fn push_metric(
     let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
+    let mut metric_signals: Option<Vec<Metric>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_metrics in &metric_request.resource_metrics {
         for scope_metrics in &resource_metrics.scope_metrics {
             metrics += scope_metrics.metrics.len();
+            if let Some(ref mut metric_signals) = metric_signals {
+                metric_signals.append(&mut scope_metrics.metrics.clone());
+            }
             for metric in &scope_metrics.metrics {
                 if let Some(data) = &metric.data {
                     match data {
@@ -285,9 +289,20 @@ async fn push_metric(
     if *verbosity == Verbosity::Basic {
         return Ok(());
     }
-
-    let report = marshaler.marshal_metrics(metric_request);
-    writer.write(&format!("{report}\n")).await?;
+    match mode {
+        OutputMode::Batch => {
+            let report = marshaler.marshal_metrics(metric_request);
+            writer.write(&format!("{report}\n")).await?;
+        }
+        OutputMode::Signal => {
+            // safety: this should be initialized above if the mode is Signal
+            let metric_signals = metric_signals.expect("metric_signals not None");
+            for (index, metric) in metric_signals.iter().enumerate() {
+                let report = marshaler.marshal_metric_signal(metric, index);
+                writer.write(&format!("{report}\n")).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -295,6 +310,7 @@ async fn push_trace(
     verbosity: &Verbosity,
     trace_request: TracesData,
     marshaler: &dyn ViewMarshaler,
+    mode: &OutputMode,
     writer: &mut OutputWriter,
 ) -> Result<(), Error> {
     // collect number of resource spans
@@ -303,9 +319,13 @@ async fn push_trace(
     let mut spans = 0;
     let mut events = 0;
     let mut links = 0;
+    let mut span_signals: Option<Vec<Span>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
+            if let Some(ref mut span_signals) = span_signals {
+                span_signals.append(&mut scope_span.spans.clone());
+            }
             for span in &scope_span.spans {
                 events += span.events.len();
                 links += span.links.len();
@@ -324,8 +344,19 @@ async fn push_trace(
         return Ok(());
     }
 
-    let report = marshaler.marshal_traces(trace_request);
-    writer.write(&format!("{report}\n")).await?;
+    match mode {
+        OutputMode::Batch => {
+            let report = marshaler.marshal_traces(trace_request);
+            writer.write(&format!("{report}\n")).await?;
+        }
+        OutputMode::Signal => {
+            let span_signals = span_signals.expect("metric_signals not None");
+            for (index, span) in span_signals.iter().enumerate() {
+                let report = marshaler.marshal_span_signal(span, index);
+                writer.write(&format!("{report}\n")).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -333,14 +364,19 @@ async fn push_log(
     verbosity: &Verbosity,
     log_request: LogsData,
     marshaler: &dyn ViewMarshaler,
+    mode: &OutputMode,
     writer: &mut OutputWriter,
 ) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
+    let mut log_signals: Option<Vec<LogRecord>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
+            if let Some(ref mut log_signals) = log_signals {
+                log_signals.append(&mut scope_log.log_records.clone());
+            }
             for log_record in &scope_log.log_records {
                 if !log_record.event_name.is_empty() {
                     events += 1;
@@ -359,15 +395,26 @@ async fn push_log(
         return Ok(());
     }
 
-    let report = marshaler.marshal_logs(log_request);
-    writer.write(&format!("{report}\n")).await?;
+    match mode {
+        OutputMode::Batch => {
+            let report = marshaler.marshal_logs(log_request);
+            writer.write(&format!("{report}\n")).await?;
+        }
+        OutputMode::Signal => {
+            let log_signals = log_signals.expect("metric_signals not None");
+            for (index, log_record) in log_signals.iter().enumerate() {
+                let report = marshaler.marshal_log_signal(log_record, index);
+                writer.write(&format!("{report}\n")).await?;
+            }
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_processor::config::{Config, SignalActive, Verbosity};
+    use crate::debug_processor::config::{Config, OutputMode, SignalActive, Verbosity};
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use crate::pdata::{OtapPdata, OtlpProtoBytes};
     use otap_df_config::node::NodeUserConfig;
@@ -429,6 +476,26 @@ mod tests {
     fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("Processor failed on TimerTick");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Config event.
+                ctx.process(Message::config_ctrl_msg(Value::Null))
+                    .await
+                    .expect("Processor failed on Config");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Shutdown event.
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
+                .await
+                .expect("Processor failed on Shutdown");
+                assert!(ctx.drain_pdata().await.is_empty());
+
                 let logs_data = LogsData::new(vec![
                     ResourceLogs::build(Resource::default())
                         .scope_logs(vec![
@@ -616,7 +683,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_normal.txt".to_string();
-        let config = Config::new(Verbosity::Normal, signals);
+        let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -642,7 +709,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_basic.txt".to_string();
-        let config = Config::new(Verbosity::Basic, signals);
+        let config = Config::new(Verbosity::Basic, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -668,7 +735,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_detailed.txt".to_string();
-        let config = Config::new(Verbosity::Detailed, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -716,7 +783,7 @@ mod tests {
         let output_file = "debug_logs.txt".to_string();
         let signals = HashSet::from([SignalActive::Logs]);
 
-        let config = Config::new(Verbosity::Detailed, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -763,8 +830,7 @@ mod tests {
 
         let output_file = "debug_metrics.txt".to_string();
         let signals = HashSet::from([SignalActive::Metrics]);
-
-        let config = Config::new(Verbosity::Detailed, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -813,7 +879,7 @@ mod tests {
         let output_file = "debug_spans.txt".to_string();
         let signals = HashSet::from([SignalActive::Spans]);
 
-        let config = Config::new(Verbosity::Detailed, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let processor = ProcessorWrapper::local(
             DebugProcessor::new(config, Some(output_file.clone())),
@@ -826,6 +892,32 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure_spans_only(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_processor_signal_mode() {
+        let test_runtime = TestRuntime::new();
+        let signals = HashSet::from([
+            SignalActive::Metrics,
+            SignalActive::Logs,
+            SignalActive::Spans,
+        ]);
+        let output_file = "debug_signal_mode.txt".to_string();
+        let config = Config::new(Verbosity::Normal, OutputMode::Signal, signals);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
     }
