@@ -171,7 +171,7 @@ impl RecordsGroup {
 
     /// Is the container empty?
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         match self {
             Self::Logs(logs) => logs.is_empty(),
             Self::Metrics(metrics) => metrics.is_empty(),
@@ -181,7 +181,7 @@ impl RecordsGroup {
 
     /// Find the number of OtapArrowRecords we've got.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Self::Logs(logs) => logs.len(),
             Self::Metrics(metrics) => metrics.len(),
