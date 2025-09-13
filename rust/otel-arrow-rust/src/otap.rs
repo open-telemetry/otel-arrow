@@ -102,7 +102,7 @@ impl OtapArrowRecords {
     }
 
     #[must_use]
-    fn tag(&self) -> OtapArrowRecordTag {
+    const fn tag(&self) -> OtapArrowRecordTag {
         match self {
             Self::Logs(_) => OtapArrowRecordTag::Logs,
             Self::Metrics(_) => OtapArrowRecordTag::Metrics,
@@ -795,7 +795,7 @@ impl OtapBatchStore for Traces {
 
 /// Return the child payload types for the given payload type
 #[must_use]
-pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
+pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {
         ArrowPayloadType::Logs => &[
             ArrowPayloadType::ResourceAttrs,
@@ -811,7 +811,7 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
         ],
         ArrowPayloadType::SpanEvents => &[ArrowPayloadType::SpanEventAttrs],
         ArrowPayloadType::SpanLinks => &[ArrowPayloadType::SpanLinkAttrs],
-        ArrowPayloadType::UnivariateMetrics => &[
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::LogAttrs,
@@ -838,9 +838,6 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
 
         ArrowPayloadType::ExpHistogramDpExemplars => {
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
-        }
-        ArrowPayloadType::MultivariateMetrics => {
-            child_payload_types(ArrowPayloadType::UnivariateMetrics)
         }
         _ => &[],
     }
