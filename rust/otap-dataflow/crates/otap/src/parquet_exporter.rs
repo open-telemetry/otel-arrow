@@ -733,7 +733,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -876,7 +876,7 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
@@ -885,7 +885,7 @@ mod test {
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver,
+            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {

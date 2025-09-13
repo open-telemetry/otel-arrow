@@ -90,8 +90,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         pipeline_key: DeployedPipelineKey,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 

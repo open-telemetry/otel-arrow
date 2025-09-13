@@ -711,7 +711,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         Ok(())
                     }
                     otap_df_engine::control::NodeControlMsg::Ack { .. }
-                    | otap_df_engine::control::NodeControlMsg::Nack { .. } => Ok(()),
+                    | otap_df_engine::control::NodeControlMsg::Nack { .. }
+                    | otap_df_engine::control::NodeControlMsg::DelayedData { .. } => Ok(()),
                 }
             }
             Message::PData(request) => {
