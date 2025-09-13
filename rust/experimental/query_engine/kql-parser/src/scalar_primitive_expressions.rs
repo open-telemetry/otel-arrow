@@ -557,8 +557,10 @@ pub(crate) fn parse_accessor_expression(
                         match key {
                             ParserMapKeySchema::Map(inner_schema) => {
                                 if let Some(schema) = inner_schema {
-                                    resolved_value_type =
-                                        schema.validate(value_accessor.get_selectors())?;
+                                    resolved_value_type = schema.try_resolve_value_type(
+                                        value_accessor.get_selectors_mut(),
+                                        &scope.get_pipeline().get_resolution_scope(),
+                                    )?;
                                 }
                             }
                             ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
@@ -631,8 +633,10 @@ pub(crate) fn parse_accessor_expression(
                         }
 
                         if let Some(schema) = default_map_schema {
-                            resolved_value_type =
-                                schema.validate(value_accessor.get_selectors())?;
+                            resolved_value_type = schema.try_resolve_value_type(
+                                value_accessor.get_selectors_mut(),
+                                &scope.get_pipeline().get_resolution_scope(),
+                            )?;
                         }
 
                         value_accessor.insert_selector(

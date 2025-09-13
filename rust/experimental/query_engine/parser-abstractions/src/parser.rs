@@ -104,51 +104,76 @@ impl ParserMapSchema {
         }
     }
 
-    pub fn validate(
+    pub fn try_resolve_value_type(
         &self,
-        selectors: &[ScalarExpression],
+        selectors: &mut [ScalarExpression],
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ParserError> {
-        if let Some(selector) = selectors.first() {
-            if let ScalarExpression::Static(StaticScalarExpression::String(string_selector)) =
-                selector
+        let number_of_selectors = selectors.len();
+
+        if let Some(selector) = selectors.first_mut() {
+            if let Some(r) = selector
+                .try_resolve_static(scope)
+                .map_err(|e| ParserError::from(&e))?
+                .as_ref()
+                .map(|v| v.as_ref())
             {
-                match self.get_schema_for_key(string_selector.get_value()) {
-                    Some(key) => {
-                        if selectors.len() > 1 {
-                            match key {
-                                ParserMapKeySchema::Map(inner_schema) => {
-                                    if let Some(schema) = inner_schema {
-                                        return schema.validate(&selectors[1..]);
+                match r.to_value() {
+                    Value::String(s) => {
+                        let key = s.get_value();
+
+                        match self.get_schema_for_key(key) {
+                            Some(key_schema) => {
+                                if number_of_selectors > 1 {
+                                    match key_schema {
+                                        ParserMapKeySchema::Map(inner_schema) => {
+                                            if let Some(schema) = inner_schema {
+                                                return schema.try_resolve_value_type(
+                                                    &mut selectors[1..],
+                                                    scope,
+                                                );
+                                            }
+                                            return Ok(None);
+                                        }
+                                        ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
+                                            // todo: Implement validation for arrays
+                                            return Ok(None);
+                                        }
+                                        _ => {
+                                            return Err(ParserError::SyntaxError(
+                                                r.get_query_location().clone(),
+                                                format!(
+                                                    "Cannot access into key '{}' which is defined as a '{}' type",
+                                                    key,
+                                                    key_schema
+                                                        .get_value_type()
+                                                        .map(|v| format!("{v:?}"))
+                                                        .unwrap_or("Unknown".into())
+                                                ),
+                                            ));
+                                        }
                                     }
-                                    return Ok(None);
                                 }
-                                ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
-                                    // todo: Implement validation for arrays
-                                    return Ok(None);
-                                }
-                                _ => {
-                                    return Err(ParserError::SyntaxError(
-                                        selector.get_query_location().clone(),
-                                        format!(
-                                            "Cannot access into key '{}' which is defined as a '{}' type",
-                                            string_selector.get_value(),
-                                            key.get_value_type()
-                                                .map(|v| format!("{v:?}"))
-                                                .unwrap_or("Unknown".into())
-                                        ),
-                                    ));
-                                }
+
+                                return Ok(key_schema.get_value_type());
+                            }
+                            None => {
+                                return Err(ParserError::SyntaxError(
+                                    r.get_query_location().clone(),
+                                    format!(
+                                        "The name '{}' does not refer to any known key on the target map",
+                                        key
+                                    ),
+                                ));
                             }
                         }
-
-                        return Ok(key.get_value_type());
                     }
-                    None => {
+                    v => {
                         return Err(ParserError::SyntaxError(
-                            selector.get_query_location().clone(),
+                            r.get_query_location().clone(),
                             format!(
-                                "The name '{}' does not refer to any known key on the target map",
-                                string_selector.get_value()
+                                "Cannot index into a map using a '{:?}' value",
+                                v.get_value_type()
                             ),
                         ));
                     }
