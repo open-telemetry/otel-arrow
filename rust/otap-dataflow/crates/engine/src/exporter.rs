@@ -243,7 +243,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg;
+    use crate::control::{AckMsg, NodeControlMsg};
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
@@ -452,17 +452,12 @@ mod tests {
         let (control_tx, pdata_tx, mut channel) = make_chan();
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
-        control_tx
-            .send_async(NodeControlMsg::Ack { id: 1 })
-            .await
-            .unwrap();
+        let ack = NodeControlMsg::Ack(AckMsg::new(1, None));
+        control_tx.send_async(ack).await.unwrap();
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            Message::Control(NodeControlMsg::Ack { id: 1 })
-        ));
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Ack(_))));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
@@ -625,7 +620,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack(AckMsg::new(99, None)))
                 .await
                 .is_err()
         );
