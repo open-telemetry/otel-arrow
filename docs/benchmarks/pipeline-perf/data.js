@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1757746937785,
+  "lastUpdate": 1757951197167,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8f8239866f5907f629d17a5d7106a7f9a34c1721",
-          "message": "[query-engine] Adds parsing of KQL todatetime expression (#956)\n\nRelates to #722\n\n## Changes\n\n* Parse KQL `todatetime` onto `ConvertScalarExpression::DateTime`\nexpression",
-          "timestamp": "2025-08-18T18:30:57Z",
-          "tree_id": "066fdaf6a6e0ab18bf3dbf12034cf702d34f9358",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8f8239866f5907f629d17a5d7106a7f9a34c1721"
-        },
-        "date": 1755542320856,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 750166.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22505000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22505000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.82,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 7.01,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 164.68,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 193.78,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 730500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 21915000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 21915000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.62,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.92,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 119.1,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 137.21,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 200.06,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58318dcba1952e670dda405cf47e315091dad1fc",
+          "message": "chore(deps): update opentelemetry-python monorepo to v1.37.0 (#1132)\n\nThis PR contains the following updates:\n\n| Package | Change | Age | Confidence |\n|---|---|---|---|\n|\n[opentelemetry-exporter-otlp](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.36.0` -> `==1.37.0` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp/1.36.0/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.36.0` -> `==1.37.0` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-proto/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-proto/1.36.0/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n|\n[opentelemetry-sdk](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.36.0` -> `==1.37.0` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-sdk/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-sdk/1.36.0/1.37.0?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-python\n(opentelemetry-exporter-otlp)</summary>\n\n###\n[`v1.37.0`](https://redirect.github.com/open-telemetry/opentelemetry-python/blob/HEAD/CHANGELOG.md#Version-1370058b0-2025-09-11)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-python/compare/v1.36.0...v1.37.0)\n\n- Add experimental composite samplers\n\n([#&#8203;4714](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4714))\n- Add new environment variables to the SDK\n`OTEL_PYTHON_EXPORTER_OTLP_{HTTP/GRPC}_{METRICS/TRACES/LOGS}_CREDENTIAL_PROVIDER`\nthat can be used to\ninject a `requests.Session` or `grpc.ChannelCredentials` object into\nOTLP exporters created during auto instrumentation\n[#&#8203;4689](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4689).\n- Filter duplicate logs out of some internal `logger`'s logs on the\nexport logs path that might otherwise endlessly log or cause a recursion\ndepth exceeded issue in cases where logging itself results in an\nexception.\n\n([#&#8203;4695](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4695)).\n- docs: linked the examples with their github source code location and\nadded Prometheus example\n\n([#&#8203;4728](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4728))\n- Permit to override default HTTP OTLP exporters headers\n\n([#&#8203;4634](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4634))\n- semantic-conventions: Bump to 1.37.0\n\n([#&#8203;4731](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4731))\n- opentelemetry-sdk: fix handling of OTEL\\_ATTRIBUTE\\_COUNT\\_LIMIT in\nlogs\n\n([#&#8203;4677](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4677))\n- Performance: Cache `importlib_metadata.entry_points`\n\n([#&#8203;4735](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4735))\n- opentelemetry-sdk: fix calling Logger.emit with an API LogRecord\ninstance\n\n([#&#8203;4741](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4741))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about these\nupdates again.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0MS45Ny4xMCIsInVwZGF0ZWRJblZlciI6IjQxLjk3LjEwIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2025-09-15T15:37:05Z",
+          "tree_id": "761139bdbfda137e43ca1ab5a72909b57404f609",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/58318dcba1952e670dda405cf47e315091dad1fc"
+        },
+        "date": 1757951195190,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 734166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22025000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22025000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.66,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.83,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 120.98,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 142.54,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 730833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21925000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21925000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.71,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.68,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 162.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 194.47,
             "unit": "MiB"
           }
         ]
