@@ -402,9 +402,6 @@ impl ProtoBuffer {
         self.buffer.clear();
     }
 
-    // helpers for encoding specific proto types:
-    // TODO use these in logs as well
-
     pub fn encode_string(&mut self, field_tag: u64, val: &str) {
         self.encode_field_tag(field_tag, wire_types::LEN);
         self.encode_varint(val.len() as u64);

@@ -480,7 +480,6 @@ impl TracesProtoBytesEncoder {
             }
         }
 
-        // TODO span status
         if let Some(status) = &span_arrays.status {
             if status.status.is_valid(index) {
                 proto_encode_len_delimited_unknown_size!(
