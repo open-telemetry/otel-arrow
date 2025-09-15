@@ -711,6 +711,251 @@ impl TracesProtoBytesEncoder {
             }
         }
 
+        // TODO span status
+
+        self.root_cursor.advance();
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use arrow::array::{
+        FixedSizeBinaryArray, RecordBatch, StringArray, TimestampNanosecondArray, UInt8Array,
+        UInt16Array, UInt32Array,
+    };
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use pretty_assertions::assert_eq;
+    use prost::Message;
+    use std::sync::Arc;
+
+    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use crate::proto::opentelemetry::trace::v1::Span;
+    use crate::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use crate::{
+        otap::Traces,
+        proto::opentelemetry::{
+            common::v1::InstrumentationScope,
+            resource::v1::Resource,
+            trace::v1::{ResourceSpans, ScopeSpans, TracesData},
+        },
+        schema::FieldExt,
+    };
+
+    #[test]
+    pub fn smoke_test_proto_encoding() {
+        // simple smoke test for proto encoding. This doesn't test every field, but those are
+        // tested in other test suites in this project that encode/decode OTAP -> OTLP
+
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::VERSION, DataType::Utf8, true),
+        ]);
+
+        let spans_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(res_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+                // TODO test status
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    res_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "scopev0", "scopev1", "scopev2",
+                        ])),
+                    ],
+                    None,
+                )),
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![
+                            4u128.to_le_bytes().to_vec(),
+                            1u128.to_le_bytes().to_vec(),
+                            8u128.to_le_bytes().to_vec(),
+                        ]
+                        .into_iter(),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let span_events_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, false),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::NAME, DataType::Utf8, false),
+                Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values([0, 1])),
+                Arc::new(UInt16Array::from_iter_values([1, 1])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([1i64, 2i64])),
+                Arc::new(StringArray::from_iter_values(["sea", "seb"])),
+                Arc::new(UInt32Array::from_iter_values([0, 2])),
+            ],
+        )
+        .unwrap();
+
+        let span_links_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, false),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values([0])),
+                Arc::new(UInt16Array::from_iter_values([2])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![16u128.to_le_bytes().to_vec()].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![32u64.to_le_bytes().to_vec()].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let attr_32_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values([0, 0])),
+                Arc::new(StringArray::from_iter_values(["ake1", "bke1"])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["aval", "bval"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
+        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        otap_batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
+        otap_batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
+        otap_batch.set(ArrowPayloadType::SpanEventAttrs, attr_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::SpanLinkAttrs, attr_32_rb.clone());
+
+        let mut result_buf = ProtoBuffer::new();
+        let mut encoder = TracesProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+
+        let result = TracesData::decode(result_buf.as_ref()).unwrap();
+
+        let expected = TracesData::new(vec![
+            ResourceSpans::build(Resource {
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    version: "scopev0".to_string(),
+                    ..Default::default()
+                })
+                .spans(vec![Span {
+                    trace_id: 4u128.to_le_bytes().to_vec(),
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+            ResourceSpans::build(Resource {
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    version: "scopev1".to_string(),
+                    ..Default::default()
+                })
+                .spans(vec![Span {
+                    trace_id: 1u128.to_le_bytes().to_vec(),
+                    events: vec![
+                        Event {
+                            time_unix_nano: 1,
+                            name: "sea".to_string(),
+                            dropped_attributes_count: 0,
+                            attributes: vec![
+                                KeyValue::new("ake1", AnyValue::new_string("aval")),
+                                KeyValue::new("bke1", AnyValue::new_string("bval")),
+                            ],
+                            ..Default::default()
+                        },
+                        Event {
+                            time_unix_nano: 2,
+                            name: "seb".to_string(),
+                            dropped_attributes_count: 2,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }])
+                .finish(),
+                ScopeSpans::build(InstrumentationScope {
+                    version: "scopev2".to_string(),
+                    ..Default::default()
+                })
+                .spans(vec![Span {
+                    trace_id: 8u128.to_le_bytes().to_vec(),
+                    links: vec![Link {
+                        trace_id: 16u128.to_le_bytes().to_vec(),
+                        span_id: 32u64.to_le_bytes().to_vec(),
+                        attributes: vec![
+                            KeyValue::new("ake1", AnyValue::new_string("aval")),
+                            KeyValue::new("bke1", AnyValue::new_string("bval")),
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        assert_eq!(result, expected);
     }
 }
