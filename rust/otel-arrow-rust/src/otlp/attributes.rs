@@ -1,14 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray, UInt16Array};
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use prost::Message;
 use snafu::OptionExt;
 
-use crate::arrays::{
-    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u16_array,
-};
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};

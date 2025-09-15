@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::StructArray;
+use arrow::array::{Array, StructArray};
 use related_data::RelatedData;
 use snafu::{OptionExt, ensure};
 
@@ -18,13 +18,14 @@ use crate::otlp::metrics::AppendAndGet;
 use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
 use crate::otlp::traces::span_link::{SpanLinkArrays, encode_span_link};
 use crate::otlp::traces::spans_arrays::SpansArrays;
+use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
     SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
     SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
     SPAN_END_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_LINKS, SPAN_NAME,
-    SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_TRACE_ID, SPAN_TRACE_STATE,
-    TRACES_DATA_RESOURCE_SPANS,
+    SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_STATUS, SPAN_STATUS_CODE,
+    SPAN_STATUS_MESSAGE, SPAN_TRACE_ID, SPAN_TRACE_STATE, TRACES_DATA_RESOURCE_SPANS,
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -712,10 +713,39 @@ impl TracesProtoBytesEncoder {
         }
 
         // TODO span status
+        if let Some(status) = &span_arrays.status {
+            if status.status.is_valid(index) {
+                proto_encode_len_delimited_unknown_size!(
+                    SPAN_STATUS,
+                    self.encode_span_status(index, status, result_buf),
+                    result_buf
+                );
+            }
+        }
 
         self.root_cursor.advance();
 
         Ok(())
+    }
+
+    fn encode_span_status(
+        &mut self,
+        index: usize,
+        status_arrays: &SpanStatusArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) {
+        if let Some(col) = &status_arrays.message {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SPAN_STATUS_MESSAGE, val);
+            }
+        }
+
+        if let Some(col) = &status_arrays.code {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_STATUS_CODE, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
     }
 }
 
@@ -724,9 +754,10 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        FixedSizeBinaryArray, RecordBatch, StringArray, TimestampNanosecondArray, UInt8Array,
-        UInt16Array, UInt32Array,
+        DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, RecordBatch, StringArray,
+        TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
     };
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -734,8 +765,9 @@ mod test {
 
     use crate::otlp::attributes::store::AttributeValueType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use crate::proto::opentelemetry::trace::v1::Span;
     use crate::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use crate::proto::opentelemetry::trace::v1::status::StatusCode;
+    use crate::proto::opentelemetry::trace::v1::{Span, Status};
     use crate::{
         otap::Traces,
         proto::opentelemetry::{
@@ -758,6 +790,10 @@ mod test {
             Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
             Field::new(consts::VERSION, DataType::Utf8, true),
         ]);
+        let span_status_fields = Fields::from(vec![
+            Field::new(consts::STATUS_MESSAGE, DataType::Utf8, true),
+            Field::new(consts::STATUS_CODE, DataType::Int32, false),
+        ]);
 
         let spans_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
@@ -773,7 +809,21 @@ mod test {
                 ),
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
-                // TODO test status
+                Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    true,
+                ),
+                Field::new(
+                    consts::DURATION_TIME_UNIX_NANO,
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    true,
+                ),
+                Field::new(
+                    consts::STATUS,
+                    DataType::Struct(span_status_fields.clone()),
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(StructArray::new(
@@ -803,6 +853,20 @@ mod test {
                     )
                     .unwrap(),
                 ),
+                Arc::new(TimestampNanosecondArray::from_iter_values([
+                    1i64, 5i64, 8i64,
+                ])),
+                Arc::new(DurationNanosecondArray::from_iter_values([
+                    1i64, 2i64, 1i64,
+                ])),
+                Arc::new(StructArray::new(
+                    span_status_fields.clone(),
+                    vec![
+                        Arc::new(StringArray::from_iter_values(["statusa", "statusb", ""])),
+                        Arc::new(Int32Array::from_iter_values([1, 2, 0])),
+                    ],
+                    Some(NullBuffer::from_iter([true, true, false])),
+                )),
             ],
         )
         .unwrap();
@@ -874,8 +938,30 @@ mod test {
         )
         .unwrap();
 
+        let attr_16_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1])),
+                Arc::new(StringArray::from_iter_values(["ake2", "bke2"])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["aval", "bval"])),
+            ],
+        )
+        .unwrap();
+
         let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
         otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, attr_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, attr_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::SpanAttrs, attr_16_rb.clone());
         otap_batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
         otap_batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
         otap_batch.set(ArrowPayloadType::SpanEventAttrs, attr_32_rb.clone());
@@ -889,30 +975,48 @@ mod test {
 
         let expected = TracesData::new(vec![
             ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("ake2", AnyValue::new_string("aval"))],
                 ..Default::default()
             })
             .scope_spans(vec![
                 ScopeSpans::build(InstrumentationScope {
                     version: "scopev0".to_string(),
+                    attributes: vec![KeyValue::new("ake2", AnyValue::new_string("aval"))],
                     ..Default::default()
                 })
                 .spans(vec![Span {
                     trace_id: 4u128.to_le_bytes().to_vec(),
+                    start_time_unix_nano: 1,
+                    end_time_unix_nano: 2,
+                    status: Some(Status {
+                        message: "statusa".to_string(),
+                        code: StatusCode::Ok as i32,
+                    }),
+                    attributes: vec![KeyValue::new("ake2", AnyValue::new_string("aval"))],
                     ..Default::default()
                 }])
                 .finish(),
             ])
             .finish(),
             ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("bke2", AnyValue::new_string("bval"))],
                 ..Default::default()
             })
             .scope_spans(vec![
                 ScopeSpans::build(InstrumentationScope {
                     version: "scopev1".to_string(),
+                    attributes: vec![KeyValue::new("bke2", AnyValue::new_string("bval"))],
                     ..Default::default()
                 })
                 .spans(vec![Span {
                     trace_id: 1u128.to_le_bytes().to_vec(),
+                    start_time_unix_nano: 5,
+                    end_time_unix_nano: 7,
+                    attributes: vec![KeyValue::new("bke2", AnyValue::new_string("bval"))],
+                    status: Some(Status {
+                        message: "statusb".to_string(),
+                        code: StatusCode::Error as i32,
+                    }),
                     events: vec![
                         Event {
                             time_unix_nano: 1,
@@ -940,6 +1044,8 @@ mod test {
                 })
                 .spans(vec![Span {
                     trace_id: 8u128.to_le_bytes().to_vec(),
+                    start_time_unix_nano: 8,
+                    end_time_unix_nano: 9,
                     links: vec![Link {
                         trace_id: 16u128.to_le_bytes().to_vec(),
                         span_id: 32u64.to_le_bytes().to_vec(),

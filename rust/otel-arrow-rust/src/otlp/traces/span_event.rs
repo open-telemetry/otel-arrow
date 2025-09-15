@@ -6,7 +6,7 @@ use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Arr
 use crate::{
     arrays::{
         NullableArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt,
-        get_u16_array, get_u16_array_opt, get_u32_array_opt,
+        get_u16_array, get_u32_array_opt,
     },
     error::{Error, Result},
     otlp::{
