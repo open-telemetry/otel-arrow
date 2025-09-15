@@ -319,7 +319,7 @@ impl LogsProtoBytesEncoder {
                 break;
             }
 
-            // check if we've found a new scope ID. If so, break
+            // check if we've found a new resource ID. If so, break
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
             if resource_id != logs_data_arrays.resource_arrays.id.value_at(next_index) {
                 break;
@@ -328,7 +328,7 @@ impl LogsProtoBytesEncoder {
 
         // encode schema url
         if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.str_at(index) {
                 result_buf.encode_field_tag(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());
@@ -360,7 +360,7 @@ impl LogsProtoBytesEncoder {
             result_buf
         );
 
-        // encode all `LogRecord`s for this `ScopeLog``
+        // encode all `LogRecord`s for this `ScopeLog`
         let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
 
         loop {
@@ -385,7 +385,7 @@ impl LogsProtoBytesEncoder {
 
         // encode schema url
         if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
-            if let Some(val) = col.value_at(index) {
+            if let Some(val) = col.str_at(index) {
                 result_buf.encode_field_tag(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN);
                 result_buf.encode_varint(val.len() as u64);
                 result_buf.extend_from_slice(val.as_bytes());

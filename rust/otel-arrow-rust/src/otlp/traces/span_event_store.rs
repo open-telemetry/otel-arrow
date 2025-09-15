@@ -8,7 +8,7 @@ use crate::arrays::{
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::traces::delta_decoder::DeltaDecoder;
-use crate::otlp::traces::span_event_arrays::SpanEvent;
+use crate::otlp::traces::span_event::SpanEvent;
 use crate::proto::opentelemetry::trace::v1::span::Event;
 use crate::schema::{consts, is_id_plain_encoded, is_parent_id_plain_encoded};
 use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array};

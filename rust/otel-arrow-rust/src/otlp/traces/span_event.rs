@@ -1,0 +1,82 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array};
+
+use crate::{
+    arrays::{
+        NullableArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt,
+        get_u16_array, get_u16_array_opt, get_u32_array_opt,
+    },
+    error::{Error, Result},
+    otlp::{
+        ProtoBuffer,
+        attributes::Attribute32Arrays,
+        common::{ChildIndexIter, SortedBatchCursor},
+    },
+    proto::{
+        consts::{
+            field_num::traces::{SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO},
+            wire_types,
+        },
+        opentelemetry::trace::v1::span,
+    },
+    schema::consts,
+};
+
+pub struct SpanEvent {
+    pub parent_id: u16,
+    pub event: span::Event,
+}
+
+pub struct SpanEventArrays<'a> {
+    pub id: Option<&'a UInt32Array>,
+    pub parent_id: &'a UInt16Array,
+    pub time_unix_nano: Option<&'a TimestampNanosecondArray>,
+    pub name: Option<StringArrayAccessor<'a>>,
+    pub dropped_attributes_count: Option<&'a UInt32Array>,
+}
+
+impl<'a> TryFrom<&'a RecordBatch> for SpanEventArrays<'a> {
+    type Error = Error;
+
+    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+        Ok(Self {
+            id: get_u32_array_opt(rb, consts::ID)?,
+            parent_id: get_u16_array(rb, consts::PARENT_ID)?,
+            time_unix_nano: get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?,
+            name: rb
+                .column_by_name(consts::NAME)
+                .map(StringArrayAccessor::try_new)
+                .transpose()?,
+            dropped_attributes_count: get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?,
+        })
+    }
+}
+
+pub fn encode_span_event(
+    index: usize,
+    event_arrays: &SpanEventArrays<'_>,
+    attrs_cursor: &mut SortedBatchCursor,
+    attrs_arrays: Option<&Attribute32Arrays<'_>>,
+    result_buf: &mut ProtoBuffer,
+) -> Result<()> {
+    if let Some(col) = &event_arrays.time_unix_nano {
+        if let Some(val) = col.value_at(index) {
+            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64);
+            result_buf.extend_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    if let Some(col) = &event_arrays.name {
+        if let Some(val) = col.str_at(index) {
+            result_buf.encode_string(SPAN_EVENT_NAME, val);
+        }
+    }
+
+    if let Some(attrs) = attrs_arrays {
+        // TODO need to support u32 attrs
+    }
+
+    Ok(())
+}

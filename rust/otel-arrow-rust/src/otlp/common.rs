@@ -399,6 +399,21 @@ impl ProtoBuffer {
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
+
+    // helpers for encoding specific proto types:
+    // TODO use these in logs as well
+
+    pub fn encode_string(&mut self, field_tag: u64, val: &str) {
+        self.encode_field_tag(field_tag, wire_types::LEN);
+        self.encode_varint(val.len() as u64);
+        self.extend_from_slice(val.as_bytes());
+    }
+
+    pub fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) {
+        self.encode_field_tag(field_tag, wire_types::LEN);
+        self.encode_varint(val.len() as u64);
+        self.extend_from_slice(val);
+    }
 }
 
 impl AsRef<[u8]> for ProtoBuffer {

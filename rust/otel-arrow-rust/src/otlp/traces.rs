@@ -9,13 +9,24 @@ use crate::arrays::NullableArrayAccessor;
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
-use crate::otlp::common::{BatchSorter, ResourceArrays, ScopeArrays, SortedBatchCursor};
+use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
+use crate::otlp::common::{
+    BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
+    proto_encode_instrumentation_scope, proto_encode_resource,
+};
 use crate::otlp::metrics::AppendAndGet;
-use crate::otlp::traces::span_event_arrays::SpanEventArrays;
+use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
 use crate::otlp::traces::span_link_arrays::SpanLinkArrays;
 use crate::otlp::traces::spans_arrays::SpansArrays;
-use crate::proto::consts::field_num::traces::TRACES_DATA_RESOURCE_SPANS;
+use crate::proto::consts::field_num::traces::{
+    RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
+    SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
+    SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
+    SPAN_END_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_NAME, SPAN_PARENT_SPAN_ID,
+    SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_TRACE_ID, SPAN_TRACE_STATE,
+    TRACES_DATA_RESOURCE_SPANS,
+};
+use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto_encode_len_delimited_unknown_size;
@@ -23,7 +34,7 @@ use crate::schema::{consts, is_id_plain_encoded};
 
 pub mod delta_decoder;
 mod related_data;
-mod span_event_arrays;
+mod span_event;
 mod span_event_store;
 mod span_link_arrays;
 mod span_links_store;
@@ -270,7 +281,7 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
 }
 
 struct TracesDataArrays<'a> {
-    spans_arrays: SpansArrays<'a>,
+    span_arrays: SpansArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
     resource_arrays: ResourceArrays<'a>,
     span_attrs: Option<Attribute16Arrays<'a>>,
@@ -291,7 +302,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for TracesDataArrays<'a> {
             .context(error::SpanRecordNotFoundSnafu)?;
 
         Ok(Self {
-            spans_arrays: SpansArrays::try_from(spans_rb)?,
+            span_arrays: SpansArrays::try_from(spans_rb)?,
             scope_arrays: ScopeArrays::try_from(spans_rb)?,
             resource_arrays: ResourceArrays::try_from(spans_rb)?,
             span_attrs: otap_batch
@@ -445,6 +456,247 @@ impl TracesProtoBytesEncoder {
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
+        // encode the `Resource`
+        proto_encode_len_delimited_unknown_size!(
+            RESOURCE_SPANS_RESOURCE,
+            proto_encode_resource(
+                index,
+                &traces_data_arrays.resource_arrays,
+                traces_data_arrays.resource_attrs.as_ref(),
+                &mut self.resource_attrs_cursor,
+                result_buf,
+            )?,
+            result_buf
+        );
+
+        // encode all the `ScopeSpan`s for this `ResourceSpan`
+        let resource_id = traces_data_arrays.resource_arrays.id.value_at(index);
+
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                RESOURCE_SPANS_SCOPE_SPANS,
+                self.encode_scope_spans(traces_data_arrays, result_buf)?,
+                result_buf
+            );
+
+            // break when we've reached the end of the root record batch
+            if self.root_cursor.finished() {
+                break;
+            }
+
+            // safety: we've just checked that the cursor isn't finished
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+
+            // check if we've found a new resource ID. If so, break
+            if resource_id != traces_data_arrays.resource_arrays.id.value_at(next_index) {
+                break;
+            }
+        }
+
+        // encode the schema url
+        if let Some(col) = &traces_data_arrays.resource_arrays.schema_url {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(RESOURCE_SPANS_SCHEMA_URL, val);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_scope_spans(
+        &mut self,
+        traces_data_arrays: &TracesDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
+        // encode the `InstrumentationScope`
+        proto_encode_len_delimited_unknown_size!(
+            SCOPE_SPANS_SCOPE,
+            proto_encode_instrumentation_scope(
+                index,
+                &traces_data_arrays.scope_arrays,
+                traces_data_arrays.scope_attrs.as_ref(),
+                &mut self.scope_attrs_cursor,
+                result_buf
+            )?,
+            result_buf
+        );
+
+        // encode all `Span`s for this `ScopeSpan`
+        let scope_id = traces_data_arrays.scope_arrays.id.value_at(index);
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                SCOPE_SPANS_SPANS,
+                self.encode_span(traces_data_arrays, result_buf)?,
+                result_buf
+            );
+
+            // break if we've reached the end of the record batch
+            if self.root_cursor.finished() {
+                break;
+            }
+
+            // Safety: we've just checked above that cursor isn't finished
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+
+            // check if we've found a new scope ID. If so, break
+            if scope_id != traces_data_arrays.scope_arrays.id.value_at(next_index) {
+                break;
+            }
+        }
+
+        // encode the schema url
+        if let Some(col) = &traces_data_arrays.span_arrays.schema_url {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SCOPE_SPANS_SCHEMA_URL, val);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_span(
+        &mut self,
+        traces_data_arrays: &TracesDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
+        let span_arrays = &traces_data_arrays.span_arrays;
+
+        if let Some(col) = &span_arrays.trace_id {
+            if let Some(val) = col.slice_at(index) {
+                result_buf.encode_bytes(SPAN_TRACE_ID, val);
+            }
+        }
+
+        if let Some(col) = &span_arrays.span_id {
+            if let Some(val) = col.slice_at(index) {
+                result_buf.encode_bytes(SPAN_SPAN_ID, val);
+            }
+        }
+
+        if let Some(col) = &span_arrays.trace_state {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SPAN_TRACE_STATE, val);
+            }
+        }
+
+        if let Some(col) = &span_arrays.parent_span_id {
+            if let Some(val) = col.slice_at(index) {
+                result_buf.encode_bytes(SPAN_PARENT_SPAN_ID, val);
+            }
+        }
+
+        if let Some(col) = &span_arrays.flags {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_FLAGS, wire_types::FIXED32);
+                result_buf.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+
+        if let Some(col) = &span_arrays.name {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SPAN_NAME, val);
+            }
+        }
+
+        if let Some(col) = &span_arrays.kind {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_KIND, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
+        if let Some(col) = &span_arrays.start_time_unix_nano {
+            if let Some(start_time) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_START_TIME_UNIX_NANO, wire_types::FIXED64);
+                result_buf.extend_from_slice(&start_time.to_le_bytes());
+
+                // encode end time from start + duration
+                if let Some(col) = &span_arrays.duration_time_unix_nano {
+                    if let Some(duration) = col.value_at(index) {
+                        let end_time = start_time + duration;
+                        result_buf.encode_field_tag(SPAN_END_TIME_UNIX_NANO, wire_types::FIXED64);
+                        result_buf.extend_from_slice(&end_time.to_le_bytes());
+                    }
+                }
+            }
+        }
+
+        if let Some(span_attrs) = &traces_data_arrays.span_attrs {
+            if let Some(id) = span_arrays.id.value_at(index) {
+                let attrs_index_iter =
+                    ChildIndexIter::new(id, span_attrs.parent_id, &mut self.spans_attrs_cursor);
+                for attr_index in attrs_index_iter {
+                    proto_encode_len_delimited_unknown_size!(
+                        SPAN_ATTRIBUTES,
+                        encode_key_value(span_attrs, attr_index, result_buf)?,
+                        result_buf
+                    );
+                }
+            }
+        }
+
+        if let Some(col) = span_arrays.dropped_attributes_count {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
+        if let Some(span_events) = &traces_data_arrays.span_events {
+            if let Some(id) = span_arrays.id.value_at(index) {
+                let events_index_iter =
+                    ChildIndexIter::new(id, span_events.parent_id, &mut self.span_events_cursor);
+                for event_index in events_index_iter {
+                    proto_encode_len_delimited_unknown_size!(
+                        SPAN_EVENTS,
+                        encode_span_event(
+                            event_index,
+                            &span_events,
+                            &mut self.span_events_attrs_cursor,
+                            traces_data_arrays.span_event_attrs.as_ref(),
+                            result_buf
+                        )?,
+                        result_buf
+                    );
+                }
+            }
+        }
+
+        if let Some(col) = span_arrays.dropped_events_count {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_DROPPED_EVENTS_COUNT, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
+        if let Some(span_links) = &traces_data_arrays.span_links {
+            if let Some(id) = span_arrays.id.value_at(index) {
+                // TODO
+            }
+        }
+
+        if let Some(col) = span_arrays.dropped_links_count {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(SPAN_DROPPED_LINKS_COUNT, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
         Ok(())
     }
 }
