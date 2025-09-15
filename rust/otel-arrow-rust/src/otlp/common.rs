@@ -8,7 +8,7 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value, parent_id};
+use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -24,7 +24,7 @@ use arrow::array::{
     Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
-use arrow::datatypes::{DataType, Field, Fields, UInt16Type, UInt32Type};
+use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 use std::cmp::Ordering;
@@ -661,7 +661,7 @@ impl BatchSorter {
         ids: &MaybeDictArrayAccessor<'_, UInt16Array>,
         cursor: &mut SortedBatchCursor,
     ) {
-        Self::init_cursor_for_ids_column(&mut self.u16_ids, &ids, cursor);
+        Self::init_cursor_for_ids_column(&mut self.u16_ids, ids, cursor);
     }
 
     pub fn init_cursor_for_u32_id_column(
@@ -686,17 +686,15 @@ impl BatchSorter {
                 sort_ids_tmp.extend(ids.values().iter().copied().enumerate());
             }
             MaybeDictArrayAccessor::Dictionary16(ids) => {
-                let len = ids.as_dict_arr().len();
                 sort_ids_tmp.extend(
-                    (0..len)
+                    (0..ids.len())
                         .map(|i| ids.value_at(i).unwrap_or_default())
                         .enumerate(),
                 );
             }
             MaybeDictArrayAccessor::Dictionary8(ids) => {
-                let len = ids.as_dict_arr().len();
                 sort_ids_tmp.extend(
-                    (0..len)
+                    (0..ids.len())
                         .map(|i| ids.value_at(i).unwrap_or_default())
                         .enumerate(),
                 );

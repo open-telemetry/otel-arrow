@@ -145,12 +145,6 @@ impl TracesProtoBytesEncoder {
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
-        // TODO remove
-        println!(
-            "span event attrs = {:?}",
-            otap_batch.get(ArrowPayloadType::SpanEventAttrs)
-        );
-
         otap_batch.decode_transport_optimized_ids()?;
         let traces_data_arrays = TracesDataArrays::try_from(&*otap_batch)?;
 
@@ -435,10 +429,6 @@ impl TracesProtoBytesEncoder {
                 let parent_ids = MaybeDictArrayAccessor::Native(span_events.parent_id);
                 let events_index_iter =
                     ChildIndexIter::new(id, &parent_ids, &mut self.span_events_cursor);
-                println!(
-                    "\n---span_event_attrs_cursor before = {:?}",
-                    self.span_events_attrs_cursor
-                );
                 for event_index in events_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         SPAN_EVENTS,
@@ -452,10 +442,6 @@ impl TracesProtoBytesEncoder {
                         result_buf
                     );
                 }
-                println!(
-                    "\n---span_event_attrs_cursor after = {:?}",
-                    self.span_events_attrs_cursor
-                );
             }
         }
 

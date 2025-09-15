@@ -324,16 +324,6 @@ pub enum MaybeDictArrayAccessor<'a, V> {
     Dictionary16(DictionaryArrayAccessor<'a, UInt16Type, V>),
 }
 
-impl<'a, V> Clone for MaybeDictArrayAccessor<'a, V> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Native(n) => MaybeDictArrayAccessor::Native(n),
-            Self::Dictionary8(d) => MaybeDictArrayAccessor::Dictionary8(d.clone()),
-            Self::Dictionary16(d) => MaybeDictArrayAccessor::Dictionary16(d.clone()),
-        }
-    }
-}
-
 impl<'a, T> NullableArrayAccessor for MaybeDictArrayAccessor<'a, T>
 where
     T: Array + NullableArrayAccessor + 'static,
@@ -532,18 +522,6 @@ where
     value: &'a V,
 }
 
-impl<'a, K, V> Clone for DictionaryArrayAccessor<'a, K, V>
-where
-    K: ArrowDictionaryKeyType,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            value: self.value,
-        }
-    }
-}
-
 impl<'a, K, V> DictionaryArrayAccessor<'a, K, V>
 where
     K: ArrowDictionaryKeyType,
@@ -573,8 +551,8 @@ where
         }
     }
 
-    pub fn as_dict_arr(&self) -> &DictionaryArray<K> {
-        self.inner
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 
     pub fn null_count(&self) -> usize {
