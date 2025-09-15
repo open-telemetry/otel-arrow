@@ -698,16 +698,19 @@ impl BatchSorter {
 }
 
 /// Iterates the indices of some child record batch
-pub(crate) struct ChildIndexIter<'a> {
-    pub parent_id: u16,
-    pub parent_id_col: &'a UInt16Array,
+pub(crate) struct ChildIndexIter<'a, T: ArrowPrimitiveType> {
+    pub parent_id: T::Native,
+    pub parent_id_col: &'a PrimitiveArray<T>,
     pub cursor: &'a mut SortedBatchCursor,
 }
 
-impl<'a> ChildIndexIter<'a> {
+impl<'a, T> ChildIndexIter<'a, T>
+where
+    T: ArrowPrimitiveType,
+{
     pub fn new(
-        parent_id: u16,
-        parent_id_col: &'a UInt16Array,
+        parent_id: T::Native,
+        parent_id_col: &'a PrimitiveArray<T>,
         cursor: &'a mut SortedBatchCursor,
     ) -> Self {
         Self {
@@ -718,7 +721,10 @@ impl<'a> ChildIndexIter<'a> {
     }
 }
 
-impl Iterator for ChildIndexIter<'_> {
+impl<T> Iterator for ChildIndexIter<'_, T>
+where
+    T: ArrowPrimitiveType,
+{
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {

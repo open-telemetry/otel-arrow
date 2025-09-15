@@ -11,16 +11,20 @@ use crate::{
     error::{Error, Result},
     otlp::{
         ProtoBuffer,
-        attributes::Attribute32Arrays,
+        attributes::{Attribute32Arrays, encode_key_value},
         common::{ChildIndexIter, SortedBatchCursor},
     },
     proto::{
         consts::{
-            field_num::traces::{SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO},
+            field_num::traces::{
+                SPAN_EVENT_ATTRIBUTES, SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, SPAN_EVENT_NAME,
+                SPAN_EVENT_TIME_UNIX_NANO,
+            },
             wire_types,
         },
         opentelemetry::trace::v1::span,
     },
+    proto_encode_len_delimited_unknown_size,
     schema::consts,
 };
 
@@ -75,7 +79,23 @@ pub fn encode_span_event(
     }
 
     if let Some(attrs) = attrs_arrays {
-        // TODO need to support u32 attrs
+        if let Some(id) = event_arrays.id.value_at(index) {
+            let attrs_index_iter = ChildIndexIter::new(id, attrs.parent_id, attrs_cursor);
+            for attrs_index in attrs_index_iter {
+                proto_encode_len_delimited_unknown_size!(
+                    SPAN_EVENT_ATTRIBUTES,
+                    encode_key_value(attrs, attrs_index, result_buf)?,
+                    result_buf
+                );
+            }
+        }
+    }
+
+    if let Some(col) = &event_arrays.dropped_attributes_count {
+        if let Some(val) = col.value_at(index) {
+            result_buf.encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT);
+            result_buf.encode_varint(val as u64);
+        }
     }
 
     Ok(())

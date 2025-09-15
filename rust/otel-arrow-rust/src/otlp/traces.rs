@@ -16,14 +16,14 @@ use crate::otlp::common::{
 };
 use crate::otlp::metrics::AppendAndGet;
 use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
-use crate::otlp::traces::span_link_arrays::SpanLinkArrays;
+use crate::otlp::traces::span_link::{SpanLinkArrays, encode_span_link};
 use crate::otlp::traces::spans_arrays::SpansArrays;
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
     SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
     SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
-    SPAN_END_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_NAME, SPAN_PARENT_SPAN_ID,
-    SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_TRACE_ID, SPAN_TRACE_STATE,
+    SPAN_END_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_LINKS, SPAN_NAME,
+    SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_TRACE_ID, SPAN_TRACE_STATE,
     TRACES_DATA_RESOURCE_SPANS,
 };
 use crate::proto::consts::wire_types;
@@ -36,7 +36,7 @@ pub mod delta_decoder;
 mod related_data;
 mod span_event;
 mod span_event_store;
-mod span_link_arrays;
+mod span_link;
 mod span_links_store;
 mod spans_arrays;
 mod spans_status_arrays;
@@ -686,7 +686,21 @@ impl TracesProtoBytesEncoder {
 
         if let Some(span_links) = &traces_data_arrays.span_links {
             if let Some(id) = span_arrays.id.value_at(index) {
-                // TODO
+                let links_index_iter =
+                    ChildIndexIter::new(id, span_links.parent_id, &mut self.span_links_cursor);
+                for link_index in links_index_iter {
+                    proto_encode_len_delimited_unknown_size!(
+                        SPAN_LINKS,
+                        encode_span_link(
+                            link_index,
+                            span_links,
+                            &mut self.span_links_attrs_cursor,
+                            traces_data_arrays.span_link_attrs.as_ref(),
+                            result_buf
+                        )?,
+                        result_buf
+                    );
+                }
             }
         }
 
