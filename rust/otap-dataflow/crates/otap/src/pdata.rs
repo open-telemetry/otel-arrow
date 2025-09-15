@@ -517,6 +517,7 @@ mod test {
             },
         },
     };
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_conversion_logs() {

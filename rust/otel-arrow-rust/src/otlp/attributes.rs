@@ -29,7 +29,7 @@ pub(crate) type Attribute16Arrays<'a> = AttributeArrays<'a, UInt16Type>;
 pub(crate) type Attribute32Arrays<'a> = AttributeArrays<'a, UInt32Type>;
 
 pub(crate) struct AttributeArrays<'a, T: ArrowPrimitiveType> {
-    pub parent_id: &'a PrimitiveArray<T>,
+    pub parent_id: MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
     pub attr_key: MaybeDictArrayAccessor<'a, StringArray>,
     pub anyval_arrays: AnyValueArrays<'a>,
 }
@@ -41,15 +41,10 @@ where
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let parent_ids = get_required_array(rb, consts::PARENT_ID)?;
-        let parent_id = parent_ids
-            .as_any()
-            .downcast_ref::<PrimitiveArray<T>>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::PARENT_ID,
-                expect: T::DATA_TYPE,
-                actual: parent_ids.data_type().clone(),
-            })?;
+        let parent_id = MaybeDictArrayAccessor::<PrimitiveArray<T>>::try_new(get_required_array(
+            rb,
+            consts::PARENT_ID,
+        )?)?;
 
         let key = rb.column_by_name(consts::ATTRIBUTE_KEY).with_context(|| {
             error::ColumnNotFoundSnafu {

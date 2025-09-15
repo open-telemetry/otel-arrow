@@ -72,7 +72,7 @@ pub fn encode_span_event(
 
     if let Some(attrs) = attrs_arrays {
         if let Some(id) = event_arrays.id.value_at(index) {
-            let attrs_index_iter = ChildIndexIter::new(id, attrs.parent_id, attrs_cursor);
+            let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
                 proto_encode_len_delimited_unknown_size!(
                     SPAN_EVENT_ATTRIBUTES,

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    ByteArrayAccessor, Int64ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
+    ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+    StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt,
+    get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value, parent_id};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -23,7 +24,7 @@ use arrow::array::{
     Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
-use arrow::datatypes::{DataType, Field, Fields};
+use arrow::datatypes::{DataType, Field, Fields, UInt16Type, UInt32Type};
 use arrow::row::{Row, RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 use std::cmp::Ordering;
@@ -66,7 +67,7 @@ pub(crate) fn proto_encode_resource(
     if let Some(attrs_arrays) = resource_attrs_arrays {
         if let Some(res_id) = resource_arrays.id.value_at(index) {
             for attr_index in
-                ChildIndexIter::new(res_id, attrs_arrays.parent_id, resource_attrs_cursor)
+                ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     RESOURCE_ATTRIBUTES,
@@ -198,7 +199,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     if let Some(attr_arrays) = scope_attrs_arrays {
         if let Some(scope_id) = scope_arrays.id.value_at(index) {
             for attr_index in
-                ChildIndexIter::new(scope_id, attr_arrays.parent_id, scope_attrs_cursor)
+                ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     INSTRUMENTATION_SCOPE_ATTRIBUTES,
@@ -501,6 +502,7 @@ pub(crate) fn patch_len_placeholder(
 ///
 /// The motivation behind using this cursor is that it will hopefully be more efficient to
 /// initialize this than sorting the entire [`RecordBatch`].
+#[derive(Debug)]
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
     curr_index: usize,
@@ -639,7 +641,7 @@ impl BatchSorter {
                         expect: DataType::UInt16,
                         actual: ids.data_type().clone(),
                     })?;
-                self.init_cursor_for_u16_id_column(ids, cursor);
+                self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
 
             // no scope/resource ID columns....
@@ -656,15 +658,15 @@ impl BatchSorter {
 
     pub fn init_cursor_for_u16_id_column(
         &mut self,
-        ids: &UInt16Array,
+        ids: &MaybeDictArrayAccessor<'_, UInt16Array>,
         cursor: &mut SortedBatchCursor,
     ) {
-        Self::init_cursor_for_ids_column(&mut self.u16_ids, ids, cursor);
+        Self::init_cursor_for_ids_column(&mut self.u16_ids, &ids, cursor);
     }
 
     pub fn init_cursor_for_u32_id_column(
         &mut self,
-        ids: &UInt32Array,
+        ids: &MaybeDictArrayAccessor<'_, UInt32Array>,
         cursor: &mut SortedBatchCursor,
     ) {
         Self::init_cursor_for_ids_column(&mut self.u32_ids, ids, cursor);
@@ -672,14 +674,34 @@ impl BatchSorter {
 
     fn init_cursor_for_ids_column<T: ArrowPrimitiveType>(
         sort_ids_tmp: &mut Vec<(usize, T::Native)>,
-        ids: &PrimitiveArray<T>,
+        ids: &MaybeDictArrayAccessor<'_, PrimitiveArray<T>>,
         cursor: &mut SortedBatchCursor,
     ) where
         <T as ArrowPrimitiveType>::Native: Ord,
     {
         sort_ids_tmp.clear();
 
-        sort_ids_tmp.extend(ids.values().iter().copied().enumerate());
+        match ids {
+            MaybeDictArrayAccessor::Native(ids) => {
+                sort_ids_tmp.extend(ids.values().iter().copied().enumerate());
+            }
+            MaybeDictArrayAccessor::Dictionary16(ids) => {
+                let len = ids.as_dict_arr().len();
+                sort_ids_tmp.extend(
+                    (0..len)
+                        .map(|i| ids.value_at(i).unwrap_or_default())
+                        .enumerate(),
+                );
+            }
+            MaybeDictArrayAccessor::Dictionary8(ids) => {
+                let len = ids.as_dict_arr().len();
+                sort_ids_tmp.extend(
+                    (0..len)
+                        .map(|i| ids.value_at(i).unwrap_or_default())
+                        .enumerate(),
+                );
+            }
+        }
 
         if ids.null_count() == 0 {
             // fast path, no null IDs
@@ -705,7 +727,7 @@ impl BatchSorter {
 /// Iterates the indices of some child record batch
 pub(crate) struct ChildIndexIter<'a, T: ArrowPrimitiveType> {
     pub parent_id: T::Native,
-    pub parent_id_col: &'a PrimitiveArray<T>,
+    pub parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
     pub cursor: &'a mut SortedBatchCursor,
 }
 
@@ -715,7 +737,7 @@ where
 {
     pub fn new(
         parent_id: T::Native,
-        parent_id_col: &'a PrimitiveArray<T>,
+        parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
         cursor: &'a mut SortedBatchCursor,
     ) -> Self {
         Self {
@@ -768,10 +790,11 @@ mod test {
 
     use arrow::{
         array::{RecordBatch, StructArray, UInt16Array},
-        datatypes::{DataType, Field, Fields, Schema},
+        datatypes::{DataType, Field, Fields, Schema, UInt16Type},
     };
 
     use crate::{
+        arrays::MaybeDictArrayAccessor,
         otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
         schema::consts,
     };
@@ -779,7 +802,8 @@ mod test {
     #[test]
     fn test_child_index_iter_shuffled_order() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter_values(vec![2, 1, 2, 0]);
+        let tmp = UInt16Array::from_iter_values(vec![2, 1, 2, 0]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![3, 1, 0, 2]);
 
@@ -812,24 +836,25 @@ mod test {
     #[test]
     fn test_child_index_iter_with_skipped_values() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter_values(vec![0, 2, 0, 2]);
+        let tmp = UInt16Array::from_iter_values(vec![0, 2, 0, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![0, 2, 1, 3]);
 
         {
-            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            let mut id_0_iter = ChildIndexIter::<UInt16Type>::new(0, &parent_ids, &mut cursor);
             assert_eq!(id_0_iter.next(), Some(0));
             assert_eq!(id_0_iter.next(), Some(2));
             assert_eq!(id_0_iter.next(), None)
         }
 
         {
-            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
             assert_eq!(id_1_iter.next(), None)
         }
 
         {
-            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
             assert_eq!(id_2_iter.next(), Some(1));
             assert_eq!(id_2_iter.next(), Some(3));
             assert_eq!(id_2_iter.next(), None)
@@ -839,25 +864,26 @@ mod test {
     #[test]
     fn test_child_index_iter_with_nulls() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter(vec![Some(0), Some(2), None, Some(0), Some(1)]);
+        let tmp = UInt16Array::from_iter(vec![Some(0), Some(2), None, Some(0), Some(1)]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![0, 3, 4, 1, 2]);
 
         {
-            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            let mut id_0_iter = ChildIndexIter::<UInt16Type>::new(0, &parent_ids, &mut cursor);
             assert_eq!(id_0_iter.next(), Some(0));
             assert_eq!(id_0_iter.next(), Some(3));
             assert_eq!(id_0_iter.next(), None)
         }
 
         {
-            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
             assert_eq!(id_1_iter.next(), Some(4));
             assert_eq!(id_1_iter.next(), None)
         }
 
         {
-            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
             assert_eq!(id_2_iter.next(), Some(1));
             assert_eq!(id_2_iter.next(), None)
         }

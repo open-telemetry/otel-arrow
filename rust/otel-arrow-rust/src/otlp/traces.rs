@@ -4,7 +4,7 @@
 use arrow::array::Array;
 use snafu::OptionExt;
 
-use crate::arrays::NullableArrayAccessor;
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBuffer;
@@ -145,6 +145,12 @@ impl TracesProtoBytesEncoder {
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
+        // TODO remove
+        println!(
+            "span event attrs = {:?}",
+            otap_batch.get(ArrowPayloadType::SpanEventAttrs)
+        );
+
         otap_batch.decode_transport_optimized_ids()?;
         let traces_data_arrays = TracesDataArrays::try_from(&*otap_batch)?;
 
@@ -160,37 +166,44 @@ impl TracesProtoBytesEncoder {
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = traces_data_arrays.resource_attrs.as_ref() {
             self.batch_sorter.init_cursor_for_u16_id_column(
-                res_attrs.parent_id,
+                &res_attrs.parent_id,
                 &mut self.resource_attrs_cursor,
             );
         }
 
         // init cursors for visiting child attributes in the correct order
         if let Some(scope_attrs) = traces_data_arrays.scope_attrs.as_ref() {
-            self.batch_sorter
-                .init_cursor_for_u16_id_column(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &scope_attrs.parent_id,
+                &mut self.scope_attrs_cursor,
+            );
         }
         if let Some(log_attrs) = traces_data_arrays.span_attrs.as_ref() {
             self.batch_sorter
-                .init_cursor_for_u16_id_column(log_attrs.parent_id, &mut self.spans_attrs_cursor);
+                .init_cursor_for_u16_id_column(&log_attrs.parent_id, &mut self.spans_attrs_cursor);
         }
         if let Some(span_events) = traces_data_arrays.span_events.as_ref() {
-            self.batch_sorter
-                .init_cursor_for_u16_id_column(span_events.parent_id, &mut self.span_events_cursor);
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &MaybeDictArrayAccessor::Native(span_events.parent_id),
+                &mut self.span_events_cursor,
+            );
         }
         if let Some(span_event_attrs) = traces_data_arrays.span_event_attrs.as_ref() {
             self.batch_sorter.init_cursor_for_u32_id_column(
-                span_event_attrs.parent_id,
+                &span_event_attrs.parent_id,
                 &mut self.span_events_attrs_cursor,
             );
         }
+
         if let Some(span_links) = traces_data_arrays.span_links.as_ref() {
-            self.batch_sorter
-                .init_cursor_for_u16_id_column(span_links.parent_id, &mut self.span_links_cursor);
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &MaybeDictArrayAccessor::Native(span_links.parent_id),
+                &mut self.span_links_cursor,
+            );
         }
         if let Some(span_link_attrs) = traces_data_arrays.span_link_attrs.as_ref() {
             self.batch_sorter.init_cursor_for_u32_id_column(
-                span_link_attrs.parent_id,
+                &span_link_attrs.parent_id,
                 &mut self.span_links_attrs_cursor,
             );
         }
@@ -399,7 +412,7 @@ impl TracesProtoBytesEncoder {
         if let Some(span_attrs) = &traces_data_arrays.span_attrs {
             if let Some(id) = span_arrays.id.value_at(index) {
                 let attrs_index_iter =
-                    ChildIndexIter::new(id, span_attrs.parent_id, &mut self.spans_attrs_cursor);
+                    ChildIndexIter::new(id, &span_attrs.parent_id, &mut self.spans_attrs_cursor);
                 for attr_index in attrs_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         SPAN_ATTRIBUTES,
@@ -419,8 +432,13 @@ impl TracesProtoBytesEncoder {
 
         if let Some(span_events) = &traces_data_arrays.span_events {
             if let Some(id) = span_arrays.id.value_at(index) {
+                let parent_ids = MaybeDictArrayAccessor::Native(span_events.parent_id);
                 let events_index_iter =
-                    ChildIndexIter::new(id, span_events.parent_id, &mut self.span_events_cursor);
+                    ChildIndexIter::new(id, &parent_ids, &mut self.span_events_cursor);
+                println!(
+                    "\n---span_event_attrs_cursor before = {:?}",
+                    self.span_events_attrs_cursor
+                );
                 for event_index in events_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         SPAN_EVENTS,
@@ -434,6 +452,10 @@ impl TracesProtoBytesEncoder {
                         result_buf
                     );
                 }
+                println!(
+                    "\n---span_event_attrs_cursor after = {:?}",
+                    self.span_events_attrs_cursor
+                );
             }
         }
 
@@ -446,8 +468,9 @@ impl TracesProtoBytesEncoder {
 
         if let Some(span_links) = &traces_data_arrays.span_links {
             if let Some(id) = span_arrays.id.value_at(index) {
+                let parent_ids = MaybeDictArrayAccessor::Native(span_links.parent_id);
                 let links_index_iter =
-                    ChildIndexIter::new(id, span_links.parent_id, &mut self.span_links_cursor);
+                    ChildIndexIter::new(id, &parent_ids, &mut self.span_links_cursor);
                 for link_index in links_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         SPAN_LINKS,

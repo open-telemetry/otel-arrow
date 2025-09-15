@@ -324,6 +324,16 @@ pub enum MaybeDictArrayAccessor<'a, V> {
     Dictionary16(DictionaryArrayAccessor<'a, UInt16Type, V>),
 }
 
+impl<'a, V> Clone for MaybeDictArrayAccessor<'a, V> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Native(n) => MaybeDictArrayAccessor::Native(n),
+            Self::Dictionary8(d) => MaybeDictArrayAccessor::Dictionary8(d.clone()),
+            Self::Dictionary16(d) => MaybeDictArrayAccessor::Dictionary16(d.clone()),
+        }
+    }
+}
+
 impl<'a, T> NullableArrayAccessor for MaybeDictArrayAccessor<'a, T>
 where
     T: Array + NullableArrayAccessor + 'static,
@@ -406,6 +416,14 @@ where
         }
         .fail()
     }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        match self {
+            Self::Dictionary16(d) => d.is_valid(index),
+            Self::Dictionary8(d) => d.is_valid(index),
+            Self::Native(d) => d.is_valid(index),
+        }
+    }
 }
 
 impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
@@ -421,6 +439,14 @@ where
         column_name: &str,
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
+    }
+
+    pub fn null_count(&self) -> usize {
+        match self {
+            Self::Dictionary16(d) => d.null_count(),
+            Self::Dictionary8(d) => d.null_count(),
+            Self::Native(n) => n.null_count(),
+        }
     }
 }
 
@@ -506,6 +532,18 @@ where
     value: &'a V,
 }
 
+impl<'a, K, V> Clone for DictionaryArrayAccessor<'a, K, V>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner,
+            value: self.value,
+        }
+    }
+}
+
 impl<'a, K, V> DictionaryArrayAccessor<'a, K, V>
 where
     K: ArrowDictionaryKeyType,
@@ -533,6 +571,18 @@ where
         } else {
             None
         }
+    }
+
+    pub fn as_dict_arr(&self) -> &DictionaryArray<K> {
+        self.inner
+    }
+
+    pub fn null_count(&self) -> usize {
+        self.inner.null_count()
+    }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        self.inner.is_valid(index)
     }
 }
 
