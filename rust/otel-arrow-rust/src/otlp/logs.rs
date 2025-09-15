@@ -13,7 +13,7 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{AttributeArrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
@@ -165,9 +165,37 @@ pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
     resource_arrays: ResourceArrays<'a>,
-    log_attrs: Option<AttributeArrays<'a>>,
-    resource_attrs: Option<AttributeArrays<'a>>,
-    scope_attrs: Option<AttributeArrays<'a>>,
+    log_attrs: Option<Attribute16Arrays<'a>>,
+    resource_attrs: Option<Attribute16Arrays<'a>>,
+    scope_attrs: Option<Attribute16Arrays<'a>>,
+}
+
+impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
+    type Error = Error;
+
+    fn try_from(otap_batch: &'a OtapArrowRecords) -> Result<Self> {
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
+
+        Ok(Self {
+            log_arrays: LogsArrays::try_from(logs_rb)?,
+            scope_arrays: ScopeArrays::try_from(logs_rb)?,
+            resource_arrays: ResourceArrays::try_from(logs_rb)?,
+            log_attrs: otap_batch
+                .get(ArrowPayloadType::LogAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            scope_attrs: otap_batch
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            resource_attrs: otap_batch
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+        })
+    }
 }
 
 pub struct LogsProtoBytesEncoder {
@@ -210,32 +238,14 @@ impl LogsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
-
-        let logs_rb = otap_batch
-            .get(ArrowPayloadType::Logs)
-            .context(error::LogRecordNotFoundSnafu)?;
-
-        let logs_data_arrays = LogsDataArrays {
-            log_arrays: LogsArrays::try_from(logs_rb)?,
-            scope_arrays: ScopeArrays::try_from(logs_rb)?,
-            resource_arrays: ResourceArrays::try_from(logs_rb)?,
-            log_attrs: otap_batch
-                .get(ArrowPayloadType::LogAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-            scope_attrs: otap_batch
-                .get(ArrowPayloadType::ScopeAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-            resource_attrs: otap_batch
-                .get(ArrowPayloadType::ResourceAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-        };
+        let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
 
         self.reset();
 
         // get the list of indices in the root record to visit in order
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
         self.batch_sorter
             .init_cursor_for_root_batch(logs_rb, &mut self.root_cursor)?;
 

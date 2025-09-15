@@ -3,23 +3,29 @@
 
 use arrow::array::StructArray;
 use related_data::RelatedData;
-use snafu::ensure;
+use snafu::{OptionExt, ensure};
 
 use crate::arrays::NullableArrayAccessor;
-use crate::error::{self, Result, SpanRecordNotFoundSnafu};
+use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::common::{ResourceArrays, ScopeArrays};
+use crate::otlp::ProtoBuffer;
+use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
+use crate::otlp::common::{BatchSorter, ResourceArrays, ScopeArrays, SortedBatchCursor};
 use crate::otlp::metrics::AppendAndGet;
+use crate::otlp::traces::span_event_arrays::SpanEventArrays;
+use crate::otlp::traces::span_link_arrays::SpanLinkArrays;
 use crate::otlp::traces::spans_arrays::SpansArrays;
+use crate::proto::consts::field_num::traces::TRACES_DATA_RESOURCE_SPANS;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::{consts, is_id_plain_encoded};
 
 pub mod delta_decoder;
 mod related_data;
-mod span_event;
+mod span_event_arrays;
 mod span_event_store;
-mod span_link;
+mod span_link_arrays;
 mod span_links_store;
 mod spans_arrays;
 mod spans_status_arrays;
@@ -53,7 +59,7 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
 
     let rb = traces_otap_batch
         .get(ArrowPayloadType::Spans)
-        .ok_or(SpanRecordNotFoundSnafu.build())?;
+        .ok_or(error::SpanRecordNotFoundSnafu.build())?;
 
     // Parse all related data (attributes, events, links)
     let mut related_data = RelatedData::try_from(&traces_otap_batch)?;
@@ -261,4 +267,184 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
     }
 
     Ok(traces)
+}
+
+struct TracesDataArrays<'a> {
+    spans_arrays: SpansArrays<'a>,
+    scope_arrays: ScopeArrays<'a>,
+    resource_arrays: ResourceArrays<'a>,
+    span_attrs: Option<Attribute16Arrays<'a>>,
+    scope_attrs: Option<Attribute16Arrays<'a>>,
+    resource_attrs: Option<Attribute16Arrays<'a>>,
+    span_events: Option<SpanEventArrays<'a>>,
+    span_event_attrs: Option<Attribute32Arrays<'a>>,
+    span_links: Option<SpanLinkArrays<'a>>,
+    span_link_attrs: Option<Attribute32Arrays<'a>>,
+}
+
+impl<'a> TryFrom<&'a OtapArrowRecords> for TracesDataArrays<'a> {
+    type Error = Error;
+
+    fn try_from(otap_batch: &'a OtapArrowRecords) -> Result<Self> {
+        let spans_rb = otap_batch
+            .get(ArrowPayloadType::Spans)
+            .context(error::SpanRecordNotFoundSnafu)?;
+
+        Ok(Self {
+            spans_arrays: SpansArrays::try_from(spans_rb)?,
+            scope_arrays: ScopeArrays::try_from(spans_rb)?,
+            resource_arrays: ResourceArrays::try_from(spans_rb)?,
+            span_attrs: otap_batch
+                .get(ArrowPayloadType::SpanAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            scope_attrs: otap_batch
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            resource_attrs: otap_batch
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            span_events: otap_batch
+                .get(ArrowPayloadType::SpanEvents)
+                .map(SpanEventArrays::try_from)
+                .transpose()?,
+            span_event_attrs: otap_batch
+                .get(ArrowPayloadType::SpanEventAttrs)
+                .map(Attribute32Arrays::try_from)
+                .transpose()?,
+            span_links: otap_batch
+                .get(ArrowPayloadType::SpanLinks)
+                .map(SpanLinkArrays::try_from)
+                .transpose()?,
+            span_link_attrs: otap_batch
+                .get(ArrowPayloadType::SpanLinkAttrs)
+                .map(Attribute32Arrays::try_from)
+                .transpose()?,
+        })
+    }
+}
+
+/// This is used to encode OTAP Batches of Spans data into serialized protobuf
+// TODO -- a docs test
+pub struct TracesProtoBytesEncoder {
+    batch_sorter: BatchSorter,
+    root_cursor: SortedBatchCursor,
+    resource_attrs_cursor: SortedBatchCursor,
+    scope_attrs_cursor: SortedBatchCursor,
+    spans_attrs_cursor: SortedBatchCursor,
+    span_links_cursor: SortedBatchCursor,
+    span_links_attrs_cursor: SortedBatchCursor,
+    span_events_cursor: SortedBatchCursor,
+    span_events_attrs_cursor: SortedBatchCursor,
+}
+
+impl TracesProtoBytesEncoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            spans_attrs_cursor: SortedBatchCursor::new(),
+            span_links_cursor: SortedBatchCursor::new(),
+            span_links_attrs_cursor: SortedBatchCursor::new(),
+            span_events_cursor: SortedBatchCursor::new(),
+            span_events_attrs_cursor: SortedBatchCursor::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.spans_attrs_cursor.reset();
+        self.span_links_cursor.reset();
+        self.span_links_attrs_cursor.reset();
+        self.span_events_cursor.reset();
+        self.span_events_attrs_cursor.reset();
+    }
+
+    /// encode the OTAP batch into a proto serialized `TracesData` / `ExportTraceServiceRequest`
+    /// message into the target buffer
+    pub fn encode(
+        &mut self,
+        otap_batch: &mut OtapArrowRecords,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        otap_batch.decode_transport_optimized_ids()?;
+        let traces_data_arrays = TracesDataArrays::try_from(&*otap_batch)?;
+
+        self.reset();
+
+        // get the list of indices from the root record batch to visit in order
+        let spans_rb = otap_batch
+            .get(ArrowPayloadType::Spans)
+            .context(error::SpanRecordNotFoundSnafu)?;
+        self.batch_sorter
+            .init_cursor_for_root_batch(spans_rb, &mut self.root_cursor)?;
+
+        // get the lists of child indices for attributes to visit in oder:
+        if let Some(res_attrs) = traces_data_arrays.resource_attrs.as_ref() {
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                res_attrs.parent_id,
+                &mut self.resource_attrs_cursor,
+            );
+        }
+
+        // init cursors for visiting child attributes in the correct order
+        if let Some(scope_attrs) = traces_data_arrays.scope_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
+        }
+        if let Some(log_attrs) = traces_data_arrays.span_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(log_attrs.parent_id, &mut self.spans_attrs_cursor);
+        }
+        if let Some(span_events) = traces_data_arrays.span_events.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(span_events.parent_id, &mut self.span_events_cursor);
+        }
+        if let Some(span_event_attrs) = traces_data_arrays.span_event_attrs.as_ref() {
+            self.batch_sorter.init_cursor_for_u32_id_column(
+                span_event_attrs.parent_id,
+                &mut self.span_events_attrs_cursor,
+            );
+        }
+        if let Some(span_links) = traces_data_arrays.span_links.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(span_links.parent_id, &mut self.span_links_cursor);
+        }
+        if let Some(span_link_attrs) = traces_data_arrays.span_link_attrs.as_ref() {
+            self.batch_sorter.init_cursor_for_u32_id_column(
+                span_link_attrs.parent_id,
+                &mut self.span_links_attrs_cursor,
+            );
+        }
+
+        // encode all the `ResourceSpan`s for this `TracesData`
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                TRACES_DATA_RESOURCE_SPANS,
+                self.encode_resource_spans(&traces_data_arrays, result_buf)?,
+                result_buf
+            );
+
+            if self.root_cursor.finished() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_resource_spans(
+        &mut self,
+        traces_data_arrays: &TracesDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

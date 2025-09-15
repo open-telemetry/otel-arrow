@@ -1,11 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::{RecordBatch, StringArray, UInt16Array};
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray, UInt16Array};
+use arrow::datatypes::{UInt16Type, UInt32Type};
 use prost::Message;
 use snafu::OptionExt;
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_u16_array};
+use crate::arrays::{
+    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u16_array,
+};
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
@@ -24,17 +27,31 @@ pub mod decoder;
 pub mod parent_id;
 pub mod store;
 
-pub(crate) struct AttributeArrays<'a> {
-    pub parent_id: &'a UInt16Array,
+pub(crate) type Attribute16Arrays<'a> = AttributeArrays<'a, UInt16Type>;
+pub(crate) type Attribute32Arrays<'a> = AttributeArrays<'a, UInt32Type>;
+
+pub(crate) struct AttributeArrays<'a, T: ArrowPrimitiveType> {
+    pub parent_id: &'a PrimitiveArray<T>,
     pub attr_key: MaybeDictArrayAccessor<'a, StringArray>,
     pub anyval_arrays: AnyValueArrays<'a>,
 }
 
-impl<'a> TryFrom<&'a RecordBatch> for AttributeArrays<'a> {
+impl<'a, T> TryFrom<&'a RecordBatch> for AttributeArrays<'a, T>
+where
+    T: ArrowPrimitiveType,
+{
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let parent_id = get_u16_array(rb, consts::PARENT_ID)?;
+        let parent_ids = get_required_array(rb, consts::PARENT_ID)?;
+        let parent_id = parent_ids
+            .as_any()
+            .downcast_ref::<PrimitiveArray<T>>()
+            .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                name: consts::PARENT_ID,
+                expect: T::DATA_TYPE,
+                actual: parent_ids.data_type().clone(),
+            })?;
 
         let key = rb.column_by_name(consts::ATTRIBUTE_KEY).with_context(|| {
             error::ColumnNotFoundSnafu {
@@ -53,8 +70,8 @@ impl<'a> TryFrom<&'a RecordBatch> for AttributeArrays<'a> {
     }
 }
 
-pub(crate) fn encode_key_value(
-    attr_arrays: &AttributeArrays<'_>,
+pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
+    attr_arrays: &AttributeArrays<'_, T>,
     index: usize,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {

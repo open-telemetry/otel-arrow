@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::attributes::{AttributeArrays, cbor, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -20,8 +20,8 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, an
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, BooleanArray, Float64Array, RecordBatch, StructArray, UInt8Array, UInt16Array,
-    UInt32Array,
+    Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
+    StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
@@ -58,7 +58,7 @@ impl ResourceArrays<'_> {
 pub(crate) fn proto_encode_resource(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
-    resource_attrs_arrays: Option<&AttributeArrays<'_>>,
+    resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
@@ -175,7 +175,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 pub(crate) fn proto_encode_instrumentation_scope(
     index: usize,
     scope_arrays: &ScopeArrays<'_>,
-    scope_attrs_arrays: Option<&AttributeArrays<'_>>,
+    scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
@@ -528,6 +528,7 @@ pub(crate) struct BatchSorter {
     // we can reuse the allocations for multiple batches.
     rows: Vec<(usize, Row<'static>)>,
     u16_ids: Vec<(usize, u16)>,
+    u32_ids: Vec<(usize, u32)>,
 }
 
 impl BatchSorter {
@@ -543,6 +544,7 @@ impl BatchSorter {
             row_converter,
             rows: Vec::new(),
             u16_ids: Vec::new(),
+            u32_ids: Vec::new(),
         }
     }
 
@@ -637,16 +639,34 @@ impl BatchSorter {
         ids: &UInt16Array,
         cursor: &mut SortedBatchCursor,
     ) {
-        self.u16_ids.clear();
-        self.u16_ids
-            .extend(ids.values().iter().copied().enumerate());
+        Self::init_cursor_for_ids_column(&mut self.u16_ids, ids, cursor);
+    }
+
+    pub fn init_cursor_for_u32_id_column(
+        &mut self,
+        ids: &UInt32Array,
+        cursor: &mut SortedBatchCursor,
+    ) {
+        Self::init_cursor_for_ids_column(&mut self.u32_ids, ids, cursor);
+    }
+
+    fn init_cursor_for_ids_column<T: ArrowPrimitiveType>(
+        sort_ids_tmp: &mut Vec<(usize, T::Native)>,
+        ids: &PrimitiveArray<T>,
+        cursor: &mut SortedBatchCursor,
+    ) where
+        <T as ArrowPrimitiveType>::Native: Ord,
+    {
+        sort_ids_tmp.clear();
+
+        sort_ids_tmp.extend(ids.values().iter().copied().enumerate());
 
         if ids.null_count() == 0 {
             // fast path, no null IDs
-            self.u16_ids.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+            sort_ids_tmp.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
         } else {
             // sort nulls last
-            self.u16_ids.sort_unstable_by(|(ia, a), (ib, b)| {
+            sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
                 match (ids.is_valid(*ia), ids.is_valid(*ib)) {
                     (true, true) => a.cmp(b),
                     (true, false) => Ordering::Less,
@@ -658,7 +678,7 @@ impl BatchSorter {
 
         cursor
             .sorted_indices
-            .extend(self.u16_ids.iter().map(|(i, _)| *i));
+            .extend(sort_ids_tmp.iter().map(|(i, _)| *i));
     }
 }
 
