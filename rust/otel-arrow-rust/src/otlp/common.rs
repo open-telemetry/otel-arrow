@@ -369,6 +369,11 @@ impl ProtoBuffer {
         Self { buffer: Vec::new() }
     }
 
+    #[must_use]
+    pub fn to_vec(self) -> Vec<u8> {
+        self.buffer
+    }
+
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
         let key = (field_number << 3) | wire_type;
         self.encode_varint(key);

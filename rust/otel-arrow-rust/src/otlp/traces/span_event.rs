@@ -14,24 +14,16 @@ use crate::{
         attributes::{Attribute32Arrays, encode_key_value},
         common::{ChildIndexIter, SortedBatchCursor},
     },
-    proto::{
-        consts::{
-            field_num::traces::{
-                SPAN_EVENT_ATTRIBUTES, SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, SPAN_EVENT_NAME,
-                SPAN_EVENT_TIME_UNIX_NANO,
-            },
-            wire_types,
+    proto::consts::{
+        field_num::traces::{
+            SPAN_EVENT_ATTRIBUTES, SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, SPAN_EVENT_NAME,
+            SPAN_EVENT_TIME_UNIX_NANO,
         },
-        opentelemetry::trace::v1::span,
+        wire_types,
     },
     proto_encode_len_delimited_unknown_size,
     schema::consts,
 };
-
-pub struct SpanEvent {
-    pub parent_id: u16,
-    pub event: span::Event,
-}
 
 pub struct SpanEventArrays<'a> {
     pub id: Option<&'a UInt32Array>,
