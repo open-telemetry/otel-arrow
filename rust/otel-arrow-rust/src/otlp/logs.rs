@@ -331,9 +331,7 @@ impl LogsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val);
             }
         }
 
@@ -388,9 +386,7 @@ impl LogsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val);
             }
         }
 
@@ -425,9 +421,7 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.severity_text {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val);
             }
         }
 
@@ -477,17 +471,13 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.trace_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_TRACE_ID, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val);
+                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val);
             }
         }
 
         if let Some(col) = &log_arrays.span_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SPAN_ID, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val);
+                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val);
             }
         }
 
@@ -501,9 +491,7 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.event_name {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val);
             }
         }
 

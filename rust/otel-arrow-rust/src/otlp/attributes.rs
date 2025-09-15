@@ -69,9 +69,7 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     if let Some(key) = attr_arrays.attr_key.str_at(index) {
-        result_buf.encode_field_tag(KEY_VALUE_KEY, wire_types::LEN);
-        result_buf.encode_varint(key.len() as u64);
-        result_buf.extend_from_slice(key.as_bytes());
+        result_buf.encode_string(KEY_VALUE_KEY, key);
     }
 
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
@@ -100,9 +98,7 @@ pub(crate) fn encode_any_value(
         AttributeValueType::Str => {
             if let Some(attr_str) = &attr_arrays.attr_str {
                 if let Some(val) = attr_str.str_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN);
-                    result_buf.encode_varint(val.len() as u64);
-                    result_buf.extend_from_slice(val.as_bytes());
+                    result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
                 }
             }
         }
@@ -133,9 +129,7 @@ pub(crate) fn encode_any_value(
         AttributeValueType::Bytes => {
             if let Some(attr_bytes) = &attr_arrays.attr_bytes {
                 if let Some(val) = attr_bytes.slice_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_BYTES_VALUE, wire_types::LEN);
-                    result_buf.encode_varint(val.len() as u64);
-                    result_buf.extend_from_slice(val.as_ref());
+                    result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val);
                 }
             }
         }
@@ -147,9 +141,7 @@ pub(crate) fn encode_any_value(
                 if let Some(Value::KvlistValue(kv_list)) = any_val?.value {
                     let mut bytes = vec![];
                     kv_list.encode(&mut bytes).expect("buffer has capacity");
-                    result_buf.encode_field_tag(ANY_VALUE_KVLIST_VALUE, wire_types::LEN);
-                    result_buf.encode_varint(bytes.len() as u64);
-                    result_buf.extend_from_slice(&bytes);
+                    result_buf.encode_bytes(ANY_VALUE_KVLIST_VALUE, bytes.as_ref());
                 }
             }
         }
@@ -158,9 +150,7 @@ pub(crate) fn encode_any_value(
                 if let Some(Value::ArrayValue(list)) = any_val?.value {
                     let mut bytes = vec![];
                     list.encode(&mut bytes).expect("buffer has capacity");
-                    result_buf.encode_field_tag(ANY_VALUE_ARRAY_VALUE, wire_types::LEN);
-                    result_buf.encode_varint(bytes.len() as u64);
-                    result_buf.extend_from_slice(&bytes);
+                    result_buf.encode_bytes(ANY_VALUE_ARRAY_VALUE, bytes.as_ref());
                 }
             }
         }
