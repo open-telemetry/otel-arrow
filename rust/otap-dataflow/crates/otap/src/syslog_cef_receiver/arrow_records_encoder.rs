@@ -182,7 +182,7 @@ mod tests {
         );
     }
 
-    fn otlp_logs_to_otap(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
+    fn otap_logs_to_otlp(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut buffer = ProtoBuffer::new();
         logs_encoder
@@ -2098,7 +2098,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = otlp_logs_to_otap(arrow_records);
+        let export_request = otap_logs_to_otlp(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2339,7 +2339,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = otlp_logs_to_otap(arrow_records);
+        let export_request = otap_logs_to_otlp(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2595,7 +2595,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = otlp_logs_to_otap(arrow_records);
+        let export_request = otap_logs_to_otlp(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
@@ -2858,7 +2858,7 @@ mod tests {
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Convert to ExportLogsServiceRequest
-        let export_request = otlp_logs_to_otap(arrow_records);
+        let export_request = otap_logs_to_otlp(arrow_records);
 
         // Verify we have the expected number of resource logs
         assert_eq!(export_request.resource_logs.len(), 1);
