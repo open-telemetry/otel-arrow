@@ -38,7 +38,7 @@ steps:
           # Render the engine config into the suite config directory
           - render_template:
               template_path: '{{engine_config_template}}'
-              output_path: ./test_suites/tech_summit/configs/engine/config.rendered.yaml
+              output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
               variables:
                 backend_hostname: backend-service
         post:
