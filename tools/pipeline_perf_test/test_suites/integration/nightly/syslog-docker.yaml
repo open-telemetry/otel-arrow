@@ -69,13 +69,13 @@ components:
 tests:
   - name: SYSLOG-ATTR-OTAP
     from_template:
-      path: test_suites/integration/templates/test_steps/test-steps-docker.yaml
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otap.yaml
         backend_receiver_type: otap
   - name: SYSLOG-ATTR-OTLP
     from_template:
-      path: test_suites/integration/templates/test_steps/test-steps-docker.yaml
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otlp.yaml
         backend_receiver_type: otlp
