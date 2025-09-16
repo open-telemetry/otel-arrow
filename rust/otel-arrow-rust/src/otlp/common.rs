@@ -696,7 +696,7 @@ impl BatchSorter {
 
         if ids.null_count() == 0 {
             // fast path, no null IDs
-            sort_ids_tmp.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+            sort_ids_tmp.sort_unstable_by_key(|&(_, value)| value);
         } else {
             // sort nulls last
             sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
