@@ -91,7 +91,7 @@ queries:
         metrics_filtered AS (
             SELECT *,
             "metric_attributes.component_name" AS component_name,
-            COALESCE("metric_attributes.core_id", -1) AS core_id,
+            COALESCE("metric_attributes.core_id", "N/A") AS core_id,
             FROM metrics
             WHERE metric_name IN (
               'logs_produced',
