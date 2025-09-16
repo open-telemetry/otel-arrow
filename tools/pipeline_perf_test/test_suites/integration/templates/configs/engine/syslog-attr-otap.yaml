@@ -6,7 +6,7 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn::otel::syslog_cef::receiver"
+    plugin_urn: "urn:otel:syslog_cef:receiver"
     out_ports:
       out_port:
         destinations:
@@ -14,7 +14,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "0.0.0.0:4317"
-      protocol: Udp
+      protocol: udp
   attr:
     kind: processor
     plugin_urn: "urn:otap:processor:attributes_processor"
