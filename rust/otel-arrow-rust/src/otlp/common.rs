@@ -384,6 +384,12 @@ impl ProtoBuffer {
         self.buffer.push(value as u8);
     }
 
+    /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
+    /// https://protobuf.dev/programming-guides/encoding/#signed-ints
+    pub fn encode_sint32(&mut self, value: i32) {
+        self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
+    }
+
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
         self.buffer.extend_from_slice(slice);
     }

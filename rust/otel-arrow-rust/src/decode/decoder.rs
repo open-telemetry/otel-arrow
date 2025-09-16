@@ -6,7 +6,7 @@ use crate::error;
 use crate::otap::{OtapArrowRecords, from_record_messages};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::logs::LogsProtoBytesEncoder;
-use crate::otlp::metrics::metrics_from;
+use crate::otlp::metrics::MetricsProtoBytesEncoder;
 use crate::otlp::traces::TracesProtoBytesEncoder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -50,6 +50,7 @@ impl StreamConsumer {
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
     logs_proto_encoder: LogsProtoBytesEncoder,
+    metrics_proto_encoder: MetricsProtoBytesEncoder,
     traces_proto_encoder: TracesProtoBytesEncoder,
     proto_buffer: ProtoBuffer,
 }
@@ -118,8 +119,18 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages));
-                metrics_from(otap_batch)
+                let mut otap_batch =
+                    OtapArrowRecords::Metrics(from_record_messages(record_messages));
+                self.proto_buffer.clear();
+                self.metrics_proto_encoder
+                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+                ExportMetricsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("error decoding proto serialization: {e:?}"),
+                    }
+                    .build()
+                })
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
