@@ -97,6 +97,7 @@ queries:
               'logs_produced',
               'failed',
               'bytes_sent',
+              'sent',
               'late_batches',
               'logs'
             ) AND timestamp > (
