@@ -443,7 +443,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 logs_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                Ok(Self::ExportLogsRequest(buffer.to_vec()))
+                Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
                 // TODO implement fast path encoding OTAP -> OTLP bytes for metrics
@@ -462,7 +462,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 traces_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                Ok(Self::ExportTracesRequest(buffer.to_vec()))
+                Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }
         }
     }
