@@ -367,7 +367,7 @@ impl ProtoBuffer {
     }
 
     #[must_use]
-    pub fn to_vec(self) -> Vec<u8> {
+    pub fn into_bytes(self) -> Vec<u8> {
         self.buffer
     }
 
