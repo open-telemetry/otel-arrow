@@ -32,7 +32,7 @@ components:
   df-engine:
     deployment:
       docker:
-        image: df_engine:latest 
+        image: df_engine:latest
         network: testbed
         ports:
           - "8086:8080"

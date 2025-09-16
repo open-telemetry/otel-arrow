@@ -8,16 +8,16 @@ engine under different load and protocol scenarios.
 
 ```shell
 integration/
-├── configs/                # Rendered configuration files used in test runs
-│   ├── backend/
-│   ├── engine/
-│   ├── loadgen/
-│   └── integration_report_logs.yaml
-├── continuous/             # Continuous integration test configurations (e.g. 100k LRPS)
-├── nightly/                # Nightly, longer-running test configs (e.g. syslog scenarios)
-└── templates/              # Jinja2 templates for configs and test step workflows
-    ├── configs/            # Templates in this directory are rendered into integration/configs/. and run by components
-    └── test_steps/
+|-- configs/                # Rendered configuration files used in test runs
+|   |-- backend/
+|   |-- engine/
+|   |-- loadgen/
+|   |-- integration_report_logs.yaml
+|-- continuous/             # Continuous integration test configurations (e.g. 100k LRPS)
+|-- nightly/                # Nightly, longer-running test configs (e.g. syslog scenarios)
+|-- templates/              # Jinja2 templates for configs and test step workflows
+    |-- configs/            # Templates in this directory are rendered into integration/configs/. and run by components
+    |-- test_steps/
 ```
 
 ## Running The Suites
@@ -43,7 +43,7 @@ docker build \
 Automated Docker builds are not yet supported. See comments in the suite
 config for details.
 
-### Run The Orchestrator
+### Run Test Suites
 
 #### Pre-Reqs (first time)
 

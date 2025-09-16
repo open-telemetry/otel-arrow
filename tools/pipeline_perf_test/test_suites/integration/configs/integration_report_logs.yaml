@@ -63,7 +63,7 @@ queries:
             SELECT *,
                   value - prev_value AS delta,
                   EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
-                  CASE 
+                  CASE
                       WHEN prev_value IS NULL OR time_delta_seconds = 0 THEN NULL
                       ELSE (value - prev_value) / time_delta_seconds
                   END AS rate
@@ -120,7 +120,7 @@ queries:
             SELECT *,
                   value - prev_value AS delta,
                   EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
-                  CASE 
+                  CASE
                       WHEN prev_value IS NULL OR time_delta_seconds = 0 THEN NULL
                       ELSE (value - prev_value) / time_delta_seconds
                   END AS rate
@@ -179,7 +179,7 @@ queries:
     sql: |
       CREATE TABLE component_resource_metrics AS
         WITH metrics_filtered AS (
-          SELECT *, 
+          SELECT *,
           "metric_attributes.component_name" AS component_name,
           FROM metrics
           WHERE metric_name IN ('process.cpu.usage', 'process.memory.usage', 'container.cpu.usage', 'container.memory.usage')
@@ -290,7 +290,7 @@ queries:
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'received_log_rate_avg'
-          
+
           UNION ALL
 
           SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
@@ -298,7 +298,7 @@ queries:
           FROM container_network_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'container.network.tx' AND component_name IN ('go-collector', 'df-engine')
-          
+
           UNION ALL
 
           SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
