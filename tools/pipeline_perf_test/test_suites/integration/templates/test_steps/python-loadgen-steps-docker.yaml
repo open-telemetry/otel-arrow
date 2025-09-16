@@ -27,11 +27,11 @@ steps:
               url: http://localhost:8087/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
-  - name: Deploy Rust Engine
+  - name: Deploy DF Engine
     action:
       component_action:
         phase: deploy
-        target: rust-engine
+        target: df-engine
     hooks:
       run:
         pre:
@@ -66,13 +66,13 @@ steps:
         phase: start_monitoring
         targets:
           - backend-service
-          - syslog-generator
-          - rust-engine
+          - load-generator
+          - df-engine
   - name: Start Load
     action:
       component_action:
         phase: start
-        target: syslog-generator
+        target: load-generator
   - name: Wait for data
     action:
       wait:
@@ -95,7 +95,7 @@ steps:
     action:
       component_action:
         phase: stop
-        target: syslog-generator
+        target: load-generator
   # Wait for all items in-flight to transit and ensure metrics are updated.
   - name: Wait For Drain and Reset
     action:
@@ -108,16 +108,16 @@ steps:
         phase: stop_monitoring
         targets:
           - backend-service
-          - syslog-generator
-          - rust-engine
+          - load-generator
+          - df-engine
   # Stop all running components.
   - name: Destroy All
     action:
       multi_component_action:
         phase: destroy
         targets:
-          - syslog-generator
-          - rust-engine
+          - load-generator
+          - df-engine
           - backend-service
   # Run the report
   - name: Run Report
