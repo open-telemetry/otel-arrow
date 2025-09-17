@@ -964,8 +964,8 @@ mod test {
 
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+    use otel_arrow_rust::otlp::attributes::AttributeValueType;
     use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
-    use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };

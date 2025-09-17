@@ -531,7 +531,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::otap::Traces;
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::span::{Event, Link};
