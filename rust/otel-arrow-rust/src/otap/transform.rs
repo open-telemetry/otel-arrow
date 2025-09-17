@@ -188,7 +188,6 @@ where
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
     // downcast parent ID into an array of the primitive type
-    // let parent_id_arr = T::get_parent_id_column(record_batch)?;
     let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(
         get_required_array(record_batch, consts::PARENT_ID)?,
     )?;
