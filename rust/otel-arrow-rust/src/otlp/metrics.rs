@@ -391,7 +391,7 @@ impl MetricsProtoBytesEncoder {
             metrics_data_arrays.number_dp_exemplar_arrays.as_ref()
         {
             self.batch_sorter.init_cursor_for_u32_id_column(
-                &MaybeDictArrayAccessor::Native(number_dp_exemplar_arrays.parent_id),
+                &number_dp_exemplar_arrays.parent_id,
                 &mut self.number_dp_exemplars_cursor,
             );
         }
@@ -422,7 +422,7 @@ impl MetricsProtoBytesEncoder {
         if let Some(hist_dp_exemplar_arrays) = metrics_data_arrays.hist_dp_exemplar_arrays.as_ref()
         {
             self.batch_sorter.init_cursor_for_u32_id_column(
-                &MaybeDictArrayAccessor::Native(hist_dp_exemplar_arrays.parent_id),
+                &hist_dp_exemplar_arrays.parent_id,
                 &mut self.hist_dp_exemplars_cursor,
             );
         }
@@ -452,7 +452,7 @@ impl MetricsProtoBytesEncoder {
             metrics_data_arrays.exp_hist_dp_exemplar_arrays.as_ref()
         {
             self.batch_sorter.init_cursor_for_u32_id_column(
-                &MaybeDictArrayAccessor::Native(exp_hist_dp_exemplar_arrays.parent_id),
+                &exp_hist_dp_exemplar_arrays.parent_id,
                 &mut self.exp_hist_exemplars_cursor,
             );
         }

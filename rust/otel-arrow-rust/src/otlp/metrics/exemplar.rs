@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    FixedSizeBinaryArrayAccessor, NullableArrayAccessor, get_f64_array_opt, get_i64_array_opt,
-    get_timestamp_nanosecond_array_opt, get_u32_array, get_u32_array_opt,
+    FixedSizeBinaryArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, get_f64_array_opt,
+    get_i64_array_opt, get_required_array, get_timestamp_nanosecond_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
@@ -20,7 +20,7 @@ use arrow::array::{Float64Array, Int64Array, RecordBatch, TimestampNanosecondArr
 
 pub struct ExemplarArrays<'a> {
     pub id: Option<&'a UInt32Array>,
-    pub parent_id: &'a UInt32Array,
+    pub parent_id: MaybeDictArrayAccessor<'a, UInt32Array>,
     pub time_unix_nano: Option<&'a TimestampNanosecondArray>,
     pub int_value: Option<&'a Int64Array>,
     pub double_value: Option<&'a Float64Array>,
@@ -33,7 +33,10 @@ impl<'a> TryFrom<&'a RecordBatch> for ExemplarArrays<'a> {
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         let id = get_u32_array_opt(rb, consts::ID)?;
-        let parent_id = get_u32_array(rb, consts::PARENT_ID)?;
+        let parent_id = MaybeDictArrayAccessor::<UInt32Array>::try_new(get_required_array(
+            rb,
+            consts::PARENT_ID,
+        )?)?;
         let time_unix_nano = get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?;
         let int_value = get_i64_array_opt(rb, consts::INT_VALUE)?;
         let double_value = get_f64_array_opt(rb, consts::DOUBLE_VALUE)?;

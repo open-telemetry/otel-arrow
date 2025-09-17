@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    MaybeDictArrayAccessor, NullableArrayAccessor, get_f64_array_opt, get_i32_array_opt,
+    NullableArrayAccessor, get_f64_array_opt, get_i32_array_opt,
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{self, Error, Result};
@@ -241,8 +241,8 @@ pub(crate) fn proto_encode_exp_hist_data_point(
 
     if let Some(exemplar_arrays) = exemplar_arrays {
         if let Some(id) = exp_hist_dp_arrays.id.value_at(index) {
-            let parent_ids = MaybeDictArrayAccessor::Native(exemplar_arrays.parent_id);
-            let exemplar_index_iter = ChildIndexIter::new(id, &parent_ids, exemplar_cursor);
+            let exemplar_index_iter =
+                ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
             for exemplar_index in exemplar_index_iter {
                 proto_encode_len_delimited_unknown_size!(
                     EXP_HISTOGRAM_DP_EXEMPLARS,

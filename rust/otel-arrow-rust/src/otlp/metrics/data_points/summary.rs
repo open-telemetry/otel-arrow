@@ -168,7 +168,7 @@ pub(crate) fn proto_encode_summary_data_point(
             for i in start..end {
                 proto_encode_len_delimited_unknown_size!(
                     SUMMARY_DP_QUANTILE_VALUES,
-                    proto_encode_value_quantile(i as usize, &quantile_arrays, result_buf),
+                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf),
                     result_buf
                 );
             }
