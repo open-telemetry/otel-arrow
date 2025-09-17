@@ -7,8 +7,7 @@ use crate::arrays::{
     get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::AttributeValueType;
-use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -26,7 +25,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
-use snafu::{OptionExt, ResultExt};
+use snafu::OptionExt;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -300,48 +299,6 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
             attr_bytes,
             attr_ser,
         })
-    }
-}
-
-impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        let value_type = AttributeValueType::try_from(self.attr_type.value_at_or_default(idx))
-            .context(error::UnrecognizedAttributeValueTypeSnafu);
-        let value_type = match value_type {
-            Ok(v) => v,
-            Err(err) => {
-                return Some(Err(err));
-            }
-        };
-
-        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self
-                .attr_ser
-                .as_ref()
-                .and_then(|byte_arr| byte_arr.slice_at(idx))?;
-            let decode_result = cbor::decode_pcommon_val(bytes).transpose()?;
-            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
-        }
-
-        let value = match value_type {
-            AttributeValueType::Str => Value::StringValue(self.attr_str.value_at_or_default(idx)),
-            AttributeValueType::Int => Value::IntValue(self.attr_int.value_at_or_default(idx)),
-            AttributeValueType::Double => {
-                Value::DoubleValue(self.attr_double.value_at_or_default(idx))
-            }
-            AttributeValueType::Bool => Value::BoolValue(self.attr_bool.value_at_or_default(idx)),
-            AttributeValueType::Bytes => {
-                Value::BytesValue(self.attr_bytes.value_at_or_default(idx))
-            }
-            _ => {
-                // silently ignore unknown types to avoid DOS attacks
-                return None;
-            }
-        };
-
-        Some(Ok(AnyValue { value: Some(value) }))
     }
 }
 
