@@ -3,17 +3,13 @@
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, get_f64_array_opt,
-    get_timestamp_nanosecond_array, get_timestamp_nanosecond_array_opt, get_u16_array,
-    get_u32_array, get_u32_array_opt, get_u64_array, get_u64_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
-use crate::otlp::metrics::AppendAndGet;
-use crate::otlp::metrics::data_points::data_point_store::HistogramDataPointsStore;
-use crate::otlp::metrics::exemplar::{ExemplarArrays, ExemplarsStore, proto_encode_exemplar};
+use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
 use crate::proto::consts::field_num::metrics::{
     HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
     HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
@@ -82,79 +78,6 @@ impl<'a> TryFrom<&'a RecordBatch> for HistogramDpArrays<'a> {
             histogram_min,
             histogram_max,
         })
-    }
-}
-
-impl HistogramDataPointsStore {
-    // See https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/metrics/otlp/histogram.go#L139
-    pub fn from_record_batch(
-        rb: &RecordBatch,
-        exemplar_store: &mut ExemplarsStore,
-        attrs_store: &Attribute32Store,
-    ) -> Result<HistogramDataPointsStore> {
-        let mut store = HistogramDataPointsStore::default();
-
-        let id_array_opt = get_u32_array_opt(rb, consts::ID)?;
-        let delta_id = get_u16_array(rb, consts::PARENT_ID)?;
-        let start_time_unix_nano =
-            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
-        let time_unix_nano = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
-        let histogram_count = get_u64_array(rb, consts::HISTOGRAM_COUNT)?;
-        let sum = get_f64_array_opt(rb, consts::HISTOGRAM_SUM)?;
-        let bucket_counts_arr: ListValueAccessor<'_, UInt64Type> = ListValueAccessor::try_new(
-            rb.column_by_name(consts::HISTOGRAM_BUCKET_COUNTS).context(
-                error::ColumnNotFoundSnafu {
-                    name: consts::HISTOGRAM_BUCKET_COUNTS,
-                },
-            )?,
-        )?;
-        let explicit_bounds_arr: ListValueAccessor<'_, Float64Type> = ListValueAccessor::try_new(
-            rb.column_by_name(consts::HISTOGRAM_EXPLICIT_BOUNDS)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::HISTOGRAM_EXPLICIT_BOUNDS,
-                })?,
-        )?;
-        let flags_arr = get_u32_array(rb, consts::FLAGS)?;
-        let max_arr = get_f64_array_opt(rb, consts::HISTOGRAM_MAX)?;
-        let min_arr = get_f64_array_opt(rb, consts::HISTOGRAM_MIN)?;
-
-        let mut prev_parent_id = 0;
-        let mut last_id = 0;
-
-        for idx in 0..rb.num_rows() {
-            let delta = delta_id.value_at_or_default(idx);
-            let parent_id = prev_parent_id + delta;
-            prev_parent_id = parent_id;
-
-            // Creates a new HistogramDataPoint and append to the list.
-            let hdps = store.get_or_default(parent_id).append_and_get();
-
-            hdps.start_time_unix_nano = start_time_unix_nano.value_at_or_default(idx) as u64;
-            hdps.time_unix_nano = time_unix_nano.value_at_or_default(idx) as u64;
-            hdps.count = histogram_count.value_at_or_default(idx);
-            hdps.sum = sum.value_at(idx);
-            if let Some(bucket_counts) = bucket_counts_arr.value_at_opt(idx) {
-                hdps.bucket_counts = bucket_counts;
-            }
-            if let Some(explicit_bounds) = explicit_bounds_arr.value_at_opt(idx) {
-                hdps.explicit_bounds = explicit_bounds;
-            }
-
-            hdps.flags = flags_arr.value_at_or_default(idx);
-            hdps.max = max_arr.value_at(idx);
-            hdps.min = min_arr.value_at(idx);
-
-            if let Some(id) = id_array_opt.value_at(idx) {
-                last_id += id;
-                let exemplars = exemplar_store.get_or_create_exemplar_by_id(last_id);
-                hdps.exemplars = std::mem::take(exemplars);
-                if let Some(attrs) = attrs_store.attribute_by_id(last_id) {
-                    hdps.attributes = attrs.to_vec();
-                }
-            }
-        }
-
-        Ok(store)
     }
 }
 

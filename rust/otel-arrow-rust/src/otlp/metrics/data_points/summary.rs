@@ -2,24 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    NullableArrayAccessor, get_f64_array, get_f64_array_opt, get_timestamp_nanosecond_array,
-    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array, get_u32_array_opt,
-    get_u64_array, get_u64_array_opt,
+    NullableArrayAccessor, get_f64_array_opt, get_timestamp_nanosecond_array_opt, get_u16_array,
+    get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
-use crate::otlp::metrics::AppendAndGet;
-use crate::otlp::metrics::data_points::data_point_store::SummaryDataPointsStore;
 use crate::proto::consts::field_num::metrics::{
     SUMMARY_DP_ATTRIBUTES, SUMMARY_DP_COUNT, SUMMARY_DP_FLAGS, SUMMARY_DP_QUANTILE_VALUES,
     SUMMARY_DP_START_TIME_UNIX_NANO, SUMMARY_DP_SUM, SUMMARY_DP_TIME_UNIX_NANO,
     VALUE_AT_QUANTILE_QUANTILE, VALUE_AT_QUANTILE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
@@ -69,57 +64,6 @@ impl<'a> TryFrom<&'a RecordBatch> for SummaryDpArrays<'a> {
     }
 }
 
-// TODO delete this
-impl SummaryDataPointsStore {
-    // see https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/metrics/otlp/summary.go#L117
-    pub fn from_record_batch(
-        rb: &RecordBatch,
-        attr_store: &mut Attribute32Store,
-    ) -> Result<SummaryDataPointsStore> {
-        let mut store = SummaryDataPointsStore::default();
-        let mut prev_parent_id = 0;
-
-        let id_arr_opt = get_u32_array_opt(rb, consts::ID)?;
-        let delta_id_arr = get_u16_array(rb, consts::PARENT_ID)?;
-        let start_time_unix_nano_arr =
-            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
-        let time_unix_nano_arr = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
-        let summary_count_arr = get_u64_array(rb, consts::SUMMARY_COUNT)?;
-        let sum_arr = get_f64_array(rb, consts::SUMMARY_SUM)?;
-        let quantile_arr =
-            QuantileArrays::try_new(rb.column_by_name(consts::SUMMARY_QUANTILE_VALUES).context(
-                error::ColumnNotFoundSnafu {
-                    name: consts::SUMMARY_QUANTILE_VALUES,
-                },
-            )?)?;
-        let flag_arr = get_u32_array(rb, consts::FLAGS)?;
-
-        for idx in 0..rb.num_rows() {
-            let delta = delta_id_arr.value_at_or_default(idx);
-            let parent_id = prev_parent_id + delta;
-            prev_parent_id = parent_id;
-            let nbdps = store.get_or_default(parent_id);
-
-            let sdp = nbdps.append_and_get();
-            sdp.start_time_unix_nano = start_time_unix_nano_arr.value_at_or_default(idx) as u64;
-            sdp.time_unix_nano = time_unix_nano_arr.value_at_or_default(idx) as u64;
-            sdp.count = summary_count_arr.value_at_or_default(idx);
-            sdp.sum = sum_arr.value_at_or_default(idx);
-            if let Some(quantile) = quantile_arr.value_at(idx) {
-                sdp.quantile_values = quantile;
-            }
-            sdp.flags = flag_arr.value_at_or_default(idx);
-            if let Some(id) = id_arr_opt.value_at(idx) {
-                if let Some(attr) = attr_store.attribute_by_delta_id(id) {
-                    sdp.attributes = attr.to_vec();
-                }
-            }
-        }
-
-        Ok(store)
-    }
-}
-
 pub struct QuantileArrays<'a> {
     list_array: &'a ListArray,
     quantile_array: &'a Float64Array,
@@ -164,27 +108,6 @@ impl<'a> QuantileArrays<'a> {
             quantile_array: quantile,
             value_array: value,
         })
-    }
-}
-
-impl QuantileArrays<'_> {
-    fn value_at(&self, idx: usize) -> Option<Vec<ValueAtQuantile>> {
-        if !self.list_array.is_valid(idx) {
-            return None;
-        }
-        let start = self.list_array.value_offsets()[idx];
-        let end = self.list_array.value_offsets()[idx + 1];
-
-        let quantiles = (start..end)
-            .map(|idx| {
-                let idx = idx as usize;
-                ValueAtQuantile {
-                    quantile: self.quantile_array.value_at_or_default(idx),
-                    value: self.value_array.value_at_or_default(idx),
-                }
-            })
-            .collect::<Vec<_>>();
-        Some(quantiles)
     }
 }
 
