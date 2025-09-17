@@ -34,18 +34,17 @@ fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer
             result_buf.encode_varint(*bool_val as u64);
         }
         ciborium::Value::Bytes(bytes_val) => {
-            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, &bytes_val);
+            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, bytes_val);
         }
         ciborium::Value::Float(float_val) => {
             result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
             result_buf.extend_from_slice(&float_val.to_le_bytes());
         }
         ciborium::Value::Text(str_val) => {
-            result_buf.encode_string(ANY_VALUE_STRING_VALUE, &str_val);
+            result_buf.encode_string(ANY_VALUE_STRING_VALUE, str_val);
         }
         ciborium::Value::Integer(int_val) => {
-            let int_val: u64 = int_val
-                .clone()
+            let int_val: u64 = (*int_val)
                 .try_into()
                 .context(error::InvalidSerializedIntAttributeValueSnafu)?;
             result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
@@ -61,7 +60,7 @@ fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer
         ciborium::Value::Map(kv_list_val) => {
             proto_encode_len_delimited_unknown_size!(
                 ANY_VALUE_KVLIST_VALUE,
-                proto_encode_cbor_kv_list(&kv_list_val, result_buf)?,
+                proto_encode_cbor_kv_list(kv_list_val, result_buf)?,
                 result_buf
             );
         }
@@ -113,7 +112,7 @@ fn proto_encode_cbor_kv(
 ) -> Result<()> {
     match key {
         ciborium::Value::Text(key_str) => {
-            result_buf.encode_string(KEY_VALUE_KEY, &key_str);
+            result_buf.encode_string(KEY_VALUE_KEY, key_str);
         }
         ciborium::Value::Null => {
             // empty key
