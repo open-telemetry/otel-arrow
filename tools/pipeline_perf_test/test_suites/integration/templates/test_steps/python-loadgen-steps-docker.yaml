@@ -135,3 +135,9 @@ steps:
                     template: {}
                   destination:
                     console: {}
+                - format:
+                    template:
+                      path:  ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: results/integration/gh-actions-benchmark
