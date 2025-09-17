@@ -31,7 +31,7 @@ use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
-use super::attributes::store::AttributeValueType;
+use super::attributes::AttributeValueType;
 
 struct LogsArrays<'a> {
     id: &'a UInt16Array,

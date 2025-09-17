@@ -3,7 +3,7 @@
 
 //! Error and result types
 
-use crate::otlp::attributes::store::AttributeValueType;
+use crate::otlp::attributes::AttributeValueType;
 use crate::otlp::metrics::MetricType;
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;

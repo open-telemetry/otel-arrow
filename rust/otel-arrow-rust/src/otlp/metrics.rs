@@ -826,7 +826,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::otap::Metrics;
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
     use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;

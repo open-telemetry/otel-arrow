@@ -7,7 +7,7 @@ use crate::arrays::{
     get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::store::AttributeValueType;
+use crate::otlp::attributes::AttributeValueType;
 use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,

@@ -18,7 +18,7 @@ use snafu::{OptionExt, ResultExt};
 
 use crate::arrays::{NullableArrayAccessor, get_u8_array};
 use crate::error::{self, Result};
-use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
+use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -1775,7 +1775,6 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
-    use crate::otlp::attributes::store::AttributeValueType;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 

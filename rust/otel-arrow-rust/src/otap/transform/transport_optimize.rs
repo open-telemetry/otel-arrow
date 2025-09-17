@@ -33,7 +33,7 @@ use crate::{
         materialize_parent_ids_by_columns, remove_delta_encoding,
         remove_delta_encoding_from_column, sort_to_indices,
     },
-    otlp::attributes::{parent_id::ParentId, store::AttributeValueType},
+    otlp::attributes::{AttributeValueType, parent_id::ParentId},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::{FieldExt, consts, get_field_metadata},
 };
@@ -1266,7 +1266,7 @@ mod test {
         datatypes::{Field, Fields, TimeUnit},
     };
 
-    use crate::{otlp::attributes::store::AttributeValueType, schema::FieldExt};
+    use crate::schema::FieldExt;
 
     use super::*;
 
