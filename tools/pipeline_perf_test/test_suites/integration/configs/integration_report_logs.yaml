@@ -224,21 +224,21 @@ queries:
     sql: |
       CREATE TABLE gh_actions_benchmark AS
           SELECT 'dropped_logs_total' AS name, 'count' AS unit, CAST(logs_lost AS FLOAT) AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Dropped Log Count' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Log Count' AS extra
           FROM log_loss
           CROSS JOIN metadata_row
 
           UNION ALL
 
           SELECT 'dropped_logs_percentage' AS name, '%' AS unit, CAST(logs_lost_pct AS FLOAT) * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Dropped Log %' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Log %' AS extra
           FROM log_loss
           CROSS JOIN metadata_row
 
           UNION ALL
 
           SELECT 'cpu_percentage_avg' AS name, '%' AS unit, avg_value * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' CPU Percentage' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Percentage' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
           WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
@@ -246,7 +246,7 @@ queries:
           UNION ALL
 
           SELECT 'cpu_percentage_max' AS name, '%' AS unit, max_value * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' CPU Percentage' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Percentage' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
           WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
@@ -254,7 +254,7 @@ queries:
           UNION ALL
 
           SELECT 'ram_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' RAM (MiB)' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
           WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
@@ -262,7 +262,7 @@ queries:
           UNION ALL
 
           SELECT 'ram_mib_max' AS name, 'MiB' AS unit, max_value / 1024 / 1024 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' RAM (MiB)' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
           WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
@@ -270,7 +270,7 @@ queries:
           UNION ALL
 
           SELECT 'logs_produced_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Sent Log Count' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Sent Log Count' AS extra
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs_produced'
@@ -278,7 +278,7 @@ queries:
           UNION ALL
 
           SELECT 'otlp_logs_received_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Received Log Count' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Received Log Count' AS extra
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs'
@@ -286,7 +286,7 @@ queries:
           UNION ALL
 
           SELECT 'received_log_rate_avg' AS name, 'logs/sec' AS unit, average_rate AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Log Throughput' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'received_log_rate_avg'
@@ -294,7 +294,7 @@ queries:
           UNION ALL
 
           SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Network Utilization' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'container.network.tx' AND component_name IN ('go-collector', 'df-engine')
@@ -302,7 +302,7 @@ queries:
           UNION ALL
 
           SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Network Utilization' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine');
