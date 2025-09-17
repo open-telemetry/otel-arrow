@@ -1130,10 +1130,7 @@ mod tests {
             // Positive path: traces row counter observed
             let traces_rows = get_metric(&map, "consumed_items_traces");
             if traces_rows < 1 {
-                eprintln!(
-                    "[diag] no consumed_items_traces yet. sets observed: {:?}",
-                    sets
-                );
+                eprintln!("[diag] no consumed_items_traces yet. sets observed: {sets:?}");
             }
             assert!(traces_rows >= 1);
 
@@ -1145,9 +1142,7 @@ mod tests {
             let dropped_empty = get_metric(&map, "dropped_empty_records");
             assert!(
                 logs_rows >= 1 || dropped_empty >= 1,
-                "expected either logs rows or dropped-empty; got logs_rows={}, dropped_empty={}",
-                logs_rows,
-                dropped_empty
+                "expected either logs rows or dropped-empty; got logs_rows={logs_rows}, dropped_empty={dropped_empty}",
             );
         });
     }
