@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758145005097,
+  "lastUpdate": 1758147259317,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "jmacd@users.noreply.github.com",
-            "name": "Joshua MacDonald",
-            "username": "jmacd"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "d45e70a8368bdc89e9c7c5ee87fc7c1e55ff59cb",
-          "message": "Establish engine::NodeId = {config::NodeId; NodeIndex(u16)} (#939)\n\nEnable fast lookup of sender/receiver nodes for delivering Ack/Nack from\nthe engine pipeline controller. `engine::NodeId` is a new struct\ncombining `config::NodeId`, which it reexports as `engine::NodeName` and\n`NodeIndex(u16)`.\n\nThe `engine::NodeId` field is passed through the component interface, so\nthat nodes know how to identify themselves using their unique\nidentifier, which serves as a direct index to a vector of node\ndefinitions. Node definitions also contain an extra field (`inner`)\ncontaining their offset in the appropriate vector (exporter, processor,\nreceiver) vector for direct access instead of a HashMap approach.\n\nNo functional changes. New type names in `engine` crate,\n\n- `NodeIndex`\n- `NodeDefinition`\n- `NodeDefs`\n- `NodeName`\n\nNo changes in `config` crate: T.B.D. a future change can make\nconfig::NodeId into `NodeName`, replacing `engine::NodeName`.\n\nNew test helpers in `crate::engine::testing::{test_node, test_nodes}`.\n\nThe engine::error crate still uses `NodeName` in `UnknownError` where\nthe full `NodeId` is not defined. Adds a `TooManyNodes` error for when\nthe u16 overflows.\n\nPoints of confusion in the review thread:\n- ~See questions about ambiguous dispatch for `send_control_msg`. I\nbelieve I've eliminated an unnecessary code path, but could be wrong!~\n- ~See a question about config validation for the batch processor test,\nwhich was constructing an error incorrectly.~\n\nPart of\n\n#509 \n#919",
-          "timestamp": "2025-08-19T23:09:33Z",
-          "tree_id": "26cf51d908e3a64de804d5768c0ccc7f2d1d8591",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/d45e70a8368bdc89e9c7c5ee87fc7c1e55ff59cb"
-        },
-        "date": 1755646092167,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 741833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22255000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22255000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.82,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 156.56,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 180.21,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 737000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22110000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22110000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.65,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.68,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 128.12,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 153.58,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 191.66,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "david@ddahl.com",
+            "name": "David Dahl",
+            "username": "daviddahl"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "eaf81aabee7eaa80d4ffe78a59d9bfd0922345d0",
+          "message": "[otap-dataflow] Add internal telemetry to RetryProcessor (RFC-aligned) + tests (#1141)\n\n• Introduce retry.processor.metrics with RFC-style consumed/produced\nitem counters and component metrics.\n•  Wire metrics via PipelineContext and report on CollectTelemetry.\n• Instrument enqueue, ACK/NACK, retry send, queue-full,\nexceeded-retries, and cleanup paths.\n• Add unit tests for telemetry (collect, queue-full, exceeded-retries,\ncleanup).",
+          "timestamp": "2025-09-17T22:06:07Z",
+          "tree_id": "6cc4c6c29a4f9a6734445e6f015efde3188a03df",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/eaf81aabee7eaa80d4ffe78a59d9bfd0922345d0"
+        },
+        "date": 1758147256715,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 731500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21945000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21945000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.62,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.61,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 121.01,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 143.25,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 732833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21985000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21985000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.65,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.9,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 161.4,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 185.46,
             "unit": "MiB"
           }
         ]
