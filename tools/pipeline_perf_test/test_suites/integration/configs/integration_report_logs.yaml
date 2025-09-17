@@ -231,7 +231,7 @@ queries:
           UNION ALL
 
           SELECT 'dropped_logs_percentage' AS name, '%' AS unit, CAST(logs_lost_pct AS FLOAT) * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Log %' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Logs %' AS extra
           FROM log_loss
           CROSS JOIN metadata_row
 
@@ -270,15 +270,15 @@ queries:
           UNION ALL
 
           SELECT 'logs_produced_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Sent Log Count' AS extra
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Counts' AS extra
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs_produced'
 
           UNION ALL
 
-          SELECT 'otlp_logs_received_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Received Log Count' AS extra
+          SELECT 'logs_received_total' AS name, 'count' AS unit, total_increase AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Counts' AS extra
           FROM aggregate_send_receive_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs'
