@@ -7,7 +7,19 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_array_concat_expression(
+pub(crate) fn parse_array_expressions(
+    array_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = array_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::array_concat_expression => parse_array_concat_expression(rule, scope),
+        _ => panic!("Unexpected rule in array_expressions: {rule}"),
+    }
+}
+
+fn parse_array_concat_expression(
     array_concat_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {

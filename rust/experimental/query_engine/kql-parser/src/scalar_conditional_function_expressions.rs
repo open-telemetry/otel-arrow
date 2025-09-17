@@ -9,7 +9,21 @@ use crate::{
     Rule, logical_expressions::parse_logical_expression, scalar_expression::parse_scalar_expression,
 };
 
-pub(crate) fn parse_conditional_expression(
+pub(crate) fn parse_conditional_expressions(
+    conditional_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = conditional_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::conditional_expression => parse_conditional_expression(rule, scope),
+        Rule::case_expression => parse_case_expression(rule, scope),
+        Rule::coalesce_expression => parse_coalesce_expression(rule, scope),
+        _ => panic!("Unexpected rule in conditional_expressions: {rule}"),
+    }
+}
+
+fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -33,7 +47,7 @@ pub(crate) fn parse_conditional_expression(
     ))
 }
 
-pub(crate) fn parse_case_expression(
+fn parse_case_expression(
     case_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -88,7 +102,7 @@ pub(crate) fn parse_case_expression(
     )))
 }
 
-pub(crate) fn parse_coalesce_expression(
+fn parse_coalesce_expression(
     coalesce_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
