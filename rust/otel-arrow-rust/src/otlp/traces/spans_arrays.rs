@@ -17,7 +17,9 @@ pub(crate) struct SpansArrays<'a> {
     pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
     pub(crate) trace_id: Option<ByteArrayAccessor<'a>>,
     pub(crate) span_id: Option<ByteArrayAccessor<'a>>,
+    pub(crate) trace_state: Option<StringArrayAccessor<'a>>,
     pub(crate) parent_span_id: Option<ByteArrayAccessor<'a>>,
+    pub(crate) flags: Option<&'a UInt32Array>,
     pub(crate) name: Option<StringArrayAccessor<'a>>,
     pub(crate) kind: Option<Int32ArrayAccessor<'a>>,
     pub(crate) start_time_unix_nano: Option<&'a TimestampNanosecondArray>,
@@ -46,10 +48,15 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
             .column_by_name(consts::SPAN_ID)
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
+        let trace_state = rb
+            .column_by_name(consts::TRACE_STATE)
+            .map(StringArrayAccessor::try_new)
+            .transpose()?;
         let parent_span_id = rb
             .column_by_name(consts::PARENT_SPAN_ID)
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
+        let flags = get_u32_array_opt(rb, consts::FLAGS)?;
         let name = rb
             .column_by_name(consts::NAME)
             .map(StringArrayAccessor::try_new)
@@ -90,7 +97,9 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
             schema_url,
             trace_id,
             span_id,
+            trace_state,
             parent_span_id,
+            flags,
             name,
             kind,
             start_time_unix_nano,
