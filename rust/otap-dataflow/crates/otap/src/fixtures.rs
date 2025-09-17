@@ -8,7 +8,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type};
 use arrow_ipc::writer::StreamWriter;
 use fluke_hpack::Encoder;
-use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
+use otel_arrow_rust::otlp::attributes::AttributeValueType;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
 use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;

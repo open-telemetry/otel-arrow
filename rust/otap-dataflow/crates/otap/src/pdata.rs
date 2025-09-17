@@ -84,9 +84,8 @@ use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::metrics::metrics_from;
+use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
-use prost::{EncodeError, Message};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
@@ -429,10 +428,6 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 error: format!("error generating OTLP request: {error}"),
             };
 
-        let map_prost_encode_error = |error: EncodeError| error::Error::ConversionError {
-            error: format!("error encoding protobuf: {error}"),
-        };
-
         match value {
             OtapArrowRecords::Logs(_) => {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
@@ -446,15 +441,13 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
-                // TODO implement fast path encoding OTAP -> OTLP bytes for metrics
-                // https://github.com/open-telemetry/otel-arrow/issues/1120
-                let export_metrics_svc_req =
-                    metrics_from(value).map_err(map_otlp_conversion_error)?;
-                let mut bytes = vec![];
-                export_metrics_svc_req
-                    .encode(&mut bytes)
-                    .map_err(map_prost_encode_error)?;
-                Ok(Self::ExportMetricsRequest(bytes))
+                let mut metrics_encoder = MetricsProtoBytesEncoder::new();
+                let mut buffer = ProtoBuffer::new();
+                metrics_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
+
+                Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
@@ -518,6 +511,7 @@ mod test {
         },
     };
     use pretty_assertions::assert_eq;
+    use prost::Message;
 
     #[test]
     fn test_conversion_logs() {

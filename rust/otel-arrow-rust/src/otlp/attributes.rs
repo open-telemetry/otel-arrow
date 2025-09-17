@@ -3,12 +3,12 @@
 
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt16Type, UInt32Type};
+use num_enum::TryFromPrimitive;
 use prost::Message;
 use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
@@ -23,7 +23,19 @@ use crate::schema::consts;
 pub mod cbor;
 pub mod decoder;
 pub mod parent_id;
-pub mod store;
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
+#[repr(u8)]
+pub enum AttributeValueType {
+    Empty = 0,
+    Str = 1,
+    Int = 2,
+    Double = 3,
+    Bool = 4,
+    Map = 5,
+    Slice = 6,
+    Bytes = 7,
+}
 
 pub(crate) type Attribute16Arrays<'a> = AttributeArrays<'a, UInt16Type>;
 pub(crate) type Attribute32Arrays<'a> = AttributeArrays<'a, UInt32Type>;

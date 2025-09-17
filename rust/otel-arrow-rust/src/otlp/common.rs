@@ -7,7 +7,7 @@ use crate::arrays::{
     get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::store::AttributeValueType;
+use crate::otlp::attributes::AttributeValueType;
 use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
@@ -17,7 +17,7 @@ use crate::proto::consts::field_num::resource::{
     RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
+use crate::proto::opentelemetry::common::v1::{AnyValue, any_value::Value};
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
@@ -136,15 +136,6 @@ pub static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
 impl ScopeArrays<'_> {
     fn data_type() -> &'static DataType {
         &SCOPE_ARRAY_DATA_TYPE
-    }
-
-    pub fn create_instrumentation_scope(&self, idx: usize) -> InstrumentationScope {
-        InstrumentationScope {
-            name: self.name.value_at(idx).unwrap_or_default(),
-            version: self.version.value_at_or_default(idx),
-            dropped_attributes_count: self.dropped_attributes_count.value_at_or_default(idx),
-            attributes: vec![],
-        }
     }
 }
 
@@ -382,6 +373,13 @@ impl ProtoBuffer {
             value >>= 7;
         }
         self.buffer.push(value as u8);
+    }
+
+    /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
+    /// https://protobuf.dev/programming-guides/encoding/#signed-ints
+    #[inline]
+    pub fn encode_sint32(&mut self, value: i32) {
+        self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
     }
 
     pub fn extend_from_slice(&mut self, slice: &[u8]) {

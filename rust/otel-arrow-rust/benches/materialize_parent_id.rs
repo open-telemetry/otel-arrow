@@ -12,7 +12,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use otel_arrow_rust::otap::transform::materialize_parent_id_for_attributes;
-use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
+use otel_arrow_rust::otlp::attributes::AttributeValueType;
 use otel_arrow_rust::schema::consts;
 
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {

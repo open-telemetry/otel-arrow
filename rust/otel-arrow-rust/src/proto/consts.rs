@@ -66,6 +66,98 @@ pub mod field_num {
     }
 
     #[allow(missing_docs)]
+    pub mod metrics {
+        pub const METRICS_DATA_RESOURCE_METRICS: u64 = 1;
+
+        pub const RESOURCE_METRICS_RESOURCE: u64 = 1;
+        pub const RESOURCE_METRICS_SCOPE_METRICS: u64 = 2;
+        pub const RESOURCE_METRICS_SCHEMA_URL: u64 = 3;
+
+        pub const SCOPE_METRICS_SCOPE: u64 = 1;
+        pub const SCOPE_METRICS_METRICS: u64 = 2;
+        pub const SCOPE_METRICS_SCHEMA_URL: u64 = 3;
+
+        pub const METRIC_NAME: u64 = 1;
+        pub const METRIC_DESCRIPTION: u64 = 2;
+        pub const METRIC_UNIT: u64 = 3;
+        pub const METRIC_GAUGE: u64 = 5;
+        pub const METRIC_SUM: u64 = 7;
+        pub const METRIC_HISTOGRAM: u64 = 9;
+        pub const METRIC_EXPONENTIAL_HISTOGRAM: u64 = 10;
+        pub const METRIC_SUMMARY: u64 = 11;
+
+        pub const GAUGE_DATA_POINTS: u64 = 1;
+
+        pub const SUM_DATA_POINTS: u64 = 1;
+        pub const SUM_AGGREGATION_TEMPORALITY: u64 = 2;
+        pub const SUM_IS_MONOTONIC: u64 = 3;
+
+        pub const HISTOGRAM_DATA_POINTS: u64 = 1;
+        pub const HISTOGRAM_AGGREGATION_TEMPORALITY: u64 = 2;
+
+        pub const EXPONENTIAL_HISTOGRAM_DATA_POINTS: u64 = 1;
+        pub const EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY: u64 = 2;
+
+        pub const SUMMARY_DATA_POINTS: u64 = 1;
+
+        pub const NUMBER_DP_ATTRIBUTES: u64 = 7;
+        pub const NUMBER_DP_START_TIME_UNIX_NANO: u64 = 2;
+        pub const NUMBER_DP_TIME_UNIX_NANO: u64 = 3;
+        pub const NUMBER_DP_AS_DOUBLE: u64 = 4;
+        pub const NUMBER_DP_AS_INT: u64 = 6;
+        pub const NUMBER_DP_EXEMPLARS: u64 = 5;
+        pub const NUMBER_DP_FLAGS: u64 = 8;
+
+        pub const HISTOGRAM_DP_ATTRIBUTES: u64 = 9;
+        pub const HISTOGRAM_DP_START_TIME_UNIX_NANO: u64 = 2;
+        pub const HISTOGRAM_DP_TIME_UNIX_NANO: u64 = 3;
+        pub const HISTOGRAM_DP_COUNT: u64 = 4;
+        pub const HISTOGRAM_DP_SUM: u64 = 5;
+        pub const HISTOGRAM_DP_BUCKET_COUNTS: u64 = 6;
+        pub const HISTOGRAM_DP_EXPLICIT_BOUNDS: u64 = 7;
+        pub const HISTOGRAM_DP_EXEMPLARS: u64 = 8;
+        pub const HISTOGRAM_DP_FLAGS: u64 = 10;
+        pub const HISTOGRAM_DP_MIN: u64 = 11;
+        pub const HISTOGRAM_DP_MAX: u64 = 12;
+
+        pub const EXP_HISTOGRAM_DP_ATTRIBUTES: u64 = 1;
+        pub const EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO: u64 = 2;
+        pub const EXP_HISTOGRAM_DP_TIME_UNIX_NANO: u64 = 3;
+        pub const EXP_HISTOGRAM_DP_COUNT: u64 = 4;
+        pub const EXP_HISTOGRAM_DP_SUM: u64 = 5;
+        pub const EXP_HISTOGRAM_DP_SCALE: u64 = 6;
+        pub const EXP_HISTOGRAM_DP_ZERO_COUNT: u64 = 7;
+        pub const EXP_HISTOGRAM_DP_POSITIVE: u64 = 8;
+        pub const EXP_HISTOGRAM_DP_NEGATIVE: u64 = 9;
+        pub const EXP_HISTOGRAM_DP_FLAGS: u64 = 10;
+        pub const EXP_HISTOGRAM_DP_EXEMPLARS: u64 = 11;
+        pub const EXP_HISTOGRAM_DP_MIN: u64 = 12;
+        pub const EXP_HISTOGRAM_DP_MAX: u64 = 13;
+        pub const EXP_HISTOGRAM_DP_ZERO_THRESHOLD: u64 = 14;
+
+        pub const EXP_HISTOGRAM_BUCKET_OFFSET: u64 = 1;
+        pub const EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS: u64 = 2;
+
+        pub const SUMMARY_DP_ATTRIBUTES: u64 = 7;
+        pub const SUMMARY_DP_START_TIME_UNIX_NANO: u64 = 2;
+        pub const SUMMARY_DP_TIME_UNIX_NANO: u64 = 3;
+        pub const SUMMARY_DP_COUNT: u64 = 4;
+        pub const SUMMARY_DP_SUM: u64 = 5;
+        pub const SUMMARY_DP_QUANTILE_VALUES: u64 = 6;
+        pub const SUMMARY_DP_FLAGS: u64 = 6;
+
+        pub const VALUE_AT_QUANTILE_QUANTILE: u64 = 1;
+        pub const VALUE_AT_QUANTILE_VALUE: u64 = 2;
+
+        pub const EXEMPLAR_FILTERED_ATTRIBUTES: u64 = 7;
+        pub const EXEMPLAR_TIME_UNIX_NANO: u64 = 2;
+        pub const EXEMPLAR_AS_DOUBLE: u64 = 3;
+        pub const EXEMPLAR_AS_INT: u64 = 6;
+        pub const EXEMPLAR_SPAN_ID: u64 = 4;
+        pub const EXEMPLAR_TRACE_ID: u64 = 5;
+    }
+
+    #[allow(missing_docs)]
     pub mod resource {
         pub const RESOURCE_ATTRIBUTES: u64 = 1;
         pub const RESOURCE_DROPPED_ATTRIBUTES_COUNT: u64 = 2;
