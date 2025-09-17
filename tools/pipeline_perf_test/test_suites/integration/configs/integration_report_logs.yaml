@@ -12,7 +12,7 @@ queries:
         SELECT
           "attributes.test.name" AS test_name,
           name AS event_name,
-          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp
         FROM events
         WHERE name IN ('observation_start', 'observation_stop')
       ),
