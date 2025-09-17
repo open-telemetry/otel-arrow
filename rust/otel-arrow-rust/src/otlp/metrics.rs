@@ -43,7 +43,6 @@ use snafu::{OptionExt, ResultExt};
 
 pub mod data_points;
 pub mod exemplar;
-mod related_data;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]

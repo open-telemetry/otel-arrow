@@ -3,13 +3,13 @@
 
 use crate::arrays::{
     NullableArrayAccessor, get_f64_array, get_f64_array_opt, get_timestamp_nanosecond_array,
-    get_timestamp_nanosecond_array_opt, get_u16_array, get_u16_array_opt, get_u32_array,
-    get_u32_array_opt, get_u64_array, get_u64_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array, get_u32_array_opt,
+    get_u64_array, get_u64_array_opt,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::store::Attribute32Store;
-use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::AppendAndGet;
 use crate::otlp::metrics::data_points::data_point_store::SummaryDataPointsStore;

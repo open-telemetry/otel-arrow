@@ -6,7 +6,7 @@ use crate::arrays::{
     get_timestamp_nanosecond_array, get_timestamp_nanosecond_array_opt, get_u16_array,
     get_u32_array, get_u32_array_opt,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};

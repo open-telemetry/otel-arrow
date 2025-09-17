@@ -17,7 +17,7 @@ use crate::proto::consts::field_num::resource::{
     RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
+use crate::proto::opentelemetry::common::v1::{AnyValue, any_value::Value};
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
@@ -136,15 +136,6 @@ pub static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
 impl ScopeArrays<'_> {
     fn data_type() -> &'static DataType {
         &SCOPE_ARRAY_DATA_TYPE
-    }
-
-    pub fn create_instrumentation_scope(&self, idx: usize) -> InstrumentationScope {
-        InstrumentationScope {
-            name: self.name.value_at(idx).unwrap_or_default(),
-            version: self.version.value_at_or_default(idx),
-            dropped_attributes_count: self.dropped_attributes_count.value_at_or_default(idx),
-            attributes: vec![],
-        }
     }
 }
 

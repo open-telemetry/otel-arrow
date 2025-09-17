@@ -24,7 +24,7 @@ use crate::proto::consts::wire_types;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayRef, Float16Array, Float64Array, ListArray, PrimitiveArray, RecordBatch,
+    Array, ArrayRef, Float64Array, ListArray, PrimitiveArray, RecordBatch,
     TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{

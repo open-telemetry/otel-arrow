@@ -2,19 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    MaybeDictArrayAccessor, NullableArrayAccessor, get_f64_array_opt, get_i32_array,
-    get_i32_array_opt, get_timestamp_nanosecond_array, get_timestamp_nanosecond_array_opt,
-    get_u16_array, get_u32_array_opt, get_u64_array, get_u64_array_opt,
+    MaybeDictArrayAccessor, NullableArrayAccessor, get_f64_array_opt, get_i32_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{self, Error, Result};
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
-use crate::otlp::metrics::AppendAndGet;
-use crate::otlp::metrics::data_points::data_point_store::EHistogramDataPointsStore;
 use crate::otlp::metrics::data_points::histogram::ListValueAccessor;
-use crate::otlp::metrics::exemplar::{ExemplarArrays, ExemplarsStore, proto_encode_exemplar};
+use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
 use crate::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
     EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS,
@@ -91,75 +87,6 @@ impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
     }
 }
 
-impl EHistogramDataPointsStore {
-    pub fn from_record_batch(
-        rb: &RecordBatch,
-        exemplar_store: &mut ExemplarsStore,
-        attr_store: &Attribute32Store,
-    ) -> Result<Self> {
-        let mut store = Self::default();
-
-        let id_arr_opt = get_u32_array_opt(rb, consts::ID)?;
-        let delta_arr = get_u16_array(rb, consts::PARENT_ID)?;
-        let start_time_unix_nano =
-            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
-        let time_unix_nano = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
-        let histogram_count = get_u64_array(rb, consts::HISTOGRAM_COUNT)?;
-        let sum_arr = get_f64_array_opt(rb, consts::HISTOGRAM_SUM)?;
-        let scale_arr = get_i32_array(rb, consts::EXP_HISTOGRAM_SCALE)?;
-        let zero_count_arr = get_u64_array(rb, consts::EXP_HISTOGRAM_ZERO_COUNT)?;
-        // let positive_arr = { todo!() };
-        //     // PositiveNegativeArrayAccess::try_new(rb, consts::EXP_HISTOGRAM_POSITIVE)?;
-        // let negative_arr = { todo!() };
-        // PositiveNegativeArrayAccess::try_new(rb, consts::EXP_HISTOGRAM_NEGATIVE)?;
-        let flags_arr = get_u32_array_opt(rb, consts::FLAGS)?;
-        let min_arr = get_f64_array_opt(rb, consts::HISTOGRAM_MIN)?;
-        let max_arr = get_f64_array_opt(rb, consts::HISTOGRAM_MAX)?;
-
-        let mut prev_parent_id = 0;
-        let mut last_id = 0;
-
-        for idx in 0..rb.num_rows() {
-            let delta = delta_arr.value_at_or_default(idx);
-            let parent_id = prev_parent_id + delta;
-            prev_parent_id = parent_id;
-            let ehdps = store.get_or_default(parent_id);
-            let hdp = ehdps.append_and_get();
-            hdp.start_time_unix_nano = start_time_unix_nano.value_at_or_default(idx) as u64;
-            hdp.time_unix_nano = time_unix_nano.value_at_or_default(idx) as u64;
-            hdp.count = histogram_count.value_at_or_default(idx);
-            hdp.sum = sum_arr.value_at(idx);
-            hdp.scale = scale_arr.value_at_or_default(idx);
-            hdp.zero_count = zero_count_arr.value_at_or_default(idx);
-            // let (offset, bucket_counts) = positive_arr.value_at(idx);
-            // hdp.positive = Some(Buckets {
-            //     offset,
-            //     bucket_counts,
-            // });
-            // let (offset, bucket_counts) = negative_arr.value_at(idx);
-            // hdp.negative = Some(Buckets {
-            //     offset,
-            //     bucket_counts,
-            // });
-
-            hdp.flags = flags_arr.value_at_or_default(idx);
-            hdp.max = max_arr.value_at(idx);
-            hdp.min = min_arr.value_at(idx);
-
-            if let Some(id) = id_arr_opt.value_at(idx) {
-                last_id += id;
-                let exemplars = exemplar_store.get_or_create_exemplar_by_id(last_id);
-                hdp.exemplars = std::mem::take(exemplars);
-                if let Some(attrs) = attr_store.attribute_by_id(last_id) {
-                    hdp.attributes = attrs.to_vec();
-                }
-            }
-        }
-
-        Ok(store)
-    }
-}
-
 pub struct PositiveNegativeArrayAccess<'a> {
     offset_array: &'a Int32Array,
     bucket_count: ListValueAccessor<'a, UInt64Type>,
@@ -182,11 +109,6 @@ impl<'a> PositiveNegativeArrayAccess<'a> {
             ),
         ]))
     }
-
-    // fn try_new(rb: &'a RecordBatch, name: &'static str) -> error::Result<Self> {
-    //     let array = rb
-    //         .column_by_name(name)
-    //         .context(error::ColumnNotFoundSnafu { name })?;
 
     fn try_new(array: &'a ArrayRef, column_name: &str) -> Result<Self> {
         let struct_array = array
@@ -232,12 +154,6 @@ impl<'a> PositiveNegativeArrayAccess<'a> {
             offset_array,
             bucket_count,
         })
-    }
-
-    fn value_at(&self, idx: usize) -> (i32, Vec<u64>) {
-        let offset = self.offset_array.value_at_or_default(idx);
-        let bucket_count = self.bucket_count.value_at_opt(idx).unwrap_or_default();
-        (offset, bucket_count)
     }
 }
 

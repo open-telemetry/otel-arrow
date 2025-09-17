@@ -447,7 +447,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
 
-                Ok(Self::ExportMetricsRequest(buffer.to_vec()))
+                Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
