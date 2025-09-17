@@ -87,13 +87,88 @@ use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::metrics_from;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use prost::{EncodeError, Message};
+use std::time::{Duration, Instant};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
+
+/// Context data per node
+#[derive(Clone, Debug)]
+pub struct ContextData {
+    /// Placeholder, e.g., number of retries.
+    register: usize,
+}
+
+impl ContextData {
+    /// Context data is a PLACEHOLDER currently an usize used for retry count
+    /// in the retry processor.
+    pub fn new(register: usize) -> Self {
+        Self { register }
+    }
+
+    /// Returns the PLACEHOLDER register.
+    pub fn register0(&self) -> usize {
+        self.register
+    }
+}
+
+/// Interest allows pipeline controller to route by Ack or Nack.
+#[derive(Clone, Debug)]
+pub enum Interest {
+    /// Only cares for Ack responses (???).
+    AckOnly,
+    /// Only cares for Nack responses (for retry).
+    NackOnly,
+    /// Cares about any response.
+    AckOrNack,
+}
+
+/// Frame of interest.
+#[derive(Clone, Debug)]
+pub struct Frame {
+    /// Which responses matter.  TODO: Used in a future PR when
+    /// pipeline_ctrl.rs actually routes Ack/Nacks.
+    _interest: Interest,
+
+    /// Which node created this frame.
+    node_id: usize,
+
+    /// When the frame was initialized.
+    when: Instant,
+
+    /// Remaining time, relative to when.
+    dead: Option<Duration>,
+
+    /// Data for this frame.
+    pub data: ContextData,
+}
+
+impl Frame {
+    /// Deadline
+    pub fn deadline(&self) -> Option<Instant> {
+        self.dead.map(|d| self.when.checked_add(d)).flatten()
+    }
+}
 
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    // This is reserved for a future PR.
+    /// Stack of interested-component states.
+    stack: Vec<Frame>,
+}
+
+impl Context {
+    /// The deadline is the optional point at which this request has
+    /// exceeded its lifetime.
+    pub fn deadline(&self) -> Option<Instant> {
+        let last = self.stack.last();
+        last.map(|f| f.deadline()).flatten()
+    }
+
+    /// Return NodeID is the upstream component ID.
+    pub fn return_node_id(&self) -> Option<usize> {
+        let last = self.stack.last();
+        last.map(|f| f.node_id)
+    }
 }
 
 /// module contains related to pdata
@@ -107,6 +182,14 @@ pub mod error {
             /// The error that occurred
             error: String,
         },
+
+        /// Request has timed out
+        #[error("Deadline exceeded")]
+        DeadlineExceeded,
+
+        /// Pipeline error (internal)
+        #[error("Pipeline error")]
+        PipelineError,
     }
 
     impl From<Error> for otap_df_engine::error::Error {
@@ -215,6 +298,48 @@ impl OtapPdata {
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
         (self.context, self.payload)
+    }
+
+    /// Reply state returns a context
+    pub fn take_reply(&mut self) -> Option<Frame> {
+        self.context.stack.pop()
+    }
+
+    /// Reply with certain interest to this node_id (the usize index)
+    /// to and node-specific context data.
+    pub fn push_reply_to(
+        &mut self,
+        interest: Interest,
+        node_id: usize,
+        data: ContextData,
+    ) -> Result<(), error::Error> {
+        let now = Instant::now();
+        let dead = self.context.deadline();
+        let remain = dead.map(|timeout| timeout.duration_since(now));
+        let expired = remain.map(|t| t.is_zero()).unwrap_or(false);
+
+        if expired {
+            Err(error::Error::DeadlineExceeded)
+        } else {
+            self.context.stack.push(Frame {
+                _interest: interest,
+                node_id,
+                when: now,
+                dead: remain,
+                data,
+            });
+            Ok(())
+        }
+    }
+
+    /// The deadline on this request.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.context.deadline()
+    }
+
+    /// Return the origin node_id for routing Ack/Nack.
+    pub fn return_node_id(&self) -> Option<usize> {
+        self.context.return_node_id()
     }
 
     /// Returns the number of items of the primary signal (spans, data

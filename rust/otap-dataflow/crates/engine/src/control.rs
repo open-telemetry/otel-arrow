@@ -14,6 +14,71 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// The ACK
+#[derive(Debug, Clone)]
+pub struct AckMsg<PData> {
+    /// Reply-to information.
+    /// Placeholder: will become Box<PData> containing context and empty payload.
+    pub msgid: u64,
+
+    /// Placeholder: we will store Box<PData> and remove this field
+    _data: std::marker::PhantomData<PData>,
+
+    /// Rejected items, part of OTLP protocol responses.
+    pub rejected: Option<RejectedItems>,
+}
+
+/// The Rejected items count of an OTLP partial success message.
+#[derive(Debug, Clone)]
+pub struct RejectedItems {
+    /// Number of items, an i64 by the OTLP proto.
+    #[allow(dead_code)]
+    items: i64,
+
+    /// Reason given
+    #[allow(dead_code)]
+    message: String,
+}
+
+impl<PData> AckMsg<PData> {
+    /// Create a new Ack message
+    pub fn new(msgid: u64, rejected: Option<RejectedItems>) -> Self {
+        Self {
+            msgid,
+            rejected,
+            _data: std::marker::PhantomData,
+        }
+    }
+}
+
+/// The NACK
+#[derive(Debug, Clone)]
+pub struct NackMsg<PData> {
+    /// Human-readable reason for the NACK.
+    pub reason: String,
+
+    /// Protocol-independent permanent status
+    pub permanent: bool,
+
+    /// Protocol-independent code number
+    pub code: Option<i32>,
+
+    /// Refused pdata.
+    pub refused: Box<PData>,
+}
+
+impl<PData> NackMsg<PData> {
+    /// Create a new Nack.
+    pub fn new(refused: PData, reason: String, permanent: bool, code: Option<i32>) -> Self {
+        Self {
+            reason,
+            permanent,
+            code,
+            refused: Box::new(refused),
+        }
+    }
+}
+
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
 #[derive(Debug, Clone)]
@@ -22,25 +87,13 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack {
-        /// Unique identifier of the message being acknowledged.
-        id: u64,
-    },
+    Ack(AckMsg<PData>),
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
-    Nack {
-        /// Unique identifier of the message not being acknowledged.
-        id: u64,
-        /// Human-readable reason for the NACK.
-        reason: String,
-
-        /// Placeholder for optional return value, making it possible for the
-        /// retry sender to be stateless.
-        pdata: Option<Box<PData>>,
-    },
+    Nack(NackMsg<PData>),
 
     /// Notifies the node of a configuration change.
     ///
