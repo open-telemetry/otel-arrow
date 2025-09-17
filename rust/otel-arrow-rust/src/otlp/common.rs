@@ -7,8 +7,7 @@ use crate::arrays::{
     get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::AttributeValueType;
-use crate::otlp::attributes::{Attribute16Arrays, cbor, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -26,7 +25,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
-use snafu::{OptionExt, ResultExt};
+use snafu::OptionExt;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;

@@ -4,7 +4,6 @@
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use num_enum::TryFromPrimitive;
-use prost::Message;
 use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
@@ -12,12 +11,10 @@ use crate::error::{self, Error, Result};
 use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
-    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
-    ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY,
-    KEY_VALUE_VALUE,
+    ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
+    ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
@@ -146,26 +143,10 @@ pub(crate) fn encode_any_value(
                 }
             }
         }
-
-        AttributeValueType::Map => {
+        AttributeValueType::Map | AttributeValueType::Slice => {
             if let Some(ser_bytes) = &attr_arrays.attr_ser {
                 if let Some(val) = ser_bytes.slice_at(index) {
-                    proto_encode_len_delimited_unknown_size!(
-                        ANY_VALUE_KVLIST_VALUE,
-                        proto_encode_cbor_bytes(val, result_buf)?,
-                        result_buf
-                    );
-                }
-            }
-        }
-        AttributeValueType::Slice => {
-            if let Some(ser_bytes) = &attr_arrays.attr_ser {
-                if let Some(val) = ser_bytes.slice_at(index) {
-                    proto_encode_len_delimited_unknown_size!(
-                        ANY_VALUE_KVLIST_VALUE,
-                        proto_encode_cbor_bytes(val, result_buf)?,
-                        result_buf
-                    );
+                    proto_encode_cbor_bytes(val, result_buf)?;
                 }
             }
         }
