@@ -406,6 +406,14 @@ where
         }
         .fail()
     }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        match self {
+            Self::Dictionary16(d) => d.is_valid(index),
+            Self::Dictionary8(d) => d.is_valid(index),
+            Self::Native(d) => d.is_valid(index),
+        }
+    }
 }
 
 impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
@@ -421,6 +429,14 @@ where
         column_name: &str,
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
+    }
+
+    pub fn null_count(&self) -> usize {
+        match self {
+            Self::Dictionary16(d) => d.null_count(),
+            Self::Dictionary8(d) => d.null_count(),
+            Self::Native(n) => n.null_count(),
+        }
     }
 }
 
@@ -533,6 +549,18 @@ where
         } else {
             None
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn null_count(&self) -> usize {
+        self.inner.null_count()
+    }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        self.inner.is_valid(index)
     }
 }
 

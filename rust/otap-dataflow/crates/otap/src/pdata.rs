@@ -84,7 +84,8 @@ use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::{metrics::metrics_from, traces::traces_from};
+use otel_arrow_rust::otlp::metrics::metrics_from;
+use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use prost::{EncodeError, Message};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
@@ -439,15 +440,14 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 let mut logs_encoder = LogsProtoBytesEncoder::new();
                 let mut buffer = ProtoBuffer::new();
 
-                // Fast path direct OTAP -> OTLP for Logs. Eventually we'll implement this for
-                // other signal types
                 logs_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                let bytes = buffer.as_ref().to_vec();
-                Ok(Self::ExportLogsRequest(bytes))
+                Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
+                // TODO implement fast path encoding OTAP -> OTLP bytes for metrics
+                // https://github.com/open-telemetry/otel-arrow/issues/1120
                 let export_metrics_svc_req =
                     metrics_from(value).map_err(map_otlp_conversion_error)?;
                 let mut bytes = vec![];
@@ -457,13 +457,12 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 Ok(Self::ExportMetricsRequest(bytes))
             }
             OtapArrowRecords::Traces(_) => {
-                let export_traces_svc_req =
-                    traces_from(value).map_err(map_otlp_conversion_error)?;
-                let mut bytes = vec![];
-                export_traces_svc_req
-                    .encode(&mut bytes)
-                    .map_err(map_prost_encode_error)?;
-                Ok(Self::ExportTracesRequest(bytes))
+                let mut traces_encoder = TracesProtoBytesEncoder::new();
+                let mut buffer = ProtoBuffer::new();
+                traces_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
+                Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }
         }
     }
@@ -518,6 +517,7 @@ mod test {
             },
         },
     };
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_conversion_logs() {
