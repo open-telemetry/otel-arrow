@@ -377,6 +377,7 @@ impl ProtoBuffer {
 
     /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
     /// https://protobuf.dev/programming-guides/encoding/#signed-ints
+    #[inline]
     pub fn encode_sint32(&mut self, value: i32) {
         self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
     }
