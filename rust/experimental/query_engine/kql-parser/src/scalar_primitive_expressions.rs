@@ -10,25 +10,23 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_type_expression(
-    type_expression_rule: Pair<Rule>,
+pub(crate) fn parse_type_expressions(
+    type_expressions_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
-    let type_expression_rule = type_expression_rule.into_inner().next().unwrap();
+    let rule = type_expressions_rule.into_inner().next().unwrap();
 
-    Ok(match type_expression_rule.as_rule() {
-        Rule::null_literal => parse_standard_null_literal(type_expression_rule),
-        Rule::real_expression => parse_real_expression(type_expression_rule)?,
-        Rule::datetime_expression => parse_datetime_expression(type_expression_rule)?,
-        Rule::time_expression => parse_timespan_expression(type_expression_rule)?,
-        Rule::regex_expression => parse_regex_expression(type_expression_rule)?,
-        Rule::dynamic_expression => parse_dynamic_expression(type_expression_rule)?,
-        Rule::true_literal | Rule::false_literal => {
-            parse_standard_bool_literal(type_expression_rule)
-        }
-        Rule::double_literal => parse_standard_double_literal(type_expression_rule, None)?,
-        Rule::integer_literal => parse_standard_integer_literal(type_expression_rule)?,
-        Rule::string_literal => parse_string_literal(type_expression_rule),
-        _ => panic!("Unexpected rule in type_expression_rule: {type_expression_rule}"),
+    Ok(match rule.as_rule() {
+        Rule::null_literal => parse_standard_null_literal(rule),
+        Rule::real_expression => parse_real_expression(rule)?,
+        Rule::datetime_expression => parse_datetime_expression(rule)?,
+        Rule::time_expression => parse_timespan_expression(rule)?,
+        Rule::regex_expression => parse_regex_expression(rule)?,
+        Rule::dynamic_expression => parse_dynamic_expression(rule)?,
+        Rule::true_literal | Rule::false_literal => parse_standard_bool_literal(rule),
+        Rule::double_literal => parse_standard_double_literal(rule, None)?,
+        Rule::integer_literal => parse_standard_integer_literal(rule)?,
+        Rule::string_literal => parse_string_literal(rule),
+        _ => panic!("Unexpected rule in type_expressions: {rule}"),
     })
 }
 
@@ -86,7 +84,7 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-pub(crate) fn parse_datetime_expression(
+fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&datetime_expression_rule);
@@ -118,7 +116,7 @@ pub(crate) fn parse_datetime_expression(
     }
 }
 
-pub(crate) fn parse_timespan_expression(
+fn parse_timespan_expression(
     time_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&time_expression_rule);
@@ -231,7 +229,7 @@ pub(crate) fn parse_timespan_expression(
     }
 }
 
-pub(crate) fn parse_regex_expression(
+fn parse_regex_expression(
     regex_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&regex_expression_rule);
@@ -255,7 +253,7 @@ pub(crate) fn parse_regex_expression(
     )))
 }
 
-pub(crate) fn parse_dynamic_expression(
+fn parse_dynamic_expression(
     dynamic_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
     return parse_dynamic_inner_expression(dynamic_expression_rule.into_inner().next().unwrap());
@@ -266,7 +264,7 @@ pub(crate) fn parse_dynamic_expression(
         let query_location = to_query_location(&dynamic_inner_expression_rule);
 
         match dynamic_inner_expression_rule.as_rule() {
-            Rule::type_expression => Ok(parse_type_expression(dynamic_inner_expression_rule)?),
+            Rule::type_expressions => Ok(parse_type_expressions(dynamic_inner_expression_rule)?),
             Rule::dynamic_array_expression => {
                 let mut values = Vec::new();
 
@@ -313,7 +311,7 @@ pub(crate) fn parse_dynamic_expression(
     }
 }
 
-pub(crate) fn parse_real_expression(
+fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&real_expression_rule);
@@ -1415,7 +1413,7 @@ mod tests {
                 (Rule::identifier_literal, "abc"),
                 (Rule::minus_token, "-"),
                 (Rule::scalar_expression, "'name'"),
-                (Rule::type_expression, "'name'"),
+                (Rule::type_expressions, "'name'"),
                 (Rule::string_literal, "'name'"),
             ],
         );
