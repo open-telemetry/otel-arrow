@@ -154,7 +154,7 @@ pub struct TestPhase<PData> {
     /// Join handle for the starting the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -172,7 +172,7 @@ pub struct ValidationPhase<PData> {
     // ToDo implement support for pipeline control messages in a future PR.
     #[allow(unused_variables)]
     #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
