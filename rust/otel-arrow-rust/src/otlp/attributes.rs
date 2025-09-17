@@ -4,19 +4,17 @@
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use num_enum::TryFromPrimitive;
-use prost::Message;
 use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{self, Error, Result};
+use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
-    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
-    ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY,
-    KEY_VALUE_VALUE,
+    ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
+    ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
@@ -145,24 +143,10 @@ pub(crate) fn encode_any_value(
                 }
             }
         }
-
-        // TODO for Map and Slice, we should be encoding directly from cbor to proto instead
-        // of going through the intermediate prost struct like we're currently doing below:
-        AttributeValueType::Map => {
-            if let Some(any_val) = attr_arrays.value_at(index) {
-                if let Some(Value::KvlistValue(kv_list)) = any_val?.value {
-                    let mut bytes = vec![];
-                    kv_list.encode(&mut bytes).expect("buffer has capacity");
-                    result_buf.encode_bytes(ANY_VALUE_KVLIST_VALUE, bytes.as_ref());
-                }
-            }
-        }
-        AttributeValueType::Slice => {
-            if let Some(any_val) = attr_arrays.value_at(index) {
-                if let Some(Value::ArrayValue(list)) = any_val?.value {
-                    let mut bytes = vec![];
-                    list.encode(&mut bytes).expect("buffer has capacity");
-                    result_buf.encode_bytes(ANY_VALUE_ARRAY_VALUE, bytes.as_ref());
+        AttributeValueType::Map | AttributeValueType::Slice => {
+            if let Some(ser_bytes) = &attr_arrays.attr_ser {
+                if let Some(val) = ser_bytes.slice_at(index) {
+                    proto_encode_cbor_bytes(val, result_buf)?;
                 }
             }
         }

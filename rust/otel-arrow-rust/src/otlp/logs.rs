@@ -27,7 +27,6 @@ use crate::proto::consts::field_num::logs::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
@@ -125,18 +124,6 @@ struct LogBodyArrays<'a> {
 impl<'a> LogBodyArrays<'a> {
     fn is_valid(&self, idx: usize) -> bool {
         self.body.is_valid(idx)
-    }
-}
-
-impl NullableArrayAccessor for LogBodyArrays<'_> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        if !self.is_valid(idx) {
-            return None;
-        }
-
-        self.anyval_arrays.value_at(idx)
     }
 }
 
@@ -514,7 +501,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::schema::{FieldExt, consts};

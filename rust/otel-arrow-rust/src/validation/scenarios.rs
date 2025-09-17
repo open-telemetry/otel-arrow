@@ -79,7 +79,7 @@ where
 
                         // Compare the received data with what was sent.
                         let expected_output_request = O::Request::from(expected_request);
-                        assert_eq!(expected_output_request, received_request);
+                        pretty_assertions::assert_eq!(expected_output_request, received_request);
 
                         Ok(())
                     }
