@@ -373,10 +373,17 @@ pub(crate) fn parse_summarize_expression(
 
                 match group_by_first_rule.as_rule() {
                     Rule::identifier_literal => {
+                        let identifier = group_by_first_rule.as_str().trim();
+
+                        validate_summary_identifier(
+                            scope,
+                            group_by_first_rule_location,
+                            identifier,
+                        )?;
+
                         let scalar = parse_scalar_expression(group_by.next().unwrap(), scope)?;
 
-                        group_by_expressions
-                            .insert(group_by_first_rule.as_str().trim().into(), scalar);
+                        group_by_expressions.insert(identifier.into(), scalar);
                     }
                     Rule::accessor_expression => {
                         let mut accessor =
@@ -432,7 +439,15 @@ pub(crate) fn parse_summarize_expression(
                 }
             }
             _ => {
-                let scope = scope.create_scope(ParserOptions::new());
+                let mut options = ParserOptions::new();
+
+                if let Some(s) = scope.get_summary_schema() {
+                    options = options
+                        .with_source_map_schema(s.clone())
+                        .with_summary_map_schema(s.clone());
+                }
+
+                let scope = scope.create_scope(options);
 
                 for e in parse_tabular_expression_rule(summarize_rule, &scope)? {
                     post_expressions.push(e);
@@ -493,7 +508,13 @@ pub(crate) fn parse_summarize_expression(
         } else {
             let last = selectors.last().unwrap();
             match scope.scalar_as_static(last) {
-                Some(v) => try_read_string(last, v),
+                Some(v) => {
+                    let identifier = try_read_string(last, v)?;
+
+                    validate_summary_identifier(scope, v.get_query_location().clone(), &identifier)?;
+
+                    Ok(identifier)
+                }
                 None => {
                     Err(ParserError::SyntaxError(
                         last.get_query_location().clone(),
@@ -678,6 +699,42 @@ fn parse_identifier_or_pattern_literal(
         Ok(Some(IdentifierOrPattern::Identifier(
             StringScalarExpression::new(location, &value),
         )))
+    }
+}
+
+pub(crate) fn validate_summary_identifier(
+    scope: &dyn ParserScope,
+    location: QueryLocation,
+    identifier: &str,
+) -> Result<(), ParserError> {
+    if let Some(schema) = scope.get_summary_schema() {
+        if schema.get_schema_for_key(identifier).is_some() {
+            Ok(())
+        } else if let Some((_, schema)) = schema.get_default_map() {
+            if let Some(schema) = schema
+                && let None = schema.get_schema_for_key(identifier)
+            {
+                Err(ParserError::QueryLanguageDiagnostic {
+                    location,
+                    diagnostic_id: "KS109",
+                    message: format!(
+                        "The name '{identifier}' does not refer to any known column, table, variable or function",
+                    ),
+                })
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(ParserError::QueryLanguageDiagnostic {
+                location,
+                diagnostic_id: "KS109",
+                message: format!(
+                    "The name '{identifier}' does not refer to any known column, table, variable or function",
+                ),
+            })
+        }
+    } else {
+        Ok(())
     }
 }
 
@@ -2804,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_parse_where_expression() {
+    fn test_parse_where_expression() {
         let run_test_success = |input: &str, expected: DataExpression| {
             let mut state = ParserState::new(input);
 
@@ -2857,7 +2914,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_parse_summarize_expression() {
+    fn test_parse_summarize_expression() {
         let run_test_success = |input: &str, expected: SummaryDataExpression| {
             let mut state = ParserState::new_with_options(
                 input,
@@ -3193,6 +3250,150 @@ mod tests {
         run_test_failure(
             "summarize by const",
             "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+        );
+    }
+
+    #[test]
+    fn test_parse_summarize_expression_with_schema() {
+        let run_test_success = |input: &str, expected: SummaryDataExpression| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_summary_map_schema(
+                    ParserMapSchema::new().with_key_definition("key1", ParserMapKeySchema::Any),
+                ),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let expression = parse_summarize_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(DataExpression::Summary(expected), expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_summary_map_schema(
+                    ParserMapSchema::new().with_key_definition("key1", ParserMapKeySchema::Any),
+                ),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let e = parse_summarize_expression(result.next().unwrap(), &state).unwrap_err();
+
+            assert!(
+                matches!(e, ParserError::QueryLanguageDiagnostic{ location: _, diagnostic_id: id, message: msg } if id == expected_id && msg == expected_msg)
+            )
+        };
+
+        run_test_success(
+            "summarize key1 = count()",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "key1".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+        );
+        run_test_failure(
+            "summarize Count = count()",
+            "KS109",
+            "The name 'Count' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize by key1",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+        run_test_failure(
+            "summarize by key2",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize by key1 = source_field",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "source_field",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+        run_test_failure(
+            "summarize by key2 = source_field",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize key1 = count() | extend key1 = 1234",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "key1".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            )
+            .with_post_expressions(vec![DataExpression::Transform(
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1234),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    )),
+                )),
+            )]),
+        );
+        run_test_failure(
+            "summarize key1 = count() | extend key2 = 1234",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
         );
     }
 
