@@ -78,7 +78,7 @@ impl ParserMapSchema {
         let definition = self
             .keys
             .entry(name.into())
-            .or_insert_with(|| ParserMapKeySchema::Map);
+            .or_insert_with(|| ParserMapKeySchema::Map(None));
         if definition.get_value_type() != Some(ValueType::Map) {
             panic!("Map key was already defined for '{name}' as something other than a map");
         }
@@ -94,8 +94,94 @@ impl ParserMapSchema {
         self.keys.get(name)
     }
 
-    pub fn get_default_map_key(&self) -> Option<&str> {
-        self.default_map_key.as_ref().map(|v| v.as_ref())
+    pub fn get_default_map(&self) -> Option<(&str, Option<&ParserMapSchema>)> {
+        if let Some(key) = &self.default_map_key
+            && let Some(ParserMapKeySchema::Map(inner_schema)) = self.get_schema_for_key(key)
+        {
+            Some((key.as_ref(), inner_schema.as_ref()))
+        } else {
+            None
+        }
+    }
+
+    pub fn try_resolve_value_type(
+        &self,
+        selectors: &mut [ScalarExpression],
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ValueType>, ParserError> {
+        let number_of_selectors = selectors.len();
+
+        if let Some(selector) = selectors.first_mut() {
+            if let Some(r) = selector
+                .try_resolve_static(scope)
+                .map_err(|e| ParserError::from(&e))?
+                .as_ref()
+                .map(|v| v.as_ref())
+            {
+                match r.to_value() {
+                    Value::String(s) => {
+                        let key = s.get_value();
+
+                        match self.get_schema_for_key(key) {
+                            Some(key_schema) => {
+                                if number_of_selectors > 1 {
+                                    match key_schema {
+                                        ParserMapKeySchema::Map(inner_schema) => {
+                                            if let Some(schema) = inner_schema {
+                                                return schema.try_resolve_value_type(
+                                                    &mut selectors[1..],
+                                                    scope,
+                                                );
+                                            }
+                                            return Ok(None);
+                                        }
+                                        ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
+                                            // todo: Implement validation for arrays
+                                            return Ok(None);
+                                        }
+                                        _ => {
+                                            return Err(ParserError::SyntaxError(
+                                                r.get_query_location().clone(),
+                                                format!(
+                                                    "Cannot access into key '{}' which is defined as a '{}' type",
+                                                    key,
+                                                    key_schema
+                                                        .get_value_type()
+                                                        .map(|v| format!("{v:?}"))
+                                                        .unwrap_or("Unknown".into())
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+
+                                return Ok(key_schema.get_value_type());
+                            }
+                            None => {
+                                return Err(ParserError::SyntaxError(
+                                    r.get_query_location().clone(),
+                                    format!(
+                                        "The name '{}' does not refer to any known key on the target map",
+                                        key
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    v => {
+                        return Err(ParserError::SyntaxError(
+                            r.get_query_location().clone(),
+                            format!(
+                                "Cannot index into a map using a '{:?}' value",
+                                v.get_value_type()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(Some(ValueType::Map))
     }
 }
 
@@ -112,7 +198,7 @@ pub enum ParserMapKeySchema {
     DateTime,
     Double,
     Integer,
-    Map,
+    Map(Option<ParserMapSchema>),
     Regex,
     String,
 }
@@ -126,7 +212,7 @@ impl ParserMapKeySchema {
             ParserMapKeySchema::DateTime => Some(ValueType::DateTime),
             ParserMapKeySchema::Double => Some(ValueType::Double),
             ParserMapKeySchema::Integer => Some(ValueType::Integer),
-            ParserMapKeySchema::Map => Some(ValueType::Map),
+            ParserMapKeySchema::Map(_) => Some(ValueType::Map),
             ParserMapKeySchema::Regex => Some(ValueType::Regex),
             ParserMapKeySchema::String => Some(ValueType::String),
         }
