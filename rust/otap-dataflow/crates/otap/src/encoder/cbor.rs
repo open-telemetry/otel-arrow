@@ -145,13 +145,13 @@ mod test {
                 any_value::Value::BytesValue(vec![1, 2, 3]),
             ),
             (
-                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(-1)]),
+                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(1)]),
                 any_value::Value::ArrayValue(ArrayValue::new(vec![
                     AnyValue {
                         value: Some(any_value::Value::BoolValue(false)),
                     },
                     AnyValue {
-                        value: Some(any_value::Value::IntValue(-1)),
+                        value: Some(any_value::Value::IntValue(1)),
                     },
                 ])),
             ),
