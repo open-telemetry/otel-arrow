@@ -128,18 +128,6 @@ impl<'a> LogBodyArrays<'a> {
     }
 }
 
-impl NullableArrayAccessor for LogBodyArrays<'_> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        if !self.is_valid(idx) {
-            return None;
-        }
-
-        self.anyval_arrays.value_at(idx)
-    }
-}
-
 impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     type Error = Error;
 

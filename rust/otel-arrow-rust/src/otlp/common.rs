@@ -303,48 +303,6 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        let value_type = AttributeValueType::try_from(self.attr_type.value_at_or_default(idx))
-            .context(error::UnrecognizedAttributeValueTypeSnafu);
-        let value_type = match value_type {
-            Ok(v) => v,
-            Err(err) => {
-                return Some(Err(err));
-            }
-        };
-
-        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self
-                .attr_ser
-                .as_ref()
-                .and_then(|byte_arr| byte_arr.slice_at(idx))?;
-            let decode_result = cbor::decode_pcommon_val(bytes).transpose()?;
-            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
-        }
-
-        let value = match value_type {
-            AttributeValueType::Str => Value::StringValue(self.attr_str.value_at_or_default(idx)),
-            AttributeValueType::Int => Value::IntValue(self.attr_int.value_at_or_default(idx)),
-            AttributeValueType::Double => {
-                Value::DoubleValue(self.attr_double.value_at_or_default(idx))
-            }
-            AttributeValueType::Bool => Value::BoolValue(self.attr_bool.value_at_or_default(idx)),
-            AttributeValueType::Bytes => {
-                Value::BytesValue(self.attr_bytes.value_at_or_default(idx))
-            }
-            _ => {
-                // silently ignore unknown types to avoid DOS attacks
-                return None;
-            }
-        };
-
-        Some(Ok(AnyValue { value: Some(value) }))
-    }
-}
-
 /// mutable buffer for encoding protobuf bytes
 #[derive(Debug, Default)]
 pub struct ProtoBuffer {
