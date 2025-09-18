@@ -269,8 +269,6 @@ impl fmt::Display for AnyValue {
     }
 }
 
-// impliment hash and eq for anyvalue and keyvalue and arraylist
-
 pub(crate) struct AnyValueArrays<'a> {
     pub attr_type: &'a UInt8Array,
     pub attr_str: Option<StringArrayAccessor<'a>>,

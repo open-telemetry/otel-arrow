@@ -8,8 +8,6 @@ use otel_arrow_rust::proto::opentelemetry::{
     trace::v1::Span,
 };
 
-use std::collections::HashSet;
-
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Predicate {
     field: SignalField,
@@ -123,9 +121,8 @@ impl Predicate {
     fn check_attributes(&self, attributes: Vec<KV>) -> bool {
         match &self.value {
             MatchValue::KeyValue(value) => {
-                let key_values = self.map_keyvalue(value.clone());
-                let attribute_hash_set: HashSet<KV> = attributes.into_iter().collect();
-                key_values.iter().any(|kv| attribute_hash_set.contains(kv))
+                let key_values = self.map_keyvalue(value.clone());  
+                key_values.iter().any(|kv| attributes.contains(kv))
             }
             _ => false, // we expect a key value to match against
         }
