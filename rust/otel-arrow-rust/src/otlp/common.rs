@@ -324,12 +324,29 @@ impl ProtoBuffer {
         self.encode_varint(key);
     }
 
-    pub fn encode_varint(&mut self, mut value: u64) {
-        while value >= 0x80 {
-            self.buffer.push(((value as u8) & 0x7F) | 0x80);
-            value >>= 7;
+    #[inline]
+    pub fn encode_varint(&mut self, value: u64) {
+        // Fast path for single byte (very common)
+        if value < 0x80 {
+            self.buffer.push(value as u8);
+            return;
         }
-        self.buffer.push(value as u8);
+        
+        // Fast path for two bytes (common)
+        if value < 0x4000 {
+            self.buffer.extend_from_slice(&[
+                ((value & 0x7F) | 0x80) as u8,
+                (value >> 7) as u8,
+            ]);
+            return;
+        }
+        
+        let mut v = value;
+        while v >= 0x80 {
+            self.buffer.push(((v & 0x7F) | 0x80) as u8);
+            v >>= 7;
+        }
+        self.buffer.push(v as u8);
     }
 
     /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
