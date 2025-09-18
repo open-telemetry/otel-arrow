@@ -331,16 +331,14 @@ impl ProtoBuffer {
             self.buffer.push(value as u8);
             return;
         }
-        
+
         // Fast path for two bytes (common)
         if value < 0x4000 {
-            self.buffer.extend_from_slice(&[
-                ((value & 0x7F) | 0x80) as u8,
-                (value >> 7) as u8,
-            ]);
+            self.buffer
+                .extend_from_slice(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
             return;
         }
-        
+
         let mut v = value;
         while v >= 0x80 {
             self.buffer.push(((v & 0x7F) | 0x80) as u8);
