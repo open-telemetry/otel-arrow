@@ -20,6 +20,7 @@ pub trait Parser {
 
 pub struct ParserOptions {
     pub(crate) source_map_schema: Option<ParserMapSchema>,
+    pub(crate) summary_map_schema: Option<ParserMapSchema>,
     pub(crate) attached_data_names: HashSet<Box<str>>,
 }
 
@@ -27,12 +28,19 @@ impl ParserOptions {
     pub fn new() -> ParserOptions {
         Self {
             source_map_schema: None,
+            summary_map_schema: None,
             attached_data_names: HashSet::new(),
         }
     }
 
     pub fn with_source_map_schema(mut self, source_map_schema: ParserMapSchema) -> ParserOptions {
         self.source_map_schema = Some(source_map_schema);
+
+        self
+    }
+
+    pub fn with_summary_map_schema(mut self, summary_map_schema: ParserMapSchema) -> ParserOptions {
+        self.summary_map_schema = Some(summary_map_schema);
 
         self
     }
@@ -52,6 +60,7 @@ impl Default for ParserOptions {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ParserMapSchema {
     keys: HashMap<Box<str>, ParserMapKeySchema>,
     default_map_key: Option<Box<str>>,
@@ -191,6 +200,7 @@ impl Default for ParserMapSchema {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum ParserMapKeySchema {
     Any,
     Array,
@@ -201,6 +211,7 @@ pub enum ParserMapKeySchema {
     Map(Option<ParserMapSchema>),
     Regex,
     String,
+    TimeSpan,
 }
 
 impl ParserMapKeySchema {
@@ -215,6 +226,27 @@ impl ParserMapKeySchema {
             ParserMapKeySchema::Map(_) => Some(ValueType::Map),
             ParserMapKeySchema::Regex => Some(ValueType::Regex),
             ParserMapKeySchema::String => Some(ValueType::String),
+            ParserMapKeySchema::TimeSpan => Some(ValueType::TimeSpan),
+        }
+    }
+}
+
+impl TryFrom<&str> for ParserMapKeySchema {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Any" => Ok(ParserMapKeySchema::Any),
+            "Array" => Ok(ParserMapKeySchema::Array),
+            "Boolean" => Ok(ParserMapKeySchema::Boolean),
+            "DateTime" => Ok(ParserMapKeySchema::DateTime),
+            "Double" => Ok(ParserMapKeySchema::Double),
+            "Integer" => Ok(ParserMapKeySchema::Integer),
+            "Map" => Ok(ParserMapKeySchema::Map(None)),
+            "Regex" => Ok(ParserMapKeySchema::Regex),
+            "String" => Ok(ParserMapKeySchema::String),
+            "TimeSpan" => Ok(ParserMapKeySchema::TimeSpan),
+            _ => Err(()),
         }
     }
 }
