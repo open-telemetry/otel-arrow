@@ -230,11 +230,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             })?;
                             self.pdata_metrics.traces_exported.inc();
                         }
-                        (_, payload) => {
-                            let service_req: OtlpProtoBytes = payload
-                                .try_into()
-                                .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
-
+                        (_, OtapPayload::OtlpBytes(service_req)) => {
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     _ = logs_client.export(bytes).await.map_err(|e| {
