@@ -114,7 +114,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ))
             .await;
 
-        let _ = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -214,6 +214,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
                         _ = traces_handle.await;
+                        _ = timer_cancel_handle.cancel().await;
                         break;
                     }
                     //send data
