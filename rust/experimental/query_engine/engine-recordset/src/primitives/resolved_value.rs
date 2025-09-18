@@ -280,7 +280,7 @@ impl ArrayValue for List<'_> {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+    fn get(&self, index: usize) -> Option<&dyn AsValue> {
         self.values.get(index).map(|v| v as &dyn AsValue)
     }
 
@@ -348,7 +348,7 @@ impl ArrayValue for ArraySlice<'_> {
         self.range_end_exclusive - self.range_start_inclusive
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+    fn get(&self, index: usize) -> Option<&dyn AsValue> {
         self.inner_value.get(self.range_start_inclusive + index)
     }
 
@@ -500,7 +500,7 @@ impl ArrayValue for Sequence<'_> {
         len
     }
 
-    fn get(&self, mut index: usize) -> Option<&(dyn AsValue)> {
+    fn get(&self, mut index: usize) -> Option<&dyn AsValue> {
         for v in &self.values {
             let end = v.len();
             if index < end {
@@ -863,7 +863,7 @@ impl ArrayValue for ResolvedArrayValue<'_> {
         self.get_array().len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+    fn get(&self, index: usize) -> Option<&dyn AsValue> {
         self.get_array().get(index)
     }
 
