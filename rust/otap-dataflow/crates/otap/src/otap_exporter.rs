@@ -9,7 +9,7 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
-use crate::pdata::OtapPdata;
+use crate::pdata::{OtapPayload, OtapPdata};
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -218,22 +218,31 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     //send data
                     Message::PData(pdata) => {
-                        // Capture signal type before moving pdata into try_from
-                        let signal_type = pdata.signal_type();
-
-                        self.pdata_metrics.inc_consumed(signal_type);
+                        // TODO(#1098): Note context is dropped.
                         let (_context, payload) = pdata.into_parts();
 
-                        // TODO(#1098): Note context is dropped.
-                        let message: OtapArrowRecords = payload
-                            .try_into()
-                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
-
-                        _ = match signal_type {
-                            SignalType::Logs => logs_sender.send(message).await,
-                            SignalType::Metrics => metrics_sender.send(message).await,
-                            SignalType::Traces => traces_sender.send(message).await,
-                        };
+                        match (payload.signal_type(), payload) {
+                            (SignalType::Logs, OtapPayload::OtapArrowRecords(records)) => {
+                                self.pdata_metrics.logs_consumed.inc();
+                                _ = logs_sender.send(records).await;
+                            }
+                            (SignalType::Metrics, OtapPayload::OtapArrowRecords(records)) => {
+                                self.pdata_metrics.metrics_consumed.inc();
+                                _ = metrics_sender.send(records).await;
+                            }
+                            (SignalType::Traces, OtapPayload::OtapArrowRecords(records)) => {
+                                self.pdata_metrics.traces_consumed.inc();
+                                _ = traces_sender.send(records).await;
+                            }
+                            (signal_type, payload) => {
+                                self.pdata_metrics.inc_consumed(signal_type);
+                                self.pdata_metrics.inc_failed(signal_type);
+                                return Err(Error::ExporterError {
+                                    exporter: effect_handler.exporter_id(),
+                                    error: format!("Unsupported payload type {payload:?} for signal type {signal_type:?}"),
+                                });
+                            }
+                        }
                     }
                     _ => {
                         return Err(Error::ExporterError {
