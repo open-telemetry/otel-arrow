@@ -12,6 +12,7 @@ categories = [
     "asynchronous"
 ]
 keywords = ["arrow", "opentelemetry", "logging", "tracing", "metrics"]
+rust-version = "1.87.0"
 
 [features]
 default = ["full"]
