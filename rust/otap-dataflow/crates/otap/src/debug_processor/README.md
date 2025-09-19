@@ -49,8 +49,8 @@ signals will be displayed `metrics`, `logs`, and `spans`
 ### Filtering
 
 You can filter the signals that get displayed, you can select the filter
-mode `include` or `exclude` and then define the predicate to match the 
-signals against, currently we support the following fields `attribute` 
+mode `include` or `exclude` and then define the predicate to match the
+signals against, currently we support the following fields `attribute`
 Multiple filter rules can be definied and will be applied in order
 (top to bottom).
 

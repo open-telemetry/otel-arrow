@@ -1,3 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Implementation of the predicate struct used to filter metric, log, span signals
+
 use serde::Deserialize;
 use serde::Serialize;
 
