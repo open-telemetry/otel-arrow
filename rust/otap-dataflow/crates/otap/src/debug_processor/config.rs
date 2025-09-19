@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::collections::HashSet;
+use otap_df_config::PortName;
 
 /// Enum that allows the user to specify how much information they want displayed
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -21,7 +22,7 @@ pub enum Verbosity {
 /// Enum that describes how the output should be handled
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OutputMode {
+pub enum DisplayMode {
     /// output the whole batch at once
     Batch,
     /// output per signal
@@ -36,6 +37,10 @@ pub enum SignalActive {
     Spans,
 }
 
+pub enum OutputMode {
+    Console,
+    Outport()
+}
 /// Defines the settings of the debug processor, controls the level of verbosity the processor outputs
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,9 +48,11 @@ pub struct Config {
     #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
     #[serde(default = "default_output_mode")]
-    mode: OutputMode,
+    mode: DisplayMode,
     #[serde(default = "default_active_signal")]
     signals: HashSet<SignalActive>,
+
+    output: 
 }
 
 fn default_verbosity() -> Verbosity {
@@ -60,14 +67,14 @@ fn default_active_signal() -> HashSet<SignalActive> {
     ])
 }
 
-fn default_output_mode() -> OutputMode {
-    OutputMode::Batch
+fn default_output_mode() -> DisplayMode {
+    DisplayMode::Batch
 }
 
 impl Config {
     /// Create a new Config object
     #[must_use]
-    pub fn new(verbosity: Verbosity, mode: OutputMode, signals: HashSet<SignalActive>) -> Self {
+    pub fn new(verbosity: Verbosity, mode: DisplayMode, signals: HashSet<SignalActive>) -> Self {
         Self {
             verbosity,
             mode,
@@ -87,7 +94,7 @@ impl Config {
     }
 
     #[must_use]
-    pub const fn mode(&self) -> OutputMode {
+    pub const fn mode(&self) -> DisplayMode {
         self.mode
     }
 }
