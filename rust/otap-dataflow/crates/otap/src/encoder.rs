@@ -964,8 +964,9 @@ mod test {
 
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-    use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
-    use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
+    use otel_arrow_rust::otlp::ProtoBuffer;
+    use otel_arrow_rust::otlp::attributes::AttributeValueType;
+    use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
@@ -3513,17 +3514,22 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
+
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))
@@ -3749,17 +3755,21 @@ mod test {
         assert_eq!(logs_attrs, &expected_attrs);
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))

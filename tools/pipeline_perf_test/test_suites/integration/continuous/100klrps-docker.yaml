@@ -1,0 +1,101 @@
+name: CI 100kLRPS
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        # Build doesn't support extra contexts, which are currently needed to get the protos compiled.
+        # run the docker build as an external step for now.
+        # e.g. - from the ../../rust/otap-dataflow dir:
+        # $ docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+        # build:
+        #   context: ../../rust/otap-dataflow/
+        #   ags:
+        ###   This doesn't work.
+        #     build-context: 'otel-arrow=../../'
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "3-3"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "1-1"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTLP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+  - name: OTLP-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otlp-attr-otap.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otap
+  - name: OTAP-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+  - name: OTAP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp

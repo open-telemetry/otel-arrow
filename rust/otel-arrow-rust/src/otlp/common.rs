@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    ByteArrayAccessor, Int64ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_required_array, get_u8_array,
+    ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+    StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt,
+    get_required_array, get_u8_array,
 };
 use crate::error::{self, Error, Result};
-use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::attributes::{AttributeArrays, cbor, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -16,16 +16,16 @@ use crate::proto::consts::field_num::resource::{
     RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT,
 };
 use crate::proto::consts::wire_types;
-use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
+use crate::proto::opentelemetry::common::v1::{AnyValue, any_value::Value};
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
-    Array, BooleanArray, Float64Array, RecordBatch, StructArray, UInt8Array, UInt16Array,
-    UInt32Array,
+    Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
+    StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
-use snafu::{OptionExt, ResultExt};
+use snafu::OptionExt;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -58,7 +58,7 @@ impl ResourceArrays<'_> {
 pub(crate) fn proto_encode_resource(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
-    resource_attrs_arrays: Option<&AttributeArrays<'_>>,
+    resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
@@ -66,7 +66,7 @@ pub(crate) fn proto_encode_resource(
     if let Some(attrs_arrays) = resource_attrs_arrays {
         if let Some(res_id) = resource_arrays.id.value_at(index) {
             for attr_index in
-                ChildIndexIter::new(res_id, attrs_arrays.parent_id, resource_attrs_cursor)
+                ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     RESOURCE_ATTRIBUTES,
@@ -136,15 +136,6 @@ impl ScopeArrays<'_> {
     fn data_type() -> &'static DataType {
         &SCOPE_ARRAY_DATA_TYPE
     }
-
-    pub fn create_instrumentation_scope(&self, idx: usize) -> InstrumentationScope {
-        InstrumentationScope {
-            name: self.name.value_at(idx).unwrap_or_default(),
-            version: self.version.value_at_or_default(idx),
-            dropped_attributes_count: self.dropped_attributes_count.value_at_or_default(idx),
-            attributes: vec![],
-        }
-    }
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
@@ -175,30 +166,26 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 pub(crate) fn proto_encode_instrumentation_scope(
     index: usize,
     scope_arrays: &ScopeArrays<'_>,
-    scope_attrs_arrays: Option<&AttributeArrays<'_>>,
+    scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     if let Some(col) = &scope_arrays.name {
         if let Some(val) = col.str_at(index) {
-            result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN);
-            result_buf.encode_varint(val.len() as u64);
-            result_buf.extend_from_slice(val.as_bytes());
+            result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val);
         }
     }
 
     if let Some(col) = &scope_arrays.version {
         if let Some(val) = col.str_at(index) {
-            result_buf.encode_field_tag(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN);
-            result_buf.encode_varint(val.len() as u64);
-            result_buf.extend_from_slice(val.as_bytes());
+            result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val);
         }
     }
 
     if let Some(attr_arrays) = scope_attrs_arrays {
         if let Some(scope_id) = scope_arrays.id.value_at(index) {
             for attr_index in
-                ChildIndexIter::new(scope_id, attr_arrays.parent_id, scope_attrs_cursor)
+                ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     INSTRUMENTATION_SCOPE_ATTRIBUTES,
@@ -315,48 +302,6 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-impl<'a> NullableArrayAccessor for AnyValueArrays<'a> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        let value_type = AttributeValueType::try_from(self.attr_type.value_at_or_default(idx))
-            .context(error::UnrecognizedAttributeValueTypeSnafu);
-        let value_type = match value_type {
-            Ok(v) => v,
-            Err(err) => {
-                return Some(Err(err));
-            }
-        };
-
-        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self
-                .attr_ser
-                .as_ref()
-                .and_then(|byte_arr| byte_arr.slice_at(idx))?;
-            let decode_result = cbor::decode_pcommon_val(bytes).transpose()?;
-            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
-        }
-
-        let value = match value_type {
-            AttributeValueType::Str => Value::StringValue(self.attr_str.value_at_or_default(idx)),
-            AttributeValueType::Int => Value::IntValue(self.attr_int.value_at_or_default(idx)),
-            AttributeValueType::Double => {
-                Value::DoubleValue(self.attr_double.value_at_or_default(idx))
-            }
-            AttributeValueType::Bool => Value::BoolValue(self.attr_bool.value_at_or_default(idx)),
-            AttributeValueType::Bytes => {
-                Value::BytesValue(self.attr_bytes.value_at_or_default(idx))
-            }
-            _ => {
-                // silently ignore unknown types to avoid DOS attacks
-                return None;
-            }
-        };
-
-        Some(Ok(AnyValue { value: Some(value) }))
-    }
-}
-
 /// mutable buffer for encoding protobuf bytes
 #[derive(Debug, Default)]
 pub struct ProtoBuffer {
@@ -367,6 +312,11 @@ impl ProtoBuffer {
     #[must_use]
     pub const fn new() -> Self {
         Self { buffer: Vec::new() }
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buffer
     }
 
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
@@ -380,6 +330,13 @@ impl ProtoBuffer {
             value >>= 7;
         }
         self.buffer.push(value as u8);
+    }
+
+    /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
+    /// https://protobuf.dev/programming-guides/encoding/#signed-ints
+    #[inline]
+    pub fn encode_sint32(&mut self, value: i32) {
+        self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
     }
 
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
@@ -398,6 +355,18 @@ impl ProtoBuffer {
 
     pub fn clear(&mut self) {
         self.buffer.clear();
+    }
+
+    pub fn encode_string(&mut self, field_tag: u64, val: &str) {
+        self.encode_field_tag(field_tag, wire_types::LEN);
+        self.encode_varint(val.len() as u64);
+        self.extend_from_slice(val.as_bytes());
+    }
+
+    pub fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) {
+        self.encode_field_tag(field_tag, wire_types::LEN);
+        self.encode_varint(val.len() as u64);
+        self.extend_from_slice(val);
     }
 }
 
@@ -481,6 +450,7 @@ pub(crate) fn patch_len_placeholder(
 ///
 /// The motivation behind using this cursor is that it will hopefully be more efficient to
 /// initialize this than sorting the entire [`RecordBatch`].
+#[derive(Debug)]
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
     curr_index: usize,
@@ -528,6 +498,7 @@ pub(crate) struct BatchSorter {
     // we can reuse the allocations for multiple batches.
     rows: Vec<(usize, Row<'static>)>,
     u16_ids: Vec<(usize, u16)>,
+    u32_ids: Vec<(usize, u32)>,
 }
 
 impl BatchSorter {
@@ -543,6 +514,7 @@ impl BatchSorter {
             row_converter,
             rows: Vec::new(),
             u16_ids: Vec::new(),
+            u32_ids: Vec::new(),
         }
     }
 
@@ -617,7 +589,7 @@ impl BatchSorter {
                         expect: DataType::UInt16,
                         actual: ids.data_type().clone(),
                     })?;
-                self.init_cursor_for_u16_id_column(ids, cursor);
+                self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
 
             // no scope/resource ID columns....
@@ -634,19 +606,55 @@ impl BatchSorter {
 
     pub fn init_cursor_for_u16_id_column(
         &mut self,
-        ids: &UInt16Array,
+        ids: &MaybeDictArrayAccessor<'_, UInt16Array>,
         cursor: &mut SortedBatchCursor,
     ) {
-        self.u16_ids.clear();
-        self.u16_ids
-            .extend(ids.values().iter().copied().enumerate());
+        Self::init_cursor_for_ids_column(&mut self.u16_ids, ids, cursor);
+    }
+
+    pub fn init_cursor_for_u32_id_column(
+        &mut self,
+        ids: &MaybeDictArrayAccessor<'_, UInt32Array>,
+        cursor: &mut SortedBatchCursor,
+    ) {
+        Self::init_cursor_for_ids_column(&mut self.u32_ids, ids, cursor);
+    }
+
+    fn init_cursor_for_ids_column<T: ArrowPrimitiveType>(
+        sort_ids_tmp: &mut Vec<(usize, T::Native)>,
+        ids: &MaybeDictArrayAccessor<'_, PrimitiveArray<T>>,
+        cursor: &mut SortedBatchCursor,
+    ) where
+        <T as ArrowPrimitiveType>::Native: Ord,
+    {
+        sort_ids_tmp.clear();
+
+        match ids {
+            MaybeDictArrayAccessor::Native(ids) => {
+                sort_ids_tmp.extend(ids.values().iter().copied().enumerate());
+            }
+            MaybeDictArrayAccessor::Dictionary16(ids) => {
+                sort_ids_tmp.extend(
+                    (0..ids.len())
+                        .map(|i| ids.value_at(i).unwrap_or_default())
+                        .enumerate(),
+                );
+            }
+            MaybeDictArrayAccessor::Dictionary8(ids) => {
+                sort_ids_tmp.extend(
+                    (0..ids.len())
+                        .map(|i| ids.value_at(i).unwrap_or_default())
+                        .enumerate(),
+                );
+            }
+        }
 
         if ids.null_count() == 0 {
             // fast path, no null IDs
-            self.u16_ids.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+            sort_ids_tmp.sort_unstable_by_key(|&(_, value)| value);
         } else {
             // sort nulls last
-            self.u16_ids.sort_unstable_by(|(ia, a), (ib, b)| {
+            sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
                 match (ids.is_valid(*ia), ids.is_valid(*ib)) {
                     (true, true) => a.cmp(b),
                     (true, false) => Ordering::Less,
@@ -658,21 +666,24 @@ impl BatchSorter {
 
         cursor
             .sorted_indices
-            .extend(self.u16_ids.iter().map(|(i, _)| *i));
+            .extend(sort_ids_tmp.iter().map(|(i, _)| *i));
     }
 }
 
 /// Iterates the indices of some child record batch
-pub(crate) struct ChildIndexIter<'a> {
-    pub parent_id: u16,
-    pub parent_id_col: &'a UInt16Array,
+pub(crate) struct ChildIndexIter<'a, T: ArrowPrimitiveType> {
+    pub parent_id: T::Native,
+    pub parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
     pub cursor: &'a mut SortedBatchCursor,
 }
 
-impl<'a> ChildIndexIter<'a> {
+impl<'a, T> ChildIndexIter<'a, T>
+where
+    T: ArrowPrimitiveType,
+{
     pub fn new(
-        parent_id: u16,
-        parent_id_col: &'a UInt16Array,
+        parent_id: T::Native,
+        parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
         cursor: &'a mut SortedBatchCursor,
     ) -> Self {
         Self {
@@ -683,7 +694,10 @@ impl<'a> ChildIndexIter<'a> {
     }
 }
 
-impl Iterator for ChildIndexIter<'_> {
+impl<T> Iterator for ChildIndexIter<'_, T>
+where
+    T: ArrowPrimitiveType,
+{
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -722,10 +736,11 @@ mod test {
 
     use arrow::{
         array::{RecordBatch, StructArray, UInt16Array},
-        datatypes::{DataType, Field, Fields, Schema},
+        datatypes::{DataType, Field, Fields, Schema, UInt16Type},
     };
 
     use crate::{
+        arrays::MaybeDictArrayAccessor,
         otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
         schema::consts,
     };
@@ -733,7 +748,8 @@ mod test {
     #[test]
     fn test_child_index_iter_shuffled_order() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter_values(vec![2, 1, 2, 0]);
+        let tmp = UInt16Array::from_iter_values(vec![2, 1, 2, 0]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![3, 1, 0, 2]);
 
@@ -766,24 +782,25 @@ mod test {
     #[test]
     fn test_child_index_iter_with_skipped_values() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter_values(vec![0, 2, 0, 2]);
+        let tmp = UInt16Array::from_iter_values(vec![0, 2, 0, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![0, 2, 1, 3]);
 
         {
-            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            let mut id_0_iter = ChildIndexIter::<UInt16Type>::new(0, &parent_ids, &mut cursor);
             assert_eq!(id_0_iter.next(), Some(0));
             assert_eq!(id_0_iter.next(), Some(2));
             assert_eq!(id_0_iter.next(), None)
         }
 
         {
-            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
             assert_eq!(id_1_iter.next(), None)
         }
 
         {
-            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
             assert_eq!(id_2_iter.next(), Some(1));
             assert_eq!(id_2_iter.next(), Some(3));
             assert_eq!(id_2_iter.next(), None)
@@ -793,25 +810,26 @@ mod test {
     #[test]
     fn test_child_index_iter_with_nulls() {
         let mut cursor = SortedBatchCursor::new();
-        let parent_ids = UInt16Array::from_iter(vec![Some(0), Some(2), None, Some(0), Some(1)]);
+        let tmp = UInt16Array::from_iter(vec![Some(0), Some(2), None, Some(0), Some(1)]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
         assert_eq!(cursor.sorted_indices, vec![0, 3, 4, 1, 2]);
 
         {
-            let mut id_0_iter = ChildIndexIter::new(0, &parent_ids, &mut cursor);
+            let mut id_0_iter = ChildIndexIter::<UInt16Type>::new(0, &parent_ids, &mut cursor);
             assert_eq!(id_0_iter.next(), Some(0));
             assert_eq!(id_0_iter.next(), Some(3));
             assert_eq!(id_0_iter.next(), None)
         }
 
         {
-            let mut id_1_iter = ChildIndexIter::new(1, &parent_ids, &mut cursor);
+            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
             assert_eq!(id_1_iter.next(), Some(4));
             assert_eq!(id_1_iter.next(), None)
         }
 
         {
-            let mut id_2_iter = ChildIndexIter::new(2, &parent_ids, &mut cursor);
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
             assert_eq!(id_2_iter.next(), Some(1));
             assert_eq!(id_2_iter.next(), None)
         }

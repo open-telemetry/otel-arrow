@@ -852,7 +852,7 @@ mod test {
     use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::schema::FieldExt;
 
     use super::*;
