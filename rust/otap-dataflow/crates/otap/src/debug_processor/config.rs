@@ -121,33 +121,3 @@ impl Default for Config {
         }
     }
 }
-
-mod tests {
-    use crate::debug_processor::config::{Config, OutputMode, SignalActive, Verbosity};
-    use crate::debug_processor::filter::{FilterMode, FilterRules};
-    use crate::debug_processor::predicate::{KeyValue, MatchValue, Predicate, SignalField};
-    use std::collections::HashSet;
-
-    #[test]
-    fn test_debug_processor_basic_verbosity() {
-        let signals = HashSet::from([
-            SignalActive::Metrics,
-            SignalActive::Logs,
-            SignalActive::Spans,
-        ]);
-        let filterrule = vec![FilterRules::new(
-            Predicate::new(
-                SignalField::Attribute,
-                MatchValue::KeyValue(vec![KeyValue::new(
-                    "key value".to_string(),
-                    MatchValue::String("fdafsda".to_string()),
-                )]),
-            ),
-            FilterMode::Exclude,
-        )];
-        let config = Config::new(Verbosity::Basic, OutputMode::Batch, signals, filterrule);
-        let serialized = serde_yaml::to_string(&config).unwrap();
-
-        println!("{serialized}");
-    }
-}

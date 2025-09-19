@@ -3,7 +3,7 @@
 
 //! Implementation of the filter definition for the debug processor
 
-use super::predicate::{MatchValue, Predicate, SignalField};
+use super::predicate::Predicate;
 use otel_arrow_rust::proto::opentelemetry::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };

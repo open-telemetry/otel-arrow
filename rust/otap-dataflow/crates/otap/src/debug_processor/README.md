@@ -8,12 +8,19 @@ This crate will contain the implementation of the debug processor.
 
 ```yaml
 config:
-    verbosity: normal
-    mode: batch
-    signals:
-      - metrics
-      - logs
-      - spans
+   verbosity: basic
+   mode: batch
+   signals:
+   - metrics
+   - spans
+   - logs
+   filters:
+   - predicate:
+      field: attribute
+      value:
+      - key: service.name
+        value: service_name
+   mode: exclude
 ```
 
 ### Verbosity
@@ -38,6 +45,14 @@ By default mode is set to `batch`
 
 Select what signals you want output for, by default the following
 signals will be displayed `metrics`, `logs`, and `spans`
+
+### Filtering
+
+You can filter the signals that get displayed, you can select the filter
+mode `include` or `exclude` and then define the predicate to match the 
+signals against, currently we support the following fields `attribute` 
+Multiple filter rules can be definied and will be applied in order
+(top to bottom).
 
 ## Example Output => Basic Verbosity
 

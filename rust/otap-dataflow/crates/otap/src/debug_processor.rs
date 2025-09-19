@@ -295,7 +295,7 @@ async fn push_metric(
     }
 
     // if there are filters to apply then apply them
-    if filters.len() > 0 {
+    if !filters.is_empty() {
         for filter in filters {
             filter.filter_metrics(&mut metric_request)
         }
@@ -357,7 +357,7 @@ async fn push_trace(
     }
 
     // if there are filters to apply then apply them
-    if filters.len() > 0 {
+    if !filters.is_empty() {
         for filter in filters {
             filter.filter_traces(&mut trace_request)
         }
@@ -416,7 +416,7 @@ async fn push_log(
     }
 
     // if there are filters to apply then apply them
-    if filters.len() > 0 {
+    if !filters.is_empty() {
         for filter in filters {
             filter.filter_logs(&mut log_request)
         }
@@ -447,7 +447,9 @@ mod tests {
 
     use crate::debug_processor::config::{Config, OutputMode, SignalActive, Verbosity};
     use crate::debug_processor::filter::{FilterMode, FilterRules};
-    use crate::debug_processor::predicate::{MatchValue, Predicate, SignalField};
+    use crate::debug_processor::predicate::{
+        KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
+    };
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use crate::pdata::{OtapPdata, OtlpProtoBytes};
     use otap_df_config::node::NodeUserConfig;
@@ -905,6 +907,63 @@ mod tests {
         }
     }
 
+    fn validation_procedure_exclude_attribute(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                // check the the processor has received the expected number of messages
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 1 metrics"));
+                assert!(reader.contains("Received 1 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("Config message received"));
+                assert!(reader.contains("Shutdown message received"));
+
+                // signal with attribute should not be present
+                assert!(!reader.contains("Attributes: log_attr1=log_val_1"));
+            })
+        }
+    }
+
+    fn validation_procedure_include_attribute(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                // check the the processor has received the expected number of messages
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 1 metrics"));
+                assert!(reader.contains("Received 1 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("Config message received"));
+                assert!(reader.contains("Shutdown message received"));
+
+                // signal with attribute should be present
+                assert!(reader.contains("Attributes: log_attr1=log_val_1"));
+            })
+        }
+    }
     #[test]
     fn test_debug_processor_only_spans() {
         let test_runtime = TestRuntime::new();
@@ -966,7 +1025,16 @@ mod tests {
     //     ]);
     //     let output_file = "debug_output_filter_include.txt".to_string();
 
-    //     let filterrule = vec![FilterRules::new(Predicate::new(SignalField::Attribute, MatchValue::String("444".to_string())), FilterMode::Include)];
+    //     let filterrule = vec![FilterRules::new(
+    //         Predicate::new(
+    //             SignalField::Attribute,
+    //             MatchValue::KeyValue(vec![PredicateKeyValue::new(
+    //                 "log_attr1".to_string(),
+    //                 MatchValue::String("log_val_1".to_string()),
+    //             )]),
+    //         ),
+    //         FilterMode::Include,
+    //     )];
     //     let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals, filterrule);
     //     let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
     //     let processor = ProcessorWrapper::local(
@@ -979,12 +1047,12 @@ mod tests {
     //     test_runtime
     //         .set_processor(processor)
     //         .run_test(scenario())
-    //         .validate(validation_procedure(output_file.clone()));
+    //         .validate(validation_procedure_include_attribute(output_file.clone()));
 
     //     remove_file(output_file).expect("Failed to remove file");
     // }
 
-    //     #[test]
+    // #[test]
     // fn test_debug_processor_filter_exclude() {
     //     let test_runtime = TestRuntime::new();
     //     let signals = HashSet::from([
@@ -994,7 +1062,16 @@ mod tests {
     //     ]);
     //     let output_file = "debug_output_filter_exclude.txt".to_string();
 
-    //     let filterrule = vec![FilterRules::new(Predicate::new(SignalField::Attribute, MatchValue::String( "444".to_string())), FilterMode::Exclude)];
+    //     let filterrule = vec![FilterRules::new(
+    //         Predicate::new(
+    //             SignalField::Attribute,
+    //             MatchValue::KeyValue(vec![PredicateKeyValue::new(
+    //                 "log_attr1".to_string(),
+    //                 MatchValue::String("log_val_1".to_string()),
+    //             )]),
+    //         ),
+    //         FilterMode::Exclude,
+    //     )];
     //     let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals, filterrule);
     //     let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
     //     let processor = ProcessorWrapper::local(
@@ -1007,7 +1084,7 @@ mod tests {
     //     test_runtime
     //         .set_processor(processor)
     //         .run_test(scenario())
-    //         .validate(validation_procedure(output_file.clone()));
+    //         .validate(validation_procedure_exclude_attribute(output_file.clone()));
 
     //     remove_file(output_file).expect("Failed to remove file");
     // }

@@ -46,6 +46,7 @@ impl KeyValue {
 
 impl Predicate {
     fn map_anyvalue(&self, match_value: MatchValue) -> AnyValue {
+        // get the anyvalue type
         match match_value {
             MatchValue::String(value) => AnyValue::new_string(value),
             MatchValue::Int(value) => AnyValue::new_int(value),
@@ -62,6 +63,7 @@ impl Predicate {
     }
 
     fn map_keyvalue(&self, key_value: Vec<KeyValue>) -> Vec<KV> {
+        // map KeyValue to proto definition KV
         key_value
             .iter()
             .map(|kv| KV::new(kv.key.clone(), self.map_anyvalue(kv.value.clone())))
@@ -85,6 +87,8 @@ impl Predicate {
             SignalField::Attribute => {
                 if let Some(data) = metric_data {
                     match data {
+                        // check attributes from each datapoint
+                        // filter on datapoints instead of metric signal for metric pdata type?
                         Data::Gauge(gauge) => gauge.data_points.iter().any(|data_points| {
                             self.check_attributes(data_points.attributes.clone())
                         }),
@@ -106,6 +110,7 @@ impl Predicate {
                         }),
                     }
                 } else {
+                    // no data to check attributes for
                     false
                 }
             }
@@ -121,7 +126,7 @@ impl Predicate {
     fn check_attributes(&self, attributes: Vec<KV>) -> bool {
         match &self.value {
             MatchValue::KeyValue(value) => {
-                let key_values = self.map_keyvalue(value.clone());  
+                let key_values = self.map_keyvalue(value.clone());
                 key_values.iter().any(|kv| attributes.contains(kv))
             }
             _ => false, // we expect a key value to match against
