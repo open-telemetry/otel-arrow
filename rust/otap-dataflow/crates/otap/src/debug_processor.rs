@@ -32,9 +32,9 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::{LogRecord, LogsData},
-    metrics::v1::{Metric, MetricsData, metric::Data},
-    trace::v1::{Span, TracesData},
+    logs::v1::LogsData,
+    metrics::v1::{MetricsData, metric::Data},
+    trace::v1::TracesData,
 };
 use prost::Message as _;
 use serde_json::Value;
@@ -355,14 +355,13 @@ async fn push_metric(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            let metric_signals: Vec<Metric> = metric_request
+            let metric_signals = metric_request
                 .resource_metrics
                 .into_iter()
                 .flat_map(|resource| resource.scope_metrics)
-                .flat_map(|scope| scope.metrics)
-                .collect();
-            for (index, metric) in metric_signals.iter().enumerate() {
-                let report = marshaler.marshal_metric_signal(metric, index);
+                .flat_map(|scope| scope.metrics);
+            for (index, metric) in metric_signals.enumerate() {
+                let report = marshaler.marshal_metric_signal(&metric, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
@@ -420,14 +419,13 @@ async fn push_trace(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            let span_signals: Vec<Span> = trace_request
+            let span_signals = trace_request
                 .resource_spans
                 .into_iter()
                 .flat_map(|resource| resource.scope_spans)
-                .flat_map(|scope| scope.spans)
-                .collect();
-            for (index, span) in span_signals.iter().enumerate() {
-                let report = marshaler.marshal_span_signal(span, index);
+                .flat_map(|scope| scope.spans);
+            for (index, span) in span_signals.enumerate() {
+                let report = marshaler.marshal_span_signal(&span, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
@@ -484,14 +482,13 @@ async fn push_log(
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            let log_signals: Vec<LogRecord> = log_request
+            let log_signals = log_request
                 .resource_logs
                 .into_iter()
                 .flat_map(|resource| resource.scope_logs)
-                .flat_map(|scope| scope.log_records)
-                .collect();
-            for (index, log_record) in log_signals.iter().enumerate() {
-                let report = marshaler.marshal_log_signal(log_record, index);
+                .flat_map(|scope| scope.log_records);
+            for (index, log_record) in log_signals.enumerate() {
+                let report = marshaler.marshal_log_signal(&log_record, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
