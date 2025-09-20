@@ -342,7 +342,10 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
     set
 }
 
-fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> &'static[ArrowPayloadType] {
+fn attrs_payloads(
+    signal: SignalType,
+    domains: &HashSet<ApplyDomain>,
+) -> &'static [ArrowPayloadType] {
     use payload_sets::*;
 
     let has_resource = domains.contains(&ApplyDomain::Resource);
@@ -352,31 +355,31 @@ fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> &'stati
     match (has_resource, has_scope, has_signal, signal) {
         // Empty cases
         (false, false, false, _) => EMPTY,
-        
+
         // Signal only
         (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
         (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
         (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-        
+
         // Resource only
         (true, false, false, _) => RESOURCE_ONLY,
-        
+
         // Scope only
         (false, true, false, _) => SCOPE_ONLY,
-        
+
         // Resource + Signal
         (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
         (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
         (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-        
+
         // Scope + Signal
         (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
         (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
         (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-        
+
         // Resource + Scope (no signal)
         (true, true, false, _) => RESOURCE_SCOPE,
-        
+
         // All three
         (true, true, true, SignalType::Logs) => LOGS_ALL,
         (true, true, true, SignalType::Metrics) => METRICS_ALL,
@@ -440,12 +443,8 @@ mod payload_sets {
         A::NumberDpExemplarAttrs,
         A::HistogramDpExemplarAttrs,
     ];
-    pub(super) const TRACES_SIGNAL: &[A] = &[
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-    
+    pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
+
     // Resource only
     pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
 
@@ -453,10 +452,7 @@ mod payload_sets {
     pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
 
     // Resource + Signal
-    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::LogAttrs,
-    ];
+    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
     pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
         A::ResourceAttrs,
         A::MetricAttrs,
@@ -472,12 +468,9 @@ mod payload_sets {
         A::SpanEventAttrs,
         A::SpanLinkAttrs,
     ];
-    
+
     // Scope + Signal
-    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::LogAttrs,
-    ];
+    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
     pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
         A::ScopeAttrs,
         A::MetricAttrs,
@@ -493,19 +486,12 @@ mod payload_sets {
         A::SpanEventAttrs,
         A::SpanLinkAttrs,
     ];
-    
+
     // Resource + Scope
-    pub(super) const RESOURCE_SCOPE: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-    ];
-    
+    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
+
     // All three: Resource + Scope + Signal
-    pub(super) const LOGS_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::LogAttrs,
-    ];
+    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
     pub(super) const METRICS_ALL: &[A] = &[
         A::ResourceAttrs,
         A::ScopeAttrs,
