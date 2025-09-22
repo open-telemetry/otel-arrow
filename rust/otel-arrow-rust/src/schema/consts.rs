@@ -52,6 +52,7 @@ pub const HISTOGRAM_BUCKET_COUNTS: &str = "bucket_counts";
 pub const HISTOGRAM_EXPLICIT_BOUNDS: &str = "explicit_bounds";
 pub const EXP_HISTOGRAM_SCALE: &str = "scale";
 pub const EXP_HISTOGRAM_ZERO_COUNT: &str = "zero_count";
+pub const EXP_HISTOGRAM_ZERO_THRESHOLD: &str = "zero_threshold";
 pub const EXP_HISTOGRAM_POSITIVE: &str = "positive";
 pub const EXP_HISTOGRAM_NEGATIVE: &str = "negative";
 pub const EXP_HISTOGRAM_OFFSET: &str = "offset";
