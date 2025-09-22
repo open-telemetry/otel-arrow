@@ -284,15 +284,15 @@ fn apply_transform_with_stats(
     transform: &AttributesTransform,
     domains: &HashSet<ApplyDomain>,
 ) -> Result<(u64, u64), EngineError> {
-    let payloads = attrs_payloads(signal, domains);
     let mut deleted_total: u64 = 0;
     let mut renamed_total: u64 = 0;
 
     // Only apply if we have transforms to apply
     if transform.rename.is_some() || transform.delete.is_some() {
-        for payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty).cloned() {
-                let (rb, stats) = transform_attributes_with_stats(&rb, transform)
+        let payloads = attrs_payloads(signal, domains);
+        for &payload_ty in payloads {
+            if let Some(rb) = records.get(payload_ty) {
+                let (rb, stats) = transform_attributes_with_stats(rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                 deleted_total += stats.deleted_entries;
                 renamed_total += stats.renamed_entries;
@@ -342,37 +342,49 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
     set
 }
 
-fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<ArrowPayloadType> {
-    use ArrowPayloadType as A;
-    let mut out: Vec<ArrowPayloadType> = Vec::new();
-    // Domains are unioned
-    if domains.contains(&ApplyDomain::Resource) {
-        out.push(A::ResourceAttrs);
+fn attrs_payloads(
+    signal: SignalType,
+    domains: &HashSet<ApplyDomain>,
+) -> &'static [ArrowPayloadType] {
+    use payload_sets::*;
+
+    let has_resource = domains.contains(&ApplyDomain::Resource);
+    let has_scope = domains.contains(&ApplyDomain::Scope);
+    let has_signal = domains.contains(&ApplyDomain::Signal);
+
+    match (has_resource, has_scope, has_signal, signal) {
+        // Empty cases
+        (false, false, false, _) => EMPTY,
+
+        // Signal only
+        (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
+        (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
+        (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
+
+        // Resource only
+        (true, false, false, _) => RESOURCE_ONLY,
+
+        // Scope only
+        (false, true, false, _) => SCOPE_ONLY,
+
+        // Resource + Signal
+        (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
+        (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
+        (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
+
+        // Scope + Signal
+        (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
+        (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
+        (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
+
+        // Resource + Scope (no signal)
+        (true, true, false, _) => RESOURCE_SCOPE,
+
+        // All three
+        (true, true, true, SignalType::Logs) => LOGS_ALL,
+        (true, true, true, SignalType::Metrics) => METRICS_ALL,
+        (true, true, true, SignalType::Traces) => TRACES_ALL,
     }
-    if domains.contains(&ApplyDomain::Scope) {
-        out.push(A::ScopeAttrs);
-    }
-    if domains.contains(&ApplyDomain::Signal) {
-        match signal {
-            SignalType::Logs => {
-                out.push(A::LogAttrs);
-            }
-            SignalType::Metrics => {
-                out.push(A::MetricAttrs);
-                out.push(A::NumberDpAttrs);
-                out.push(A::HistogramDpAttrs);
-                out.push(A::SummaryDpAttrs);
-                out.push(A::NumberDpExemplarAttrs);
-                out.push(A::HistogramDpExemplarAttrs);
-            }
-            SignalType::Traces => {
-                out.push(A::SpanAttrs);
-                out.push(A::SpanEventAttrs);
-                out.push(A::SpanLinkAttrs);
-            }
-        }
-    }
-    out
 }
 
 fn engine_err(msg: &str) -> EngineError {
@@ -414,6 +426,90 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
             create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
     };
+
+// Pre-computed arrays for all domain combinations
+mod payload_sets {
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
+
+    pub(super) const EMPTY: &[A] = &[];
+
+    // Signal only
+    pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
+    pub(super) const METRICS_SIGNAL: &[A] = &[
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
+
+    // Resource only
+    pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
+
+    // Scope only
+    pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
+
+    // Resource + Signal
+    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
+    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Scope + Signal
+    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Resource + Scope
+    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
+
+    // All three: Resource + Scope + Signal
+    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+}
 
 #[cfg(test)]
 mod tests {
