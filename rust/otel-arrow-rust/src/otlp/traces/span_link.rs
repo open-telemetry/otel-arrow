@@ -16,8 +16,8 @@ use crate::{
     },
     proto::consts::{
         field_num::traces::{
-            SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_ATTRIBUTES, SPAN_LINK_SPAN_ID,
-            SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE,
+            SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_ATTRIBUTES, SPAN_LINK_FLAGS,
+            SPAN_LINK_SPAN_ID, SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE,
         },
         wire_types,
     },
@@ -32,6 +32,7 @@ pub struct SpanLinkArrays<'a> {
     pub trace_id: Option<FixedSizeBinaryArrayAccessor<'a>>,
     pub trace_state: Option<StringArrayAccessor<'a>>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
+    pub flags: Option<&'a UInt32Array>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for SpanLinkArrays<'a> {
@@ -54,6 +55,7 @@ impl<'a> TryFrom<&'a RecordBatch> for SpanLinkArrays<'a> {
                 .map(StringArrayAccessor::try_new)
                 .transpose()?,
             dropped_attributes_count: get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?,
+            flags: get_u32_array_opt(rb, consts::FLAGS)?,
         })
     }
 }
@@ -103,8 +105,12 @@ pub fn encode_span_link(
         }
     }
 
-    // TODO support flags:
-    // https://github.com/open-telemetry/otel-arrow/issues/1136
+    if let Some(col) = &link_arrays.flags {
+        if let Some(val) = col.value_at(index) {
+            result_buf.encode_field_tag(SPAN_LINK_FLAGS, wire_types::FIXED32);
+            result_buf.extend_from_slice(&val.to_le_bytes());
+        }
+    }
 
     Ok(())
 }
