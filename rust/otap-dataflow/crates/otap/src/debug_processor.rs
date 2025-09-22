@@ -47,38 +47,12 @@ mod marshaler;
 mod metrics;
 mod normal_marshaler;
 
-/// A wrapper around AsyncWrite that simplifies error handling for debug output
-struct OutputWriter {
-    writer: Box<dyn AsyncWrite + Unpin>,
-    processor_id: NodeId,
-}
-
-impl OutputWriter {
-    fn new(writer: Box<dyn AsyncWrite + Unpin>, processor_id: NodeId) -> Self {
-        Self {
-            writer,
-            processor_id,
-        }
-    }
-
-    async fn write(&mut self, data: &str) -> Result<(), Error> {
-        self.writer
-            .write_all(data.as_bytes())
-            .await
-            .map_err(|e| Error::ProcessorError {
-                processor: self.processor_id.clone(),
-                error: format!("Write error: {e}"),
-            })
-    }
-}
-
 /// The URN for the debug processor
 pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
 
 /// processor that outputs all data received to stdout
 pub struct DebugProcessor {
     config: Config,
-    output: Option<String>,
     metrics: MetricSet<DebugPdataMetrics>,
 }
 
@@ -117,11 +91,10 @@ impl DebugProcessor {
     /// Creates a new Debug processor
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(config: Config, output: Option<String>, pipeline_ctx: PipelineContext) -> Self {
+    pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
         DebugProcessor {
             config,
-            output,
             metrics,
         }
     }
@@ -135,7 +108,6 @@ impl DebugProcessor {
             })?;
         Ok(DebugProcessor {
             config,
-            output: None,
             metrics,
         })
     }
@@ -152,16 +124,17 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let active_signals = self.config.signals();
         let verbosity = self.config.verbosity();
         let mode = self.config.mode();
-
         let marshaler: Box<dyn ViewMarshaler> = if verbosity == Verbosity::Normal {
             Box::new(NormalViewMarshaler)
         } else {
             Box::new(DetailedViewMarshaler)
         };
 
-        // get a writer to write to stdout or to a file
-        let raw_writer = get_writer(&self.output).await;
-        let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
+        // // get a writer to write to stdout or to a file
+        // let raw_writer = get_writer(&self.output).await;
+        // let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
+
+        let debug_output = DebugOutput::new_from_output_mode(self.config.output());
 
         match msg {
             Message::Control(control) => {
@@ -205,7 +178,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 req,
                                 &*marshaler,
                                 &mode,
-                                &mut writer,
+                                &debug_output,
                                 &mut self.metrics,
                             )
                             .await?;
@@ -224,7 +197,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 req,
                                 &*marshaler,
                                 &mode,
-                                &mut writer,
+                                &debug_output,
                                 &mut self.metrics,
                             )
                             .await?;
@@ -243,7 +216,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 req,
                                 &*marshaler,
                                 &mode,
-                                &mut writer,
+                                &debug_output,
                                 &mut self.metrics,
                             )
                             .await?;
@@ -257,30 +230,13 @@ impl local::Processor<OtapPdata> for DebugProcessor {
     }
 }
 
-/// determine if output goes to console or to a file
-async fn get_writer(output_file: &Option<String>) -> Box<dyn AsyncWrite + Unpin> {
-    match output_file {
-        Some(file_name) => {
-            let file = File::options()
-                .write(true)
-                .append(true)
-                .create(true)
-                .open(file_name)
-                .await
-                .expect("could not open output file");
-            Box::new(file)
-        }
-        None => Box::new(tokio::io::stdout()),
-    }
-}
-
 /// Function to collect and report the data contained in a Metrics object received by the Debug processor
 async fn push_metric(
     verbosity: &Verbosity,
     metric_request: MetricsData,
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
-    writer: &mut OutputWriter,
+    debug_output: &DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource metrics
@@ -325,15 +281,13 @@ async fn push_metric(
         .metric_datapoints_consumed
         .add(data_points as u64);
 
-    writer
-        .write(&format!("Received {resource_metrics} resource metrics\n"))
-        .await?;
-    writer
-        .write(&format!("Received {metrics} metrics\n"))
-        .await?;
-    writer
-        .write(&format!("Received {data_points} data points\n"))
-        .await?;
+
+    let report_basic = format!("Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n");
+    debug_output.output_message(report_basic).await?;
+
+    // if outport then send via outport
+    // need function to generate structured log from the string data
+
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return Ok(());
@@ -341,14 +295,14 @@ async fn push_metric(
     match mode {
         DisplayMode::Batch => {
             let report = marshaler.marshal_metrics(metric_request);
-            writer.write(&format!("{report}\n")).await?;
+            debug_output.output_message(format!("{report}\n")).await?;
         }
         DisplayMode::Signal => {
             // safety: this should be initialized above if the mode is Signal
             let metric_signals = metric_signals.expect("metric_signals not None");
             for (index, metric) in metric_signals.iter().enumerate() {
                 let report = marshaler.marshal_metric_signal(metric, index);
-                writer.write(&format!("{report}\n")).await?;
+                debug_output.output_message(format!("{report}\n")).await?;
             }
         }
     }
@@ -360,7 +314,7 @@ async fn push_trace(
     trace_request: TracesData,
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
-    writer: &mut OutputWriter,
+    debug_output: &DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource spans
@@ -385,12 +339,9 @@ async fn push_trace(
     internal_metrics.span_signals_consumed.add(spans as u64);
     internal_metrics.span_events_consumed.add(events as u64);
     internal_metrics.span_links_consumed.add(links as u64);
-    writer
-        .write(&format!("Received {resource_spans} resource spans\n"))
-        .await?;
-    writer.write(&format!("Received {spans} spans\n")).await?;
-    writer.write(&format!("Received {events} events\n")).await?;
-    writer.write(&format!("Received {links} links\n")).await?;
+
+    let report_basic = format!("Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n");
+    debug_output.output_message(report_basic).await?;
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return Ok(());
@@ -399,13 +350,13 @@ async fn push_trace(
     match mode {
         DisplayMode::Batch => {
             let report = marshaler.marshal_traces(trace_request);
-            writer.write(&format!("{report}\n")).await?;
+            debug_output.output_message(format!("{report}\n")).await?;
         }
         DisplayMode::Signal => {
             let span_signals = span_signals.expect("metric_signals not None");
             for (index, span) in span_signals.iter().enumerate() {
                 let report = marshaler.marshal_span_signal(span, index);
-                writer.write(&format!("{report}\n")).await?;
+            debug_output.output_message(format!("{report}\n")).await?;
             }
         }
     }
@@ -417,7 +368,7 @@ async fn push_log(
     log_request: LogsData,
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
-    writer: &mut OutputWriter,
+    debug_output: &DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
@@ -441,13 +392,10 @@ async fn push_log(
         .log_signals_consumed
         .add(log_records as u64);
     internal_metrics.events_consumed.add(events as u64);
-    writer
-        .write(&format!("Received {resource_logs} resource logs\n"))
-        .await?;
-    writer
-        .write(&format!("Received {log_records} log records\n"))
-        .await?;
-    writer.write(&format!("Received {events} events\n")).await?;
+
+    let report_basic = format!("Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n");
+        debug_output.output_message(report_basic).await?;
+
     if *verbosity == Verbosity::Basic {
         return Ok(());
     }
@@ -455,13 +403,13 @@ async fn push_log(
     match mode {
         DisplayMode::Batch => {
             let report = marshaler.marshal_logs(log_request);
-            writer.write(&format!("{report}\n")).await?;
+            debug_output.output_message(format!("{report}\n")).await?;
         }
         DisplayMode::Signal => {
             let log_signals = log_signals.expect("metric_signals not None");
             for (index, log_record) in log_signals.iter().enumerate() {
                 let report = marshaler.marshal_log_signal(log_record, index);
-                writer.write(&format!("{report}\n")).await?;
+                debug_output.output_message(format!("{report}\n")).await?;
             }
         }
     }
