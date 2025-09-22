@@ -477,7 +477,7 @@ impl DataPointFlags {
 
     /// Return the raw flags value.
     #[must_use]
-    pub fn into_inner(self) -> u32 {
+    pub const fn into_inner(self) -> u32 {
         self.0
     }
 }

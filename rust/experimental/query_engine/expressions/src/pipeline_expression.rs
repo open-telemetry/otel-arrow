@@ -73,7 +73,16 @@ impl PipelineExpression {
     }
 
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
-        // todo: Implement constant folding and other optimizations
+        let scope = PipelineResolutionScope {
+            constants: &self.constants,
+        };
+
+        let mut errors = Vec::new();
+        for e in &mut self.expressions {
+            if let Err(e) = e.try_fold(&scope) {
+                errors.push(e);
+            }
+        }
         Ok(())
     }
 }
@@ -178,5 +187,51 @@ impl PipelineExpressionBuilder {
 impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
     fn as_ref(&self) -> &PipelineExpression {
         &self.pipeline
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_folding_test() {
+        let actual = PipelineExpressionBuilder::new("")
+            .with_constants(vec![StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )])
+            .with_expressions(vec![DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Boolean(
+                            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                        )),
+                        ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::Boolean,
+                            0,
+                            ValueAccessor::new(),
+                        )),
+                        false,
+                    )),
+                ),
+            )])
+            .build()
+            .unwrap();
+
+        let mut expected = PipelineExpression::new("");
+
+        expected.push_constant(StaticScalarExpression::Boolean(
+            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+        ));
+
+        // Note: In this test the predicate evaluates to a static true so it
+        // gets elided completely.
+        expected.push_expression(DataExpression::Discard(DiscardDataExpression::new(
+            QueryLocation::new_fake(),
+        )));
+
+        assert_eq!(expected, actual);
     }
 }

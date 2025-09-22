@@ -153,7 +153,6 @@ tests:
         partial_update_dict = self.config.model_dump(
             exclude={"target"}, exclude_none=True
         )
-
         # Merge the partial update into the existing config
         updated_config = update_model(base_config, partial_update_dict)
 
@@ -174,14 +173,12 @@ tests:
             updated = component.replace_strategy(new_monitoring_strategy)
 
         if "configuration" in partial_update_dict:
-            updated = component.replace_strategy(
-                updated_config.configuration.build_element()
-            )
+            new_configuration_strategy = updated_config.configuration.build_element()
+            updated = component.replace_strategy(new_configuration_strategy)
 
         if "execution" in partial_update_dict:
-            updated = component.replace_strategy(
-                updated_config.execution.build_element()
-            )
+            new_execution_strategy = updated_config.execution.build_element()
+            updated = component.replace_strategy(new_execution_strategy)
 
         if not updated:
             logger.error("Failed to update component with strategy.")
@@ -193,47 +190,33 @@ tests:
 
 def update_model(model: BaseModel, update: dict) -> BaseModel:
     """
-    Recursively updates a Pydantic model with values from a given update dictionary.
+    Updates a model with a known structure of top-level ConfigurableWrapper fields.
 
-    This function is capable of handling:
-      - Nested Pydantic models
-      - Wrapped configurations using ConfigurableWrapper
-      - Partial updates that only modify specific fields
-      - Merging deep structures without overwriting unrelated fields
-
-    Args:
-        model (BaseModel): The original Pydantic model to be updated.
-        update (dict): A dictionary containing partial updates to apply.
-
-    Returns:
-        BaseModel: A new model instance with the updates applied.
-
-    Behavior:
-        - For fields that are `ConfigurableWrapper` instances, it recursively updates
-          their internal `config` based on the type key.
-        - For fields that are nested Pydantic models, it applies recursive updates.
-        - For all other fields, values from the update dictionary are applied directly.
-
-    Example:
-        updated_model = update_model(existing_model, {"execution": {"threads": 4}})
+    Only updates existing fields. No recursion beyond updating `.config` of wrappers.
     """
-    data = model.model_dump()
+    updates = {}
 
-    for k, v in update.items():
-        current_value = getattr(model, k, None)
+    for key, value in update.items():
+        current = getattr(model, key, None)
 
-        if isinstance(current_value, ConfigurableWrapper):
-            # We're updating the .config of the wrapper
-            updated_config = update_model(
-                current_value.config, v.get(current_value.element_type)
+        if not isinstance(current, ConfigurableWrapper):
+            raise TypeError(
+                f"Expected ConfigurableWrapper at '{key}', got {type(current)}"
             )
-            data[k] = current_value.model_copy(update={"config": updated_config})
 
-        elif isinstance(current_value, BaseModel) and isinstance(v, Mapping):
-            data[k] = update_model(current_value, v)
+        # Get the inner config update based on the element_type key
+        config_update = value.get(current.element_type)
 
-        else:
-            # New field or direct value (fallback)
-            data[k] = v
+        if not isinstance(config_update, Mapping):
+            raise ValueError(
+                f"Expected mapping for config update of '{key}', got: {config_update}"
+            )
 
-    return model.model_copy(update=data)
+        # Update the inner config model
+        updated_config = current.config.model_copy(update=config_update)
+
+        # Update the wrapper with the new config
+        updated_wrapper = current.model_copy(update={"config": updated_config})
+        updates[key] = updated_wrapper
+
+    return model.model_copy(update=updates)

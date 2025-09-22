@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
+use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -16,7 +17,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
-use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -28,10 +28,11 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 /// URN for the OTLP Receiver
-pub const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 
 /// Configuration for OTLP Receiver
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
@@ -102,35 +103,40 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     ) -> Result<(), Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        let listener_stream = TcpListenerStream::new(listener);
 
-        loop {
-            let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-            let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-            let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
+        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
+        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
 
-            if let Some(ref compression) = self.config.compression_method {
-                let encoding = compression.map_to_compression_encoding();
+        if let Some(ref compression) = self.config.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-                logs_service_server = logs_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                metrics_service_server = metrics_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-            }
+            logs_service_server = logs_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            metrics_service_server = metrics_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+            trace_service_server = trace_service_server
+                .send_compressed(encoding)
+                .accept_compressed(encoding);
+        }
 
-            tokio::select! {
-                biased;
+        let server = Server::builder()
+            .add_service(logs_service_server)
+            .add_service(metrics_service_server)
+            .add_service(trace_service_server);
 
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    match ctrl_msg {
+        tokio::select! {
+            biased;
+
+            // Process internal events
+            ctrl_msg_result = async {
+                loop {
+                    match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
-                            break;
+                            return Ok(());
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Report current receiver metrics.
@@ -144,18 +150,18 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         }
                     }
                 }
-                result = Server::builder()
-                    .add_service(logs_service_server)
-                    .add_service(metrics_service_server)
-                    .add_service(trace_service_server)
-                    .serve_with_incoming(&mut listener_stream) => {
-                        if let Err(error) = result {
-                            return Err(Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                error: error.to_string()
-                            })
-                        }
-                    }
+            } => {
+                return ctrl_msg_result;
+            },
+
+            // Run server
+            result = server.serve_with_incoming(listener_stream) => {
+                if let Err(error) = result {
+                    return Err(Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        error: error.to_string()
+                    });
+                }
             }
         }
 
@@ -172,6 +178,23 @@ mod tests {
     use std::pin::Pin;
     use std::time::Duration;
 
+    use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use crate::proto::opentelemetry::collector::logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+    };
+    use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+    use crate::proto::opentelemetry::collector::metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    };
+    use crate::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use crate::proto::opentelemetry::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -179,23 +202,6 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::{
-        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
-    use otap_df_otlp::proto::opentelemetry::collector::trace::v1::{
-        ExportTraceServiceRequest, ExportTraceServiceResponse,
-    };
-    use otap_df_otlp::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otap_df_otlp::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_otlp::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_otlp::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_otlp::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use tokio::time::timeout;
@@ -339,6 +345,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
 
@@ -353,6 +360,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
@@ -369,6 +377,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
+                    .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(

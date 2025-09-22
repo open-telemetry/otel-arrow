@@ -159,7 +159,7 @@ impl PrecomputedSizes {
 
     /// Get the current length for tracking child positions
     #[must_use]
-    pub fn position(&self) -> usize {
+    pub const fn position(&self) -> usize {
         self.sizes.len()
     }
 

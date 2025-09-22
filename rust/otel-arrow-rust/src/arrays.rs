@@ -307,6 +307,15 @@ impl NullableArrayAccessor for ByteArrayAccessor<'_> {
     }
 }
 
+impl<'a> ByteArrayAccessor<'a> {
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Binary(b) => b.slice_at(idx),
+            Self::FixedSizeBinary(b) => b.slice_at(idx),
+        }
+    }
+}
+
 /// Wrapper around an array that might be a dictionary or it might just be an unencoded
 /// array of the base type
 pub enum MaybeDictArrayAccessor<'a, V> {
@@ -397,6 +406,14 @@ where
         }
         .fail()
     }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        match self {
+            Self::Dictionary16(d) => d.is_valid(index),
+            Self::Dictionary8(d) => d.is_valid(index),
+            Self::Native(d) => d.is_valid(index),
+        }
+    }
 }
 
 impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
@@ -413,17 +430,53 @@ where
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
+
+    pub fn null_count(&self) -> usize {
+        match self {
+            Self::Dictionary16(d) => d.null_count(),
+            Self::Dictionary8(d) => d.null_count(),
+            Self::Native(n) => n.null_count(),
+        }
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(bin_arr) => {
+                if bin_arr.is_valid(idx) {
+                    Some(bin_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
     pub fn try_new(arr: &'a ArrayRef, dims: i32) -> error::Result<Self> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
+    }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(fsb_arr) => {
+                if fsb_arr.is_valid(idx) {
+                    Some(fsb_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -437,6 +490,20 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
         column_name: &str,
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
+    }
+
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        match self {
+            Self::Dictionary16(dict) => dict.str_at(idx),
+            Self::Dictionary8(dict) => dict.str_at(idx),
+            Self::Native(str_arr) => {
+                if str_arr.is_valid(idx) {
+                    Some(str_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -483,12 +550,75 @@ where
             None
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn null_count(&self) -> usize {
+        self.inner.null_count()
+    }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        self.inner.is_valid(index)
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, BinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, FixedSizeBinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, StringArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
 }
 
 /// Helper for accessing columns of a struct array
 ///
 /// Methods return various errors into this crate's Error type if
-/// if callers requirments for the struct columns are not met (for
+/// if callers requirements for the struct columns are not met (for
 /// example `ColumnDataTypeMismatchSnafu`)
 pub struct StructColumnAccessor<'a> {
     inner: &'a StructArray,
@@ -569,6 +699,16 @@ impl<'a> StructColumnAccessor<'a> {
         self.inner
             .column_by_name(column_name)
             .map(Int32ArrayAccessor::try_new)
+            .transpose()
+    }
+
+    pub fn int64_column_op(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<Int64ArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(Int64ArrayAccessor::try_new)
             .transpose()
     }
 }

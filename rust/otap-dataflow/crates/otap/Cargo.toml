@@ -24,32 +24,7 @@ humantime-serde.workspace = true
 log.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
-otap-df-engine = { path = "../engine" }
-otap-df-engine-macros = { path = "../engine-macros" }
-otap-df-channel = { path = "../channel" }
-otap-df-config = { path = "../config" }
-otap-df-otlp = { path = "../otlp", features = ["test-utils"]}
-otap-df-pdata-views = { path = "../pdata-views" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
 parquet.workspace = true
-tonic = { version = "0.13.1", default-features = false, features = [
-    "server",
-    "channel",
-    "router",
-    "transport",
-    "codegen",
-    "prost",
-    "zstd",
-    "gzip",
-    "deflate",
-] }
-tower-service = "0.3"
-fluke-hpack = "0.3.1"
-serde = {version="1", features=["derive"]}
-prost = "0.13.5"
-tokio-stream = "0.1.17"
-async-stream = "0.3.6"
 thiserror = { workspace = true }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true }
@@ -58,9 +33,34 @@ linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
+tonic = { workspace = true }
+tonic-middleware = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+
+otap-df-engine = { path = "../engine" }
+otap-df-engine-macros = { path = "../engine-macros" }
+otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
+otap-df-pdata-views = { path = "../pdata-views" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
+chrono = { version = "0.4", features = ["serde"] }
+tower-service = "0.3"
+fluke-hpack = "0.3.1"
+serde = {version="1", features=["derive"]}
+tokio-stream = "0.1.17"
+async-stream = "0.3.6"
+humantime = "2.2.0"
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+rand = "0.9.2"
+zip = "=4.2.0"
 
 [dev-dependencies]
 portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
 url.workspace = true
+tokio-util.workspace = true

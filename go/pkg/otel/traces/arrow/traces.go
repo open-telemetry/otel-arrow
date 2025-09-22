@@ -35,6 +35,7 @@ var (
 		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}},
 		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8), Nullable: true},
 		{Name: constants.ParentSpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Nullable: true},
+		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Dictionary8), Nullable: true},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
@@ -60,6 +61,7 @@ type TracesBuilder struct {
 	sib   *builder.FixedSizeBinaryBuilder // span id builder
 	tsb   *builder.StringBuilder          // trace state builder
 	psib  *builder.FixedSizeBinaryBuilder // parent span id builder
+	fb    *builder.Uint32Builder          // flags builder
 	nb    *builder.StringBuilder          // name builder
 	kb    *builder.Int32Builder           // kind builder
 	dacb  *builder.Uint32Builder          // dropped attributes count builder
@@ -131,6 +133,7 @@ func (b *TracesBuilder) init() error {
 	b.tsb = b.builder.StringBuilder(constants.TraceState)
 	b.psib = b.builder.FixedSizeBinaryBuilder(constants.ParentSpanId)
 	b.nb = b.builder.StringBuilder(constants.Name)
+	b.fb = b.builder.Uint32Builder(constants.Flags)
 	b.kb = b.builder.Int32Builder(constants.KIND)
 	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
 	b.decb = b.builder.Uint32Builder(constants.DroppedEventsCount)
@@ -271,6 +274,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		} else {
 			b.psib.Append(psib[:])
 		}
+		b.fb.Append(uint32(span.Span.Flags()))
 		b.nb.AppendNonEmpty(span.Span.Name())
 		b.kb.AppendNonZero(int32(span.Span.Kind()))
 

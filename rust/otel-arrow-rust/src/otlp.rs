@@ -10,3 +10,4 @@ pub mod metrics;
 pub mod traces;
 
 mod common;
+pub use common::ProtoBuffer;

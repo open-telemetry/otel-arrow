@@ -22,7 +22,7 @@ use crate::{
 };
 use crate::{
     encode::record::array::{ArrayAppendSlice, boolean::BooleanBuilderOptions},
-    otlp::attributes::store::AttributeValueType,
+    otlp::attributes::AttributeValueType,
 };
 
 /// Record batch builder for attributes

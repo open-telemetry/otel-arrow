@@ -28,7 +28,7 @@ impl ParseScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             ParseScalarExpression::Json(p) => p.try_resolve_static(scope),
             ParseScalarExpression::Regex(p) => p.try_resolve_static(scope),
@@ -83,7 +83,7 @@ impl ParseJsonScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = self.inner_expression.get_query_location().clone();
 
         match self.inner_expression.try_resolve_static(scope)? {
@@ -151,7 +151,7 @@ impl ParseRegexScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let pattern = self.pattern.try_resolve_static(scope)?;
 
         let options = if let Some(o) = &mut self.options {

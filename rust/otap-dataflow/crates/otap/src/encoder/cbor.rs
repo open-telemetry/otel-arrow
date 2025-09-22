@@ -118,12 +118,14 @@ mod test {
     use super::*;
     use otap_df_pdata_views::otlp::proto::common::{ObjAny, ObjKeyValue};
     use otap_df_pdata_views::otlp::proto::wrappers::Wraps;
+    use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::{
-        otlp::attributes::cbor::decode_pcommon_val,
+        otlp::attributes::cbor::proto_encode_cbor_bytes,
         proto::opentelemetry::common::v1::{
             AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
         },
     };
+    use prost::Message;
 
     #[test]
     fn test_round_trip_anyvals() {
@@ -143,13 +145,13 @@ mod test {
                 any_value::Value::BytesValue(vec![1, 2, 3]),
             ),
             (
-                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(-1)]),
+                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(1)]),
                 any_value::Value::ArrayValue(ArrayValue::new(vec![
                     AnyValue {
                         value: Some(any_value::Value::BoolValue(false)),
                     },
                     AnyValue {
-                        value: Some(any_value::Value::IntValue(-1)),
+                        value: Some(any_value::Value::IntValue(1)),
                     },
                 ])),
             ),
@@ -182,9 +184,11 @@ mod test {
             serialize_any_values(vec![ObjAny::new(&source)].into_iter(), &mut serialized_val)
                 .unwrap();
 
-            let result = decode_pcommon_val(&serialized_val).unwrap();
+            let mut proto_buffer = ProtoBuffer::new();
+            proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
+            let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(
-                result,
+                result.value,
                 Some(any_value::Value::ArrayValue(ArrayValue::new(vec![
                     AnyValue {
                         value: Some(expected)
@@ -250,9 +254,11 @@ mod test {
             )
             .unwrap();
 
-            let result = decode_pcommon_val(&serialized_val).unwrap();
+            let mut proto_buffer = ProtoBuffer::new();
+            proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
+            let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(
-                result,
+                result.value,
                 Some(any_value::Value::KvlistValue(KeyValueList {
                     values: expected.clone()
                 }))

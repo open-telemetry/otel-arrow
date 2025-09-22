@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
-use crate::otlp::bytes::consts::wire_types;
+use otel_arrow_rust::proto::consts::wire_types;
 
 /// Clones the parser, sharing the underlying buffer and interior-mutability state.
 /// The cloned instance will share offsets and position with the original.
@@ -162,7 +162,7 @@ where
 /// return the range of the positions in the byte slice containing values. The range is determined
 /// from the wire type.
 #[inline]
-fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, usize)> {
+pub(crate) fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, usize)> {
     let range = match wire_type {
         wire_types::VARINT => {
             // /// TODO this could maybe be read_variant bytes for faster perf

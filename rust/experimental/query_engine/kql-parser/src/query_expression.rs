@@ -272,6 +272,7 @@ mod tests {
                         QueryLocation::new_fake(),
                         ValueType::Integer,
                         0,
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -301,6 +302,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 ValueType::String,
                                 1,
+                                ValueAccessor::new(),
                             )),
                         ]),
                     )),
