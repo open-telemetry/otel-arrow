@@ -5,7 +5,7 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
-use crate::error::TypedError;
+use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -150,6 +150,12 @@ pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
 pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
+
+/// Trait for sending admin commands without depending on the pipeline data type.
+pub trait PipelineAdminSender: Send + Sync {
+    /// Attempts to send a shutdown request to the pipeline.
+    fn try_send_shutdown(&self, reason: String) -> Result<(), Error>;
+}
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
 ///
@@ -334,5 +340,19 @@ impl<PData> ControlSenders<PData> {
         } else {
             Err(errors)
         }
+    }
+}
+
+impl<PData> PipelineAdminSender for SharedSender<PipelineControlMsg<PData>>
+where
+    PData: Send + Sync + 'static,
+{
+    fn try_send_shutdown(&self, reason: String) -> Result<(), Error> {
+        let shutdown_msg = PipelineControlMsg::Shutdown { reason };
+
+        self.try_send(shutdown_msg)
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: format!("Failed to send shutdown message: {}", e),
+            })
     }
 }

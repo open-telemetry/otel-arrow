@@ -157,10 +157,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Start the admin HTTP server
         let admin_server_handle =
             spawn_thread_local_task("http-admin", move |cancellation_token| {
+                // Convert the concrete senders to trait objects for the admin crate
+                let admin_senders: Vec<
+                    std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>,
+                > = ctrl_msg_senders
+                    .into_iter()
+                    .map(|sender| {
+                        std::sync::Arc::new(sender)
+                            as std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>
+                    })
+                    .collect();
+
                 otap_df_admin::run(
                     admin_settings,
                     obs_state_handle,
-                    ctrl_msg_senders,
+                    admin_senders,
                     metrics_registry,
                     cancellation_token,
                 )
@@ -273,8 +284,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_handle: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
