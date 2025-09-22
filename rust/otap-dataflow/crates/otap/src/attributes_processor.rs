@@ -292,7 +292,7 @@ fn apply_transform_with_stats(
         let payloads = attrs_payloads(signal, domains);
         for &payload_ty in payloads {
             if let Some(rb) = records.get(payload_ty) {
-                let (rb, stats) = transform_attributes_with_stats(&rb, transform)
+                let (rb, stats) = transform_attributes_with_stats(rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                 deleted_total += stats.deleted_entries;
                 renamed_total += stats.renamed_entries;
