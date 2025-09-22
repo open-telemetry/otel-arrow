@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758576981560,
+  "lastUpdate": 1758582306437,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "66651184+utpilla@users.noreply.github.com",
-            "name": "Utkarsh Umesan Pillai",
-            "username": "utpilla"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "49488a8084ca96bc92e8247f336eb454d1739ab0",
-          "message": "Add benchmarks for Syslog CEF Receiver (#978)\n\n## Changes\n- Add benchmarks for Syslog CEF Receiver\n\nMachine details:\n\nOS: Ubuntu 22.04.4 LTS (5.15.153.1-microsoft-standard-WSL2)\nHardware: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz, 16vCPUs,\nRAM: 64.0 GB\n\n**parser_comparison/rfc3164**\n```\ntime:   [22.645 ns 22.859 ns 23.178 ns]\nthrpt:  [3.0538 GiB/s 3.0965 GiB/s 3.1257 GiB/s]\n```\n\n**parser_comparison/rfc5424**\n```\ntime:   [60.350 ns 60.541 ns 60.803 ns]\nthrpt:  [1.1028 GiB/s 1.1076 GiB/s 1.1111 GiB/s]\n```\n\n**parser_comparison/cef**\n```\ntime:   [43.112 ns 43.256 ns 43.452 ns]\nthrpt:  [1.6718 GiB/s 1.6794 GiB/s 1.6850 GiB/s]\n```\n\n**arrow_batch_creation/rfc3164_arrow_batch_100_msgs**\n```\ntime:   [149.85 µs 150.54 µs 151.27 µs]\n```\n\n**arrow_batch_creation/rfc5424_arrow_batch_100_msgs**\n```\ntime:   [126.32 µs 128.02 µs 130.03 µs]\n```\n\n**arrow_batch_creation/cef_arrow_batch_100_msgs**\n```\ntime:   [94.159 µs 94.257 µs 94.372 µs]\n```\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-08-21T22:57:20Z",
-          "tree_id": "77446ebfdb44e370719e2bebefa860bfb978d022",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/49488a8084ca96bc92e8247f336eb454d1739ab0"
-        },
-        "date": 1755817807178,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 738333.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22150000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22150000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.78,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 7.06,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 164.49,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 202.56,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 739333.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22180000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22180000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.6,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.7,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 128.07,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 150.06,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 201.47,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "72628f358a7a69e1b51bfd2bbd61cf9fa29009fb",
+          "message": "[perf][otap-df-otap] Avoid redundant allocations for validating AttributeTransform config (#1172)\n\n## Changes\n- The transforms for `AttributesProcessor` are not changed after\ninitialization\n- Currently we are `AttributesTransform::validate()` in the hot-path.\nThis method allocates a `BTreeSet` when called\n- In this PR, I have updated the code to perform validation of\n`AttributesTransform` just one in the `new` method",
+          "timestamp": "2025-09-22T22:57:26Z",
+          "tree_id": "8e7ce8c8a5baf6c65268f5411e46ad305e05d92a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/72628f358a7a69e1b51bfd2bbd61cf9fa29009fb"
+        },
+        "date": 1758582303489,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 737166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22115000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22115000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.54,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.73,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 134.87,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 157.22,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 739500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22185000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22185000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.75,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.87,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 171.55,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 212.04,
             "unit": "MiB"
           }
         ]
