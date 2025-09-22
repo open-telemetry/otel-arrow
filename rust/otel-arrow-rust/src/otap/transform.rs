@@ -567,6 +567,7 @@ pub struct TransformStats {
 /// transformed batch and exact per-batch [`TransformStats`].
 ///
 /// Behavior and guarantees:
+/// - Expects the caller to validate the transform configuration by calling [`AttributesTransform::validate`].
 /// - Parity: the returned `RecordBatch` is the same result you would get from
 ///   [`transform_attributes`] for the same inputs.
 /// - Exact totals: `TransformStats` are computed during the transform with minimal overhead.
@@ -582,8 +583,6 @@ pub fn transform_attributes_with_stats(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<(RecordBatch, TransformStats)> {
-    transform.validate()?;
-
     let schema = attrs_record_batch.schema();
     let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
         error::ColumnNotFoundSnafu {
