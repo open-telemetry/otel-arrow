@@ -117,7 +117,7 @@ impl TimerSet {
 /// corresponding NodeControlMsg to nodes when timers expire.
 pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
     control_senders: ControlSenders<PData>,
     /// Repeating timers for generic TimerTick.
@@ -132,7 +132,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
-        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
@@ -169,7 +169,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineControlMsg::Shutdown {reason} => {
+                        PipelineControlMsg::Shutdown { reason } => {
                             // ToDo don't ignore the returned errors
                             _ = self.control_senders.shutdown_receivers(reason).await;
                             break;
@@ -183,7 +183,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
                             self.telemetry_timers.start(node_id, duration);
                         }
-                        PipelineControlMsg::CancelTelemetryTimer { node_id } => {
+                        PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
                     }
@@ -298,7 +298,7 @@ mod tests {
 
     fn setup_test_manager<PData>() -> (
         PipelineCtrlMsgManager<PData>,
-        crate::control::PipelineCtrlMsgSender,
+        crate::control::PipelineCtrlMsgSender<PData>,
         HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
     ) {

@@ -128,7 +128,10 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+    ) -> Result<(), Error> {
         match self {
             ExporterWrapper::Local {
                 mut effect_handler,
