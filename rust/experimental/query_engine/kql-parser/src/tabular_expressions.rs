@@ -3400,6 +3400,8 @@ mod tests {
     #[test]
     fn test_parse_tabular_expression() {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
+            println!("Testing: {input}");
+
             let state = ParserState::new(input);
 
             let mut result = KqlPestParser::parse(Rule::tabular_expression, input).unwrap();

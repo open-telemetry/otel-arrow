@@ -25,7 +25,11 @@ fn parse_array_concat_expression(
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&array_concat_expression_rule);
 
-    let array_concat_rules = array_concat_expression_rule.into_inner();
+    let array_concat_rules = array_concat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 

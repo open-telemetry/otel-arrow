@@ -176,7 +176,7 @@ conversion_expressions = {
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
-strcat_expression = { "strcat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+strcat_expression = { "strcat" ~ scalar_list_expression }
 strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 extract_expression = { "extract" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 string_expressions = {
@@ -195,12 +195,12 @@ parse_expressions = {
     | parse_regex_expression
 }
 
-array_concat_expression = { "array_concat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+array_concat_expression = { "array_concat" ~ scalar_list_expression }
 array_expressions = {
     array_concat_expression
 }
 
-negate_expression = { "-" ~ scalar_expression }
+negate_expression = { "-" ~ scalar_unary_expression }
 bin_expression = { "bin" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 math_expressions = {
     negate_expression
@@ -212,18 +212,11 @@ temporal_expressions = {
     now_expression
 }
 
-arithmetic_factor = {
-    scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
-}
-arithmetic_expression = {
-    arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
-}
-
 /* Note: Order is imporant here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
-scalar_expression = {
+scalar_unary_expression = {
     type_expressions
     | conditional_expressions
     | conversion_expressions
@@ -233,17 +226,32 @@ scalar_expression = {
     | temporal_expressions
     | parse_expressions
     | accessor_expression
-    | ("(" ~ scalar_expression ~ ")")
-    | ("(" ~ logical_expression ~ ")")
-    | ("(" ~ arithmetic_expression ~ ")")
+    | "(" ~ scalar_expression ~ ")"
 }
 
-comparison_expression = {
-    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token|matches_regex_token) ~ scalar_expression
-    | scalar_expression ~ (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
+scalar_arithmetic_binary_expression = _{
+    (multiply_token|divide_token|modulo_token) ~ scalar_unary_expression
+    | (plus_token|minus_token) ~ scalar_unary_expression
 }
-logical_expressions = _{ comparison_expression|scalar_expression }
-logical_expression = { logical_expressions ~ ((and_token|or_token) ~ logical_expressions)* }
+scalar_logical_binary_expression = _{
+    (equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_unary_expression
+    | matches_regex_token ~ scalar_unary_expression
+    | (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token) ~ scalar_unary_expression
+    | (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ scalar_list_expression
+    | (and_token|or_token) ~ scalar_unary_expression
+}
+
+scalar_expression = {
+    scalar_unary_expression ~ (scalar_arithmetic_binary_expression|scalar_logical_binary_expression)*
+}
+
+scalar_list_expression = {
+    "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
+}
+
+logical_expression = {
+    scalar_expression
+}
 
 assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
 
