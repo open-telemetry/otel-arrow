@@ -99,6 +99,7 @@ func TestCustom1TracesEncodingDecoding(t *testing.T) {
 	span.SetSpanID(spanID("90d5ead3745935bd"))
 	span.TraceState().FromRaw("maiores")
 	span.SetKind(2)
+	span.SetFlags(5)
 	span.SetDroppedAttributesCount(9)
 	span.SetDroppedEventsCount(9)
 	span.SetDroppedLinksCount(6)
@@ -149,6 +150,7 @@ func TestCustom1TracesEncodingDecoding(t *testing.T) {
 	link = span.Links().AppendEmpty()
 	link.TraceState().FromRaw("vel")
 	link.SetDroppedAttributesCount(6)
+	link.SetFlags(8)
 
 	span.Status().SetCode(1)
 
@@ -174,6 +176,7 @@ func TestCustom2TracesEncodingDecoding(t *testing.T) {
 	span.SetSpanID(spanID("90d5ead3745935bd"))
 	span.TraceState().FromRaw("maiores")
 	span.SetKind(2)
+	span.SetFlags(6)
 	span.SetDroppedAttributesCount(9)
 	span.SetDroppedEventsCount(9)
 	span.SetDroppedLinksCount(6)
@@ -224,6 +227,7 @@ func TestCustom2TracesEncodingDecoding(t *testing.T) {
 	link = span.Links().AppendEmpty()
 	link.TraceState().FromRaw("vel")
 	link.SetDroppedAttributesCount(6)
+	link.SetFlags(7)
 
 	span.Status().SetCode(1)
 
