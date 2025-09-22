@@ -284,14 +284,14 @@ fn apply_transform_with_stats(
     transform: &AttributesTransform,
     domains: &HashSet<ApplyDomain>,
 ) -> Result<(u64, u64), EngineError> {
-    let payloads = attrs_payloads(signal, domains);
     let mut deleted_total: u64 = 0;
     let mut renamed_total: u64 = 0;
 
     // Only apply if we have transforms to apply
     if transform.rename.is_some() || transform.delete.is_some() {
+        let payloads = attrs_payloads(signal, domains);
         for &payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty).cloned() {
+            if let Some(rb) = records.get(payload_ty) {
                 let (rb, stats) = transform_attributes_with_stats(&rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                 deleted_total += stats.deleted_entries;
