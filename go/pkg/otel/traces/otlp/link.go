@@ -29,6 +29,7 @@ type (
 		SpanID                 int
 		TraceState             int
 		DroppedAttributesCount int
+		Flags                  int
 	}
 
 	// SpanLinksStore contains a set of links indexed by span ID.
@@ -116,6 +117,11 @@ func SpanLinksStoreFrom(
 			return nil, werror.Wrap(err)
 		}
 
+		flags, err := arrowutils.U32FromRecord(record, spanLinkIDs.Flags, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
 		link := ptrace.NewSpanLink()
 
 		var tid pcommon.TraceID
@@ -136,6 +142,7 @@ func SpanLinksStoreFrom(
 		}
 
 		link.SetDroppedAttributesCount(dac)
+		link.SetFlags(flags)
 		store.linksByID[parentID] = append(store.linksByID[parentID], &link)
 	}
 
@@ -174,6 +181,11 @@ func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
+	flags, err := arrowutils.FieldIDFromSchema(schema, constants.Flags)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
 	return &SpanLinkIDs{
 		ParentID:               ParentID,
 		TraceID:                traceID,
@@ -181,6 +193,7 @@ func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 		TraceState:             traceState,
 		ID:                     ID,
 		DroppedAttributesCount: dac,
+		Flags:                  flags,
 	}, nil
 }
 

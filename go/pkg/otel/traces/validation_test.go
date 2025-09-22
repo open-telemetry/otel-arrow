@@ -150,6 +150,7 @@ func TestCustom1TracesEncodingDecoding(t *testing.T) {
 	link = span.Links().AppendEmpty()
 	link.TraceState().FromRaw("vel")
 	link.SetDroppedAttributesCount(6)
+	link.SetFlags(8)
 
 	span.Status().SetCode(1)
 
@@ -226,6 +227,7 @@ func TestCustom2TracesEncodingDecoding(t *testing.T) {
 	link = span.Links().AppendEmpty()
 	link.TraceState().FromRaw("vel")
 	link.SetDroppedAttributesCount(6)
+	link.SetFlags(7)
 
 	span.Status().SetCode(1)
 
