@@ -504,7 +504,7 @@ mod test {
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             resource::v1::Resource,
             trace::v1::{
-                ResourceSpans, ScopeSpans, Span, Status,
+                ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
                 span::{Event, Link},
                 status::StatusCode,
             },
@@ -779,6 +779,7 @@ mod test {
                         ])
                         .finish(),
                     Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
+                        .flags(SpanFlags::TraceFlagsMask)
                         .end_time_unix_nano(3u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])

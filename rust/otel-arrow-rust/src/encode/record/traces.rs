@@ -21,7 +21,10 @@ use crate::{
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
-    schema::{FieldExt, SpanId, TraceId, consts},
+    schema::{
+        FieldExt, SpanId, TraceId,
+        consts::{self, FLAGS},
+    },
 };
 
 /// Record batch builder for traces
@@ -41,6 +44,7 @@ pub struct TracesRecordBatchBuilder {
     span_id: FixedSizeBinaryArrayBuilder,
     trace_state: StringArrayBuilder,
     parent_span_id: FixedSizeBinaryArrayBuilder,
+    flags: UInt32ArrayBuilder,
     name: StringArrayBuilder,
     kind: Int32ArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
@@ -107,6 +111,11 @@ impl TracesRecordBatchBuilder {
                 },
                 8,
             ),
+            flags: UInt32ArrayBuilder::new(ArrayOptions {
+                dictionary_options: None,
+                optional: true,
+                ..Default::default()
+            }),
             name: StringArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
@@ -196,6 +205,15 @@ impl TracesRecordBatchBuilder {
                 self.parent_span_id.append_null();
                 Ok(())
             }
+        }
+    }
+
+    /// append a value to the `flags` array
+    pub fn append_flags(&mut self, val: Option<u32>) {
+        if let Some(val) = val {
+            self.flags.append_value(&val);
+        } else {
+            self.flags.append_null();
         }
     }
 
@@ -350,6 +368,11 @@ impl TracesRecordBatchBuilder {
             true,
         ));
         columns.push(array);
+
+        if let Some(array) = self.flags.finish() {
+            fields.push(Field::new(FLAGS, array.data_type().clone(), true));
+            columns.push(array);
+        }
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
