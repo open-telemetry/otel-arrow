@@ -180,6 +180,78 @@ impl AttributesProcessor {
             metrics: None,
         }
     }
+
+    const fn is_noop(&self) -> bool {
+        self.transform.rename.is_none() && self.transform.delete.is_none()
+    }
+
+    fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+        use payload_sets::*;
+
+        let has_resource = self.domains.contains(&ApplyDomain::Resource);
+        let has_scope = self.domains.contains(&ApplyDomain::Scope);
+        let has_signal = self.domains.contains(&ApplyDomain::Signal);
+
+        match (has_resource, has_scope, has_signal, signal) {
+            // Empty cases
+            (false, false, false, _) => EMPTY,
+
+            // Signal only
+            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
+            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
+            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
+
+            // Resource only
+            (true, false, false, _) => RESOURCE_ONLY,
+
+            // Scope only
+            (false, true, false, _) => SCOPE_ONLY,
+
+            // Resource + Signal
+            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
+
+            // Scope + Signal
+            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
+
+            // Resource + Scope (no signal)
+            (true, true, false, _) => RESOURCE_SCOPE,
+
+            // All three
+            (true, true, true, SignalType::Logs) => LOGS_ALL,
+            (true, true, true, SignalType::Metrics) => METRICS_ALL,
+            (true, true, true, SignalType::Traces) => TRACES_ALL,
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn apply_transform_with_stats(
+        &self,
+        records: &mut OtapArrowRecords,
+        signal: SignalType,
+    ) -> Result<(u64, u64), EngineError> {
+        let mut deleted_total: u64 = 0;
+        let mut renamed_total: u64 = 0;
+
+        // Only apply if we have transforms to apply
+        if !self.is_noop() {
+            let payloads = self.attrs_payloads(signal);
+            for &payload_ty in payloads {
+                if let Some(rb) = records.get(payload_ty) {
+                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
+                    deleted_total += stats.deleted_entries;
+                    renamed_total += stats.renamed_entries;
+                    records.set(payload_ty, rb);
+                }
+            }
+        }
+
+        Ok((deleted_total, renamed_total))
+    }
 }
 
 #[async_trait(?Send)]
@@ -207,7 +279,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 // Fast path: no actions to apply
-                if self.transform.rename.is_none() && self.transform.delete.is_none() {
+                if self.is_noop() {
                     let res = effect_handler
                         .send_message(pdata)
                         .await
@@ -238,12 +310,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
                 // Apply transform across selected domains and collect exact stats
-                match apply_transform_with_stats(
-                    &mut records,
-                    signal,
-                    &self.transform,
-                    &self.domains,
-                ) {
+                match self.apply_transform_with_stats(&mut records, signal) {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
@@ -275,33 +342,6 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
             }
         }
     }
-}
-
-#[allow(clippy::result_large_err)]
-fn apply_transform_with_stats(
-    records: &mut OtapArrowRecords,
-    signal: SignalType,
-    transform: &AttributesTransform,
-    domains: &HashSet<ApplyDomain>,
-) -> Result<(u64, u64), EngineError> {
-    let mut deleted_total: u64 = 0;
-    let mut renamed_total: u64 = 0;
-
-    // Only apply if we have transforms to apply
-    if transform.rename.is_some() || transform.delete.is_some() {
-        let payloads = attrs_payloads(signal, domains);
-        for &payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty) {
-                let (rb, stats) = transform_attributes_with_stats(rb, transform)
-                    .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                deleted_total += stats.deleted_entries;
-                renamed_total += stats.renamed_entries;
-                records.set(payload_ty, rb);
-            }
-        }
-    }
-
-    Ok((deleted_total, renamed_total))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -340,51 +380,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
         }
     }
     set
-}
-
-fn attrs_payloads(
-    signal: SignalType,
-    domains: &HashSet<ApplyDomain>,
-) -> &'static [ArrowPayloadType] {
-    use payload_sets::*;
-
-    let has_resource = domains.contains(&ApplyDomain::Resource);
-    let has_scope = domains.contains(&ApplyDomain::Scope);
-    let has_signal = domains.contains(&ApplyDomain::Signal);
-
-    match (has_resource, has_scope, has_signal, signal) {
-        // Empty cases
-        (false, false, false, _) => EMPTY,
-
-        // Signal only
-        (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
-        (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
-        (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-
-        // Resource only
-        (true, false, false, _) => RESOURCE_ONLY,
-
-        // Scope only
-        (false, true, false, _) => SCOPE_ONLY,
-
-        // Resource + Signal
-        (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
-        (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
-        (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-
-        // Scope + Signal
-        (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
-        (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
-        (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-
-        // Resource + Scope (no signal)
-        (true, true, false, _) => RESOURCE_SCOPE,
-
-        // All three
-        (true, true, true, SignalType::Logs) => LOGS_ALL,
-        (true, true, true, SignalType::Metrics) => METRICS_ALL,
-        (true, true, true, SignalType::Traces) => TRACES_ALL,
-    }
 }
 
 fn engine_err(msg: &str) -> EngineError {
