@@ -1637,9 +1637,6 @@ mod test {
                                             AnyValue::new_string("val3"),
                                         )],
                                     }],
-                                    // TODO zero threshold:
-                                    // https://github.com/open-telemetry/otel-arrow/issues/1142
-                                    ..Default::default()
                                 }],
                                 aggregation_temporality: 53,
                             })),
