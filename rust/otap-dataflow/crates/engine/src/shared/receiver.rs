@@ -87,7 +87,7 @@ impl<PData> ControlChannel<PData> {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
@@ -107,7 +107,7 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
@@ -209,7 +209,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 

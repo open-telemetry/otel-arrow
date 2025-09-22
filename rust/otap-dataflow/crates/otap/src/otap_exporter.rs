@@ -114,7 +114,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ))
             .await;
 
-        let _ = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -214,6 +214,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
                         _ = traces_handle.await;
+                        _ = timer_cancel_handle.cancel().await;
                         break;
                     }
                     //send data
@@ -222,9 +223,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let signal_type = pdata.signal_type();
 
                         self.pdata_metrics.inc_consumed(signal_type);
-            let (_context, payload) = pdata.into_parts();
+                        let (_context, payload) = pdata.into_parts();
 
-            // TODO(#1098): Note context is dropped.
+                        // TODO(#1098): Note context is dropped.
                         let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
@@ -633,7 +634,7 @@ mod tests {
     fn test_from_config_success() {
         let json_config = json!({
             "grpc_endpoint": "http://localhost:4317",
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test
@@ -658,7 +659,7 @@ mod tests {
     #[test]
     fn test_from_config_missing_required_field() {
         let json_config = json!({
-            "compression_method": "Gzip"
+            "compression_method": "gzip"
         });
 
         // Create a proper pipeline context for the test

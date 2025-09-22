@@ -10,13 +10,14 @@ mod telemetry;
 
 use axum::Router;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_engine::control::PipelineCtrlMsgSender;
+use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 
@@ -30,14 +31,14 @@ struct AppState {
     metrics_registry: MetricsRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
+    ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
     observed_store: ObservedStateHandle,
-    ctrl_msg_senders: Vec<PipelineCtrlMsgSender>,
+    ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
     metrics_registry: MetricsRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {

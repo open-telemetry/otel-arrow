@@ -87,7 +87,7 @@ pub trait Processor<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the processor.
     /// Supports multiple named output ports.
@@ -210,7 +210,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 

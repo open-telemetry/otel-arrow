@@ -20,7 +20,7 @@ use crate::{
         boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
         dictionary::DictionaryOptions,
     },
-    otlp::attributes::store::AttributeValueType,
+    otlp::attributes::AttributeValueType,
     schema::{FieldExt, SpanId, TraceId, consts},
 };
 

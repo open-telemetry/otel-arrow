@@ -1,0 +1,56 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+  default_node_ctrl_msg_channel_size: {{ default_node_ctrl_msg_channel_size | default(100) }}
+  default_pdata_channel_size: {{ default_pdata_channel_size | default(100) }}
+
+{%- set receiver_type = backend_receiver_type | default("otap") -%}
+{%- set listen_addr = listening_addr | default("0.0.0.0:1235") -%}
+
+{# Determine plugin URN and config for receiver #}
+{%- if receiver_type == "otap" -%}
+  {% set plugin_urn = "urn:otel:otap:receiver" %}
+  {% set compression = compression_method | default("zstd") %}
+  {% set extra_config = {
+    "message_size": 100,
+    "compression_method": compression
+  } %}
+{%- elif receiver_type == "otlp" -%}
+  {% set plugin_urn = "urn:otel:otlp:receiver" %}
+  {% set compression = compression_method | default("gzip") %}
+  {% set extra_config = {
+    "compression_method": compression
+  } %}
+{%- else -%}
+  {% set plugin_urn = "urn:unknown:receiver" %}
+  {% set error_msg = "Unknown backend_receiver_type: " ~ receiver_type %}
+{%- endif %}
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "{{ plugin_urn }}"
+    {%- if receiver_type in ["otap", "otlp"] %}
+    out_ports:
+      out_port:
+        destinations:
+          - perf
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "{{ listen_addr }}"
+      {%- for k, v in extra_config.items() %}
+      {{ k }}: {{ v }}
+      {%- endfor %}
+    {%- else %}
+    config:
+      error: "{{ error_msg }}"
+    {%- endif %}
+
+  perf:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:perf:exporter"
+    config:
+      frequency: 500
+      cpu_usage: false
+      mem_usage: false
+      disk_usage: false
+      io_usage: false

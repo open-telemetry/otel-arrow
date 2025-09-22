@@ -206,7 +206,7 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
@@ -241,7 +241,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
@@ -249,7 +249,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
     }
 

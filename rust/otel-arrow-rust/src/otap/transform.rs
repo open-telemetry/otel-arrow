@@ -16,9 +16,11 @@ use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8T
 use arrow::row::{RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{NullableArrayAccessor, get_u8_array};
+use crate::arrays::{
+    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+};
 use crate::error::{self, Result};
-use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
+use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -186,7 +188,9 @@ where
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
     // downcast parent ID into an array of the primitive type
-    let parent_id_arr = T::get_parent_id_column(record_batch)?;
+    let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(
+        get_required_array(record_batch, consts::PARENT_ID)?,
+    )?;
 
     let mut materialized_parent_ids =
         PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
@@ -327,8 +331,13 @@ where
     };
 
     let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
+
+    // TODO: It would be more efficient here to figure out if the original type was a
+    // dictionary and map the keys. Instead, we build up this primitive array and cast
+    // back to the original type in `replace_materialized_parent_id_column`
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
+
     // safety: there's a check at the beginning of this method that the batch is not empty
     let mut curr_parent_id = encoded_parent_ids
         .value_at(0)
@@ -393,18 +402,25 @@ fn replace_materialized_parent_id_column(
     let parent_id_idx = schema
         .index_of(consts::PARENT_ID)
         .expect("parent_id should be in the schema");
+
+    let field = schema.field(parent_id_idx);
     let columns = record_batch
         .columns()
         .iter()
         .enumerate()
         .map(|(i, col)| {
             if i == parent_id_idx {
-                materialized_parent_ids.clone()
+                arrow::compute::cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("could not replace parent id {e}"),
+                    }
+                    .build()
+                })
             } else {
-                col.clone()
+                Ok(col.clone())
             }
         })
-        .collect::<Vec<ArrayRef>>();
+        .collect::<Result<Vec<ArrayRef>>>()?;
 
     // update the field metadata for the parent_id column
     let schema = update_field_metadata(
@@ -522,6 +538,195 @@ impl AttributesTransform {
         }
 
         Ok(())
+    }
+}
+
+/// Exact, per-batch statistics produced while transforming a single OTel attributes
+/// [`RecordBatch`].
+///
+/// Fields semantics:
+/// - `deleted_entries`: number of attribute rows removed due to `delete` rules.
+/// - `renamed_entries`: number of attribute rows whose key changed due to `rename` rules.
+///
+/// Notes:
+/// - Counts are exact for the provided `RecordBatch` (no approximation).
+/// - For dictionary-encoded key columns, `renamed_entries` counts only rows that remain
+///   after `delete` rules (i.e., rows referencing dictionary values that were renamed).
+///   Rows that are deleted are not also counted as renamed.
+/// - This struct intentionally contains totals only. Per-key breakdowns are not collected
+///   by default to avoid string allocation and additional work.
+#[derive(Debug, Default, Clone)]
+pub struct TransformStats {
+    /// Exact number of attribute entries removed by delete rules
+    pub deleted_entries: u64,
+    /// Exact number of attribute entries whose key was renamed
+    pub renamed_entries: u64,
+}
+
+/// Apply an [`AttributesTransform`] to an attributes [`RecordBatch`] and return both the
+/// transformed batch and exact per-batch [`TransformStats`].
+///
+/// Behavior and guarantees:
+/// - Parity: the returned `RecordBatch` is the same result you would get from
+///   [`transform_attributes`] for the same inputs.
+/// - Exact totals: `TransformStats` are computed during the transform with minimal overhead.
+///   The UTF-8 key path reuses planning information; the dictionary path tallies counts during
+///   the existing remapping loop. No extra full passes over the data are performed.
+/// - Dictionary rename semantics: `renamed_entries` counts only kept rows whose keys were
+///   changed; deleted rows are counted only in `deleted_entries`.
+///
+/// Errors:
+/// - Returns the same kinds of errors as [`transform_attributes`] (e.g., invalid transform,
+///   missing columns, unsupported key types).
+pub fn transform_attributes_with_stats(
+    attrs_record_batch: &RecordBatch,
+    transform: &AttributesTransform,
+) -> Result<(RecordBatch, TransformStats)> {
+    transform.validate()?;
+
+    let schema = attrs_record_batch.schema();
+    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
+        error::ColumnNotFoundSnafu {
+            name: consts::ATTRIBUTE_KEY,
+        }
+        .build()
+    })?;
+
+    match schema.field(key_column_idx).data_type() {
+        DataType::Utf8 => {
+            let keys_arr = attrs_record_batch
+                .column(key_column_idx)
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast Utf8 Column to string array");
+
+            let keys_transform_result = transform_keys(keys_arr, transform)?;
+            let stats = TransformStats {
+                renamed_entries: keys_transform_result.replaced_rows as u64,
+                deleted_entries: keys_transform_result.deleted_rows as u64,
+            };
+            let new_keys = Arc::new(keys_transform_result.new_keys);
+
+            let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
+            let should_materialize_parent_ids =
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
+            };
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        Ok(new_keys.clone() as ArrayRef)
+                    } else {
+                        match keys_transform_result.keep_ranges.as_ref() {
+                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
+                            None => Ok(col.clone()),
+                        }
+                    }
+                })
+                .collect::<Result<Vec<ArrayRef>>>()?;
+
+            let rb = RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns");
+            Ok((rb, stats))
+        }
+        DataType::Dictionary(k, _) => {
+            let (new_dict, keep_ranges, stats) = match *k.clone() {
+                DataType::UInt8 => {
+                    let dict_imm_result = transform_dictionary_keys(
+                        attrs_record_batch
+                            .column(key_column_idx)
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .expect("can downcast dictionary column to dictionary array"),
+                        transform,
+                    )?;
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
+                    (
+                        new_dict as ArrayRef,
+                        dict_imm_result.keep_ranges,
+                        TransformStats {
+                            deleted_entries: dict_imm_result.deleted_rows as u64,
+                            renamed_entries: dict_imm_result.renamed_rows as u64,
+                        },
+                    )
+                }
+                DataType::UInt16 => {
+                    let dict_imm_result = transform_dictionary_keys(
+                        attrs_record_batch
+                            .column(key_column_idx)
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .expect("can downcast dictionary column to dictionary array"),
+                        transform,
+                    )?;
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
+                    (
+                        new_dict as ArrayRef,
+                        dict_imm_result.keep_ranges,
+                        TransformStats {
+                            deleted_entries: dict_imm_result.deleted_rows as u64,
+                            renamed_entries: dict_imm_result.renamed_rows as u64,
+                        },
+                    )
+                }
+                data_type => {
+                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: data_type.clone(),
+                    }
+                    .build());
+                }
+            };
+
+            let any_rows_deleted = keep_ranges.is_some();
+            let should_materialize_parent_ids =
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
+            };
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        Ok(new_dict.clone())
+                    } else {
+                        match keep_ranges.as_ref() {
+                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
+                            None => Ok(col.clone()),
+                        }
+                    }
+                })
+                .collect::<Result<Vec<ArrayRef>>>()?;
+
+            let rb = RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns");
+            Ok((rb, stats))
+        }
+        data_type => Err(error::InvalidListArraySnafu {
+            expect_oneof: vec![
+                DataType::Utf8,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ],
+            actual: data_type.clone(),
+        }
+        .build()),
     }
 }
 
@@ -696,6 +901,11 @@ struct KeysTransformResult {
     ///
     /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
+
+    /// Exact number of rows whose key was renamed (row-level replacements)
+    replaced_rows: usize,
+    /// Exact number of rows that were deleted due to delete rules (row-level deletions)
+    deleted_rows: usize,
 }
 
 /// Transform the attributes key array
@@ -739,6 +949,8 @@ fn transform_keys(
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
             keep_ranges: None,
+            replaced_rows: 0,
+            deleted_rows: 0,
         });
     }
 
@@ -930,6 +1142,8 @@ fn transform_keys(
     Ok(KeysTransformResult {
         new_keys,
         keep_ranges,
+        replaced_rows: total_replacements,
+        deleted_rows: total_deletions,
     })
 }
 
@@ -943,6 +1157,11 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     ///
     /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
+
+    /// Exact number of rows that were deleted due to delete rules
+    deleted_rows: usize,
+    /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
+    renamed_rows: usize,
 }
 
 /// transforms the keys for the dictionary array.
@@ -963,6 +1182,24 @@ where
     })?;
     let dict_values_transform_result = transform_keys(dict_values, transform)?;
 
+    // Build a quick lookup of which dictionary value indices were renamed
+    let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
+    if let Some(rename) = transform.rename.as_ref().filter(|r| !r.is_empty()) {
+        let repl_plan = plan_key_replacements(
+            dict_values.len(),
+            dict_values.values(),
+            dict_values.offsets(),
+            rename,
+        )?;
+        for (start_idx, end_idx, _) in repl_plan.ranges.iter().cloned() {
+            for i in start_idx..end_idx {
+                if let Some(slot) = value_index_renamed.get_mut(i) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+
     if dict_values_transform_result.keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
@@ -979,6 +1216,26 @@ where
         return Ok(DictionaryKeysTransformResult {
             new_keys: new_dict,
             keep_ranges: None,
+            deleted_rows: 0,
+            renamed_rows: {
+                // Count renamed rows among kept rows (all rows are kept in this branch)
+                let mut renamed = 0usize;
+                if !value_index_renamed.is_empty() {
+                    let dict_keys_nulls = dict_keys.nulls();
+                    for i in 0..dict_arr.len() {
+                        if dict_keys_nulls
+                            .map(|nulls| nulls.is_valid(i))
+                            .unwrap_or(true)
+                        {
+                            let dict_key: usize = dict_keys.value(i).as_usize();
+                            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                                renamed += 1;
+                            }
+                        }
+                    }
+                }
+                renamed
+            },
         });
     }
 
@@ -1073,6 +1330,9 @@ where
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
+    let total_rows = dict_arr.len();
+    let deleted_rows_count = total_rows - count_kept_values;
+    let mut renamed_rows_count: usize = 0;
 
     // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
@@ -1108,6 +1368,11 @@ where
             .get(dict_key)
             .expect("dict keys values range lookup not properly initialized");
         if *kept_in_dict_values_range_idx >= 0 {
+            // Count rename if the referenced dictionary value was replaced
+            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                renamed_rows_count += 1;
+            }
+
             let new_dict_key =
                 dict_key - dict_key_adjustments[*kept_in_dict_values_range_idx as usize];
             let new_dict_key = K::Native::from_usize(new_dict_key).expect("dict_key_overflow");
@@ -1138,6 +1403,8 @@ where
     Ok(DictionaryKeysTransformResult {
         new_keys: new_dict,
         keep_ranges: Some(keep_ranges),
+        deleted_rows: deleted_rows_count,
+        renamed_rows: renamed_rows_count,
     })
 }
 
@@ -1524,7 +1791,6 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
-    use crate::otlp::attributes::store::AttributeValueType;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
@@ -3216,5 +3482,78 @@ mod test {
                 Err(Error::InvalidAttributeTransform { .. })
             ));
         }
+    }
+
+    #[test]
+    fn test_with_stats_utf8_rename_and_delete() {
+        // keys: [a, b, a, d, c] ; rename a->A ; delete d
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "a", "d", "c"])),
+                Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: Some(BTreeMap::from_iter([(
+                String::from("a"),
+                String::from("A"),
+            )])),
+            delete: Some(BTreeSet::from_iter([String::from("d")])),
+        };
+
+        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        assert_eq!(stats.renamed_entries, 2);
+        assert_eq!(stats.deleted_entries, 1);
+
+        // parity with original transform
+        let plain = transform_attributes(&input, &tx).unwrap();
+        assert_eq!(with_stats, plain);
+    }
+
+    #[test]
+    fn test_with_stats_dict_rename_and_delete() {
+        // keys: [a, b, a, d, c] ; rename a->A ; delete d
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 1, 0, 2, 3]);
+        let dict_vals = StringArray::from_iter_values(vec!["a", "b", "d", "c"]);
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(dict_keys, Arc::new(dict_vals))),
+                Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: Some(BTreeMap::from_iter([(
+                String::from("a"),
+                String::from("A"),
+            )])),
+            delete: Some(BTreeSet::from_iter([String::from("d")])),
+        };
+
+        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        assert_eq!(stats.renamed_entries, 2);
+        assert_eq!(stats.deleted_entries, 1);
+
+        let plain = transform_attributes(&input, &tx).unwrap();
+        assert_eq!(with_stats, plain);
     }
 }

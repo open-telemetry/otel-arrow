@@ -263,6 +263,67 @@ pub(crate) fn parse_project_away_expression(
     Ok(expressions)
 }
 
+pub(crate) fn parse_project_rename_expression(
+    project_rename_expression_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&project_rename_expression_rule);
+
+    let project_rename_rules = project_rename_expression_rule.into_inner();
+
+    let mut expressions = Vec::new();
+
+    for rule in project_rename_rules {
+        match rule.as_rule() {
+            Rule::assignment_expression => {
+                let e = parse_source_assignment_expression(rule, scope)?;
+                if let ScalarExpression::Source(s) = e.1 {
+                    expressions.push((e.0, s, e.2));
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        e.0.clone(),
+                        format!(
+                            "To be valid in a project-rename expression '{}' should be an accessor expression which refers to data on the source",
+                            scope.get_query_slice(&e.0).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_rename_expression: {rule}"),
+        }
+    }
+
+    if expressions.len() == 1 {
+        let (location, source, destination) = expressions.drain(..).next().unwrap();
+
+        Ok(TransformExpression::Move(MoveTransformExpression::new(
+            location,
+            MutableValueExpression::Source(source),
+            MutableValueExpression::Source(destination),
+        )))
+    } else {
+        let mut keys = Vec::with_capacity(expressions.len());
+
+        for (_, source, destination) in expressions.drain(..) {
+            keys.push(MapKeyRenameSelector::new(
+                source.get_value_accessor().clone(),
+                destination.get_value_accessor().clone(),
+            ));
+        }
+
+        Ok(TransformExpression::RenameMapKeys(
+            RenameMapKeysTransformExpression::new(
+                query_location.clone(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    ValueAccessor::new(),
+                )),
+                keys,
+            ),
+        ))
+    }
+}
+
 pub(crate) fn parse_where_expression(
     where_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
@@ -312,10 +373,17 @@ pub(crate) fn parse_summarize_expression(
 
                 match group_by_first_rule.as_rule() {
                     Rule::identifier_literal => {
+                        let identifier = group_by_first_rule.as_str().trim();
+
+                        validate_summary_identifier(
+                            scope,
+                            group_by_first_rule_location,
+                            identifier,
+                        )?;
+
                         let scalar = parse_scalar_expression(group_by.next().unwrap(), scope)?;
 
-                        group_by_expressions
-                            .insert(group_by_first_rule.as_str().trim().into(), scalar);
+                        group_by_expressions.insert(identifier.into(), scalar);
                     }
                     Rule::accessor_expression => {
                         let mut accessor =
@@ -371,7 +439,15 @@ pub(crate) fn parse_summarize_expression(
                 }
             }
             _ => {
-                let scope = scope.create_scope(ParserOptions::new());
+                let mut options = ParserOptions::new();
+
+                if let Some(s) = scope.get_summary_schema() {
+                    options = options
+                        .with_source_map_schema(s.clone())
+                        .with_summary_map_schema(s.clone());
+                }
+
+                let scope = scope.create_scope(options);
 
                 for e in parse_tabular_expression_rule(summarize_rule, &scope)? {
                     post_expressions.push(e);
@@ -432,7 +508,13 @@ pub(crate) fn parse_summarize_expression(
         } else {
             let last = selectors.last().unwrap();
             match scope.scalar_as_static(last) {
-                Some(v) => try_read_string(last, v),
+                Some(v) => {
+                    let identifier = try_read_string(last, v)?;
+
+                    validate_summary_identifier(scope, v.get_query_location().clone(), &identifier)?;
+
+                    Ok(identifier)
+                }
                 None => {
                     Err(ParserError::SyntaxError(
                         last.get_query_location().clone(),
@@ -502,6 +584,9 @@ pub(crate) fn parse_tabular_expression_rule(
                 expressions.push(DataExpression::Transform(e));
             }
         }
+        Rule::project_rename_expression => expressions.push(DataExpression::Transform(
+            parse_project_rename_expression(tabular_expression_rule, scope)?,
+        )),
         Rule::where_expression => {
             expressions.push(parse_where_expression(tabular_expression_rule, scope)?)
         }
@@ -531,6 +616,7 @@ fn get_root_map_key_from_source_scalar_expression(
     None
 }
 
+#[derive(Debug, PartialEq)]
 enum IdentifierOrPattern {
     Identifier(StringScalarExpression),
     Map {
@@ -581,13 +667,25 @@ fn parse_identifier_or_pattern_literal(
             Ok(Some(IdentifierOrPattern::Identifier(
                 StringScalarExpression::new(location, &value),
             )))
-        } else if let Some(d) = schema.get_default_map_key() {
-            Ok(Some(IdentifierOrPattern::Map {
-                name: StringScalarExpression::new(location.clone(), d),
-                key: ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(location, &value),
-                )),
-            }))
+        } else if let Some((key, schema)) = schema.get_default_map() {
+            if let Some(schema) = schema
+                && let None = schema.get_schema_for_key(&value)
+            {
+                Err(ParserError::QueryLanguageDiagnostic {
+                    location,
+                    diagnostic_id: "KS109",
+                    message: format!(
+                        "The name '{value}' does not refer to any known column, table, variable or function",
+                    ),
+                })
+            } else {
+                Ok(Some(IdentifierOrPattern::Map {
+                    name: StringScalarExpression::new(location.clone(), key),
+                    key: ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(location, &value),
+                    )),
+                }))
+            }
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
@@ -601,6 +699,42 @@ fn parse_identifier_or_pattern_literal(
         Ok(Some(IdentifierOrPattern::Identifier(
             StringScalarExpression::new(location, &value),
         )))
+    }
+}
+
+pub(crate) fn validate_summary_identifier(
+    scope: &dyn ParserScope,
+    location: QueryLocation,
+    identifier: &str,
+) -> Result<(), ParserError> {
+    if let Some(schema) = scope.get_summary_schema() {
+        if schema.get_schema_for_key(identifier).is_some() {
+            Ok(())
+        } else if let Some((_, schema)) = schema.get_default_map() {
+            if let Some(schema) = schema
+                && let None = schema.get_schema_for_key(identifier)
+            {
+                Err(ParserError::QueryLanguageDiagnostic {
+                    location,
+                    diagnostic_id: "KS109",
+                    message: format!(
+                        "The name '{identifier}' does not refer to any known column, table, variable or function",
+                    ),
+                })
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(ParserError::QueryLanguageDiagnostic {
+                location,
+                diagnostic_id: "KS109",
+                message: format!(
+                    "The name '{identifier}' does not refer to any known column, table, variable or function",
+                ),
+            })
+        }
+    } else {
+        Ok(())
     }
 }
 
@@ -793,7 +927,7 @@ fn push_map_transformation_expression(
 
         if !reduction.patterns.is_empty() {
             if let Some(schema) = scope.get_source_schema() {
-                let default_source_map = schema.get_default_map_key();
+                let default_source_map = schema.get_default_map();
                 let mut default_source_map_matched_regex = false;
 
                 // Note: If we have schema we can apply the regex patterns ahead
@@ -801,8 +935,8 @@ fn push_map_transformation_expression(
                 foreach_source_schema_key(schema, |k| {
                     for p in &reduction.patterns {
                         if p.get_value().is_match(k) {
-                            if let Some(d) = default_source_map
-                                && k == d
+                            if let Some((default_source_map_key, _)) = default_source_map
+                                && k == default_source_map_key
                             {
                                 default_source_map_matched_regex = true;
                                 if retain {
@@ -817,23 +951,63 @@ fn push_map_transformation_expression(
                     }
                 });
 
-                if let Some(d) = default_source_map {
+                if let Some((default_source_map_key, default_source_map_schema)) =
+                    default_source_map
+                {
+                    // Note: We need to handle the default source map keys
+                    // which may match the regex as well. When we are in
+                    // remove mode if we already added the
+                    // default_source_map_key we can skip this because the
+                    // whole map will be removed.
                     if retain || !default_source_map_matched_regex {
-                        // Note: We add selectors for the default_source_map_key
-                        // which will run the regex for its keys. When we are in
-                        // remove mode if we already added the
-                        // default_source_map_key we can skip this because the
-                        // whole map will be removed.
-                        for p in reduction.patterns {
-                            reduction.selectors.push(SourceScalarExpression::new(
-                                query_location.clone(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(query_location.clone(), d),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::Regex(p)),
-                                ]),
-                            ));
+                        if let Some(schema) = default_source_map_schema {
+                            //Note: If we have schema we can run the regex ahead of time.
+                            foreach_source_schema_key(schema, |k| {
+                                for p in &reduction.patterns {
+                                    if p.get_value().is_match(k) {
+                                        reduction.selectors.push(SourceScalarExpression::new(
+                                            query_location.clone(),
+                                            ValueAccessor::new_with_selectors(vec![
+                                                ScalarExpression::Static(
+                                                    StaticScalarExpression::String(
+                                                        StringScalarExpression::new(
+                                                            query_location.clone(),
+                                                            default_source_map_key,
+                                                        ),
+                                                    ),
+                                                ),
+                                                ScalarExpression::Static(
+                                                    StaticScalarExpression::String(
+                                                        StringScalarExpression::new(
+                                                            query_location.clone(),
+                                                            k,
+                                                        ),
+                                                    ),
+                                                ),
+                                            ]),
+                                        ));
+                                        break;
+                                    }
+                                }
+                            });
+                        } else {
+                            // Note: If we don't have schema we add selectors
+                            // for the default_source_map_key which will run the
+                            // regex for its keys.
+                            for p in reduction.patterns {
+                                reduction.selectors.push(SourceScalarExpression::new(
+                                    query_location.clone(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                query_location.clone(),
+                                                default_source_map_key,
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::Regex(p)),
+                                    ]),
+                                ));
+                            }
                         }
                     }
                 }
@@ -906,6 +1080,101 @@ mod tests {
     use crate::KqlPestParser;
 
     use super::*;
+
+    #[test]
+    fn test_parse_identifier_or_pattern_literal() {
+        let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new().with_key_definition(
+                                        "int_value",
+                                        ParserMapKeySchema::Integer,
+                                    ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let expression = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new().with_key_definition(
+                                        "int_value",
+                                        ParserMapKeySchema::Integer,
+                                    ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let error = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "int_value",
+            Some(IdentifierOrPattern::Map {
+                name: StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                key: ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                )),
+            }),
+        );
+
+        run_test_failure(
+            "unknown",
+            "KS109",
+            "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
 
     #[test]
     fn test_parse_extend_expression() {
@@ -1895,6 +2164,108 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_project_keep_expression_with_schema() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-keep int*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
+        );
+
+        run_test_failure(
+            "project-keep attributes['unknown']",
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+    }
+
+    #[test]
     fn test_parse_project_away_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
             let mut state = ParserState::new_with_options(
@@ -2200,7 +2571,297 @@ mod tests {
     }
 
     #[test]
-    pub fn test_parse_where_expression() {
+    fn test_parse_project_away_expression_with_schema() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        ),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-away int*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
+        );
+
+        run_test_failure(
+            "project-away attributes['unknown']",
+            "The name 'unknown' does not refer to any known key on the target map",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_rename_expression() {
+        let run_test_success = |input: &str, expected: TransformExpression| {
+            let mut state = ParserState::new(input);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlPestParser::parse(Rule::project_rename_expression, input).unwrap();
+
+            let expression =
+                parse_project_rename_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlPestParser::parse(Rule::project_rename_expression, input).unwrap();
+
+            let error =
+                parse_project_rename_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-rename A = B",
+            TransformExpression::Move(MoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "B",
+                        )),
+                    )]),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "A",
+                        )),
+                    )]),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "project-rename Attributes['key2'] = Attributes['key1']",
+            TransformExpression::Move(MoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        )),
+                    ]),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "Attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                        )),
+                    ]),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "project-rename A = B, Attributes['C'] = Attributes['D']",
+            TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "B",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "A",
+                            )),
+                        )]),
+                    ),
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "D"),
+                            )),
+                        ]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "C"),
+                            )),
+                        ]),
+                    ),
+                ],
+            )),
+        );
+
+        run_test_success(
+            "project-rename Body[0] = B, Body[1] = C",
+            TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "B",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "Body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                            )),
+                        ]),
+                    ),
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "C",
+                            )),
+                        )]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "Body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                        ]),
+                    ),
+                ],
+            )),
+        );
+
+        run_test_failure(
+            "project-rename A = variable",
+            "To be valid in a project-rename expression 'A = variable' should be an accessor expression which refers to data on the source",
+        );
+    }
+
+    #[test]
+    fn test_parse_where_expression() {
         let run_test_success = |input: &str, expected: DataExpression| {
             let mut state = ParserState::new(input);
 
@@ -2253,7 +2914,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_parse_summarize_expression() {
+    fn test_parse_summarize_expression() {
         let run_test_success = |input: &str, expected: SummaryDataExpression| {
             let mut state = ParserState::new_with_options(
                 input,
@@ -2262,7 +2923,7 @@ mod tests {
                         ParserMapSchema::new()
                             .with_key_definition("a", ParserMapKeySchema::Any)
                             .with_key_definition("c", ParserMapKeySchema::Any)
-                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map(None))
                             .set_default_map_key("Attributes"),
                     )
                     .with_attached_data_names(&["resource"]),
@@ -2291,7 +2952,7 @@ mod tests {
                         ParserMapSchema::new()
                             .with_key_definition("a", ParserMapKeySchema::Any)
                             .with_key_definition("c", ParserMapKeySchema::Any)
-                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map(None))
                             .set_default_map_key("Attributes"),
                     )
                     .with_attached_data_names(&["resource"]),
@@ -2589,6 +3250,150 @@ mod tests {
         run_test_failure(
             "summarize by const",
             "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+        );
+    }
+
+    #[test]
+    fn test_parse_summarize_expression_with_schema() {
+        let run_test_success = |input: &str, expected: SummaryDataExpression| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_summary_map_schema(
+                    ParserMapSchema::new().with_key_definition("key1", ParserMapKeySchema::Any),
+                ),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let expression = parse_summarize_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(DataExpression::Summary(expected), expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_summary_map_schema(
+                    ParserMapSchema::new().with_key_definition("key1", ParserMapKeySchema::Any),
+                ),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let e = parse_summarize_expression(result.next().unwrap(), &state).unwrap_err();
+
+            assert!(
+                matches!(e, ParserError::QueryLanguageDiagnostic{ location: _, diagnostic_id: id, message: msg } if id == expected_id && msg == expected_msg)
+            )
+        };
+
+        run_test_success(
+            "summarize key1 = count()",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "key1".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+        );
+        run_test_failure(
+            "summarize Count = count()",
+            "KS109",
+            "The name 'Count' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize by key1",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+        run_test_failure(
+            "summarize by key2",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize by key1 = source_field",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "source_field",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+        run_test_failure(
+            "summarize by key2 = source_field",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_success(
+            "summarize key1 = count() | extend key1 = 1234",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "key1".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            )
+            .with_post_expressions(vec![DataExpression::Transform(
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1234),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    )),
+                )),
+            )]),
+        );
+        run_test_failure(
+            "summarize key1 = count() | extend key2 = 1234",
+            "KS109",
+            "The name 'key2' does not refer to any known column, table, variable or function",
         );
     }
 

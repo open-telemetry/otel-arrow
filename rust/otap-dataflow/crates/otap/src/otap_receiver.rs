@@ -42,6 +42,7 @@ const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
