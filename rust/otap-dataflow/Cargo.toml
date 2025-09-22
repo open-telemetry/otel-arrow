@@ -13,7 +13,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.86.0"
+rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
