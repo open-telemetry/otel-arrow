@@ -17,6 +17,7 @@ use crate::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN, EXP_HISTOGRAM_DP_NEGATIVE,
     EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE, EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO,
     EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_ZERO_COUNT,
+    EXP_HISTOGRAM_DP_ZERO_THRESHOLD,
 };
 use crate::proto::consts::wire_types;
 use crate::proto_encode_len_delimited_unknown_size;
@@ -42,6 +43,7 @@ pub struct ExpHistogramDpArrays<'a> {
     pub flags: Option<&'a UInt32Array>,
     pub histogram_min: Option<&'a Float64Array>,
     pub histogram_max: Option<&'a Float64Array>,
+    pub zero_threshold: Option<&'a Float64Array>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
@@ -68,6 +70,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
         let flags = get_u32_array_opt(rb, consts::FLAGS)?;
         let histogram_min = get_f64_array_opt(rb, consts::HISTOGRAM_MIN)?;
         let histogram_max = get_f64_array_opt(rb, consts::HISTOGRAM_MAX)?;
+        let zero_threshold = get_f64_array_opt(rb, consts::EXP_HISTOGRAM_ZERO_THRESHOLD)?;
 
         Ok(Self {
             id,
@@ -83,6 +86,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
             flags,
             histogram_min,
             histogram_max,
+            zero_threshold,
         })
     }
 }
@@ -276,6 +280,13 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     if let Some(col) = exp_hist_dp_arrays.histogram_max {
         if let Some(val) = col.value_at(index) {
             result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MAX, wire_types::FIXED64);
+            result_buf.extend_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    if let Some(col) = exp_hist_dp_arrays.zero_threshold {
+        if let Some(val) = col.value_at(index) {
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_THRESHOLD, wire_types::FIXED64);
             result_buf.extend_from_slice(&val.to_le_bytes());
         }
     }
