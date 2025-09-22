@@ -14,12 +14,20 @@ pub(crate) fn parse_aggregate_assignment_expression(
     let mut aggregate_assignment_rules = aggregate_assignment_expression_rule.into_inner();
 
     let destination_rule = aggregate_assignment_rules.next().unwrap();
-    let destination_rule_str = destination_rule.as_str();
+    let destination_rule_location = to_query_location(&destination_rule);
+
+    let identifier = destination_rule.as_str().trim();
+
+    crate::tabular_expressions::validate_summary_identifier(
+        scope,
+        destination_rule_location,
+        identifier,
+    )?;
 
     let aggregation_expression =
         parse_aggregate_expression(aggregate_assignment_rules.next().unwrap(), scope)?;
 
-    Ok((destination_rule_str.into(), aggregation_expression))
+    Ok((identifier.into(), aggregation_expression))
 }
 
 fn parse_aggregate_expression(

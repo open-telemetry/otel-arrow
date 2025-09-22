@@ -22,6 +22,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
+use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,7 +101,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let _ = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -139,11 +141,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         // reuse the encoder and the buffer across pdatas
         let mut logs_encoder = LogsProtoBytesEncoder::new();
+        let mut metrics_encoder = MetricsProtoBytesEncoder::new();
+        let mut traces_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::new();
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                    _ = timer_cancel_handle.cancel().await;
+                    break;
+                }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
@@ -158,9 +165,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     self.pdata_metrics.inc_consumed(signal_type);
 
                     match (signal_type, payload) {
-                        // use optimized direct encoding OTAP -> OTLP directly
-                        // TODO currently this is only implemented for logs, but eventually we'll do
-                        // do this for other signal types as well
+                        // use optimized direct encoding OTAP -> OTLP bytes directly
                         (SignalType::Logs, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
                             proto_buffer.clear();
                             logs_encoder
@@ -184,11 +189,51 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             })?;
                             self.pdata_metrics.logs_exported.inc();
                         }
-                        (_, payload) => {
-                            let service_req: OtlpProtoBytes = payload
-                                .try_into()
-                                .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
+                            proto_buffer.clear();
+                            metrics_encoder
+                                .encode(&mut otap_batch, &mut proto_buffer)
+                                .map_err(|e| {
+                                    self.pdata_metrics.metrics_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
+                                })?;
 
+                            let bytes = proto_buffer.as_ref().to_vec();
+                            _ = metrics_client.export(bytes).await.map_err(|e| {
+                                self.pdata_metrics.metrics_failed.inc();
+                                Error::ExporterError {
+                                    exporter: exporter_id.clone(),
+                                    error: e.to_string(),
+                                }
+                            })?;
+                            self.pdata_metrics.metrics_exported.inc()
+                        }
+                        (SignalType::Traces, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
+                            proto_buffer.clear();
+                            traces_encoder
+                                .encode(&mut otap_batch, &mut proto_buffer)
+                                .map_err(|e| {
+                                    self.pdata_metrics.traces_failed.inc();
+                                    Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        error: e.to_string(),
+                                    }
+                                })?;
+
+                            let bytes = proto_buffer.as_ref().to_vec();
+                            _ = trace_client.export(bytes).await.map_err(|e| {
+                                self.pdata_metrics.traces_failed.inc();
+                                Error::ExporterError {
+                                    exporter: exporter_id.clone(),
+                                    error: e.to_string(),
+                                }
+                            })?;
+                            self.pdata_metrics.traces_exported.inc();
+                        }
+                        (_, OtapPayload::OtlpBytes(service_req)) => {
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     _ = logs_client.export(bytes).await.map_err(|e| {

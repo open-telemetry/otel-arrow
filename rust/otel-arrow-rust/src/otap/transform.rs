@@ -16,9 +16,11 @@ use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8T
 use arrow::row::{RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{NullableArrayAccessor, get_u8_array};
+use crate::arrays::{
+    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+};
 use crate::error::{self, Result};
-use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
+use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -186,7 +188,9 @@ where
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
     // downcast parent ID into an array of the primitive type
-    let parent_id_arr = T::get_parent_id_column(record_batch)?;
+    let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(
+        get_required_array(record_batch, consts::PARENT_ID)?,
+    )?;
 
     let mut materialized_parent_ids =
         PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
@@ -327,8 +331,13 @@ where
     };
 
     let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
+
+    // TODO: It would be more efficient here to figure out if the original type was a
+    // dictionary and map the keys. Instead, we build up this primitive array and cast
+    // back to the original type in `replace_materialized_parent_id_column`
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
+
     // safety: there's a check at the beginning of this method that the batch is not empty
     let mut curr_parent_id = encoded_parent_ids
         .value_at(0)
@@ -393,18 +402,25 @@ fn replace_materialized_parent_id_column(
     let parent_id_idx = schema
         .index_of(consts::PARENT_ID)
         .expect("parent_id should be in the schema");
+
+    let field = schema.field(parent_id_idx);
     let columns = record_batch
         .columns()
         .iter()
         .enumerate()
         .map(|(i, col)| {
             if i == parent_id_idx {
-                materialized_parent_ids.clone()
+                arrow::compute::cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("could not replace parent id {e}"),
+                    }
+                    .build()
+                })
             } else {
-                col.clone()
+                Ok(col.clone())
             }
         })
-        .collect::<Vec<ArrayRef>>();
+        .collect::<Result<Vec<ArrayRef>>>()?;
 
     // update the field metadata for the parent_id column
     let schema = update_field_metadata(
@@ -1775,7 +1791,6 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
-    use crate::otlp::attributes::store::AttributeValueType;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 

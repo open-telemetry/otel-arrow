@@ -13,7 +13,7 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{AttributeArrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
@@ -27,11 +27,10 @@ use crate::proto::consts::field_num::logs::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
-use super::attributes::store::AttributeValueType;
+use super::attributes::AttributeValueType;
 
 struct LogsArrays<'a> {
     id: &'a UInt16Array,
@@ -128,18 +127,6 @@ impl<'a> LogBodyArrays<'a> {
     }
 }
 
-impl NullableArrayAccessor for LogBodyArrays<'_> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        if !self.is_valid(idx) {
-            return None;
-        }
-
-        self.anyval_arrays.value_at(idx)
-    }
-}
-
 impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     type Error = Error;
 
@@ -165,9 +152,37 @@ pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
     resource_arrays: ResourceArrays<'a>,
-    log_attrs: Option<AttributeArrays<'a>>,
-    resource_attrs: Option<AttributeArrays<'a>>,
-    scope_attrs: Option<AttributeArrays<'a>>,
+    log_attrs: Option<Attribute16Arrays<'a>>,
+    resource_attrs: Option<Attribute16Arrays<'a>>,
+    scope_attrs: Option<Attribute16Arrays<'a>>,
+}
+
+impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
+    type Error = Error;
+
+    fn try_from(otap_batch: &'a OtapArrowRecords) -> Result<Self> {
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
+
+        Ok(Self {
+            log_arrays: LogsArrays::try_from(logs_rb)?,
+            scope_arrays: ScopeArrays::try_from(logs_rb)?,
+            resource_arrays: ResourceArrays::try_from(logs_rb)?,
+            log_attrs: otap_batch
+                .get(ArrowPayloadType::LogAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            scope_attrs: otap_batch
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            resource_attrs: otap_batch
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+        })
+    }
 }
 
 pub struct LogsProtoBytesEncoder {
@@ -210,49 +225,33 @@ impl LogsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
-
-        let logs_rb = otap_batch
-            .get(ArrowPayloadType::Logs)
-            .context(error::LogRecordNotFoundSnafu)?;
-
-        let logs_data_arrays = LogsDataArrays {
-            log_arrays: LogsArrays::try_from(logs_rb)?,
-            scope_arrays: ScopeArrays::try_from(logs_rb)?,
-            resource_arrays: ResourceArrays::try_from(logs_rb)?,
-            log_attrs: otap_batch
-                .get(ArrowPayloadType::LogAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-            scope_attrs: otap_batch
-                .get(ArrowPayloadType::ScopeAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-            resource_attrs: otap_batch
-                .get(ArrowPayloadType::ResourceAttrs)
-                .map(AttributeArrays::try_from)
-                .transpose()?,
-        };
+        let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
 
         self.reset();
 
         // get the list of indices in the root record to visit in order
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
         self.batch_sorter
             .init_cursor_for_root_batch(logs_rb, &mut self.root_cursor)?;
 
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
             self.batch_sorter.init_cursor_for_u16_id_column(
-                res_attrs.parent_id,
+                &res_attrs.parent_id,
                 &mut self.resource_attrs_cursor,
             );
         }
         if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
-            self.batch_sorter
-                .init_cursor_for_u16_id_column(scope_attrs.parent_id, &mut self.scope_attrs_cursor);
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &scope_attrs.parent_id,
+                &mut self.scope_attrs_cursor,
+            );
         }
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             self.batch_sorter
-                .init_cursor_for_u16_id_column(log_attrs.parent_id, &mut self.log_attrs_cursor);
+                .init_cursor_for_u16_id_column(&log_attrs.parent_id, &mut self.log_attrs_cursor);
         }
 
         // encode all `ResourceLog`s for this `LogsData`
@@ -309,7 +308,7 @@ impl LogsProtoBytesEncoder {
                 break;
             }
 
-            // check if we've found a new scope ID. If so, break
+            // check if we've found a new resource ID. If so, break
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
             if resource_id != logs_data_arrays.resource_arrays.id.value_at(next_index) {
                 break;
@@ -318,10 +317,8 @@ impl LogsProtoBytesEncoder {
 
         // encode schema url
         if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val);
             }
         }
 
@@ -350,7 +347,7 @@ impl LogsProtoBytesEncoder {
             result_buf
         );
 
-        // encode all `LogRecord`s for this `ScopeLog``
+        // encode all `LogRecord`s for this `ScopeLog`
         let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
 
         loop {
@@ -375,10 +372,8 @@ impl LogsProtoBytesEncoder {
 
         // encode schema url
         if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val);
             }
         }
 
@@ -413,9 +408,7 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.severity_text {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val);
             }
         }
 
@@ -437,7 +430,7 @@ impl LogsProtoBytesEncoder {
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             if let Some(id) = log_arrays.id.value_at(index) {
                 let attrs_index_iter =
-                    ChildIndexIter::new(id, log_attrs.parent_id, &mut self.log_attrs_cursor);
+                    ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
                 for attr_index in attrs_index_iter {
                     proto_encode_len_delimited_unknown_size!(
                         LOG_RECORD_ATTRIBUTES,
@@ -465,17 +458,13 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.trace_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_TRACE_ID, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val);
+                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val);
             }
         }
 
         if let Some(col) = &log_arrays.span_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SPAN_ID, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val);
+                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val);
             }
         }
 
@@ -489,9 +478,7 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = &log_arrays.event_name {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_EVENT_NAME, wire_types::LEN);
-                result_buf.encode_varint(val.len() as u64);
-                result_buf.extend_from_slice(val.as_bytes());
+                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val);
             }
         }
 
@@ -514,7 +501,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::schema::{FieldExt, consts};
