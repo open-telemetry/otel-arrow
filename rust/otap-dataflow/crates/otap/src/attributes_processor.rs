@@ -124,17 +124,16 @@ impl AttributesProcessor {
     /// Transforms the Go collector-style configuration into the operations
     /// supported by the underlying Arrow attribute transform API.
     #[must_use = "AttributesProcessor creation may fail and return a ConfigError"]
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse AttributesProcessor configuration: {e}"),
             })?;
-        Ok(Self::new(cfg))
+        Self::new(cfg)
     }
 
     /// Creates a new AttributesProcessor with the given parsed configuration.
-    #[must_use]
-    fn new(config: Config) -> Self {
+    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
 
@@ -163,22 +162,30 @@ impl AttributesProcessor {
         //   application of transforms when a composed map would be invalid.
         // For now, we compose a single transform and let transform_attributes
         // enforce validity (which may error for conflicting maps).
-        Self {
-            transform: AttributesTransform {
-                rename: if renames.is_empty() {
-                    None
-                } else {
-                    Some(renames)
-                },
-                delete: if deletes.is_empty() {
-                    None
-                } else {
-                    Some(deletes)
-                },
+        let transform = AttributesTransform {
+            rename: if renames.is_empty() {
+                None
+            } else {
+                Some(renames)
             },
+            delete: if deletes.is_empty() {
+                None
+            } else {
+                Some(deletes)
+            },
+        };
+
+        transform
+            .validate()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Invalid attribute transform configuration: {e}"),
+            })?;
+
+        Ok(Self {
+            transform,
             domains,
             metrics: None,
-        }
+        })
     }
 
     const fn is_noop(&self) -> bool {
