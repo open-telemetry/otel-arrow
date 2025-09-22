@@ -65,7 +65,7 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
         str_values.append_null();
         int_values.append_null();
         double_values.append_null();
-        bool_values.append_value((i as f64 / 10.0) as usize % 2 == 0);
+        bool_values.append_value(((i as f64 / 10.0) as usize).is_multiple_of(2));
     }
 
     let schema = Schema::new(vec![
