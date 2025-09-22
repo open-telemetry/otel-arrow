@@ -1287,6 +1287,11 @@ mod test {
                 Field::new(consts::FLAGS, DataType::UInt32, true),
                 Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
                 Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+                Field::new(
+                    consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+                    DataType::Float64,
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values([0])),
@@ -1330,6 +1335,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter([Some(88)])),
                 Arc::new(Float64Array::from_iter([Some(0.01)])),
                 Arc::new(Float64Array::from_iter([Some(100.0)])),
+                Arc::new(Float64Array::from_iter([Some(1.1)])),
             ],
         )
         .unwrap();
@@ -1616,6 +1622,7 @@ mod test {
                                     flags: 88,
                                     min: Some(0.01),
                                     max: Some(100.0),
+                                    zero_threshold: 1.1,
                                     attributes: vec![KeyValue::new(
                                         "ehdpka",
                                         AnyValue::new_string("val3"),
