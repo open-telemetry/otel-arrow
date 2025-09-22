@@ -792,6 +792,7 @@ mod test {
                                     KeyValue::new("link_key_r", AnyValue::new_string("val1")),
                                     KeyValue::new("link_key", AnyValue::new_string("val2")),
                                 ])
+                                .flags(255u32)
                                 .finish(),
                         ])
                         .events(vec![

@@ -21,10 +21,7 @@ use crate::{
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
-    schema::{
-        FieldExt, SpanId, TraceId,
-        consts::{self, FLAGS},
-    },
+    schema::{FieldExt, SpanId, TraceId, consts},
 };
 
 /// Record batch builder for traces
@@ -208,7 +205,7 @@ impl TracesRecordBatchBuilder {
         }
     }
 
-    /// append a value to the `flags` array
+    /// Append a value to the `flags` array
     pub fn append_flags(&mut self, val: Option<u32>) {
         if let Some(val) = val {
             self.flags.append_value(&val);
@@ -370,7 +367,7 @@ impl TracesRecordBatchBuilder {
         columns.push(array);
 
         if let Some(array) = self.flags.finish() {
-            fields.push(Field::new(FLAGS, array.data_type().clone(), true));
+            fields.push(Field::new(consts::FLAGS, array.data_type().clone(), true));
             columns.push(array);
         }
 
@@ -575,6 +572,7 @@ pub struct LinksRecordBatchBuilder {
     span_id: FixedSizeBinaryArrayBuilder,
     trace_state: StringArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
+    flags: UInt32ArrayBuilder,
 }
 
 impl LinksRecordBatchBuilder {
@@ -615,6 +613,11 @@ impl LinksRecordBatchBuilder {
             }),
             dropped_attributes_count: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: false,
+                dictionary_options: None,
+                ..Default::default()
+            }),
+            flags: UInt32ArrayBuilder::new(ArrayOptions {
+                optional: true,
                 dictionary_options: None,
                 ..Default::default()
             }),
@@ -669,6 +672,15 @@ impl LinksRecordBatchBuilder {
         match val {
             Some(val) => self.dropped_attributes_count.append_value(&val),
             None => self.dropped_attributes_count.append_null(),
+        }
+    }
+
+    /// Append a value to the `flags` array
+    pub fn append_flags(&mut self, val: Option<u32>) {
+        if let Some(val) = val {
+            self.flags.append_value(&val);
+        } else {
+            self.flags.append_null();
         }
     }
 
@@ -738,6 +750,11 @@ impl LinksRecordBatchBuilder {
             true,
         ));
         columns.push(array);
+
+        if let Some(array) = self.flags.finish() {
+            fields.push(Field::new(consts::FLAGS, array.data_type().clone(), true));
+            columns.push(array);
+        }
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
     }

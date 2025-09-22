@@ -172,6 +172,7 @@ where
                     links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
                     links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
+                    links.append_flags(link.flags());
 
                     for kv in link.attributes() {
                         link_attrs.append_parent_id(&curr_link_id);
@@ -3888,6 +3889,7 @@ mod test {
                                 "link_attr1",
                                 AnyValue::new_string("hello"),
                             )])
+                            .flags(255u32)
                             .finish(),
                     ])
                     .finish(),
@@ -4263,6 +4265,7 @@ mod test {
                     true,
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, true),
+                Field::new("flags", DataType::UInt32, true),
             ])),
             vec![
                 // id
@@ -4292,6 +4295,8 @@ mod test {
                 )) as ArrayRef,
                 // dropped_attributes_count
                 Arc::new(UInt32Array::from(vec![567])) as ArrayRef,
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
             ],
         )
         .unwrap();
