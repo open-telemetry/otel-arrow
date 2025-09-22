@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758553001269,
+  "lastUpdate": 1758554989020,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "369e081ed3d57a0fd925b85bcabcc052a29436c4",
-          "message": "[query-engine] Global variable support (#982)\n\n## Changes\n\n* Expands the pipeline so it can track global variables scoped to a\nbatch of records\n\n## Details\n\nThe main scenario I wanted to enable is this:\n\n```\nlet batch_time = now();\nsource | summarize by BatchTime = batch_time\n```\n\nBut also planning to utilize global variables elsewhere. Looking ahead\nto user-defined functions:\n\n```\nlet c = 10; // global variable\nlet Func = (v:long) { \n    let c = c + 1; // creates a local variable with the same name as the global initialized to the global value + 1\n    v + c\n};\nprint Func(0), Func(1)\n// output: 11, 12\n```\n\nPerhaps also something like:\n\n```\nlet lookup = external_call_to_get_data();\nsource | extend name = lookup[id]\n```",
-          "timestamp": "2025-08-21T21:07:11Z",
-          "tree_id": "0b068faf316f95b8ef9e1fd4c593fc62f628d776",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/369e081ed3d57a0fd925b85bcabcc052a29436c4"
-        },
-        "date": 1755810921836,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 749166.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22475000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22475000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.73,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 166.31,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 196.39,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 735500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22065000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22065000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.56,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.68,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 120.7,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 138.51,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 188.48,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ee99b8ba8ac4da587d2e4d31f3132c60c2f90fe1",
+          "message": "chore(deps): update dependency prometheus_client to v0.23.1 (#1165)\n\nComing soon: The Renovate bot (GitHub App) will be renamed to Mend. PRs\nfrom Renovate will soon appear from 'Mend'. Learn more\n[here](https://redirect.github.com/renovatebot/renovate/discussions/37842).\n\nThis PR contains the following updates:\n\n| Package | Change | Age | Confidence |\n|---|---|---|---|\n|\n[prometheus_client](https://redirect.github.com/prometheus/client_python)\n| `==0.22.1` -> `==0.23.1` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/prometheus-client/0.23.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/prometheus-client/0.22.1/0.23.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>prometheus/client_python (prometheus_client)</summary>\n\n###\n[`v0.23.1`](https://redirect.github.com/prometheus/client_python/releases/tag/v0.23.1)\n\n[Compare\nSource](https://redirect.github.com/prometheus/client_python/compare/v0.23.0...v0.23.1)\n\n##### What's Changed\n\n- fix: use tuples instead of packaging Version by\n[@&#8203;efiop](https://redirect.github.com/efiop) in\n[#&#8203;1136](https://redirect.github.com/prometheus/client_python/pull/1136)\n\n##### New Contributors\n\n- [@&#8203;efiop](https://redirect.github.com/efiop) made their first\ncontribution in\n[#&#8203;1136](https://redirect.github.com/prometheus/client_python/pull/1136)\n\n**Full Changelog**:\n<https://github.com/prometheus/client_python/compare/v0.23.0...v0.23.1>\n\n###\n[`v0.23.0`](https://redirect.github.com/prometheus/client_python/releases/tag/v0.23.0)\n\n[Compare\nSource](https://redirect.github.com/prometheus/client_python/compare/v0.22.1...v0.23.0)\n\n##### What's Changed\n\n- UTF-8 Content Negotiation by\n[@&#8203;ywwg](https://redirect.github.com/ywwg) in\n[#&#8203;1102](https://redirect.github.com/prometheus/client_python/pull/1102)\n- Re include test data by\n[@&#8203;mgorny](https://redirect.github.com/mgorny) in\n[#&#8203;1113](https://redirect.github.com/prometheus/client_python/pull/1113)\n- Improve parser performance by\n[@&#8203;csmarchbanks](https://redirect.github.com/csmarchbanks) in\n[#&#8203;1117](https://redirect.github.com/prometheus/client_python/pull/1117)\n- Add support to `write_to_textfile` for custom tmpdir by\n[@&#8203;aadityadhruv](https://redirect.github.com/aadityadhruv) in\n[#&#8203;1115](https://redirect.github.com/prometheus/client_python/pull/1115)\n- OM text exposition for NH by\n[@&#8203;vesari](https://redirect.github.com/vesari) in\n[#&#8203;1087](https://redirect.github.com/prometheus/client_python/pull/1087)\n- Fix bug which caused metric publishing to not accept query string\nparameters in ASGI app by\n[@&#8203;hacksparr0w](https://redirect.github.com/hacksparr0w) in\n[#&#8203;1125](https://redirect.github.com/prometheus/client_python/pull/1125)\n- Emit native histograms only when OM 2.0.0 is requested by\n[@&#8203;vesari](https://redirect.github.com/vesari) in\n[#&#8203;1128](https://redirect.github.com/prometheus/client_python/pull/1128)\n- fix: remove space after comma in openmetrics exposition by\n[@&#8203;theSuess](https://redirect.github.com/theSuess) in\n[#&#8203;1132](https://redirect.github.com/prometheus/client_python/pull/1132)\n- Fix issue parsing double spaces after # HELP/# TYPE by\n[@&#8203;csmarchbanks](https://redirect.github.com/csmarchbanks) in\n[#&#8203;1134](https://redirect.github.com/prometheus/client_python/pull/1134)\n\n##### New Contributors\n\n- [@&#8203;mgorny](https://redirect.github.com/mgorny) made their first\ncontribution in\n[#&#8203;1113](https://redirect.github.com/prometheus/client_python/pull/1113)\n- [@&#8203;aadityadhruv](https://redirect.github.com/aadityadhruv) made\ntheir first contribution in\n[#&#8203;1115](https://redirect.github.com/prometheus/client_python/pull/1115)\n- [@&#8203;hacksparr0w](https://redirect.github.com/hacksparr0w) made\ntheir first contribution in\n[#&#8203;1125](https://redirect.github.com/prometheus/client_python/pull/1125)\n- [@&#8203;theSuess](https://redirect.github.com/theSuess) made their\nfirst contribution in\n[#&#8203;1132](https://redirect.github.com/prometheus/client_python/pull/1132)\n\n**Full Changelog**:\n<https://github.com/prometheus/client_python/compare/v0.22.1...v0.23.0>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0MS45Ny4xMCIsInVwZGF0ZWRJblZlciI6IjQxLjk3LjEwIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2025-09-22T15:21:44Z",
+          "tree_id": "38f0a4552fc2d5b8662db081637725d2995c9b58",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ee99b8ba8ac4da587d2e4d31f3132c60c2f90fe1"
+        },
+        "date": 1758554987027,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 736333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22090000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22090000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.63,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 116.87,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 137.1,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 727500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21825000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21825000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.62,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 164.54,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 188.82,
             "unit": "MiB"
           }
         ]
