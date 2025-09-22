@@ -14,7 +14,7 @@ use crate::otlp::bytes::decode::{
 };
 use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 use otel_arrow_rust::proto::consts::field_num::common::{
-    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE,
+    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
     ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, ARRAY_VALUE_VALUES,
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION, KEY_VALUE_KEY,
@@ -331,7 +331,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
                             ANY_VALUE_DOUBLE_VALUE => ValueType::Double,
                             ANY_VALUE_ARRAY_VALUE => ValueType::Array,
                             ANY_VALUE_KVLIST_VALUE => ValueType::KeyValueList,
-                            ANY_VALUE_BYES_VALUE => ValueType::Bytes,
+                            ANY_VALUE_BYTES_VALUE => ValueType::Bytes,
                             _ => {
                                 // treat unknown types as an empty value
                                 ValueType::Empty

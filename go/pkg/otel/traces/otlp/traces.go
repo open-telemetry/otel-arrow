@@ -34,6 +34,7 @@ type (
 		SpanID               int
 		TraceState           int
 		ParentSpanID         int
+		Flags                int
 		Name                 int
 		Kind                 int
 		DropAttributesCount  int
@@ -157,6 +158,10 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 			// parentSpanID can be null
 			parentSpanID = []byte{}
 		}
+		flags, err := arrowutils.U32FromRecord(record, traceIDs.Flags, row)
+		if err != nil {
+			return traces, werror.Wrap(err)
+		}
 		name, err := arrowutils.StringFromRecord(record, traceIDs.Name, row)
 		if err != nil {
 			return traces, werror.Wrap(err)
@@ -239,6 +244,7 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 		span.SetSpanID(sid)
 		span.TraceState().FromRaw(traceState)
 		span.SetParentSpanID(psid)
+		span.SetFlags(flags)
 		span.SetName(name)
 		span.SetKind(ptrace.SpanKind(kind))
 		span.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
@@ -268,6 +274,7 @@ func SchemaToIds(schema *arrow.Schema) (*SpanIDs, error) {
 	spanId, _ := arrowutils.FieldIDFromSchema(schema, constants.SpanId)
 	traceState, _ := arrowutils.FieldIDFromSchema(schema, constants.TraceState)
 	parentSpanId, _ := arrowutils.FieldIDFromSchema(schema, constants.ParentSpanId)
+	flags, _ := arrowutils.FieldIDFromSchema(schema, constants.Flags)
 	name, _ := arrowutils.FieldIDFromSchema(schema, constants.Name)
 	kind, _ := arrowutils.FieldIDFromSchema(schema, constants.KIND)
 	droppedAttributesCount, _ := arrowutils.FieldIDFromSchema(schema, constants.DroppedAttributesCount)
@@ -290,6 +297,7 @@ func SchemaToIds(schema *arrow.Schema) (*SpanIDs, error) {
 		SpanID:               spanId,
 		TraceState:           traceState,
 		ParentSpanID:         parentSpanId,
+		Flags:                flags,
 		Name:                 name,
 		Kind:                 kind,
 		DropAttributesCount:  droppedAttributesCount,

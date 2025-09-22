@@ -84,8 +84,8 @@ use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::{metrics::metrics_from, traces::traces_from};
-use prost::{EncodeError, Message};
+use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
+use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 
@@ -428,10 +428,6 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 error: format!("error generating OTLP request: {error}"),
             };
 
-        let map_prost_encode_error = |error: EncodeError| error::Error::ConversionError {
-            error: format!("error encoding protobuf: {error}"),
-        };
-
         match value {
             OtapArrowRecords::Logs(_) => {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
@@ -439,31 +435,27 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 let mut logs_encoder = LogsProtoBytesEncoder::new();
                 let mut buffer = ProtoBuffer::new();
 
-                // Fast path direct OTAP -> OTLP for Logs. Eventually we'll implement this for
-                // other signal types
                 logs_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                let bytes = buffer.as_ref().to_vec();
-                Ok(Self::ExportLogsRequest(bytes))
+                Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
-                let export_metrics_svc_req =
-                    metrics_from(value).map_err(map_otlp_conversion_error)?;
-                let mut bytes = vec![];
-                export_metrics_svc_req
-                    .encode(&mut bytes)
-                    .map_err(map_prost_encode_error)?;
-                Ok(Self::ExportMetricsRequest(bytes))
+                let mut metrics_encoder = MetricsProtoBytesEncoder::new();
+                let mut buffer = ProtoBuffer::new();
+                metrics_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
+
+                Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
-                let export_traces_svc_req =
-                    traces_from(value).map_err(map_otlp_conversion_error)?;
-                let mut bytes = vec![];
-                export_traces_svc_req
-                    .encode(&mut bytes)
-                    .map_err(map_prost_encode_error)?;
-                Ok(Self::ExportTracesRequest(bytes))
+                let mut traces_encoder = TracesProtoBytesEncoder::new();
+                let mut buffer = ProtoBuffer::new();
+                traces_encoder
+                    .encode(&mut value, &mut buffer)
+                    .map_err(map_otlp_conversion_error)?;
+                Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }
         }
     }
@@ -512,12 +504,14 @@ mod test {
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             resource::v1::Resource,
             trace::v1::{
-                ResourceSpans, ScopeSpans, Span, Status,
+                ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
                 span::{Event, Link},
                 status::StatusCode,
             },
         },
     };
+    use pretty_assertions::assert_eq;
+    use prost::Message;
 
     #[test]
     fn test_conversion_logs() {
@@ -785,6 +779,7 @@ mod test {
                         ])
                         .finish(),
                     Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
+                        .flags(SpanFlags::TraceFlagsMask)
                         .end_time_unix_nano(3u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
@@ -797,6 +792,7 @@ mod test {
                                     KeyValue::new("link_key_r", AnyValue::new_string("val1")),
                                     KeyValue::new("link_key", AnyValue::new_string("val2")),
                                 ])
+                                .flags(255u32)
                                 .finish(),
                         ])
                         .events(vec![

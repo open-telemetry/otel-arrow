@@ -9,6 +9,7 @@ use crate::{ParserError, ParserMapSchema, ParserOptions};
 
 pub struct ParserState {
     source_map_schema: Option<ParserMapSchema>,
+    summary_map_schema: Option<ParserMapSchema>,
     attached_data_names: HashSet<Box<str>>,
     global_variable_names: HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
@@ -24,6 +25,7 @@ impl ParserState {
     pub fn new_with_options(query: &str, options: ParserOptions) -> ParserState {
         Self {
             source_map_schema: options.source_map_schema,
+            summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
             global_variable_names: HashSet::new(),
             variable_names: HashSet::new(),
@@ -65,6 +67,10 @@ impl ParserScope for ParserState {
         self.source_map_schema.as_ref()
     }
 
+    fn get_summary_schema(&self) -> Option<&ParserMapSchema> {
+        self.summary_map_schema.as_ref()
+    }
+
     fn is_well_defined_identifier(&self, name: &str) -> bool {
         name == "source"
             || self.is_attached_data_defined(name)
@@ -92,6 +98,7 @@ impl ParserScope for ParserState {
         ParserStateScope {
             pipeline_builder: &self.pipeline_builder,
             source_map_schema: options.source_map_schema,
+            summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
             global_variable_names: &self.global_variable_names,
             variable_names: HashSet::new(),
@@ -103,6 +110,7 @@ impl ParserScope for ParserState {
 pub struct ParserStateScope<'a> {
     pipeline_builder: &'a PipelineExpressionBuilder,
     source_map_schema: Option<ParserMapSchema>,
+    summary_map_schema: Option<ParserMapSchema>,
     attached_data_names: HashSet<Box<str>>,
     global_variable_names: &'a HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
@@ -116,6 +124,10 @@ impl ParserScope for ParserStateScope<'_> {
 
     fn get_source_schema(&self) -> Option<&ParserMapSchema> {
         self.source_map_schema.as_ref()
+    }
+
+    fn get_summary_schema(&self) -> Option<&ParserMapSchema> {
+        self.summary_map_schema.as_ref()
     }
 
     fn is_well_defined_identifier(&self, name: &str) -> bool {
@@ -145,6 +157,7 @@ impl ParserScope for ParserStateScope<'_> {
         ParserStateScope {
             pipeline_builder: self.pipeline_builder,
             source_map_schema: options.source_map_schema,
+            summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
             global_variable_names: self.global_variable_names,
             variable_names: HashSet::new(),
@@ -165,6 +178,8 @@ pub trait ParserScope {
     }
 
     fn get_source_schema(&self) -> Option<&ParserMapSchema>;
+
+    fn get_summary_schema(&self) -> Option<&ParserMapSchema>;
 
     fn is_well_defined_identifier(&self, name: &str) -> bool;
 

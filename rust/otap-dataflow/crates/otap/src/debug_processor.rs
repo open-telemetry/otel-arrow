@@ -10,7 +10,9 @@
 
 use self::config::{Config, OutputMode, SignalActive, Verbosity};
 use self::detailed_marshaler::DetailedViewMarshaler;
+use self::filter::FilterRules;
 use self::marshaler::ViewMarshaler;
+use self::metrics::DebugPdataMetrics;
 use self::normal_marshaler::NormalViewMarshaler;
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
@@ -28,10 +30,11 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::{LogRecord, LogsData},
-    metrics::v1::{Metric, MetricsData, metric::Data},
-    trace::v1::{Span, TracesData},
+    logs::v1::LogsData,
+    metrics::v1::{MetricsData, metric::Data},
+    trace::v1::TracesData,
 };
 use prost::Message as _;
 use serde_json::Value;
@@ -41,8 +44,11 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod config;
 mod detailed_marshaler;
+mod filter;
 mod marshaler;
+mod metrics;
 mod normal_marshaler;
+mod predicate;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -76,19 +82,20 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
 pub struct DebugProcessor {
     config: Config,
     output: Option<String>,
+    metrics: MetricSet<DebugPdataMetrics>,
 }
 
 /// Factory function to create an DebugProcessor.
 ///
 /// See the module documentation for configuration examples
 pub fn create_debug_processor(
-    _pipeline_ctx: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     Ok(ProcessorWrapper::local(
-        DebugProcessor::from_config(&node_config.config)?,
+        DebugProcessor::from_config(pipeline_ctx, &node_config.config)?,
         node,
         node_config,
         processor_config,
@@ -113,12 +120,18 @@ impl DebugProcessor {
     /// Creates a new Debug processor
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(config: Config, output: Option<String>) -> Self {
-        DebugProcessor { config, output }
+    pub fn new(config: Config, output: Option<String>, pipeline_ctx: PipelineContext) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        DebugProcessor {
+            config,
+            output,
+            metrics,
+        }
     }
 
     /// Creates a new DebugProcessor from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -126,6 +139,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             output: None,
+            metrics,
         })
     }
 }
@@ -141,6 +155,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let active_signals = self.config.signals();
         let verbosity = self.config.verbosity();
         let mode = self.config.mode();
+        let filters = self.config.filters();
 
         let marshaler: Box<dyn ViewMarshaler> = if verbosity == Verbosity::Normal {
             Box::new(NormalViewMarshaler)
@@ -164,6 +179,11 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     NodeControlMsg::Shutdown { .. } => {
                         writer.write("Shutdown message received\n").await?;
                     }
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => {
+                        _ = metrics_reporter.report(&mut self.metrics);
+                    }
                     _ => {}
                 }
                 Ok(())
@@ -184,8 +204,18 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_log(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
+                            push_log(
+                                &verbosity,
+                                req,
+                                &*marshaler,
+                                &mode,
+                                filters,
+                                &mut writer,
+                                &mut self.metrics,
+                            )
+                            .await?;
                         }
+                        self.metrics.logs_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
@@ -194,8 +224,18 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytesf: {e}"),
                                 }
                             })?;
-                            push_metric(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
+                            push_metric(
+                                &verbosity,
+                                req,
+                                &*marshaler,
+                                &mode,
+                                filters,
+                                &mut writer,
+                                &mut self.metrics,
+                            )
+                            .await?;
                         }
+                        self.metrics.metrics_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
@@ -204,8 +244,18 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_trace(&verbosity, req, &*marshaler, &mode, &mut writer).await?;
+                            push_trace(
+                                &verbosity,
+                                req,
+                                &*marshaler,
+                                &mode,
+                                filters,
+                                &mut writer,
+                                &mut self.metrics,
+                            )
+                            .await?;
                         }
+                        self.metrics.traces_consumed.add(1);
                     }
                 }
                 Ok(())
@@ -234,10 +284,12 @@ async fn get_writer(output_file: &Option<String>) -> Box<dyn AsyncWrite + Unpin>
 /// Function to collect and report the data contained in a Metrics object received by the Debug processor
 async fn push_metric(
     verbosity: &Verbosity,
-    metric_request: MetricsData,
+    mut metric_request: MetricsData,
     marshaler: &dyn ViewMarshaler,
     mode: &OutputMode,
+    filters: &Vec<FilterRules>,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource metrics
     // collect number of metrics
@@ -245,13 +297,9 @@ async fn push_metric(
     let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
-    let mut metric_signals: Option<Vec<Metric>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_metrics in &metric_request.resource_metrics {
         for scope_metrics in &resource_metrics.scope_metrics {
             metrics += scope_metrics.metrics.len();
-            if let Some(ref mut metric_signals) = metric_signals {
-                metric_signals.append(&mut scope_metrics.metrics.clone());
-            }
             for metric in &scope_metrics.metrics {
                 if let Some(data) = &metric.data {
                     match data {
@@ -276,6 +324,11 @@ async fn push_metric(
         }
     }
 
+    internal_metrics.metric_signals_consumed.add(metrics as u64);
+    internal_metrics
+        .metric_datapoints_consumed
+        .add(data_points as u64);
+
     writer
         .write(&format!("Received {resource_metrics} resource metrics\n"))
         .await?;
@@ -289,16 +342,26 @@ async fn push_metric(
     if *verbosity == Verbosity::Basic {
         return Ok(());
     }
+
+    // if there are filters to apply then apply them
+    if !filters.is_empty() {
+        for filter in filters {
+            filter.filter_metrics(&mut metric_request)
+        }
+    }
     match mode {
         OutputMode::Batch => {
             let report = marshaler.marshal_metrics(metric_request);
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            // safety: this should be initialized above if the mode is Signal
-            let metric_signals = metric_signals.expect("metric_signals not None");
-            for (index, metric) in metric_signals.iter().enumerate() {
-                let report = marshaler.marshal_metric_signal(metric, index);
+            let metric_signals = metric_request
+                .resource_metrics
+                .into_iter()
+                .flat_map(|resource| resource.scope_metrics)
+                .flat_map(|scope| scope.metrics);
+            for (index, metric) in metric_signals.enumerate() {
+                let report = marshaler.marshal_metric_signal(&metric, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
@@ -308,10 +371,12 @@ async fn push_metric(
 
 async fn push_trace(
     verbosity: &Verbosity,
-    trace_request: TracesData,
+    mut trace_request: TracesData,
     marshaler: &dyn ViewMarshaler,
     mode: &OutputMode,
+    filters: &Vec<FilterRules>,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource spans
     // collect number of spans
@@ -319,20 +384,18 @@ async fn push_trace(
     let mut spans = 0;
     let mut events = 0;
     let mut links = 0;
-    let mut span_signals: Option<Vec<Span>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
-            if let Some(ref mut span_signals) = span_signals {
-                span_signals.append(&mut scope_span.spans.clone());
-            }
             for span in &scope_span.spans {
                 events += span.events.len();
                 links += span.links.len();
             }
         }
     }
-
+    internal_metrics.span_signals_consumed.add(spans as u64);
+    internal_metrics.span_events_consumed.add(events as u64);
+    internal_metrics.span_links_consumed.add(links as u64);
     writer
         .write(&format!("Received {resource_spans} resource spans\n"))
         .await?;
@@ -344,15 +407,25 @@ async fn push_trace(
         return Ok(());
     }
 
+    // if there are filters to apply then apply them
+    if !filters.is_empty() {
+        for filter in filters {
+            filter.filter_traces(&mut trace_request)
+        }
+    }
     match mode {
         OutputMode::Batch => {
             let report = marshaler.marshal_traces(trace_request);
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            let span_signals = span_signals.expect("metric_signals not None");
-            for (index, span) in span_signals.iter().enumerate() {
-                let report = marshaler.marshal_span_signal(span, index);
+            let span_signals = trace_request
+                .resource_spans
+                .into_iter()
+                .flat_map(|resource| resource.scope_spans)
+                .flat_map(|scope| scope.spans);
+            for (index, span) in span_signals.enumerate() {
+                let report = marshaler.marshal_span_signal(&span, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
@@ -362,21 +435,19 @@ async fn push_trace(
 
 async fn push_log(
     verbosity: &Verbosity,
-    log_request: LogsData,
+    mut log_request: LogsData,
     marshaler: &dyn ViewMarshaler,
     mode: &OutputMode,
+    filters: &Vec<FilterRules>,
     writer: &mut OutputWriter,
+    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
-    let mut log_signals: Option<Vec<LogRecord>> = matches!(mode, OutputMode::Signal).then(Vec::new);
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
-            if let Some(ref mut log_signals) = log_signals {
-                log_signals.append(&mut scope_log.log_records.clone());
-            }
             for log_record in &scope_log.log_records {
                 if !log_record.event_name.is_empty() {
                     events += 1;
@@ -384,6 +455,10 @@ async fn push_log(
             }
         }
     }
+    internal_metrics
+        .log_signals_consumed
+        .add(log_records as u64);
+    internal_metrics.events_consumed.add(events as u64);
     writer
         .write(&format!("Received {resource_logs} resource logs\n"))
         .await?;
@@ -395,15 +470,25 @@ async fn push_log(
         return Ok(());
     }
 
+    // if there are filters to apply then apply them
+    if !filters.is_empty() {
+        for filter in filters {
+            filter.filter_logs(&mut log_request)
+        }
+    }
     match mode {
         OutputMode::Batch => {
             let report = marshaler.marshal_logs(log_request);
             writer.write(&format!("{report}\n")).await?;
         }
         OutputMode::Signal => {
-            let log_signals = log_signals.expect("metric_signals not None");
-            for (index, log_record) in log_signals.iter().enumerate() {
-                let report = marshaler.marshal_log_signal(log_record, index);
+            let log_signals = log_request
+                .resource_logs
+                .into_iter()
+                .flat_map(|resource| resource.scope_logs)
+                .flat_map(|scope| scope.log_records);
+            for (index, log_record) in log_signals.enumerate() {
+                let report = marshaler.marshal_log_signal(&log_record, index);
                 writer.write(&format!("{report}\n")).await?;
             }
         }
@@ -415,14 +500,20 @@ async fn push_log(
 mod tests {
 
     use crate::debug_processor::config::{Config, OutputMode, SignalActive, Verbosity};
+    use crate::debug_processor::filter::{FilterMode, FilterRules};
+    use crate::debug_processor::predicate::{
+        KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
+    };
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use crate::pdata::{OtapPdata, OtlpProtoBytes};
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -683,10 +774,16 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_normal.txt".to_string();
-        let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -709,10 +806,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_basic.txt".to_string();
-        let config = Config::new(Verbosity::Basic, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Basic, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -735,10 +836,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_detailed.txt".to_string();
-        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -783,10 +888,14 @@ mod tests {
         let output_file = "debug_logs.txt".to_string();
         let signals = HashSet::from([SignalActive::Logs]);
 
-        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -830,10 +939,14 @@ mod tests {
 
         let output_file = "debug_metrics.txt".to_string();
         let signals = HashSet::from([SignalActive::Metrics]);
-        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -872,6 +985,63 @@ mod tests {
         }
     }
 
+    fn validation_procedure_exclude_attribute(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                // check the the processor has received the expected number of messages
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 1 metrics"));
+                assert!(reader.contains("Received 1 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("Config message received"));
+                assert!(reader.contains("Shutdown message received"));
+
+                // signal with attribute should not be present
+                assert!(!reader.contains("Attributes: log_attr1=log_val_1"));
+            })
+        }
+    }
+
+    fn validation_procedure_include_attribute(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                // check the the processor has received the expected number of messages
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 1 metrics"));
+                assert!(reader.contains("Received 1 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("Config message received"));
+                assert!(reader.contains("Shutdown message received"));
+
+                // signal with attribute should be present
+                assert!(reader.contains("Attributes: log_attr1=log_val_1"));
+            })
+        }
+    }
     #[test]
     fn test_debug_processor_only_spans() {
         let test_runtime = TestRuntime::new();
@@ -879,10 +1049,14 @@ mod tests {
         let output_file = "debug_spans.txt".to_string();
         let signals = HashSet::from([SignalActive::Spans]);
 
-        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals);
+        let config = Config::new(Verbosity::Detailed, OutputMode::Batch, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -905,10 +1079,15 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_signal_mode.txt".to_string();
-        let config = Config::new(Verbosity::Normal, OutputMode::Signal, signals);
+
+        let config = Config::new(Verbosity::Normal, OutputMode::Signal, signals, Vec::new());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone())),
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -918,6 +1097,88 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_processor_filter_include() {
+        let test_runtime = TestRuntime::new();
+        let signals = HashSet::from([
+            SignalActive::Metrics,
+            SignalActive::Logs,
+            SignalActive::Spans,
+        ]);
+        let output_file = "debug_output_filter_include.txt".to_string();
+
+        let filterrule = vec![FilterRules::new(
+            Predicate::new(
+                SignalField::Attribute,
+                MatchValue::KeyValue(vec![PredicateKeyValue::new(
+                    "log_attr1".to_string(),
+                    MatchValue::String("log_val_1".to_string()),
+                )]),
+            ),
+            FilterMode::Include,
+        )];
+        let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals, filterrule);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure_include_attribute(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_processor_filter_exclude() {
+        let test_runtime = TestRuntime::new();
+        let signals = HashSet::from([
+            SignalActive::Metrics,
+            SignalActive::Logs,
+            SignalActive::Spans,
+        ]);
+        let output_file = "debug_output_filter_exclude.txt".to_string();
+
+        let filterrule = vec![FilterRules::new(
+            Predicate::new(
+                SignalField::Attribute,
+                MatchValue::KeyValue(vec![PredicateKeyValue::new(
+                    "log_attr1".to_string(),
+                    MatchValue::String("log_val_1".to_string()),
+                )]),
+            ),
+            FilterMode::Exclude,
+        )];
+        let config = Config::new(Verbosity::Normal, OutputMode::Batch, signals, filterrule);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure_exclude_attribute(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
     }

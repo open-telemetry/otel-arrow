@@ -133,6 +133,7 @@ where
                 spans.append_span_id(span.span_id().copied().unwrap_or_default())?;
                 spans.append_trace_state(span.trace_state());
                 spans.append_parent_span_id(span.parent_span_id().copied())?;
+                spans.append_flags(span.flags());
                 spans.append_name(span.name().unwrap_or_default());
                 spans.append_kind(Some(span.kind()));
                 spans.append_dropped_attributes_count(Some(span.dropped_attributes_count()));
@@ -171,6 +172,7 @@ where
                     links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
                     links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
+                    links.append_flags(link.flags());
 
                     for kv in link.attributes() {
                         link_attrs.append_parent_id(&curr_link_id);
@@ -964,8 +966,9 @@ mod test {
 
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-    use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
-    use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
+    use otel_arrow_rust::otlp::ProtoBuffer;
+    use otel_arrow_rust::otlp::attributes::AttributeValueType;
+    use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
@@ -973,6 +976,7 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::SpanFlags;
     use otel_arrow_rust::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
@@ -3513,17 +3517,22 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
+
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))
@@ -3749,17 +3758,21 @@ mod test {
         assert_eq!(logs_attrs, &expected_attrs);
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))
@@ -3852,6 +3865,7 @@ mod test {
                     .trace_state("some_state")
                     .end_time_unix_nano(1999u64)
                     .parent_span_id(a_parent_span_id.to_vec())
+                    .flags(SpanFlags::TraceFlagsMask)
                     .dropped_attributes_count(7u32)
                     .dropped_events_count(11u32)
                     .dropped_links_count(29u32)
@@ -3875,6 +3889,7 @@ mod test {
                                 "link_attr1",
                                 AnyValue::new_string("hello"),
                             )])
+                            .flags(255u32)
                             .finish(),
                     ])
                     .finish(),
@@ -3970,6 +3985,7 @@ mod test {
                     true,
                 ),
                 Field::new("parent_span_id", DataType::FixedSizeBinary(8), true),
+                Field::new("flags", DataType::UInt32, true),
                 Field::new(
                     "name",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -4128,6 +4144,8 @@ mod test {
                     )
                     .unwrap(),
                 ),
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -4247,6 +4265,7 @@ mod test {
                     true,
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, true),
+                Field::new("flags", DataType::UInt32, true),
             ])),
             vec![
                 // id
@@ -4276,6 +4295,8 @@ mod test {
                 )) as ArrayRef,
                 // dropped_attributes_count
                 Arc::new(UInt32Array::from(vec![567])) as ArrayRef,
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
             ],
         )
         .unwrap();

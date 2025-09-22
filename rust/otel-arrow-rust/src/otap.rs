@@ -102,7 +102,7 @@ impl OtapArrowRecords {
     }
 
     #[must_use]
-    fn tag(&self) -> OtapArrowRecordTag {
+    const fn tag(&self) -> OtapArrowRecordTag {
         match self {
             Self::Logs(_) => OtapArrowRecordTag::Logs,
             Self::Metrics(_) => OtapArrowRecordTag::Metrics,
@@ -383,17 +383,18 @@ fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
         Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()
-            .map(|batch| batch.num_rows())
-            .unwrap_or(0),
+            .map_or(0, |batch| batch.num_rows()),
         Metrics::COUNT => DATA_POINTS_TYPES
             .iter()
-            .flat_map(|dpt| batches[POSITION_LOOKUP[*dpt as usize]].as_ref())
-            .map(|batch| batch.num_rows())
+            .map(|&dpt| {
+                batches[POSITION_LOOKUP[dpt as usize]]
+                    .as_ref()
+                    .map_or(0, |batch| batch.num_rows())
+            })
             .sum(),
         Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]]
             .as_ref()
-            .map(|batch| batch.num_rows())
-            .unwrap_or(0),
+            .map_or(0, |batch| batch.num_rows()),
         _ => {
             unreachable!()
         }
@@ -794,7 +795,7 @@ impl OtapBatchStore for Traces {
 
 /// Return the child payload types for the given payload type
 #[must_use]
-pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
+pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {
         ArrowPayloadType::Logs => &[
             ArrowPayloadType::ResourceAttrs,
@@ -810,7 +811,7 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
         ],
         ArrowPayloadType::SpanEvents => &[ArrowPayloadType::SpanEventAttrs],
         ArrowPayloadType::SpanLinks => &[ArrowPayloadType::SpanLinkAttrs],
-        ArrowPayloadType::UnivariateMetrics => &[
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::LogAttrs,
@@ -838,9 +839,6 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
         ArrowPayloadType::ExpHistogramDpExemplars => {
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
-        ArrowPayloadType::MultivariateMetrics => {
-            child_payload_types(ArrowPayloadType::UnivariateMetrics)
-        }
         _ => &[],
     }
 }
@@ -854,7 +852,7 @@ mod test {
     use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::schema::FieldExt;
 
     use super::*;
