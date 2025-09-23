@@ -2476,8 +2476,13 @@ mod test {
             (
                 // most basic transform
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("b".into(), "B".into())]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![("d".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "b".into(),
+                        "B".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                        ("d".into()),
+                    ]))),
                 },
                 (vec!["a", "b", "c", "d", "e"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["a", "B", "c", "e"], vec!["1", "1", "3", "5"]),
@@ -2485,7 +2490,10 @@ mod test {
             (
                 // test replacements at array boundaries
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("a".into(), "A".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "A".into(),
+                    )]))),
                     delete: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
@@ -2494,7 +2502,10 @@ mod test {
             (
                 // test replacements where replacements longer than target
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("a".into(), "AAA".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAA".into(),
+                    )]))),
                     delete: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
@@ -2506,7 +2517,10 @@ mod test {
             (
                 // test replacements where replacements shorter than target
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("aaa".into(), "a".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "aaa".into(),
+                        "a".into(),
+                    )]))),
                     delete: None,
                 },
                 (
@@ -2518,7 +2532,10 @@ mod test {
             (
                 // test replacing single contiguous block of keys
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("a".into(), "AA".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
                     delete: None,
                 },
                 (
@@ -2570,7 +2587,7 @@ mod test {
                 // test deletion at array boundaries without replaces
                 AttributesTransform {
                     rename: None,
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()])))
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["b", "d"], vec!["1", "4"]),
@@ -2579,7 +2596,7 @@ mod test {
                 // test delete contiguous segment
                 AttributesTransform {
                     rename: None,
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()])))
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "b", "a", "a"],
@@ -2591,7 +2608,10 @@ mod test {
                 // test multiple deletes
                 AttributesTransform {
                     rename: None,
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into(), "b".into()])))
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                        "a".into(),
+                        "b".into(),
+                    ]))),
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "c", "a", "a"],
@@ -2602,8 +2622,11 @@ mod test {
             (
                 // test adjacent replacement and delete
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("a".into(), "AAA".into())]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()])))
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
                 (vec!["_", "a", "a", "b", "c"], vec!["1", "2", "3", "4", "5"]),
                 (vec!["_", "AAA", "AAA", "c"], vec!["1", "2", "3", "5"]),
@@ -2612,7 +2635,7 @@ mod test {
                 // test we handle an empty rename
                 AttributesTransform {
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()])))
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["a", "a", "c"], vec!["1", "2", "4"]),
@@ -2620,7 +2643,10 @@ mod test {
             (
                 // test we handle an empty delete
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("a".into(), "AAAA".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAAA".into(),
+                    )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![]))),
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
@@ -2789,7 +2815,10 @@ mod test {
             let result = transform_attributes(
                 &record_batch,
                 &AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("k2".into(), "K2".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "k2".into(),
+                        "K2".into(),
+                    )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["k3".into()]))),
                 },
             )
@@ -2943,8 +2972,14 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![("b".into(), "B".into())]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["c".into(), "e".into()]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                    "b".into(),
+                    "B".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                    "c".into(),
+                    "e".into(),
+                ]))),
             },
         )
         .unwrap();
@@ -2973,8 +3008,11 @@ mod test {
             (
                 // basic dict transform
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([("a".into(), "AA".into())]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()])))
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
                     // keys column - dict keys
@@ -3011,8 +3049,11 @@ mod test {
             (
                 // test with some nulls
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([("a".into(), "AA".into())]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()])))
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
                     vec![
@@ -3075,7 +3116,10 @@ mod test {
                 // test if there's nulls in the dict keys. This would be unusual
                 // but technically it's possible
                 AttributesTransform {
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([("a".into(), "AA".into())]))),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
@@ -3171,8 +3215,11 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("c".into(), "CCCCC".into())]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()])))
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "c".into(),
+                    "CCCCC".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -3267,7 +3314,7 @@ mod test {
             &input,
             &AttributesTransform {
                 rename: None,
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()])))
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -3344,7 +3391,7 @@ mod test {
             &input,
             &AttributesTransform {
                 rename: None,
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()])))
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -3404,7 +3451,10 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("b".into(), "BBB".into())]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "BBB".into(),
+                )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
             },
         )
@@ -3469,7 +3519,10 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("b".into(), "BBB".into())]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "BBB".into(),
+                )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
             },
         )
@@ -3482,7 +3535,10 @@ mod test {
     fn test_invalid_attributes_transforms() {
         let test_cases = vec![
             AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("b".into(), "b".into())]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "b".into(),
+                )]))),
                 delete: None,
             },
             AttributesTransform {
@@ -3493,11 +3549,17 @@ mod test {
                 delete: None,
             },
             AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("b".into(), "a".into())]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "a".into(),
+                )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
             },
             AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([("b".into(), "a".into())]))),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "a".into(),
+                )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
             },
         ];
@@ -3538,7 +3600,9 @@ mod test {
                 String::from("a"),
                 String::from("A"),
             )]))),
-            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from("d")]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from(
+                "d",
+            )]))),
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -3578,7 +3642,9 @@ mod test {
                 String::from("a"),
                 String::from("A"),
             )]))),
-            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from("d")]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from(
+                "d",
+            )]))),
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();

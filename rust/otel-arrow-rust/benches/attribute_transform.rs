@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::{transform_attributes, AttributesTransform, DeleteTransform, RenameTransform};
+use otel_arrow_rust::otap::transform::{
+    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
+};
 use otel_arrow_rust::schema::consts;
 
 fn generate_native_keys_attr_batch(
@@ -116,7 +118,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                                     "attr24".into(),
                                     "attr_24".into(),
                                 )]))),
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr15".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
@@ -137,7 +141,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: None,
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr15".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
@@ -194,7 +200,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: None,
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr9".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
@@ -218,7 +226,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                                     "attr3".into(),
                                     "attr_3".into(),
                                 )]))),
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()])))
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr9".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
@@ -270,7 +280,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: None,
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr9".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
@@ -295,7 +307,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
                                     "attr3".into(),
                                     "attr_3".into(),
                                 )]))),
-                                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()])))
+                                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                                    "attr9".into()
+                                ]))),
                             },
                         )
                         .expect("expect no errors");
