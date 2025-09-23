@@ -3,13 +3,25 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{CtxData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
+use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
+
+bitflags::bitflags! {
+    /// Types of subscription that a PData can have.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Interests: u8 {
+    /// Acks interest
+        const ACKS   = 1 << 0;
+    /// Nacks interest
+        const NACKS  = 1 << 1;
+    }
+}
 
 /// Common implementation of all effect handlers.
 ///
@@ -200,6 +212,17 @@ impl<PData> EffectHandlerCore<PData> {
             pipeline_ctrl_msg_sender,
         })
     }
+
+    pub async fn notify_nack(&mut self, _nack: NackMsg<PData>) {
+        // @@@
+    }
+}
+
+/// Effect handler extensions specific to data type.
+#[async_trait(?Send)]
+pub trait EffectHandlerExtension<PData> {
+    /// Subscribe to a set of interests.
+    async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut PData);
 }
 
 /// Handle to cancel a running timer.

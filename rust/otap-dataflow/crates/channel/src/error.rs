@@ -18,6 +18,16 @@ pub enum SendError<T> {
     Closed(T),
 }
 
+impl<T> SendError<T> {
+    /// Retrieves inner. TODO: why discard full vs closed?
+    pub fn inner(self) -> T {
+        match self {
+            Self::Full(t) => t,
+            Self::Closed(t) => t,
+        }
+    }
+}
+
 /// Errors that can occur when consuming messages from a channel.
 #[derive(thiserror::Error, Debug)]
 pub enum RecvError {

@@ -31,6 +31,9 @@ linkme = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true }
+bitflags = { workspace = true }
+bytemuck = { workspace = true }
+smallvec = { workspace = true }
 
 socket2 = { version = "0.6.0", features = ["all"] }
 

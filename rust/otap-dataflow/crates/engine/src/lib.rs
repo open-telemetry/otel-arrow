@@ -9,7 +9,7 @@ use crate::{
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
-    node::{Node, NodeDefs, NodeId, NodeName, NodeType},
+    node::{Node, NodeDefs, NodeName, NodeType},
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
     runtime_pipeline::{PipeNode, RuntimePipeline},
@@ -44,6 +44,13 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
+
+/// Data-specific extensions to the effect handler.
+pub use effect_handler::{EffectHandlerExtension, Interests};
+
+/// Used in the effect handler extensions.
+pub use control::{CtxData, NackMsg};
+pub use node::NodeId;
 
 /// Trait for factory types that expose a name.
 ///

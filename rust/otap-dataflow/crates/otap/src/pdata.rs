@@ -78,7 +78,9 @@
 // directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
 // this diagram may need to be updated (https://github.com/open-telemetry/otel-arrow/issues/1095)
 
+use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use otap_df_config::experimental::SignalType;
+use otap_df_engine::{CtxData, EffectHandlerExtension, Interests};
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
@@ -87,12 +89,29 @@ use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 
-use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
-
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    // This is reserved for a future PR.
+    stack: Vec<Frame>,
+}
+
+impl Context {
+    /// Subscribe to a set of interests.
+    pub(crate) fn subscribe_to(&mut self, interests: Interests, ctx: CtxData, node_id: usize) {
+        self.stack.push(Frame {
+            interests,
+            node_id,
+            ctx,
+        });
+    }
+}
+
+/// Per-node interests
+#[derive(Clone, Debug)]
+pub struct Frame {
+    interests: Interests,
+    ctx: CtxData,
+    node_id: usize,
 }
 
 /// module contains related to pdata
@@ -491,6 +510,20 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
             }
         }
     }
+}
+
+#[async_trait::async_trait(?Send)]
+impl EffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
+{
+    async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut OtapPdata) {
+        data.context
+            .subscribe_to(int, ctx, self.processor_id().index)
+    }
+
+    // async fn reply_nack(&self, nack: NackMsg<OtapPdata>) {
+    //     // @@@
+    // }
 }
 
 #[cfg(test)]
