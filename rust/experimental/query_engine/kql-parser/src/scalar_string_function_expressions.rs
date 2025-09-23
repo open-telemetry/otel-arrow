@@ -148,7 +148,11 @@ fn parse_strcat_expression(
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strcat_expression_rule);
 
-    let strcat_rules = strcat_expression_rule.into_inner();
+    let strcat_rules = strcat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 
