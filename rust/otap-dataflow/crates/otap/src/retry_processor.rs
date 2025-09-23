@@ -408,9 +408,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                     .min(self.config.max_retry_delay_ms as f64)
                         as u64;
 
-                    // TODO: implement delay!
+                    // Compute the delay.
                     let next_retry_time = now + Duration::from_millis(delay_ms);
-                    let _ = next_retry_time;
 
                     // E.g., check deadline-before-retry
                     // let deadline = nack.refused.deadline();
@@ -430,7 +429,12 @@ impl Processor<OtapPdata> for RetryProcessor {
                         .subscribe_to(Interests::NACKS, rstate.into(), &mut rereq)
                         .await;
 
-                    match effect_handler.send_message(*rereq).await {
+                    effect_handler
+                        .delay_message(nack.refused, next_retry_time)
+                        .await
+                }
+                NodeControlMsg::DelayedData { data } => {
+                    match effect_handler.send_message(data).await {
                         Ok(()) => Ok(()),
                         Err(TypedError::ChannelSendError(sent)) => {
                             // TODO: Note we remove full vs closed info here.

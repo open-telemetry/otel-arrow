@@ -4,12 +4,12 @@
 //! Common foundation of all effect handlers.
 
 use crate::control::{CtxData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
 bitflags::bitflags! {
@@ -213,8 +213,14 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
-    pub async fn notify_nack(&mut self, _nack: NackMsg<PData>) {
-        // @@@
+    pub async fn delay_message(
+        &self,
+        _data: Box<PData>,
+        _resume: Instant,
+    ) -> Result<(), TypedError<PData>> {
+        // @@@ TODO: Sending a delay request, will return to _this_
+        // component for sending.
+        Ok(())
     }
 }
 
@@ -223,6 +229,9 @@ impl<PData> EffectHandlerCore<PData> {
 pub trait EffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
     async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut PData);
+
+    /// @@@ TODO; this will send to the PipelineControl manager
+    async fn notify_nack(&self, _nack: NackMsg<PData>);
 }
 
 /// Handle to cancel a running timer.

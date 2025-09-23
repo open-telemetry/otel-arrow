@@ -135,6 +135,12 @@ pub enum NodeControlMsg<PData> {
         // For future usage
     },
 
+    /// Data after a delay.
+    DelayedData {
+        /// The data; may or may not have subscribe_to called
+        data: Box<PData>,
+    },
+
     /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
     ///
     /// This separates metrics collection from the generic TimerTick to allow

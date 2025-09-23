@@ -521,9 +521,10 @@ impl EffectHandlerExtension<OtapPdata>
             .subscribe_to(int, ctx, self.processor_id().index)
     }
 
-    // async fn reply_nack(&self, nack: NackMsg<OtapPdata>) {
-    //     // @@@
-    // }
+    /// Reply with a Nack.
+    async fn notify_nack(&mut self, nack: NackMsg<OtapPdata>) {
+        // @@@ pop from data.context.stack, set that in nack.context
+    }
 }
 
 #[cfg(test)]
