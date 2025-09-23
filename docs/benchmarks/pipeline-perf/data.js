@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758661647640,
+  "lastUpdate": 1758667252208,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "66651184+utpilla@users.noreply.github.com",
-            "name": "Utkarsh Umesan Pillai",
-            "username": "utpilla"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "fc5780ec74a02a55f295fad2ef5550b65085fa55",
-          "message": "Update Node index to usize (#984)\n\nFollow up to\nhttps://github.com/open-telemetry/otel-arrow/pull/939#discussion_r2286670031\n\n## Changes\n- Update Node index to `usize` to look up the vec directly without\nconverting from `u16`",
-          "timestamp": "2025-08-21T23:12:26Z",
-          "tree_id": "10812c04ed420619d3564c10bca1a082c560875c",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/fc5780ec74a02a55f295fad2ef5550b65085fa55"
-        },
-        "date": 1755818458650,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 737666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22130000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22130000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.67,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.79,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 168.5,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 194.96,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 736666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22100000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22100000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.73,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.69,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 133.84,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 154.46,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 186.6,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "35d23213e095b1342d79231f17fc0f55db1a9e1e",
+          "message": "[query-engine] Improve formatting of diagnostics when displayed (#1175)\n\n## Changes\n\n* Attempting to improve the readability of recordset engine diagnostics\nwhen displayed with the query\n\n## Details\n\n### Before\n\n```\nln   1: source | where (key1 == int(null) or key1 != int(null) or key1 == int(null)) and (name == int(null))\n                                                                                                  [Verbose] StaticScalar(Null): Evaluated as: 'null'\n                                                                                               [Verbose] LogicalExpression(EqualTo): Evaluated as: 'true'\n                                                                                          [Verbose] StaticScalar(String): Evaluated as: 'Attributes'\n                                                                                          [Verbose] StaticScalar(String): Resolved '{\"key1\":null,\"name\":null}' value for key 'Attributes' specified in accessor expression\n                                                                                          [Verbose] StaticScalar(String): Evaluated as: 'name'\n                                                                                          [Verbose] StaticScalar(String): Resolved 'null' value for key 'name' specified in accessor expression\n                                                                                          [Verbose] ScalarExpression(Source): Evaluated as: 'null'\n                                                                                     [Verbose] LogicalExpression(And): Evaluated as: 'true'\n                                                               [Verbose] LogicalExpression(Or): Evaluated as: 'true'\n                                          [Verbose] LogicalExpression(Or): Evaluated as: 'true'\n                                [Verbose] StaticScalar(Null): Evaluated as: 'null'\n                             [Verbose] LogicalExpression(EqualTo): Evaluated as: 'true'\n                        [Verbose] StaticScalar(String): Evaluated as: 'Attributes'\n                        [Verbose] StaticScalar(String): Resolved '{\"key1\":null,\"name\":null}' value for key 'Attributes' specified in accessor expression\n                        [Verbose] StaticScalar(String): Evaluated as: 'key1'\n                        [Verbose] StaticScalar(String): Resolved 'null' value for key 'key1' specified in accessor expression\n                        [Verbose] ScalarExpression(Source): Evaluated as: 'null'\n                 [Verbose] LogicalExpression(Not): Evaluated as: 'false'\n                 [Verbose] DiscardDataExpression: Record included\n```\n\n### After\n\n```\nln   1: source | where (key1 == int(null) or key1 != int(null) or key1 == int(null)) and (name == int(null))\n                 |      |    |  |         |                    |                     |    |    |  | [Verbose] StaticScalar(Null): Evaluated as: 'null'\n                 |      |    |  |         |                    |                     |    |    | [Verbose] LogicalExpression(EqualTo): Evaluated as: 'true'\n                 |      |    |  |         |                    |                     |    | [Verbose] StaticScalar(String): Evaluated as: 'Attributes'\n                 |      |    |  |         |                    |                     |    | [Verbose] StaticScalar(String): Resolved '{\"key1\":null,\"name\":null}' value for key 'Attributes' specified in accessor expression\n                 |      |    |  |         |                    |                     |    | [Verbose] StaticScalar(String): Evaluated as: 'name'\n                 |      |    |  |         |                    |                     |    | [Verbose] StaticScalar(String): Resolved 'null' value for key 'name' specified in accessor expression\n                 |      |    |  |         |                    |                     |    | [Verbose] ScalarExpression(Source): Evaluated as: 'null'\n                 |      |    |  |         |                    |                     | [Verbose] LogicalExpression(And): Evaluated as: 'true'\n                 |      |    |  |         |                    | [Verbose] LogicalExpression(Or): Evaluated as: 'true'\n                 |      |    |  |         | [Verbose] LogicalExpression(Or): Evaluated as: 'true'\n                 |      |    |  | [Verbose] StaticScalar(Null): Evaluated as: 'null'\n                 |      |    | [Verbose] LogicalExpression(EqualTo): Evaluated as: 'true'\n                 |      | [Verbose] StaticScalar(String): Evaluated as: 'Attributes'\n                 |      | [Verbose] StaticScalar(String): Resolved '{\"key1\":null,\"name\":null}' value for key 'Attributes' specified in accessor expression\n                 |      | [Verbose] StaticScalar(String): Evaluated as: 'key1'\n                 |      | [Verbose] StaticScalar(String): Resolved 'null' value for key 'key1' specified in accessor expression\n                 |      | [Verbose] ScalarExpression(Source): Evaluated as: 'null'\n                 | [Verbose] LogicalExpression(Not): Evaluated as: 'false'\n                 | [Verbose] DiscardDataExpression: Record included\n```",
+          "timestamp": "2025-09-23T22:07:28Z",
+          "tree_id": "3b3d696e42e8624195977f9014e35d41b1559541",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/35d23213e095b1342d79231f17fc0f55db1a9e1e"
+        },
+        "date": 1758667249425,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 723833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21715000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21715000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.57,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 122.15,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 141.47,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 736500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22095000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22095000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.75,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.66,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 170.26,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 204.18,
             "unit": "MiB"
           }
         ]
