@@ -84,16 +84,6 @@ impl SyslogCefReceiver {
         }
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn new(config: Config) -> Self {
-        // Create a minimal pipeline context for tests
-        let registry = otap_df_telemetry::registry::MetricsRegistryHandle::new();
-        let controller = otap_df_engine::context::ControllerContext::new(registry);
-        let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
-        SyslogCefReceiver::with_pipeline(pipeline, config)
-    }
-
     /// Creates a new SyslogCefReceiver from a configuration object
     fn from_config(
         pipeline: PipelineContext,
@@ -464,6 +454,17 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
+
+    // Test-only constructor moved here to keep all test code at the end of the file.
+    impl SyslogCefReceiver {
+        #[allow(dead_code)]
+        fn new(config: Config) -> Self {
+            let registry = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+            let controller = otap_df_engine::context::ControllerContext::new(registry);
+            let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+            SyslogCefReceiver::with_pipeline(pipeline, config)
+        }
+    }
 
     /// Test closure that simulates a typical UDP syslog receiver scenario.
     fn udp_scenario(
