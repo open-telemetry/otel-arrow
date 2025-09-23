@@ -486,13 +486,53 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
+pub struct RenameTransform {
+    pub(super) map: BTreeMap<String, String>,
+    pub(super) target_bytes: Vec<Vec<u8>>,
+    pub(super) replacement_bytes: Vec<Vec<u8>>,
+}
+
+impl RenameTransform {
+    pub fn new(map: BTreeMap<String, String>) -> Self {
+        let count = map.len();
+        let mut target_bytes = Vec::with_capacity(count);
+        let mut replacement_bytes = Vec::with_capacity(count);
+        for (key, value) in &map {
+            target_bytes.push(key.as_bytes().to_vec());
+            replacement_bytes.push(value.as_bytes().to_vec());
+        }
+
+        Self {
+            map,
+            target_bytes,
+            replacement_bytes,
+        }
+    }
+}
+
+pub struct DeleteTransform {
+    pub(super) set: BTreeSet<String>,
+    pub(super) target_bytes: Vec<Vec<u8>>,
+}
+
+impl DeleteTransform {
+    pub fn new(set: BTreeSet<String>) -> Self {
+        let count = set.len();
+        let mut target_bytes = Vec::with_capacity(count);
+        for key in &set {
+            target_bytes.push(key.as_bytes().to_vec());
+        }
+
+        Self { set, target_bytes }
+    }
+}
 /// Specification for transformations to make to a collection of OTel Attributes
 pub struct AttributesTransform {
     /// map of old -> new attribute keys
-    pub rename: Option<BTreeMap<String, String>>,
+    pub rename: Option<RenameTransform>,
 
     // rows with attribute names in this set will be deleted from the attribute record batch
-    pub delete: Option<BTreeSet<String>>,
+    pub delete: Option<DeleteTransform>,
 }
 
 impl AttributesTransform {
@@ -510,7 +550,7 @@ impl AttributesTransform {
         let mut all_keys = BTreeSet::new();
 
         if let Some(rename) = &self.rename {
-            for (from, to) in rename.iter() {
+            for (from, to) in rename.map.iter() {
                 if !all_keys.insert(from) {
                     return Err(error::InvalidAttributeTransformSnafu {
                         reason: format!("Duplicate key in rename: {from}"),
@@ -527,7 +567,7 @@ impl AttributesTransform {
         }
 
         if let Some(delete) = &self.delete {
-            for key in delete.iter() {
+            for key in delete.set.iter() {
                 if !all_keys.insert(key) {
                     return Err(error::InvalidAttributeTransformSnafu {
                         reason: format!("Duplicate key in delete: {key}"),
@@ -924,7 +964,7 @@ fn transform_keys(
         .rename
         .as_ref()
         // handle an empty set of replacements as if no replacements were passed
-        .filter(|r| !r.is_empty())
+        .filter(|r| !r.map.is_empty())
         .map(|r| plan_key_replacements(len, values, offsets, r))
         .transpose()?;
 
@@ -932,7 +972,7 @@ fn transform_keys(
         .delete
         .as_ref()
         // handle an empty set of deletes as if no replacements were passed
-        .filter(|d| !d.is_empty())
+        .filter(|d| !d.set.is_empty())
         .map(|d| plan_key_deletes(len, values, offsets, d))
         .transpose()?;
 
@@ -979,7 +1019,7 @@ fn transform_keys(
         match range_type {
             KeyTransformRangeType::Replace => {
                 // insert the replaced values into the new_values buffer
-                let replacement_bytes = replacement_plan
+                let replacement_bytes = &replacement_plan
                     .as_ref()
                     .expect("replacement plan should be initialized")
                     .replacement_bytes[transform_idx];
@@ -1040,7 +1080,7 @@ fn transform_keys(
             match range_type {
                 KeyTransformRangeType::Replace => {
                     // append offsets for values that were replaced, but add the offset adjustment
-                    let replacement_bytes = replacement_plan
+                    let replacement_bytes = &replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
                         .replacement_bytes[transform_idx];
@@ -1183,7 +1223,7 @@ where
 
     // Build a quick lookup of which dictionary value indices were renamed
     let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
-    if let Some(rename) = transform.rename.as_ref().filter(|r| !r.is_empty()) {
+    if let Some(rename) = transform.rename.as_ref().filter(|r| !r.map.is_empty()) {
         let repl_plan = plan_key_replacements(
             dict_values.len(),
             dict_values.values(),
@@ -1478,7 +1518,7 @@ struct KeyReplacementPlan<'a> {
     ranges: Vec<(usize, usize, usize)>,
 
     /// this contains the bytes to replace each value in each of `ranges`
-    replacement_bytes: Vec<&'a [u8]>,
+    replacement_bytes: &'a [Vec<u8>],
 
     /// this contains the count of how many values are replaced in each of `ranges`. Along with
     /// `replacement_byte_len_diffs` can be used to calculate the length of the new values buffer.
@@ -1501,21 +1541,15 @@ fn plan_key_replacements<'a>(
     array_len: usize,
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
-    replacements: &'a BTreeMap<String, String>,
+    replacements: &'a RenameTransform,
 ) -> Result<KeyReplacementPlan<'a>> {
-    let target_bytes = replacements
-        .keys()
-        .map(|target| target.as_bytes())
-        .collect::<Vec<_>>();
+    let target_bytes = replacements.target_bytes.as_slice();
 
-    let replacement_bytes = replacements
-        .values()
-        .map(|replacement| replacement.as_bytes())
-        .collect::<Vec<_>>();
+    let replacement_bytes = replacements.replacement_bytes.as_slice();
 
     let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
 
-    let replacement_byte_len_diffs = (0..replacements.len())
+    let replacement_byte_len_diffs = (0..replacements.map.len())
         .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
         .collect::<Vec<_>>();
     let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
@@ -1538,7 +1572,7 @@ pub struct KeyDeletePlan<'a> {
     ranges: Vec<(usize, usize, usize)>,
 
     /// the bytes of the key being deleted in each `range`
-    target_keys: Vec<&'a [u8]>,
+    target_keys: &'a [Vec<u8>],
 
     /// how many values are in each range being deleted
     counts: Vec<usize>,
@@ -1553,12 +1587,9 @@ fn plan_key_deletes<'a>(
     array_len: usize,
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
-    delete_keys: &'a BTreeSet<String>,
+    delete_keys: &'a DeleteTransform,
 ) -> Result<KeyDeletePlan<'a>> {
-    let target_bytes = delete_keys
-        .iter()
-        .map(|key| key.as_bytes())
-        .collect::<Vec<_>>();
+    let target_bytes = delete_keys.target_bytes.as_slice();
 
     let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
 
@@ -1594,7 +1625,7 @@ fn find_matching_key_ranges(
     array_len: usize,
     values_buf: &Buffer,
     offsets: &OffsetBuffer<i32>,
-    target_bytes: &[&[u8]],
+    target_bytes: &[Vec<u8>],
 ) -> Result<KeyTransformTargetRanges> {
     let mut ranges = Vec::new();
     let mut total_matches = 0;
@@ -1612,7 +1643,7 @@ fn find_matching_key_ranges(
     let offset_ptr = offsets.as_ptr();
 
     for target_idx in 0..target_bytes.len() {
-        let target_bytes = target_bytes[target_idx];
+        let target_bytes = &target_bytes[target_idx];
         let count = counts
             .get_mut(target_idx)
             .expect("counts should be initialized");
