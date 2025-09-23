@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758582306437,
+  "lastUpdate": 1758661647640,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "david@ddahl.com",
-            "name": "David Dahl",
-            "username": "daviddahl"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "a679d7eba9f4e53cc0f67ee472fb3d7779c8dd1a",
-          "message": "[otap-dataflow ] Add OTAP attributes_processor  (#941)\n\nAdds a new OTAP processor that enables efficient bulk renaming of\nattributes across logs, metrics, and traces. The processor:\n\n- Uses the transform_attributes API for safe, atomic attribute\ntransformations\n- Works on both OtapArrowRecords and OtapArrowBytes payloads\n- Precomputes rename maps for improved performance\n- Prevents ambiguous renames (e.g., A->B->C) by validating transforms\n- Includes comprehensive tests across all signal types\n\nAdditional changes:\n- Updated string format patterns in perf_exporter and otap_exporter to\ncomply with new Clippy requirements around string interpolation.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-08-21T23:08:56Z",
-          "tree_id": "d2ffed80b88615381ede57730f9e3418cd93d552",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/a679d7eba9f4e53cc0f67ee472fb3d7779c8dd1a"
-        },
-        "date": 1755818220747,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 734000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22020000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22020000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.61,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.62,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 160.7,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 188.1,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 733833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22015000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22015000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.7,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.85,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 129.22,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 151.36,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 212.04,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8ee8073ebf5862fcea798f889465c038982cd9d",
+          "message": "[query-engine] KQL Pratt parsing (#1174)\n\n## Changes\n\n* Use `PrattParser` in KQL parser to resolve operator precedence\n\n## Details\n\nPest doesn't support left-hand recursion. To workaround that issue up to\nthis point we have forced parenthesis in recursive rules:\n\n`source | extend a = (1 + 1)`\n`source | extend is_something = (key == 'name')`\n\nNow you can do:\n\n`source | extend a = 1 + 1`\n`source | extend is_something = key1 == 'something'`\n\nWhich is more natural and allowed in KQL.\n\nBased on a very nice\n[PoC](https://github.com/gouslu/otel-arrow/blob/gouslu/recursion/rust/experimental/query_engine/kql-parser/src/pratt_arithmetic.rs)\ndone by @gouslu.",
+          "timestamp": "2025-09-23T20:52:45Z",
+          "tree_id": "3eddb891dd4f1a62dd321d3ff31e6d07e7809600",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b8ee8073ebf5862fcea798f889465c038982cd9d"
+        },
+        "date": 1758661640055,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 729000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21870000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21870000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.67,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 127.02,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 153.69,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 735833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22075000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22075000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.75,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 162.72,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 186.6,
             "unit": "MiB"
           }
         ]
