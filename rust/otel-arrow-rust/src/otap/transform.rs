@@ -1062,7 +1062,7 @@ fn transform_keys(
         // pointer to the end of the previous range where the values were replaced
         let mut prev_range_index_end = 0;
 
-        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter() {
+        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().copied() {
             // copy offsets for values that were not replaced, but add the offset adjustment
             offsets
                 .inner()
@@ -1085,9 +1085,9 @@ fn transform_keys(
                     let replacement_bytes = &replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_bytes[*transform_idx];
-                    let mut offset = offsets[*start_idx] + curr_total_offset_adjustment;
-                    for _ in *start_idx..*end_idx {
+                        .replacement_bytes[transform_idx];
+                    let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
+                    for _ in start_idx..end_idx {
                         new_offsets.push(offset);
                         offset += replacement_bytes.len() as i32;
                     }
@@ -1097,8 +1097,8 @@ fn transform_keys(
                     let val_len_diff = replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_byte_len_diffs[*transform_idx];
-                    curr_total_offset_adjustment += val_len_diff * (*end_idx - *start_idx) as i32;
+                        .replacement_byte_len_diffs[transform_idx];
+                    curr_total_offset_adjustment += val_len_diff * (end_idx - start_idx) as i32;
                 }
                 KeyTransformRangeType::Delete => {
                     // for deleted ranges we don't need to append any offsets to the buffer, so we
@@ -1106,14 +1106,14 @@ fn transform_keys(
                     let deleted_val_len = delete_plan
                         .as_ref()
                         .expect("delete plan should be initialized")
-                        .target_keys[*transform_idx]
+                        .target_keys[transform_idx]
                         .len();
                     curr_total_offset_adjustment -=
                         (deleted_val_len * (end_idx - start_idx)) as i32;
                 }
             }
 
-            prev_range_index_end = *end_idx
+            prev_range_index_end = end_idx;
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
