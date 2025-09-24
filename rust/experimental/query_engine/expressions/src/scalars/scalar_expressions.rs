@@ -724,18 +724,15 @@ impl Expression for ConditionalScalarExpression {
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Conditional")?;
-        writeln!(f, "{indent}├── Condition:")?;
-        write!(f, "{indent}│   └── ")?;
+        write!(f, "{indent}├── Condition(Logical): ")?;
         self.condition
-            .fmt_with_indent(f, format!("{indent}│       ").as_str())?;
-        writeln!(f, "{indent}├── True:")?;
-        write!(f, "{indent}│   └── ")?;
+            .fmt_with_indent(f, format!("{indent}│                       ").as_str())?;
+        write!(f, "{indent}├── True(Scalar): ")?;
         self.true_expression
-            .fmt_with_indent(f, format!("{indent}│       ").as_str())?;
-        writeln!(f, "{indent}└── False:")?;
-        write!(f, "{indent}    └── ")?;
+            .fmt_with_indent(f, format!("{indent}│                 ").as_str())?;
+        write!(f, "{indent}└── False(Scalar): ")?;
         self.false_expression
-            .fmt_with_indent(f, format!("{indent}        ").as_str())?;
+            .fmt_with_indent(f, format!("{indent}                   ").as_str())?;
         Ok(())
     }
 }
