@@ -47,7 +47,9 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes_with_stats},
+    transform::{
+        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+    },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
@@ -166,12 +168,12 @@ impl AttributesProcessor {
             rename: if renames.is_empty() {
                 None
             } else {
-                Some(renames)
+                Some(RenameTransform::new(renames))
             },
             delete: if deletes.is_empty() {
                 None
             } else {
-                Some(deletes)
+                Some(DeleteTransform::new(deletes))
             },
         };
 
