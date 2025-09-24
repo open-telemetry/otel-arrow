@@ -84,6 +84,24 @@ impl ValueAccessor {
         Self::select_from_value(root, &mut s.drain(..))
     }
 
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        let last_idx = self.selectors.len() - 1;
+        for (i, e) in self.selectors.iter().enumerate() {
+            if i == last_idx {
+                write!(f, "{indent}└── ")?;
+                e.fmt_with_indent(f, format!("{indent}    ").as_str())?;
+            } else {
+                write!(f, "{indent}├── ")?;
+                e.fmt_with_indent(f, format!("{indent}│   ").as_str())?;
+            }
+        }
+        Ok(())
+    }
+
     fn select_from_value<'a>(
         root: &'a StaticScalarExpression,
         selectors: &mut std::vec::Drain<ScalarStaticResolutionResult<'a>>,

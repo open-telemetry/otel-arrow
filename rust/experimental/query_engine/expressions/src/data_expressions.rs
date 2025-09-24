@@ -44,6 +44,14 @@ impl Expression for DataExpression {
             DataExpression::Transform(_) => "DataExpression(Transform)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            DataExpression::Discard(d) => d.fmt_with_indent(f, indent),
+            DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
+            DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,5 +102,18 @@ impl Expression for DiscardDataExpression {
 
     fn get_name(&self) -> &'static str {
         "DiscardDataExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Discard")?;
+        match self.predicate.as_ref() {
+            None => writeln!(f, "{indent}└── Predicate: None")?,
+            Some(p) => {
+                writeln!(f, "{indent}└── Predicate:")?;
+                write!(f, "{indent}    └── ")?;
+                p.fmt_with_indent(f, format!("{indent}        ").as_str())?;
+            }
+        }
+        Ok(())
     }
 }

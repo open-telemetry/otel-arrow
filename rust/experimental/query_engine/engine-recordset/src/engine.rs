@@ -136,12 +136,31 @@ where
             None,
         );
 
+        if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
+            for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
+                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    constant,
+                    format!("Constant defined with id '{constant_id}'"),
+                ));
+            }
+        }
+
         for init in initializations {
             match init {
-                PipelineInitialization::SetGlobalVariable { name, value } => {
-                    let value = execute_scalar_expression(&execution_context, value)?;
+                PipelineInitialization::SetGlobalVariable {
+                    name,
+                    value: scalar,
+                } => {
+                    let value = execute_scalar_expression(&execution_context, scalar)?;
 
                     self.global_variables.borrow_mut().set(name, value);
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar,
+                        || format!("Global variable defined with name '{name}'"),
+                    );
                 }
             }
         }
@@ -200,16 +219,6 @@ where
             attached_records,
             Some(record),
         );
-
-        if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
-            for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
-                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    constant,
-                    format!("Constant defined with id '{constant_id}'"),
-                ));
-            }
-        }
 
         process_record(execution_context, self.pipeline.get_expressions())
     }
