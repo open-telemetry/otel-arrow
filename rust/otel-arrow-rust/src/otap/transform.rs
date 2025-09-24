@@ -1011,9 +1011,9 @@ fn transform_keys(
     let mut last_end_offset = 0;
 
     // iterate over the transform ranges, copying unmodified ranges and replacing renamed keys
-    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().cloned() {
+    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter() {
         // directly copy all the bytes of the values that were not replaced
-        let start_offset = offsets[start_idx] as usize;
+        let start_offset = offsets[*start_idx] as usize;
         new_values.extend_from_slice(
             &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
         );
@@ -1024,8 +1024,8 @@ fn transform_keys(
                 let replacement_bytes = &replacement_plan
                     .as_ref()
                     .expect("replacement plan should be initialized")
-                    .replacement_bytes[transform_idx];
-                for _ in start_idx..end_idx {
+                    .replacement_bytes[*transform_idx];
+                for _ in *start_idx..*end_idx {
                     new_values.extend_from_slice(replacement_bytes);
                 }
             }
@@ -1035,7 +1035,7 @@ fn transform_keys(
             }
         }
 
-        last_end_offset = offsets[end_idx] as usize;
+        last_end_offset = offsets[*end_idx] as usize;
     }
 
     // copy any bytes from the tail of the source value buffer
