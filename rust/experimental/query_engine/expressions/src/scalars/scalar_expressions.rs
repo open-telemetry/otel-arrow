@@ -238,6 +238,28 @@ impl Expression for ScalarExpression {
             ScalarExpression::Math(m) => m.get_name(),
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            ScalarExpression::Attached(a) => a.fmt_with_indent(f, indent),
+            ScalarExpression::Constant(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Case(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Coalesce(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Collection(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Conditional(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Convert(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::Temporal(t) => t.fmt_with_indent(f, indent),
+            ScalarExpression::Length(l) => l.fmt_with_indent(f, indent),
+            ScalarExpression::Logical(l) => l.fmt_with_indent(f, indent),
+            ScalarExpression::Math(m) => m.fmt_with_indent(f, indent),
+            ScalarExpression::Parse(p) => p.fmt_with_indent(f, indent),
+            ScalarExpression::Slice(s) => s.fmt_with_indent(f, indent),
+            ScalarExpression::Source(s) => s.fmt_with_indent(f, indent),
+            ScalarExpression::Static(s) => s.fmt_with_indent(f, indent),
+            ScalarExpression::Text(t) => t.fmt_with_indent(f, indent),
+            ScalarExpression::Variable(v) => v.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -294,6 +316,18 @@ impl Expression for SourceScalarExpression {
     fn get_name(&self) -> &'static str {
         "SourceScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Source")?;
+        if !self.accessor.has_selectors() {
+            writeln!(f, "{indent}└── Accessor: None")?;
+        } else {
+            writeln!(f, "{indent}└── Accessor:")?;
+            self.accessor
+                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,6 +374,19 @@ impl Expression for AttachedScalarExpression {
     fn get_name(&self) -> &'static str {
         "AttachedScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Attached")?;
+        writeln!(f, "{indent}├── Name: {:?}", self.name.get_value())?;
+        if !self.accessor.has_selectors() {
+            writeln!(f, "{indent}└── Accessor: None")?;
+        } else {
+            writeln!(f, "{indent}└── Accessor:")?;
+            self.accessor
+                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -385,6 +432,19 @@ impl Expression for VariableScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "VariableScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Variable")?;
+        writeln!(f, "{indent}├── Name: {:?}", self.name.get_value())?;
+        if !self.accessor.has_selectors() {
+            writeln!(f, "{indent}└── Accessor: None")?;
+        } else {
+            writeln!(f, "{indent}└── Accessor:")?;
+            self.accessor
+                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
+        }
+        Ok(())
     }
 }
 
@@ -492,6 +552,13 @@ impl Expression for ReferenceConstantScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ReferenceConstantScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Constant(Reference)")?;
+        writeln!(f, "{indent}├── ValueType: {:?}", self.get_value_type())?;
+        writeln!(f, "{indent}└── Id: {}", self.get_constant_id())?;
+        Ok(())
     }
 }
 
@@ -653,6 +720,23 @@ impl Expression for ConditionalScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ConditionalScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Conditional")?;
+        writeln!(f, "{indent}├── Condition:")?;
+        write!(f, "{indent}│   └── ")?;
+        self.condition
+            .fmt_with_indent(f, format!("{indent}│       ").as_str())?;
+        writeln!(f, "{indent}├── True:")?;
+        write!(f, "{indent}│   └── ")?;
+        self.true_expression
+            .fmt_with_indent(f, format!("{indent}│       ").as_str())?;
+        writeln!(f, "{indent}└── False:")?;
+        write!(f, "{indent}    └── ")?;
+        self.false_expression
+            .fmt_with_indent(f, format!("{indent}        ").as_str())?;
+        Ok(())
     }
 }
 
