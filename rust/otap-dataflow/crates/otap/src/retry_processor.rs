@@ -118,53 +118,20 @@ pub struct RetryProcessorMetrics {
     #[metric(unit = "{item}")]
     pub produced_items_traces_refused: Counter<u64>,
 
-    /// Number of items produced (logs) with outcome=failure (originating here)
+    /// Number of items produced (logs)
     #[metric(unit = "{item}")]
-    pub produced_items_logs_failure: Counter<u64>,
-    /// Number of items produced (metrics) with outcome=failure
+    pub retried_items_logs: Counter<u64>,
+    /// Number of items produced (metrics)
     #[metric(unit = "{item}")]
-    pub produced_items_metrics_failure: Counter<u64>,
-    /// Number of items produced (traces) with outcome=failure
+    pub retried_items_metrics: Counter<u64>,
+    /// Number of items retried (traces)
     #[metric(unit = "{item}")]
-    pub produced_items_traces_failure: Counter<u64>,
-
-    // Component-specific counters
-    /// Number of messages added to the pending retry queue.
-    #[metric(unit = "{msg}")]
-    pub msgs_enqueued: Counter<u64>,
-
-    /// Number of ACKs received that removed a message from the pending queue.
-    #[metric(unit = "{msg}")]
-    pub msgs_acked: Counter<u64>,
-
-    /// Number of NACK control messages processed.
-    #[metric(unit = "{msg}")]
-    pub nacks_received: Counter<u64>,
-
-    /// Number of retry attempts scheduled as a result of NACKs.
-    #[metric(unit = "{event}")]
-    pub retry_attempts: Counter<u64>,
-
-    /// Number of messages re-sent due to a retry.
-    #[metric(unit = "{msg}")]
-    pub msgs_retried: Counter<u64>,
-
-    /// Number of messages dropped because the queue was full.
-    #[metric(unit = "{msg}")]
-    pub msgs_dropped_queue_full: Counter<u64>,
-
-    /// Number of messages dropped after exceeding the maximum retries.
-    #[metric(unit = "{msg}")]
-    pub msgs_dropped_exceeded_retries: Counter<u64>,
-
-    /// Number of expired messages removed during cleanup.
-    #[metric(unit = "{msg}")]
-    pub msgs_removed_expired: Counter<u64>,
+    pub retried_items_traces: Counter<u64>,
 }
 
 impl RetryProcessorMetrics {
     /// Increment consumed.items with outcome=success for the given signal by n
-    pub fn add_consumed_success(&mut self, st: SignalType, n: u64) {
+    fn add_consumed_success(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_success.add(n),
             SignalType::Metrics => self.consumed_items_metrics_success.add(n),
@@ -172,7 +139,7 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment consumed.items with outcome=failure for the given signal by n
-    pub fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
+    fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_failure.add(n),
             SignalType::Metrics => self.consumed_items_metrics_failure.add(n),
@@ -180,7 +147,7 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment consumed.items with outcome=refused for the given signal by n
-    pub fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
+    fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_refused.add(n),
             SignalType::Metrics => self.consumed_items_metrics_refused.add(n),
@@ -189,7 +156,7 @@ impl RetryProcessorMetrics {
     }
 
     /// Increment produced.items with outcome=success for the given signal by n
-    pub fn add_produced_success(&mut self, st: SignalType, n: u64) {
+    fn add_produced_success(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.produced_items_logs_success.add(n),
             SignalType::Metrics => self.produced_items_metrics_success.add(n),
@@ -197,19 +164,20 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment produced.items with outcome=refused for the given signal by n
-    pub fn add_produced_refused(&mut self, st: SignalType, n: u64) {
+    fn add_produced_refused(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.produced_items_logs_refused.add(n),
             SignalType::Metrics => self.produced_items_metrics_refused.add(n),
             SignalType::Traces => self.produced_items_traces_refused.add(n),
         }
     }
-    /// Increment produced.items with outcome=failure for the given signal by n
-    pub fn add_produced_failure(&mut self, st: SignalType, n: u64) {
+
+    /// Increment retried.items for the given signal by n
+    fn add_retried(&mut self, st: SignalType, n: u64) {
         match st {
-            SignalType::Logs => self.produced_items_logs_failure.add(n),
-            SignalType::Metrics => self.produced_items_metrics_failure.add(n),
-            SignalType::Traces => self.produced_items_traces_failure.add(n),
+            SignalType::Logs => self.retried_items_logs.add(n),
+            SignalType::Metrics => self.retried_items_metrics.add(n),
+            SignalType::Traces => self.retried_items_traces.add(n),
         }
     }
 }
@@ -254,9 +222,7 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
 /// Register SignalTypeRouter as an OTAP processor factory
 pub struct RetryProcessor {
     config: RetryConfig,
-
-    /// Optional metrics handle
-    metrics: Option<MetricSet<RetryProcessorMetrics>>,
+    metrics: MetricSet<RetryProcessorMetrics>,
 }
 
 /// Factory function to create a SignalTypeRouter processor
@@ -287,12 +253,6 @@ pub fn create_retry_processor(
     ))
 }
 
-// impl Default for RetryProcessor {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
 #[derive(Debug)]
 struct RetryState {
     retries: usize, // register
@@ -319,20 +279,11 @@ impl From<CtxData> for RetryState {
 }
 
 impl RetryProcessor {
-    // /// Creates a new RetryProcessor with default configuration
-    // #[must_use]
-    // pub fn new() -> Self {
-    //     Self::with_config(RetryConfig::default())
-    // }
-
     /// Creates a new RetryProcessor with metrics registered via PipelineContext
     #[must_use]
     pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: RetryConfig) -> Self {
         let metrics = pipeline_ctx.register_metrics::<RetryProcessorMetrics>();
-        Self {
-            config,
-            metrics: Some(metrics),
-        }
+        Self { config, metrics }
     }
 }
 
@@ -348,7 +299,11 @@ impl Processor<OtapPdata> for RetryProcessor {
         match msg {
             Message::PData(mut data) => {
                 effect_handler
-                    .subscribe_to(Interests::NACKS, RetryState::new().into(), &mut data)
+                    .subscribe_to(
+                        Interests::NACKS | Interests::ACKS,
+                        RetryState::new().into(),
+                        &mut data,
+                    )
                     .await;
                 match effect_handler.send_message(data).await {
                     Ok(()) => {
@@ -356,16 +311,10 @@ impl Processor<OtapPdata> for RetryProcessor {
                         Ok(())
                     }
                     Err(TypedError::ChannelSendError(sent)) => {
-                        // TODO: Note we remove full vs closed info here.
                         let data = sent.inner();
                         let signal = data.signal_type();
                         let items = data.num_items();
-                        // TODO: Note that if we fail to send, we drop.
-                        // How would we delay or Nack when the outbound queue is full?
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.add_produced_failure(signal, items as u64);
-                        }
-                        // TODO: What do we return?
+                        self.metrics.add_consumed_failure(signal, items as u64);
                         Ok(())
                     }
                     Err(e) => Err(e.into()),
@@ -373,26 +322,33 @@ impl Processor<OtapPdata> for RetryProcessor {
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Nack(mut nack) => {
-                    // If the error is permanent or too many retries.
-                    // If the payload is empty: the effect is also
-                    // permanent, as by intentionaly failing to return
-                    // the data.
+                    let signal = nack.refused.signal_type();
+                    let items = nack.refused.num_items();
+
+                    // The producer side returned one refusal.
+                    self.metrics.add_produced_refused(signal, items as u64);
+
                     if nack.permanent {
-                        // Passthrough
-                        effect_handler.notify_nack(nack).await;
+                        // Passthrough permanent nacks.
+                        effect_handler.notify_nack(nack).await?;
+                        self.metrics.add_consumed_refused(signal, items as u64);
                         return Ok(());
                     } else if nack.context.is_none() || nack.refused.is_empty() {
+                        // We might retry, but how could we?
                         nack.reason = format!("retry internal error: {}", nack.reason);
                         nack.permanent = true;
-                        effect_handler.notify_nack(nack).await;
+                        effect_handler.notify_nack(nack).await?;
+                        self.metrics.add_consumed_failure(signal, items as u64);
                         return Ok(());
                     }
 
                     let mut rstate: RetryState = nack.context.take().expect("some").into();
 
                     if rstate.retries >= self.config.max_retries {
+                        // The final refusal counts to the consumer.
                         nack.reason = format!("max retries reached: {}", nack.reason);
-                        effect_handler.notify_nack(nack).await;
+                        effect_handler.notify_nack(nack).await?;
+                        self.metrics.add_consumed_refused(signal, items as u64);
                         return Ok(());
                     }
 
@@ -420,6 +376,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     //     // Deadline expired: forward NACK upstream. Not permanent.
                     //     nack.reason = format!("final retry: {}", nack.reason);
                     //     effect_handler.notify_nack(nack).await?;
+                    //     self.metrics.add_consumed_failure(signal, items as u64);
                     //     return Ok(());
                     // }
 
@@ -429,12 +386,25 @@ impl Processor<OtapPdata> for RetryProcessor {
                         .subscribe_to(Interests::NACKS, rstate.into(), &mut rereq)
                         .await;
 
-                    effect_handler
-                        .delay_message(nack.refused, next_retry_time)
+                    // Enter a delay, we'll continue in the
+                    // DelayedData branch next.
+                    let res = effect_handler
+                        .delay_message(rereq, next_retry_time)
                         .await
+                        .map_err(|e| e.into());
+                    match res {
+                        Ok(_) => {
+                            self.metrics.add_retried(signal, items as u64);
+                        }
+                        Err(_) => {
+                            self.metrics.add_retried(signal, items as u64);
+                        }
+                    }
+                    res
                 }
                 NodeControlMsg::DelayedData { data } => {
-                    match effect_handler.send_message(data).await {
+                    // Control flow follows from delay_message() above.
+                    match effect_handler.send_message(*data).await {
                         Ok(()) => Ok(()),
                         Err(TypedError::ChannelSendError(sent)) => {
                             // TODO: Note we remove full vs closed info here.
@@ -442,38 +412,40 @@ impl Processor<OtapPdata> for RetryProcessor {
                             let signal = data.signal_type();
                             let items = data.num_items();
 
-                            // TODO: Note that if we fail to send, we drop.
-                            // Can we delay or Nack when the outbound queue is full?
-                            if let Some(m) = self.metrics.as_mut() {
-                                m.add_produced_failure(signal, items as u64);
-                            }
+                            self.metrics.add_consumed_failure(signal, items as u64);
                             Ok(())
                         }
-                        Err(e) => Err(e.into()),
+                        Err(e) => {
+                            // Here we have consumed_failure but we don't expect this
+                            // and haven't saved the count for metric purposes.
+                            Err(e.into())
+                        }
                     }
+                }
+                NodeControlMsg::Ack(ack) => {
+                    let signal = ack.accepted.signal_type();
+                    let items = ack.accepted.num_items();
+
+                    self.metrics.add_produced_success(signal, items as u64);
+                    self.metrics.add_consumed_success(signal, items as u64);
+
+                    effect_handler.notify_ack(ack).await.map_err(|e| e.into())
                 }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                } => {
-                    if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(metrics);
-                    }
-                    Ok(())
-                }
+                } => metrics_reporter
+                    .report(&mut self.metrics)
+                    .map_err(|error| Error::Telemetry { error }),
                 NodeControlMsg::Config { config } => {
                     if let Ok(new_config) = serde_json::from_value::<RetryConfig>(config) {
                         self.config = new_config;
                     }
                     Ok(())
                 }
-                NodeControlMsg::Ack(_) | NodeControlMsg::TimerTick { .. } => {
+                NodeControlMsg::TimerTick { .. } => {
                     unreachable!("impossible");
                 }
-                NodeControlMsg::Shutdown { .. } => {
-                    // @@@ TODO Stop retrying; should just work b/c
-                    // SendError<T> will tell you a permanent closed?
-                    Ok(())
-                }
+                NodeControlMsg::Shutdown { .. } => Ok(()),
             },
         }
     }

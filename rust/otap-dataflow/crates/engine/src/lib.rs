@@ -49,7 +49,7 @@ pub mod testing;
 pub use effect_handler::{EffectHandlerExtension, Interests};
 
 /// Used in the effect handler extensions.
-pub use control::{CtxData, NackMsg};
+pub use control::{AckMsg, CtxData, NackMsg};
 pub use node::NodeId;
 
 /// Trait for factory types that expose a name.

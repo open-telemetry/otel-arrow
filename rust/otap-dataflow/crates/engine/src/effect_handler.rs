@@ -3,7 +3,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{CtxData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, CtxData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -213,13 +213,36 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
+    /// Delay a message until a future time; will resume in the same
+    /// effect handler with Message::Control(NodeControlMsg::DelayedData).
     pub async fn delay_message(
         &self,
         _data: Box<PData>,
         _resume: Instant,
     ) -> Result<(), TypedError<PData>> {
-        // @@@ TODO: Sending a delay request, will return to _this_
-        // component for sending.
+        // TODO: Return to this component for sending.
+        Ok(())
+    }
+
+    /// Send a Ack to a node of known-interest.
+    pub async fn route_ack(
+        &self,
+        _node_id: usize,
+        _nack: AckMsg<PData>,
+    ) -> Result<(), TypedError<PData>> {
+        // TODO: Calling component (which knows data type) has prepared
+        // the context and extracted the node_id to send it.
+        Ok(())
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack(
+        &self,
+        _node_id: usize,
+        _nack: NackMsg<PData>,
+    ) -> Result<(), TypedError<PData>> {
+        // TODO: Calling component (which knows data type) has prepared
+        // the context and extracted the node_id to send it.
         Ok(())
     }
 }
@@ -230,8 +253,11 @@ pub trait EffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
     async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut PData);
 
-    /// @@@ TODO; this will send to the PipelineControl manager
-    async fn notify_nack(&self, _nack: NackMsg<PData>);
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
+
+    /// Triggers the next step of work (if any) in Ack processing.
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
 }
 
 /// Handle to cancel a running timer.

@@ -43,14 +43,18 @@ pub type CtxData = SmallVec<[CtxVal; 2]>;
 #[derive(Debug, Clone)]
 pub struct AckMsg<PData> {
     /// Accepteded pdata, presumed context-only.
-    accepted: Box<PData>,
+    pub accepted: Box<PData>,
+
+    /// Subscriber information returned.
+    pub context: Option<CtxData>,
 }
 
 impl<PData> AckMsg<PData> {
     /// Creates a new ACK
-    pub fn new(accepted: PData) -> Self {
+    pub fn new(accepted: PData, context: CtxData) -> Self {
         Self {
             accepted: Box::new(accepted),
+            context: Some(context),
         }
     }
 

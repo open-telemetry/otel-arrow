@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
@@ -205,13 +206,31 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_timer(duration).await
     }
 
-    ///
+    /// Delay a message until a future time.
     pub async fn delay_message(
         &self,
         data: Box<PData>,
         resume: Instant,
     ) -> Result<(), TypedError<PData>> {
         self.core.delay_message(data, resume).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack(
+        &self,
+        node_id: usize,
+        ack: AckMsg<PData>,
+    ) -> Result<(), TypedError<PData>> {
+        self.core.route_ack(node_id, ack).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack(
+        &self,
+        node_id: usize,
+        nack: NackMsg<PData>,
+    ) -> Result<(), TypedError<PData>> {
+        self.core.route_nack(node_id, nack).await
     }
 
     // More methods will be added in the future as needed.

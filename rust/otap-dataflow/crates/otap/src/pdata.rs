@@ -80,7 +80,7 @@
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use otap_df_config::experimental::SignalType;
-use otap_df_engine::{CtxData, EffectHandlerExtension, Interests};
+use otap_df_engine::{AckMsg, CtxData, EffectHandlerExtension, Interests, NackMsg};
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
@@ -97,21 +97,43 @@ pub struct Context {
 
 impl Context {
     /// Subscribe to a set of interests.
-    pub(crate) fn subscribe_to(&mut self, interests: Interests, ctx: CtxData, node_id: usize) {
+    pub(crate) fn subscribe_to(&mut self, interests: Interests, context: CtxData, node_id: usize) {
         self.stack.push(Frame {
             interests,
             node_id,
-            ctx,
+            context,
         });
+    }
+
+    /// Consume frames to locate the most recent subscriber with NACKS.
+    pub(crate) fn next_nack_subscriber(&mut self) -> Option<Frame> {
+        self.next_with_interest(Interests::NACKS)
+    }
+
+    /// Consume frames to locate the most recent subscriber with ACKS.
+    pub(crate) fn next_ack_subscriber(&mut self) -> Option<Frame> {
+        self.next_with_interest(Interests::ACKS)
+    }
+
+    fn next_with_interest(&mut self, int: Interests) -> Option<Frame> {
+        while let Some(frame) = self.stack.pop() {
+            if frame.interests.contains(int) {
+                return Some(frame);
+            }
+        }
+        None
     }
 }
 
-/// Per-node interests
+/// Per-node interests, context, and identity.
 #[derive(Clone, Debug)]
 pub struct Frame {
-    interests: Interests,
-    ctx: CtxData,
-    node_id: usize,
+    /// Declares the set of interests this node has (Acks, Nacks, ...)
+    pub interests: Interests,
+    /// The caller's context returns via AckMsg.context or Ack.context.
+    pub context: CtxData,
+    /// The caller's node_id for routing.
+    pub node_id: usize,
 }
 
 /// module contains related to pdata
@@ -516,14 +538,35 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 impl EffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut OtapPdata) {
+    async fn subscribe_to(&self, int: Interests, context: CtxData, data: &mut OtapPdata) {
         data.context
-            .subscribe_to(int, ctx, self.processor_id().index)
+            .subscribe_to(int, context, self.processor_id().index)
     }
 
-    /// Reply with a Nack.
-    async fn notify_nack(&mut self, nack: NackMsg<OtapPdata>) {
-        // @@@ pop from data.context.stack, set that in nack.context
+    async fn notify_ack(
+        &self,
+        mut ack: AckMsg<OtapPdata>,
+    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
+        let next = ack.accepted.context.next_ack_subscriber();
+        if next.is_none() {
+            return Ok(());
+        }
+        let frame = next.expect("some");
+        ack.context = Some(frame.context);
+        self.route_ack(frame.node_id, ack).await
+    }
+
+    async fn notify_nack(
+        &self,
+        mut nack: NackMsg<OtapPdata>,
+    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
+        let next = nack.refused.context.next_nack_subscriber();
+        if next.is_none() {
+            return Ok(());
+        }
+        let frame = next.expect("some");
+        nack.context = Some(frame.context);
+        self.route_nack(frame.node_id, nack).await
     }
 }
 
