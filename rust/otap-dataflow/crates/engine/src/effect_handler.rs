@@ -3,7 +3,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{AckMsg, CtxData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, CallData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -225,34 +225,38 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Send a Ack to a node of known-interest.
-    pub async fn route_ack(
-        &self,
-        _node_id: usize,
-        _nack: AckMsg<PData>,
-    ) -> Result<(), TypedError<PData>> {
-        // TODO: Calling component (which knows data type) has prepared
-        // the context and extracted the node_id to send it.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        if let Some((_node_id, _ack)) = cxf(ack) {
+            // TODO! send an ack-delivery request to the pipeline controller
+        }
         Ok(())
     }
 
     /// Send a Nack to a node of known-interest.
-    pub async fn route_nack(
-        &self,
-        _node_id: usize,
-        _nack: NackMsg<PData>,
-    ) -> Result<(), TypedError<PData>> {
-        // TODO: Calling component (which knows data type) has prepared
-        // the context and extracted the node_id to send it.
+    pub async fn route_nack<F>(&self, ack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        if let Some((_node_id, _nack)) = cxf(ack) {
+            // TODO! send an nack-delivery request to the pipeline controller
+        }
         Ok(())
     }
 }
 
-/// Effect handler extensions specific to data type.
+/// Effect handler extensions for producers specific to data type.
 #[async_trait(?Send)]
-pub trait EffectHandlerExtension<PData> {
+pub trait ProducerEffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
-    async fn subscribe_to(&self, int: Interests, ctx: CtxData, data: &mut PData);
+    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+}
 
+/// Effect handler extensions for consumers specific to data type.
+#[async_trait(?Send)]
+pub trait ConsumerEffectHandlerExtension<PData> {
     /// Triggers the next step of work (if any) in Nack processing.
     async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
 

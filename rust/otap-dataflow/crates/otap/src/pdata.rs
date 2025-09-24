@@ -80,7 +80,10 @@
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 use otap_df_config::experimental::SignalType;
-use otap_df_engine::{AckMsg, CtxData, EffectHandlerExtension, Interests, NackMsg};
+use otap_df_engine::{
+    AckMsg, CallData, ConsumerEffectHandlerExtension, Interests, NackMsg,
+    ProducerEffectHandlerExtension,
+};
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
@@ -97,22 +100,39 @@ pub struct Context {
 
 impl Context {
     /// Subscribe to a set of interests.
-    pub(crate) fn subscribe_to(&mut self, interests: Interests, context: CtxData, node_id: usize) {
+    pub(crate) fn subscribe_to(
+        &mut self,
+        interests: Interests,
+        calldata: CallData,
+        node_id: usize,
+    ) {
         self.stack.push(Frame {
             interests,
             node_id,
-            context,
+            calldata,
         });
     }
 
-    /// Consume frames to locate the most recent subscriber with NACKS.
-    pub(crate) fn next_nack_subscriber(&mut self) -> Option<Frame> {
-        self.next_with_interest(Interests::NACKS)
+    /// Consume frames to locate the most recent subscriber with ACKS.
+    pub(crate) fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
+        ack.accepted
+            .context
+            .next_with_interest(Interests::ACKS)
+            .map(|frame| {
+                ack.calldata = Some(frame.calldata);
+                (frame.node_id, ack)
+            })
     }
 
-    /// Consume frames to locate the most recent subscriber with ACKS.
-    pub(crate) fn next_ack_subscriber(&mut self) -> Option<Frame> {
-        self.next_with_interest(Interests::ACKS)
+    /// Consume frames to locate the most recent subscriber with NACKS.
+    pub(crate) fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
+        nack.refused
+            .context
+            .next_with_interest(Interests::NACKS)
+            .map(|frame| {
+                nack.calldata = Some(frame.calldata);
+                (frame.node_id, nack)
+            })
     }
 
     fn next_with_interest(&mut self, int: Interests) -> Option<Frame> {
@@ -130,8 +150,8 @@ impl Context {
 pub struct Frame {
     /// Declares the set of interests this node has (Acks, Nacks, ...)
     pub interests: Interests,
-    /// The caller's context returns via AckMsg.context or Ack.context.
-    pub context: CtxData,
+    /// The caller's data returns via AckMsg.context or Ack.context.
+    pub calldata: CallData,
     /// The caller's node_id for routing.
     pub node_id: usize,
 }
@@ -287,10 +307,10 @@ impl OtapPayload {
 
     /// Removes the payload from this request, leaving an empty request.
     #[must_use]
-    pub fn payload(&mut self) -> Self {
+    pub fn take_payload(&mut self) -> Self {
         match self {
-            Self::OtlpBytes(value) => Self::OtlpBytes(value.payload()),
-            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.payload()),
+            Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
+            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
         }
     }
 
@@ -319,7 +339,7 @@ pub trait OtapPayloadHelpers {
     fn is_empty(&self) -> bool;
 
     /// Takes the payload, leaving an empty payload behind.
-    fn payload(&mut self) -> Self;
+    fn take_payload(&mut self) -> Self;
 }
 
 impl OtapPayloadHelpers for OtapArrowRecords {
@@ -331,7 +351,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::Logs(value) => Self::Logs(std::mem::take(value)),
             Self::Metrics(value) => Self::Metrics(std::mem::take(value)),
@@ -382,7 +402,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::ExportLogsRequest(value) => Self::ExportLogsRequest(std::mem::take(value)),
             Self::ExportMetricsRequest(value) => Self::ExportMetricsRequest(std::mem::take(value)),
@@ -535,38 +555,60 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 }
 
 #[async_trait::async_trait(?Send)]
-impl EffectHandlerExtension<OtapPdata>
+impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, context: CtxData, data: &mut OtapPdata) {
+    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
         data.context
-            .subscribe_to(int, context, self.processor_id().index)
+            .subscribe_to(int, ctx, self.processor_id().index)
     }
+}
 
+#[async_trait::async_trait(?Send)]
+impl ProducerEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
+{
+    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+        data.context
+            .subscribe_to(int, ctx, self.receiver_id().index)
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ConsumerEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
+{
     async fn notify_ack(
         &self,
-        mut ack: AckMsg<OtapPdata>,
+        ack: AckMsg<OtapPdata>,
     ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        let next = ack.accepted.context.next_ack_subscriber();
-        if next.is_none() {
-            return Ok(());
-        }
-        let frame = next.expect("some");
-        ack.context = Some(frame.context);
-        self.route_ack(frame.node_id, ack).await
+        self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(
         &self,
-        mut nack: NackMsg<OtapPdata>,
+        nack: NackMsg<OtapPdata>,
     ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        let next = nack.refused.context.next_nack_subscriber();
-        if next.is_none() {
-            return Ok(());
-        }
-        let frame = next.expect("some");
-        nack.context = Some(frame.context);
-        self.route_nack(frame.node_id, nack).await
+        self.route_nack(nack, Context::next_nack).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ConsumerEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
+{
+    async fn notify_ack(
+        &self,
+        ack: AckMsg<OtapPdata>,
+    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
+        self.route_ack(ack, Context::next_ack).await
+    }
+
+    async fn notify_nack(
+        &self,
+        nack: NackMsg<OtapPdata>,
+    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
+        self.route_nack(nack, Context::next_nack).await
     }
 }
 

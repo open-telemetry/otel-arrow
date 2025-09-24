@@ -10,15 +10,15 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
@@ -160,8 +160,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
-                    // TODO(#1098): Note context is dropped.
-                    let (_context, payload) = pdata.into_parts();
+                    let (context, payload) = pdata.into_parts();
                     self.pdata_metrics.inc_consumed(signal_type);
 
                     match (signal_type, payload) {
@@ -180,14 +179,29 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             // TODO we should try to change the client interfaces to accept a slice
                             // of bytes to avoid the copy here
                             let bytes = proto_buffer.as_ref().to_vec();
-                            _ = logs_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.logs_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
+                            // Note! We could clone the bytes (or not subject to TODO above)
+                            // and return it in the Ack or Nack.
+                            // For here and now, returning the original otap_batch.
+                            let mut saved: OtapPayload = otap_batch.into();
+                            match logs_client.export(bytes).await {
+                                Ok(_ignored) => {
+                                    _ = saved.take_payload(); // Dump payload
+                                    effect_handler
+                                        .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
+                                        .await?;
+                                    self.pdata_metrics.traces_exported.inc();
                                 }
-                            })?;
-                            self.pdata_metrics.logs_exported.inc();
+                                Err(e) => {
+                                    let estr = e.to_string();
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(
+                                            &estr,
+                                            OtapPdata::new(context, saved),
+                                        ))
+                                        .await?;
+                                    self.pdata_metrics.traces_failed.inc();
+                                }
+                            }
                         }
                         (SignalType::Metrics, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
                             proto_buffer.clear();
@@ -202,14 +216,26 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
-                            _ = metrics_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.metrics_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
+                            let mut saved: OtapPayload = otap_batch.into();
+                            match metrics_client.export(bytes).await {
+                                Ok(_ignored) => {
+                                    _ = saved.take_payload(); // Dump payload
+                                    effect_handler
+                                        .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
+                                        .await?;
+                                    self.pdata_metrics.traces_exported.inc();
                                 }
-                            })?;
-                            self.pdata_metrics.metrics_exported.inc()
+                                Err(e) => {
+                                    let estr = e.to_string();
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(
+                                            &estr,
+                                            OtapPdata::new(context, saved),
+                                        ))
+                                        .await?;
+                                    self.pdata_metrics.traces_failed.inc();
+                                }
+                            }
                         }
                         (SignalType::Traces, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
                             proto_buffer.clear();
@@ -224,46 +250,101 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
-                            _ = trace_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.traces_failed.inc();
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    error: e.to_string(),
+                            let mut saved: OtapPayload = otap_batch.into();
+                            match trace_client.export(bytes).await {
+                                Ok(_ignored) => {
+                                    _ = saved.take_payload(); // Dump payload
+                                    effect_handler
+                                        .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
+                                        .await?;
+                                    self.pdata_metrics.traces_exported.inc();
                                 }
-                            })?;
-                            self.pdata_metrics.traces_exported.inc();
+                                Err(e) => {
+                                    let estr = e.to_string();
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(
+                                            &estr,
+                                            OtapPdata::new(context, saved),
+                                        ))
+                                        .await?;
+                                    self.pdata_metrics.traces_failed.inc();
+                                }
+                            }
                         }
                         (_, OtapPayload::OtlpBytes(service_req)) => {
+                            // TODO: This is a clone of the bytes used for responding in the Nack. It's
+                            // an unnecessary clone in the Ack case, but we ought to borrow a slice for
+                            // the export(), in which case this clone wouldn't be required.
+                            let mut saved: OtapPayload = service_req.clone().into();
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                    _ = logs_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.logs_failed.inc();
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            error: e.to_string(),
+                                    match logs_client.export(bytes).await {
+                                        Ok(_ignored) => {
+                                            _ = saved.take_payload(); // Dump payload
+                                            effect_handler
+                                                .notify_ack(AckMsg::new(OtapPdata::new(
+                                                    context, saved,
+                                                )))
+                                                .await?;
+                                            self.pdata_metrics.traces_exported.inc();
                                         }
-                                    })?;
-                                    self.pdata_metrics.logs_exported.inc();
+                                        Err(e) => {
+                                            let estr = e.to_string();
+                                            effect_handler
+                                                .notify_nack(NackMsg::new(
+                                                    &estr,
+                                                    OtapPdata::new(context, saved),
+                                                ))
+                                                .await?;
+                                            self.pdata_metrics.traces_failed.inc();
+                                        }
+                                    }
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    _ = metrics_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.metrics_failed.inc();
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            error: e.to_string(),
+                                    match metrics_client.export(bytes).await {
+                                        Ok(_ignored) => {
+                                            _ = saved.take_payload(); // Dump payload
+                                            effect_handler
+                                                .notify_ack(AckMsg::new(OtapPdata::new(
+                                                    context, saved,
+                                                )))
+                                                .await?;
+                                            self.pdata_metrics.metrics_exported.inc();
                                         }
-                                    })?;
-                                    self.pdata_metrics.metrics_exported.inc();
+                                        Err(e) => {
+                                            let estr = e.to_string();
+                                            effect_handler
+                                                .notify_nack(NackMsg::new(
+                                                    &estr,
+                                                    OtapPdata::new(context, saved),
+                                                ))
+                                                .await?;
+                                            self.pdata_metrics.metrics_failed.inc();
+                                        }
+                                    }
                                 }
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                    _ = trace_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.traces_failed.inc();
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            error: e.to_string(),
+                                    match trace_client.export(bytes).await {
+                                        Ok(_ignored) => {
+                                            _ = saved.take_payload(); // Dump payload
+                                            effect_handler
+                                                .notify_ack(AckMsg::new(OtapPdata::new(
+                                                    context, saved,
+                                                )))
+                                                .await?;
+                                            self.pdata_metrics.traces_exported.inc();
                                         }
-                                    })?;
-                                    self.pdata_metrics.traces_exported.inc();
+                                        Err(e) => {
+                                            let estr = e.to_string();
+                                            effect_handler
+                                                .notify_nack(NackMsg::new(
+                                                    &estr,
+                                                    OtapPdata::new(context, saved),
+                                                ))
+                                                .await?;
+                                            self.pdata_metrics.traces_failed.inc();
+                                        }
+                                    }
                                 }
                             };
                         }

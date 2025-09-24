@@ -216,21 +216,19 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Send an Ack to a node of known-interest.
-    pub async fn route_ack(
-        &self,
-        node_id: usize,
-        ack: AckMsg<PData>,
-    ) -> Result<(), TypedError<PData>> {
-        self.core.route_ack(node_id, ack).await
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
     }
 
     /// Send a Nack to a node of known-interest.
-    pub async fn route_nack(
-        &self,
-        node_id: usize,
-        nack: NackMsg<PData>,
-    ) -> Result<(), TypedError<PData>> {
-        self.core.route_nack(node_id, nack).await
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
     }
 
     // More methods will be added in the future as needed.

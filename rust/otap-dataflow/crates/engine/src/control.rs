@@ -37,7 +37,7 @@ impl From<CtxVal> for usize {
 }
 
 /// Standard context values
-pub type CtxData = SmallVec<[CtxVal; 2]>;
+pub type CallData = SmallVec<[CtxVal; 2]>;
 
 /// The ACK
 #[derive(Debug, Clone)]
@@ -46,21 +46,16 @@ pub struct AckMsg<PData> {
     pub accepted: Box<PData>,
 
     /// Subscriber information returned.
-    pub context: Option<CtxData>,
+    pub calldata: Option<CallData>,
 }
 
 impl<PData> AckMsg<PData> {
     /// Creates a new ACK
-    pub fn new(accepted: PData, context: CtxData) -> Self {
+    pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            context: Some(context),
+            calldata: None,
         }
-    }
-
-    /// Refer to the accepted PData.
-    pub fn accepted(&self) -> &PData {
-        &*self.accepted
     }
 }
 
@@ -74,36 +69,22 @@ pub struct NackMsg<PData> {
     pub permanent: bool,
 
     /// Subscriber information returned.
-    pub context: Option<CtxData>,
+    pub calldata: Option<CallData>,
 
     /// Refused pdata, presumed to have payload.
     pub refused: Box<PData>,
 }
 
 impl<PData> NackMsg<PData> {
-    // /// Create a new transient NACK (permanent: false)
-    // pub fn new_transient<T: Into<String>>(reason: T, refused: PData) -> Self {
-    //     Self {
-    //         reason: reason.into(),
-    //         permanent: false,
-    //         context,
-    //         refused: Box::new(refused),
-    //     }
-    // }
-
-    // /// Create a new permanent NACK
-    // pub fn new_permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
-    //     Self {
-    //         reason: reason.into(),
-    //         permanent: true,
-    //         refused: Box::new(refused),
-    //     }
-    // }
-
-    //
-    //pub fn take_reply(self) -> (Self, {
-    //
-    //}
+    /// Create a new transient NACK (permanent: false)
+    pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self {
+            reason: reason.into(),
+            permanent: false,
+            calldata: None,
+            refused: Box::new(refused),
+        }
+    }
 }
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,

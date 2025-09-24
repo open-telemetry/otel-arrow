@@ -43,9 +43,9 @@ use otap_df_config::experimental::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
-    EffectHandlerExtension, Interests, ProcessorFactory,
+    ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
-    control::{CtxData, NodeControlMsg},
+    control::{CallData, NodeControlMsg},
     error::{Error, TypedError},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -264,14 +264,14 @@ impl RetryState {
     }
 }
 
-impl From<RetryState> for CtxData {
+impl From<RetryState> for CallData {
     fn from(value: RetryState) -> Self {
         smallvec::smallvec![value.retries.into()]
     }
 }
 
-impl From<CtxData> for RetryState {
-    fn from(value: CtxData) -> Self {
+impl From<CallData> for RetryState {
+    fn from(value: CallData) -> Self {
         Self {
             retries: value[0].into(),
         }
@@ -333,7 +333,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                         effect_handler.notify_nack(nack).await?;
                         self.metrics.add_consumed_refused(signal, items as u64);
                         return Ok(());
-                    } else if nack.context.is_none() || nack.refused.is_empty() {
+                    } else if nack.calldata.is_none() || nack.refused.is_empty() {
                         // We might retry, but how could we?
                         nack.reason = format!("retry internal error: {}", nack.reason);
                         nack.permanent = true;
@@ -342,7 +342,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                         return Ok(());
                     }
 
-                    let mut rstate: RetryState = nack.context.take().expect("some").into();
+                    let mut rstate: RetryState = nack.calldata.take().expect("some").into();
 
                     if rstate.retries >= self.config.max_retries {
                         // The final refusal counts to the consumer.

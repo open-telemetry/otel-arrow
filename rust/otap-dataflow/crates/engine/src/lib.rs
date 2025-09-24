@@ -46,10 +46,12 @@ pub mod shared;
 pub mod testing;
 
 /// Data-specific extensions to the effect handler.
-pub use effect_handler::{EffectHandlerExtension, Interests};
+pub use effect_handler::{
+    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+};
 
 /// Used in the effect handler extensions.
-pub use control::{AckMsg, CtxData, NackMsg};
+pub use control::{AckMsg, CallData, NackMsg};
 pub use node::NodeId;
 
 /// Trait for factory types that expose a name.
