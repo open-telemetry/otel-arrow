@@ -86,10 +86,14 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        // TODO: HERE: How is the OTLPData converted to OtapPdata?
+        // This type does not implement subscribe_to, there's no
+        // context, extension not implemented.
         _ = self
             .effect_handler
             .send_message(OTLPData::Logs(request.into_inner()))
             .await;
+        // TODO: HERE: how do we wait for the Ack/Nack.
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -102,6 +106,7 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+        // TODO: HERE: how do we subscribe, wait for the Ack/Nack.
         _ = self
             .effect_handler
             .send_message(OTLPData::Metrics(request.into_inner()))
@@ -118,6 +123,7 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
+        // TODO: HERE: how do we subscribe, wait for the Ack/Nack.
         _ = self
             .effect_handler
             .send_message(OTLPData::Traces(request.into_inner()))
@@ -134,6 +140,7 @@ impl ProfilesService for ProfilesServiceImpl {
         &self,
         request: Request<ExportProfilesServiceRequest>,
     ) -> Result<Response<ExportProfilesServiceResponse>, Status> {
+        // TODO: HERE: how do we subscribe, wait for the Ack/Nack.
         _ = self
             .effect_handler
             .send_message(OTLPData::Profiles(request.into_inner()))
