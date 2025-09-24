@@ -41,6 +41,12 @@ impl Expression for TemporalScalarExpression {
             TemporalScalarExpression::Now(_) => "TemporalScalar(Now)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, _indent: &str) -> std::fmt::Result {
+        match self {
+            TemporalScalarExpression::Now(_) => writeln!(f, "Now"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

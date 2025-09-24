@@ -93,6 +93,21 @@ impl LogicalExpression {
             Ok(None)
         }
     }
+
+    fn fmt_binary_with_indent(
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+        name: &str,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+    ) -> std::fmt::Result {
+        writeln!(f, "{name}")?;
+        write!(f, "{indent}├── Left(Scalar): ")?;
+        left.fmt_with_indent(f, format!("{indent}│                 ").as_str())?;
+        write!(f, "{indent}└── Right(Scalar): ")?;
+        right.fmt_with_indent(f, format!("{indent}                   ").as_str())?;
+        Ok(())
+    }
 }
 
 impl Expression for LogicalExpression {
@@ -121,6 +136,26 @@ impl Expression for LogicalExpression {
             LogicalExpression::Or(_) => "LogicalExpression(Or)",
             LogicalExpression::Contains(_) => "LogicalExpression(Contains)",
             LogicalExpression::Matches(_) => "LogicalExpression(Matches)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            LogicalExpression::Scalar(s) => s.fmt_with_indent(f, indent),
+            LogicalExpression::EqualTo(e) => {
+                Self::fmt_binary_with_indent(f, indent, "EqualTo", &e.left, &e.right)
+            }
+            LogicalExpression::GreaterThan(g) => {
+                Self::fmt_binary_with_indent(f, indent, "GreaterThan", &g.left, &g.right)
+            }
+            LogicalExpression::GreaterThanOrEqualTo(g) => {
+                Self::fmt_binary_with_indent(f, indent, "GreaterThanOrEqualTo", &g.left, &g.right)
+            }
+            LogicalExpression::Not(n) => n.fmt_with_indent(f, indent),
+            LogicalExpression::And(a) => a.fmt_with_indent(f, indent),
+            LogicalExpression::Or(o) => o.fmt_with_indent(f, indent),
+            LogicalExpression::Contains(c) => c.fmt_with_indent(f, indent),
+            LogicalExpression::Matches(m) => m.fmt_with_indent(f, indent),
         }
     }
 }
@@ -189,6 +224,17 @@ impl Expression for AndLogicalExpression {
     fn get_name(&self) -> &'static str {
         "AndLogicalExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "And")?;
+        write!(f, "{indent}├── Left(Logical): ")?;
+        self.left
+            .fmt_with_indent(f, format!("{indent}│                  ").as_str())?;
+        write!(f, "{indent}└── Right(Logical): ")?;
+        self.right
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,6 +300,17 @@ impl Expression for OrLogicalExpression {
 
     fn get_name(&self) -> &'static str {
         "OrLogicalExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Or")?;
+        write!(f, "{indent}├── Left(Logical): ")?;
+        self.left
+            .fmt_with_indent(f, format!("{indent}│                  ").as_str())?;
+        write!(f, "{indent}└── Right(Logical): ")?;
+        self.right
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
     }
 }
 
@@ -498,6 +555,13 @@ impl Expression for NotLogicalExpression {
     fn get_name(&self) -> &'static str {
         "NotLogicalExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "Not(Logical): ")?;
+        self.inner_expression
+            .fmt_with_indent(f, format!("{indent}              ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -573,6 +637,18 @@ impl Expression for ContainsLogicalExpression {
     fn get_name(&self) -> &'static str {
         "ContainsLogicalExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Contains")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Needle(Scalar): ")?;
+        self.needle
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        writeln!(f, "{indent}└── CaseInsensitive: {}", self.case_insensitive)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -632,6 +708,17 @@ impl Expression for MatchesLogicalExpression {
 
     fn get_name(&self) -> &'static str {
         "MatchesLogicalExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Matches")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}└── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+        Ok(())
     }
 }
 
