@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758827827672,
+  "lastUpdate": 1758834698725,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f072056cceec81bda170e322411f0ed1d28b7720",
-          "message": "fix resource and scope IDs not getting decoded when removing transport encoding (#993)\n\nFixes: #952 \n\nWhen we remove the transport encoding from an OTAP Batch (e.g. removing\ndelta encoding ID columns so they're plain encoded), we were missing the\nresource/scope ID columns embedded within these struct arrays on the\nroot record. This fixes the bug.",
-          "timestamp": "2025-08-22T20:13:58Z",
-          "tree_id": "3325736d78a693ac853275ec9a01f64cd8e22152",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/f072056cceec81bda170e322411f0ed1d28b7720"
-        },
-        "date": 1755894142893,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 730833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 21925000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 21925000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.87,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 156.49,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 186.98,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 737333.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22120000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22120000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.6,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.59,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 123.87,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 146.18,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 204.71,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "507720481af23f8ea761dbf2dfc77516dd70c0e4",
+          "message": "[query-engine] Implement fmt_with_indent for more expressions (#1182)\n\nRelates to #1178\n\n## Changes\n\n* Implements `fmt_with_indent` for more expressions. Note: I had CoPilot\ndo the initial work but I tweaked and cleaned everything up manually.\n\n## Details\n\nExamples:\n\n```\nPipeline\n├── Query: \"\"\n├── Constants: []\n├── Initializations: []\n└── Expressions:\n    └── Remove\n        └── Target(Mutable): Variable\n                             ├── Name: \"var\"\n                             └── Accessor:\n                                 └── String: \"field\"\n```\n\n```\nPipeline\n├── Query: \"\"\n├── Constants: []\n├── Initializations: []\n└── Expressions:\n    └── RemoveMapKeys(Retain)\n        ├── Target(Mutable): Source\n        │                    └── Accessor:\n        │                        └── String: \"Attributes\"\n        ├── Keys[0](Scalar): Variable\n        │                    ├── Name: \"var1\"\n        │                    └── Accessor: None\n        └── Keys[1](Scalar): Variable\n                             ├── Name: \"var2\"\n                             └── Accessor: None\n```\n\n```\nPipeline\n├── Query: \"\\nsource\\n | project-rename name = key1\\n | project-rename name = key1, key1 = source.Attributes[name]\\n | project-away key1['field'], name, *Time\\n \"\n├── Constants: []\n├── Initializations: []\n└── Expressions:\n    ├── Move\n    │   ├── Source(Mutable): Source\n    │   │                    └── Accessor:\n    │   │                        ├── String: \"Attributes\"\n    │   │                        └── String: \"key1\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"name\"\n    ├── RenameMapKeys\n    │   ├── Target(Mutable): Source\n    │   │                    └── Accessor: None\n    │   ├── Keys[0]:\n    │   │   ├── Source(Accessor):\n    │   │   │   ├── String: \"Attributes\"\n    │   │   │   └── String: \"key1\"\n    │   │   └── Destination(Accessor):\n    │   │       ├── String: \"Attributes\"\n    │   │       └── String: \"name\"\n    │   └── Keys[1]:\n    │       ├── Source(Accessor):\n    │       │   ├── String: \"Attributes\"\n    │       │   └── Source\n    │       │       └── Accessor:\n    │       │           ├── String: \"Attributes\"\n    │       │           └── String: \"name\"\n    │       └── Destination(Accessor):\n    │           ├── String: \"Attributes\"\n    │           └── String: \"key1\"\n    └── ReduceMap(Remove)\n        ├── Target(Mutable): Source\n        │                    └── Accessor: None\n        ├── Selectors[0](KeyOrPattern): String: \"ObservedTimestamp\"\n        ├── Selectors[1](KeyOrPattern): String: \"Timestamp\"\n        ├── Selectors[2](Accessor):\n        │   ├── String: \"Attributes\"\n        │   ├── String: \"key1\"\n        │   └── String: \"field\"\n        ├── Selectors[3](Accessor):\n        │   ├── String: \"Attributes\"\n        │   └── Regex: \"^.*Time\"\n        └── Selectors[4](Accessor):\n            ├── String: \"Attributes\"\n            └── String: \"name\"\n```\n\n```\nPipeline\n├── Query: \"\\nsource\\n | extend\\n    c1 = coalesce(key1, name, 'n/a'),\\n    c2 = case(name == int(null), name, key1 == int(null), 'b', key1),\\n    l = strlen(name),\\n    s1 = substring(name, 5),\\n    s2 = substring(name, key1, key1)\\n \"\n├── Constants: []\n├── Initializations: []\n└── Expressions:\n    ├── Set\n    │   ├── Source(Scalar): Coalesce\n    │   │                   ├── Expressions[0](Scalar): Source\n    │   │                   │                           └── Accessor:\n    │   │                   │                               ├── String: \"Attributes\"\n    │   │                   │                               └── String: \"key1\"\n    │   │                   ├── Expressions[1](Scalar): Source\n    │   │                   │                           └── Accessor:\n    │   │                   │                               ├── String: \"Attributes\"\n    │   │                   │                               └── String: \"name\"\n    │   │                   └── Expressions[2](Scalar): String: \"n/a\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"c1\"\n    ├── Set\n    │   ├── Source(Scalar): Case\n    │   │                   ├── When[0]\n    │   │                   │   ├── Condition(Logical): EqualTo\n    │   │                   │   │                       ├── Left(Scalar): Source\n    │   │                   │   │                       │                 └── Accessor:\n    │   │                   │   │                       │                     ├── String: \"Attributes\"\n    │   │                   │   │                       │                     └── String: \"name\"\n    │   │                   │   │                       └── Right(Scalar): Null\n    │   │                   │   └── Expression(Scalar): Source\n    │   │                   │                           └── Accessor:\n    │   │                   │                               ├── String: \"Attributes\"\n    │   │                   │                               └── String: \"name\"\n    │   │                   ├── When[1]\n    │   │                   │   ├── Condition(Logical): EqualTo\n    │   │                   │   │                       ├── Left(Scalar): Source\n    │   │                   │   │                       │                 └── Accessor:\n    │   │                   │   │                       │                     ├── String: \"Attributes\"\n    │   │                   │   │                       │                     └── String: \"key1\"\n    │   │                   │   │                       └── Right(Scalar): Null\n    │   │                   │   └── Expression(Scalar): String: \"b\"\n    │   │                   └── Else(Scalar): Source\n    │   │                                     └── Accessor:\n    │   │                                         ├── String: \"Attributes\"\n    │   │                                         └── String: \"key1\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"c2\"\n    ├── Set\n    │   ├── Source(Scalar): Length(Scalar): Source\n    │   │                                   └── Accessor:\n    │   │                                       ├── String: \"Attributes\"\n    │   │                                       └── String: \"name\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"l\"\n    ├── Set\n    │   ├── Source(Scalar): Slice\n    │   │                   ├── Source(Scalar): Source\n    │   │                   │                   └── Accessor:\n    │   │                   │                       ├── String: \"Attributes\"\n    │   │                   │                       └── String: \"name\"\n    │   │                   ├── StartInclusive(Scalar): Integer: 5\n    │   │                   └── EndExclusive: None\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"s1\"\n    └── Set\n        ├── Source(Scalar): Slice\n        │                   ├── Source(Scalar): Source\n        │                   │                   └── Accessor:\n        │                   │                       ├── String: \"Attributes\"\n        │                   │                       └── String: \"name\"\n        │                   ├── StartInclusive(Scalar): Source\n        │                   │                           └── Accessor:\n        │                   │                               ├── String: \"Attributes\"\n        │                   │                               └── String: \"key1\"\n        │                   └── EndExclusive(Scalar): Source\n        │                                             └── Accessor:\n        │                                                 ├── String: \"Attributes\"\n        │                                                 └── String: \"key1\"\n        └── Destination(Mutable): Source\n                                  └── Accessor:\n                                      ├── String: \"Attributes\"\n                                      └── String: \"s2\"\n```",
+          "timestamp": "2025-09-25T20:39:41Z",
+          "tree_id": "3e0d2bbb63baa44464b2c33714df9d65fe7561ba",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/507720481af23f8ea761dbf2dfc77516dd70c0e4"
+        },
+        "date": 1758834695740,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 732166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21965000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21965000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.63,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.67,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 128.64,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 152.32,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 739333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.73,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.69,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 160.12,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 187.27,
             "unit": "MiB"
           }
         ]
