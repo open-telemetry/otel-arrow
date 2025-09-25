@@ -151,8 +151,8 @@ impl std::fmt::Display for PipelineExpression {
                     write!(f, "    └── ")?;
                     e.fmt_with_indent(f, "        ")?;
                 } else {
-                    write!(f, "│   ├── ")?;
-                    e.fmt_with_indent(f, "│   │   ")?;
+                    write!(f, "    ├── ")?;
+                    e.fmt_with_indent(f, "    │   ")?;
                 }
             }
         }
