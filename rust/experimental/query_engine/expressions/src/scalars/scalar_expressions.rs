@@ -319,13 +319,9 @@ impl Expression for SourceScalarExpression {
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Source")?;
-        if !self.accessor.has_selectors() {
-            writeln!(f, "{indent}└── Accessor: None")?;
-        } else {
-            writeln!(f, "{indent}└── Accessor:")?;
-            self.accessor
-                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
-        }
+        write!(f, "{indent}└── Accessor: ")?;
+        self.accessor
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }
@@ -378,13 +374,9 @@ impl Expression for AttachedScalarExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Attached")?;
         writeln!(f, "{indent}├── Name: {:?}", self.name.get_value())?;
-        if !self.accessor.has_selectors() {
-            writeln!(f, "{indent}└── Accessor: None")?;
-        } else {
-            writeln!(f, "{indent}└── Accessor:")?;
-            self.accessor
-                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
-        }
+        write!(f, "{indent}└── Accessor: ")?;
+        self.accessor
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }
@@ -437,13 +429,9 @@ impl Expression for VariableScalarExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Variable")?;
         writeln!(f, "{indent}├── Name: {:?}", self.name.get_value())?;
-        if !self.accessor.has_selectors() {
-            writeln!(f, "{indent}└── Accessor: None")?;
-        } else {
-            writeln!(f, "{indent}└── Accessor:")?;
-            self.accessor
-                .fmt_with_indent(f, format!("{indent}    ").as_str())?;
-        }
+        write!(f, "{indent}└── Accessor: ")?;
+        self.accessor
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }
@@ -635,6 +623,26 @@ impl Expression for CoalesceScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "CoalesceScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Coalesce")?;
+        if self.expressions.is_empty() {
+            writeln!(f, "{indent}└── Expressions: []")?;
+        } else {
+            writeln!(f, "{indent}└── Expressions:")?;
+            let last_idx = self.expressions.len() - 1;
+            for (i, e) in self.expressions.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "{indent}    └── ")?;
+                    e.fmt_with_indent(f, format!("{indent}        ").as_str())?;
+                } else {
+                    write!(f, "{indent}    ├── ")?;
+                    e.fmt_with_indent(f, format!("{indent}    │   ").as_str())?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -846,6 +854,21 @@ impl Expression for CaseScalarExpression {
     fn get_name(&self) -> &'static str {
         "CaseScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Case")?;
+        for (i, (cond, expr)) in self.expressions_with_conditions.iter().enumerate() {
+            writeln!(f, "{indent}├── When[{i}]")?;
+            write!(f, "{indent}│   ├── Condition(Logical): ")?;
+            cond.fmt_with_indent(f, format!("{indent}│   │                       ").as_str())?;
+            write!(f, "{indent}│   └── Expression(Scalar): ")?;
+            expr.fmt_with_indent(f, format!("{indent}│                           ").as_str())?;
+        }
+        write!(f, "{indent}└── Else(Scalar): ")?;
+        self.else_expression
+            .fmt_with_indent(f, format!("{indent}                  ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -921,6 +944,13 @@ impl Expression for LengthScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "LengthScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "Length(Scalar): ")?;
+        self.inner_expression
+            .fmt_with_indent(f, format!("{indent}                ").as_str())?;
+        Ok(())
     }
 }
 
@@ -1141,6 +1171,35 @@ impl Expression for SliceScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "SliceScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Slice")?;
+        write!(f, "{indent}├── Source(Scalar): ")?;
+        self.source
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+
+        match &self.range_start_inclusive {
+            Some(s) => {
+                write!(f, "{indent}├── StartInclusive(Scalar): ")?;
+                s.fmt_with_indent(f, format!("{indent}│                           ").as_str())?;
+            }
+            None => {
+                writeln!(f, "{indent}├── StartInclusive: None")?;
+            }
+        }
+
+        match &self.range_end_exclusive {
+            Some(s) => {
+                write!(f, "{indent}└── EndExclusive(Scalar): ")?;
+                s.fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+            }
+            None => {
+                writeln!(f, "{indent}└── EndExclusive: None")?;
+            }
+        }
+
+        Ok(())
     }
 }
 
