@@ -560,7 +560,7 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.processor_id().index)
     }
@@ -570,7 +570,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.receiver_id().index)
     }
@@ -580,7 +580,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.processor_id().index)
     }
@@ -590,7 +590,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
 {
-    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.receiver_id().index)
     }

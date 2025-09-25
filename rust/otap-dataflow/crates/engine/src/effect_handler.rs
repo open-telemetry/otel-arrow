@@ -251,7 +251,7 @@ impl<PData> EffectHandlerCore<PData> {
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
-    async fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
 }
 
 /// Effect handler extensions for consumers specific to data type.

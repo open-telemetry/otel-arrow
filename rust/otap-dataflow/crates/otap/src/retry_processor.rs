@@ -298,13 +298,11 @@ impl Processor<OtapPdata> for RetryProcessor {
         // for metrics on the return path?
         match msg {
             Message::PData(mut data) => {
-                effect_handler
-                    .subscribe_to(
-                        Interests::NACKS | Interests::ACKS,
-                        RetryState::new().into(),
-                        &mut data,
-                    )
-                    .await;
+                effect_handler.subscribe_to(
+                    Interests::NACKS | Interests::ACKS,
+                    RetryState::new().into(),
+                    &mut data,
+                );
                 match effect_handler.send_message(data).await {
                     Ok(()) => {
                         // Request control flows downstream.
@@ -382,9 +380,7 @@ impl Processor<OtapPdata> for RetryProcessor {
 
                     // Updated RetryState back onto context for retry attempt
                     let mut rereq = nack.refused;
-                    effect_handler
-                        .subscribe_to(Interests::NACKS, rstate.into(), &mut rereq)
-                        .await;
+                    effect_handler.subscribe_to(Interests::NACKS, rstate.into(), &mut rereq);
 
                     // Enter a delay, we'll continue in the
                     // DelayedData branch next.
