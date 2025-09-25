@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::AddAssign;
 use std::sync::Arc;
@@ -1455,28 +1456,10 @@ enum KeyTransformRangeType {
     Delete,
 }
 
-/// Represents the merged transform ranges, either as a borrowed slice (no allocation)
-/// or as an owned Vec (when merging is required)
-enum TransformRanges<'a> {
-    /// Direct reference to ranges when only one type of transform exists
-    Borrowed(&'a [(usize, usize, usize, KeyTransformRangeType)]),
-    /// Owned vector when we need to merge replacement and delete ranges
-    Owned(Vec<(usize, usize, usize, KeyTransformRangeType)>),
-}
-
-impl<'a> TransformRanges<'a> {
-    fn iter(&self) -> impl Iterator<Item = &(usize, usize, usize, KeyTransformRangeType)> + '_ {
-        match self {
-            TransformRanges::Borrowed(slice) => slice.iter(),
-            TransformRanges::Owned(vec) => vec.iter(),
-        }
-    }
-}
-
 fn merge_transform_ranges<'a>(
     replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
-) -> TransformRanges<'a> {
+) -> Cow<'a, [(usize, usize, usize, KeyTransformRangeType)]> {
     match (replacement_plan, delete_plan) {
         (Some(replacement_plan), Some(delete_plan)) => {
             let mut result =
@@ -1514,11 +1497,11 @@ fn merge_transform_ranges<'a>(
                 del_idx += 1;
             }
 
-            TransformRanges::Owned(result)
+            Cow::Owned(result)
         }
-        (Some(replacement_plan), None) => TransformRanges::Borrowed(&replacement_plan.ranges),
-        (None, Some(delete_plan)) => TransformRanges::Borrowed(&delete_plan.ranges),
-        (None, None) => TransformRanges::Borrowed(&[]),
+        (Some(replacement_plan), None) => Cow::Borrowed(&replacement_plan.ranges),
+        (None, Some(delete_plan)) => Cow::Borrowed(&delete_plan.ranges),
+        (None, None) => Cow::Borrowed(&[]),
     }
 }
 
