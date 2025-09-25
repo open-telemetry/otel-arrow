@@ -65,6 +65,17 @@ impl Expression for TransformExpression {
             TransformExpression::Set(_) => "Transform(Set)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            TransformExpression::Move(m) => m.fmt_with_indent(f, indent),
+            TransformExpression::ReduceMap(r) => r.fmt_with_indent(f, indent),
+            TransformExpression::Remove(r) => r.fmt_with_indent(f, indent),
+            TransformExpression::RemoveMapKeys(r) => r.fmt_with_indent(f, indent),
+            TransformExpression::RenameMapKeys(r) => r.fmt_with_indent(f, indent),
+            TransformExpression::Set(s) => s.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +125,17 @@ impl Expression for SetTransformExpression {
     fn get_name(&self) -> &'static str {
         "SetTransformExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Set")?;
+        write!(f, "{indent}├── Source(Scalar): ")?;
+        self.source
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        write!(f, "{indent}└── Destination(Mutable): ")?;
+        self.destination
+            .fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +176,14 @@ impl Expression for RemoveTransformExpression {
 
     fn get_name(&self) -> &'static str {
         "RemoveTransformExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Remove")?;
+        write!(f, "{indent}└── Target(Mutable): ")?;
+        self.target
+            .fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+        Ok(())
     }
 }
 
@@ -204,6 +234,17 @@ impl Expression for MoveTransformExpression {
     fn get_name(&self) -> &'static str {
         "MoveTransformExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Move")?;
+        write!(f, "{indent}├── Source(Mutable): ")?;
+        self.source
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        write!(f, "{indent}└── Destination(Mutable): ")?;
+        self.destination
+            .fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,6 +280,19 @@ impl Expression for RemoveMapKeysTransformExpression {
         match self {
             RemoveMapKeysTransformExpression::Remove(_) => "RemoveMapKeysTransform(Remove)",
             RemoveMapKeysTransformExpression::Retain(_) => "RemoveMapKeysTransform(Retain)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(m) => {
+                writeln!(f, "RemoveMapKeys(Remove)")?;
+                m.fmt_with_indent(f, indent)
+            }
+            RemoveMapKeysTransformExpression::Retain(m) => {
+                writeln!(f, "RemoveMapKeys(Retain)")?;
+                m.fmt_with_indent(f, indent)
+            }
         }
     }
 }
@@ -293,6 +347,27 @@ impl Expression for MapKeyListExpression {
     fn get_name(&self) -> &'static str {
         "MapKeyListExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "{indent}├── Target(Mutable): ")?;
+        self.target
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        if self.keys.is_empty() {
+            writeln!(f, "{indent}└── Keys: []")?;
+        } else {
+            let last_idx = self.keys.len() - 1;
+            for (i, k) in self.keys.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "{indent}└── Keys[{i}](Scalar): ")?;
+                    k.fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+                } else {
+                    write!(f, "{indent}├── Keys[{i}](Scalar): ")?;
+                    k.fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -329,6 +404,19 @@ impl Expression for ReduceMapTransformExpression {
         match self {
             ReduceMapTransformExpression::Remove(_) => "ReduceMapTransform(Remove)",
             ReduceMapTransformExpression::Retain(_) => "ReduceMapTransform(Retain)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            ReduceMapTransformExpression::Remove(m) => {
+                writeln!(f, "ReduceMap(Remove)")?;
+                m.fmt_with_indent(f, indent)
+            }
+            ReduceMapTransformExpression::Retain(m) => {
+                writeln!(f, "ReduceMap(Retain)")?;
+                m.fmt_with_indent(f, indent)
+            }
         }
     }
 }
@@ -453,6 +541,41 @@ impl Expression for MapSelectionExpression {
     fn get_name(&self) -> &'static str {
         "MapSelectionExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "{indent}├── Target(Mutable): ")?;
+        self.target
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        if self.selectors.is_empty() {
+            writeln!(f, "{indent}└── Selectors: []")?;
+        } else {
+            for (i, sel) in self.selectors.iter().enumerate() {
+                let last = i + 1 == self.selectors.len();
+                let branch = if last { "└──" } else { "├──" };
+                match sel {
+                    MapSelector::KeyOrKeyPattern(s) => {
+                        write!(f, "{indent}{branch} Selectors[{i}](KeyOrPattern): ")?;
+                        s.fmt_with_indent(
+                            f,
+                            format!(
+                                "{indent}{}                               ",
+                                if last { " " } else { "│" }
+                            )
+                            .as_str(),
+                        )?;
+                    }
+                    MapSelector::ValueAccessor(a) => {
+                        write!(f, "{indent}{branch} Selectors[{i}](Accessor): ")?;
+                        a.fmt_with_indent(
+                            f,
+                            format!("{indent}{}   ", if last { " " } else { "│" }).as_str(),
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -505,6 +628,28 @@ impl Expression for RenameMapKeysTransformExpression {
     fn get_name(&self) -> &'static str {
         "RenameMapKeysTransformExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "RenameMapKeys")?;
+        write!(f, "{indent}├── Target(Mutable): ")?;
+        self.target
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        if self.keys.is_empty() {
+            writeln!(f, "{indent}└── Keys: []")?;
+        } else {
+            let last_idx = self.keys.len() - 1;
+            for (i, k) in self.keys.iter().enumerate() {
+                if i == last_idx {
+                    writeln!(f, "{indent}└── Keys[{i}]:")?;
+                    k.fmt_with_indent(f, format!("{indent}    ").as_str())?;
+                } else {
+                    writeln!(f, "{indent}├── Keys[{i}]:")?;
+                    k.fmt_with_indent(f, format!("{indent}│   ").as_str())?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -535,6 +680,20 @@ impl MapKeyRenameSelector {
     ) -> Result<(), ExpressionError> {
         self.source.try_fold(scope)?;
         self.destination.try_fold(scope)?;
+        Ok(())
+    }
+
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        write!(f, "{indent}├── Source(Accessor): ")?;
+        self.source
+            .fmt_with_indent(f, format!("{indent}│   ").as_str())?;
+        write!(f, "{indent}└── Destination(Accessor):")?;
+        self.destination
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }

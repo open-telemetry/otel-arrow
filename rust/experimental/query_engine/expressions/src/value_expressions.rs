@@ -44,4 +44,11 @@ impl Expression for MutableValueExpression {
             MutableValueExpression::Variable(_) => "MutableValueExpression(Variable)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            MutableValueExpression::Source(s) => s.fmt_with_indent(f, indent),
+            MutableValueExpression::Variable(v) => v.fmt_with_indent(f, indent),
+        }
+    }
 }

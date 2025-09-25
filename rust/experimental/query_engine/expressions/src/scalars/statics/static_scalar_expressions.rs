@@ -193,7 +193,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Integer(i) => writeln!(f, "Integer: {}", i.get_value()),
             StaticScalarExpression::Map(m) => writeln!(f, "Map: {}", Value::Map(m)),
             StaticScalarExpression::Null(_) => writeln!(f, "Null"),
-            StaticScalarExpression::Regex(r) => writeln!(f, "Regex: {}", r.get_value()),
+            StaticScalarExpression::Regex(r) => writeln!(f, "Regex: {:?}", r.get_value().as_str()),
             StaticScalarExpression::String(s) => writeln!(f, "String: {:?}", s.get_value()),
             StaticScalarExpression::TimeSpan(t) => writeln!(f, "TimeSpan: {}", Value::TimeSpan(t)),
         }
