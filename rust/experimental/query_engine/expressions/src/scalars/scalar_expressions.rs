@@ -630,15 +630,14 @@ impl Expression for CoalesceScalarExpression {
         if self.expressions.is_empty() {
             writeln!(f, "{indent}└── Expressions: []")?;
         } else {
-            writeln!(f, "{indent}└── Expressions:")?;
             let last_idx = self.expressions.len() - 1;
             for (i, e) in self.expressions.iter().enumerate() {
                 if i == last_idx {
-                    write!(f, "{indent}    └── ")?;
-                    e.fmt_with_indent(f, format!("{indent}        ").as_str())?;
+                    write!(f, "{indent}└── Expressions[{i}](Scalar): ")?;
+                    e.fmt_with_indent(f, format!("{indent}                            ").as_str())?;
                 } else {
-                    write!(f, "{indent}    ├── ")?;
-                    e.fmt_with_indent(f, format!("{indent}    │   ").as_str())?;
+                    write!(f, "{indent}├── Expressions[{i}](Scalar): ")?;
+                    e.fmt_with_indent(f, format!("{indent}│                           ").as_str())?;
                 }
             }
         }
