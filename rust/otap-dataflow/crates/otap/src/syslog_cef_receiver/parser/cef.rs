@@ -26,10 +26,10 @@ impl CefMessage<'_> {
 #[inline]
 fn needs_unescaping(data: &[u8]) -> bool {
     let len = data.len();
-    if len < 2 { 
-        return false; 
+    if len < 2 {
+        return false;
     }
-    
+
     // Use unchecked indexing since we know i+1 is valid
     for i in 0..len - 1 {
         if data[i] == b'\\' {
@@ -48,7 +48,7 @@ fn needs_unescaping(data: &[u8]) -> bool {
 const fn unescape_inplace(data: &mut [u8]) -> usize {
     let mut write_pos = 0;
     let mut read_pos = 0;
-    
+
     while read_pos < data.len() {
         if read_pos + 1 < data.len() && data[read_pos] == b'\\' {
             match data[read_pos + 1] {
@@ -80,7 +80,7 @@ const fn unescape_inplace(data: &mut [u8]) -> usize {
         }
         write_pos += 1;
     }
-    
+
     write_pos
 }
 
@@ -114,7 +114,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
                 // If odd number of backslashes, the pipe is escaped
                 escaped = backslash_count % 2 == 1;
             }
-            
+
             if !escaped {
                 parts[parts_count] = Some(&content[start..i]);
                 parts_count += 1;
@@ -195,8 +195,8 @@ pub(super) struct CefExtensionsIter<'a> {
 
 impl<'a> CefExtensionsIter<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { 
-            data, 
+        Self {
+            data,
             pos: 0,
             scratch_buffer: Vec::new(), // TODO: This would allocate if the extensions provided in the input have to be unescaped. Could we avoid this allocation?
         }
@@ -317,6 +317,7 @@ impl<'a> CefExtensionsIter<'a> {
     }
 
     /// Collect all extensions into a Vec, allocating only when necessary
+    #[cfg(test)]
     fn collect_all(mut self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut result = Vec::new();
         while let Some((key, value)) = self.next_extension() {
@@ -345,9 +346,18 @@ mod tests {
 
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 3);
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"src".as_slice(), b"10.0.0.1".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"dst".as_slice(), b"2.1.2.2".as_slice()));
-        assert_eq!((extensions[2].0.as_slice(), extensions[2].1.as_slice()), (b"spt".as_slice(), b"1232".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"dst".as_slice(), b"2.1.2.2".as_slice())
+        );
+        assert_eq!(
+            (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
+            (b"spt".as_slice(), b"1232".as_slice())
+        );
     }
 
     #[test]
@@ -381,7 +391,10 @@ mod tests {
                 b"This is a message with spaces".as_slice()
             )
         );
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -391,8 +404,14 @@ mod tests {
 
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"equation".as_slice(), b"a=b+c".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"equation".as_slice(), b"a=b+c".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -402,8 +421,14 @@ mod tests {
 
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"empty".as_slice(), b"".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"empty".as_slice(), b"".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -413,8 +438,14 @@ mod tests {
 
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"value".as_slice(), b"has trailing spaces".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"next".as_slice(), b"value".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"value".as_slice(), b"has trailing spaces".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"next".as_slice(), b"value".as_slice())
+        );
     }
 
     #[test]
@@ -425,15 +456,22 @@ mod tests {
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
         // Now properly unescaped
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"msg".as_slice(), b"escaped=equals".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"msg".as_slice(), b"escaped=equals".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
     fn test_header_pipe_escaping() {
-        let input = b"CEF:0|Security|threatmanager|1.0|100|detected a \\| in message|10|src=10.0.0.1";
+        let input =
+            b"CEF:0|Security|threatmanager|1.0|100|detected a \\| in message|10|src=10.0.0.1";
         let result = parse_cef(input).unwrap();
-        
+
         assert_eq!(result.version, 0);
         assert_eq!(result.device_vendor, b"Security".as_slice());
         assert_eq!(result.device_product, b"threatmanager".as_slice());
@@ -441,16 +479,25 @@ mod tests {
         assert_eq!(result.severity, b"10".as_slice());
     }
 
-    #[test] 
+    #[test]
     fn test_extension_unescaping_comprehensive() {
         let input = b"CEF:0|V|P|1.0|100|name|10|msg=Line1\\nLine2 path=C:\\\\temp equals=a\\=b";
         let result = parse_cef(input).unwrap();
 
         let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 3);
-        
-        assert_eq!((extensions[0].0.as_slice(), extensions[0].1.as_slice()), (b"msg".as_slice(), b"Line1\nLine2".as_slice()));
-        assert_eq!((extensions[1].0.as_slice(), extensions[1].1.as_slice()), (b"path".as_slice(), b"C:\\temp".as_slice()));
-        assert_eq!((extensions[2].0.as_slice(), extensions[2].1.as_slice()), (b"equals".as_slice(), b"a=b".as_slice()));
+
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"msg".as_slice(), b"Line1\nLine2".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"path".as_slice(), b"C:\\temp".as_slice())
+        );
+        assert_eq!(
+            (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
+            (b"equals".as_slice(), b"a=b".as_slice())
+        );
     }
 }
