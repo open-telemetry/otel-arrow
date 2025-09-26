@@ -186,6 +186,43 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
+                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                                let msg = NodeControlMsg::Ack(ack);
+                                match sender.try_send(msg) {
+                                    Ok(()) => {}
+                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                                        let _ = sender.send(msg).await;
+                                    }
+                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                                }
+                            }
+                        }
+                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                                let msg = NodeControlMsg::Nack(nack);
+                                match sender.try_send(msg) {
+                                    Ok(()) => {}
+                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                                        let _ = sender.send(msg).await;
+                                    }
+                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                                }
+                            }
+                        }
+                        PipelineControlMsg::DelayData { node_id, data, when } => {
+                            // Stub implementation: pass through immediately instead of delaying
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                                let msg = NodeControlMsg::DelayedData { data, when };
+                                match sender.try_send(msg) {
+                                    Ok(()) => {}
+                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                                        let _ = sender.send(msg).await;
+                                    }
+                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                                }
+                            }
+                        }
                     }
                 }
                 // Handle timer expiration events.

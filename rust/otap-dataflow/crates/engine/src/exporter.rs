@@ -466,7 +466,7 @@ mod tests {
         let msg = channel.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Message::Control(NodeControlMsg::Ack(ref a)) if *a.accepted() == req1,
+            Message::Control(NodeControlMsg::Ack(ref a)) if **a.accepted == req1,
         ));
 
         // Then pdata message

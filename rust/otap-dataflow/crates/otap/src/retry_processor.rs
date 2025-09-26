@@ -398,7 +398,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     }
                     res
                 }
-                NodeControlMsg::DelayedData { data } => {
+                NodeControlMsg::DelayedData { data, when: _ } => {
                     // Control flow follows from delay_message() above.
                     match effect_handler.send_message(*data).await {
                         Ok(()) => Ok(()),

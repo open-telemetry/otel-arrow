@@ -170,16 +170,13 @@ impl<PData> EffectHandlerCore<PData> {
     ) -> Result<TimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::StartTimer {
-                node_id: self.node_id.index,
-                duration,
-            })
-            .await
-            // Drop the SendError
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })?;
+        
+        let msg = PipelineControlMsg::StartTimer {
+            node_id: self.node_id.index,
+            duration,
+        };
+        
+        self.send_pipeline_control_msg(msg).await.map_err(|e: TypedError<PData>| -> Error { e.into() })?;
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.index,
@@ -193,19 +190,15 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self
-            .pipeline_ctrl_msg_sender
-            .clone()
+        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::StartTelemetryTimer {
-                node_id: self.node_id.index,
-                duration,
-            })
-            .await
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })?;
+        
+        let msg = PipelineControlMsg::StartTelemetryTimer {
+            node_id: self.node_id.index,
+            duration,
+        };
+        
+        self.send_pipeline_control_msg(msg).await.map_err(|e: TypedError<PData>| -> Error { e.into() })?;
 
         Ok(TelemetryTimerCancelHandle {
             node_id: self.node_id.clone(),
@@ -213,15 +206,34 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
+    /// Helper method to send pipeline control messages with error handling.
+    async fn send_pipeline_control_msg(
+        &self,
+        msg: PipelineControlMsg<PData>,
+    ) -> Result<(), TypedError<PData>> {
+        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_ctrl_msg_sender
+            .send(msg)
+            .await
+            .map_err(|e| TypedError::Error(Error::PipelineControlMsgError {
+                error: e.to_string(),
+            }))
+    }
+
     /// Delay a message until a future time; will resume in the same
     /// effect handler with Message::Control(NodeControlMsg::DelayedData).
     pub async fn delay_message(
         &self,
-        _data: Box<PData>,
-        _resume: Instant,
+        data: Box<PData>,
+        resume: Instant,
     ) -> Result<(), TypedError<PData>> {
-        // TODO: Return to this component for sending.
-        Ok(())
+        let msg = PipelineControlMsg::DelayData {
+            node_id: self.node_id.index,
+            data,
+            when: resume,
+        };
+        self.send_pipeline_control_msg(msg).await
     }
 
     /// Send a Ack to a node of known-interest.
@@ -229,19 +241,21 @@ impl<PData> EffectHandlerCore<PData> {
     where
         F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
-        if let Some((_node_id, _ack)) = cxf(ack) {
-            // TODO! send an ack-delivery request to the pipeline controller
+        if let Some((node_id, ack)) = cxf(ack) {
+            let msg = PipelineControlMsg::DeliverAck { node_id, ack };
+            self.send_pipeline_control_msg(msg).await?
         }
         Ok(())
     }
 
     /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(&self, ack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
     where
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
-        if let Some((_node_id, _nack)) = cxf(ack) {
-            // TODO! send an nack-delivery request to the pipeline controller
+        if let Some((node_id, nack)) = cxf(nack) {
+            let msg = PipelineControlMsg::DeliverNack { node_id, nack };
+            self.send_pipeline_control_msg(msg).await?
         }
         Ok(())
     }
