@@ -8,7 +8,8 @@
 
 use crate::config::ReceiverConfig;
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel, AckMsg, NackMsg,
+    AckMsg, Controllable, NackMsg, NodeControlMsg, PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -26,27 +27,27 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Trait for preparing Ack/Nack messages with proper correlation data in tests.
-/// 
+///
 /// This trait abstracts the correlation preparation logic that would normally be
 /// handled by ConsumerEffectHandlerExtension::notify_ack/notify_nack in production.
 /// Pipeline-specific implementations can provide the proper correlation handling
 /// while keeping the test harness generic.
 pub trait TestCorrelationHandler<PData> {
     /// Prepare an AckMsg with proper correlation data for testing.
-    /// 
+    ///
     /// This simulates what ConsumerEffectHandlerExtension::notify_ack() does:
     /// - Extracts correlation information from the context stack
     /// - Sets appropriate calldata for routing back to the original requester
-    /// 
+    ///
     /// Returns None if no correlation subscriber is found (equivalent to next_ack returning None).
     fn prepare_ack(&self, data: PData) -> Option<(usize, AckMsg<PData>)>;
-    
+
     /// Prepare a NackMsg with proper correlation data for testing.
-    /// 
+    ///
     /// This simulates what ConsumerEffectHandlerExtension::notify_nack() does:
     /// - Extracts correlation information from the context stack  
     /// - Sets appropriate calldata for routing back to the original requester
-    /// 
+    ///
     /// Returns None if no correlation subscriber is found (equivalent to next_nack returning None).
     fn prepare_nack(&self, data: PData, reason: String) -> Option<(usize, NackMsg<PData>)>;
 }
@@ -148,48 +149,41 @@ impl<PData: Clone> NotSendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
     /// Automatically sends Ack/Nack response based on the configured behavior.
     pub async fn recv(&mut self) -> Result<PData, RecvError> {
-        println!("[TEST DEBUG] Validation waiting for message...");
         let data = self.pdata_receiver.recv().await?;
-        println!("[TEST DEBUG] Validation received message from receiver");
-        
+
         // Send automatic Ack/Nack response based on configuration
         match self.auto_ack_behavior {
             AutoAckBehavior::AlwaysAck => {
                 use crate::control::{AckMsg, NodeControlMsg};
-                
+
                 // Create basic AckMsg - the receiver will need to handle correlation properly
                 let ack_msg = AckMsg::new(data.clone());
-                println!("[TEST DEBUG] Sending auto-Ack back to receiver (basic version)");
                 if let Err(e) = self.control_sender.send(NodeControlMsg::Ack(ack_msg)).await {
-                    eprintln!("[TEST ERROR] Failed to send automatic Ack in test: {}", e);
                 } else {
-                    println!("[TEST DEBUG] Auto-Ack sent successfully");
                 }
-                
+
                 // TODO: For proper correlation, we need to use Context::next_ack()
                 // This requires access to otap-specific types not available in engine crate
             }
             AutoAckBehavior::AlwaysNack => {
                 use crate::control::{NackMsg, NodeControlMsg};
-                
-                // Create basic NackMsg - the receiver will need to handle correlation properly  
+
+                // Create basic NackMsg - the receiver will need to handle correlation properly
                 let nack_msg = NackMsg::new("Test configured to Nack", data.clone());
-                println!("[TEST DEBUG] Sending auto-Nack back to receiver (basic version)");
-                if let Err(e) = self.control_sender.send(NodeControlMsg::Nack(nack_msg)).await {
-                    eprintln!("[TEST ERROR] Failed to send automatic Nack in test: {}", e);
+                if let Err(e) = self
+                    .control_sender
+                    .send(NodeControlMsg::Nack(nack_msg))
+                    .await
+                {
                 } else {
-                    println!("[TEST DEBUG] Auto-Nack sent successfully");
                 }
-                
+
                 // TODO: For proper correlation, we need to use Context::next_nack()
                 // This requires access to otap-specific types not available in engine crate
             }
-            AutoAckBehavior::Manual => {
-                println!("[TEST DEBUG] Manual mode - no automatic response");
-            }
+            AutoAckBehavior::Manual => {}
         }
-        
-        println!("[TEST DEBUG] Returning message to validation");
+
         Ok(data)
     }
 
@@ -208,7 +202,6 @@ impl<PData: Clone> NotSendValidateContext<PData> {
     pub async fn send_prepared_ack(&mut self, data: PData) -> Result<(), Error> {
         if let Some(ref handler) = self.correlation_handler {
             if let Some((_node_id, prepared_ack)) = handler.prepare_ack(data) {
-                println!("[TEST DEBUG] Sending manually prepared Ack with proper correlation");
                 self.control_sender
                     .send(NodeControlMsg::Ack(prepared_ack))
                     .await
@@ -231,7 +224,6 @@ impl<PData: Clone> NotSendValidateContext<PData> {
     pub async fn send_prepared_nack(&mut self, data: PData, reason: String) -> Result<(), Error> {
         if let Some(ref handler) = self.correlation_handler {
             if let Some((_node_id, prepared_nack)) = handler.prepare_nack(data, reason) {
-                println!("[TEST DEBUG] Sending manually prepared Nack with proper correlation");
                 self.control_sender
                     .send(NodeControlMsg::Nack(prepared_nack))
                     .await
@@ -314,7 +306,7 @@ pub struct ValidationPhase<PData> {
     counters: CtrlMsgCounters,
 
     pdata_receiver: Receiver<PData>,
-    
+
     /// Control sender for sending Ack/Nack messages back to the receiver
     control_sender: Sender<NodeControlMsg<PData>>,
 
@@ -430,7 +422,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
-        
+
         ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -467,19 +459,19 @@ impl<PData> ValidationPhase<PData> {
             counters: self.counters,
             control_sender: self.control_sender.clone(),
             auto_ack_behavior: AutoAckBehavior::Manual, // Disable auto-ack for proper correlation
-            correlation_handler: None, // Default to no correlation handler
+            correlation_handler: None,                  // Default to no correlation handler
         };
 
         // Use select! to run validation concurrently with the LocalSet tasks
         self.rt.block_on(async move {
             tokio::select! {
                 biased;
-                
+
                 // Run the validation future
                 validation_result = future_fn(context) => {
                     validation_result
                 }
-                
+
                 // Run the local tasks (receiver and test scenario)
                 _ = self.local_tasks => {
                     panic!("LocalSet completed before validation finished")
