@@ -15,7 +15,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A context value
 #[repr(transparent)]
@@ -66,6 +66,7 @@ pub struct NackMsg<PData> {
     pub reason: String,
 
     /// Protocol-independent permanent status
+    /// TODO not currently written; only read by retry_processor.
     pub permanent: bool,
 
     /// Subscriber information returned.
@@ -179,6 +180,35 @@ pub enum PipelineControlMsg<PData> {
 
         /// Temporarily placed, see #1083. Placement is arbitrary.
         _temp: PhantomData<PData>,
+    },
+    /// Requests to delay a specific request.
+    DelayData {
+        /// Identifier of the node that will receive the delayed data
+        /// via its control channel. Generally this loops back to the
+        /// component issuing the delay, since nodes do not know other
+        /// node NodeIds and must call send_message() themselves after
+        /// the delay.
+        node_id: usize,
+        /// Request data.
+        data: Box<PData>,
+        /// When to resume.
+        when: Instant,
+    },
+    /// Requests to deliver an Ack.
+    DeliverAck {
+        /// Destination is computed by the calling node based on context
+        /// corresponding with the calldata already setup in the Ack.
+        node_id: usize,
+        /// Ack
+        ack: AckMsg<PData>,
+    },
+    /// Requests to deliver a Nack.
+    DeliverNack {
+        /// Destination is computed by the calling node based on context
+        /// corresponding with the calldata already setup in the Nack.
+        node_id: usize,
+        /// Nack
+        nack: NackMsg<PData>,
     },
     /// Requests shutdown of the pipeline.
     Shutdown {

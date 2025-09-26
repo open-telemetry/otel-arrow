@@ -148,38 +148,17 @@ impl<PData> TestContext<PData> {
 impl<PData: Clone> NotSendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
     /// Automatically sends Ack/Nack response based on the configured behavior.
-    pub async fn recv(&mut self) -> Result<PData, RecvError> {
+    pub async fn recv(&mut self) -> Result<PData, Error> {
         let data = self.pdata_receiver.recv().await?;
 
         // Send automatic Ack/Nack response based on configuration
         match self.auto_ack_behavior {
             AutoAckBehavior::AlwaysAck => {
-                use crate::control::{AckMsg, NodeControlMsg};
-
-                // Create basic AckMsg - the receiver will need to handle correlation properly
-                let ack_msg = AckMsg::new(data.clone());
-                if let Err(e) = self.control_sender.send(NodeControlMsg::Ack(ack_msg)).await {
-                } else {
-                }
-
-                // TODO: For proper correlation, we need to use Context::next_ack()
-                // This requires access to otap-specific types not available in engine crate
+                self.send_prepared_ack(data.clone()).await?;
             }
             AutoAckBehavior::AlwaysNack => {
-                use crate::control::{NackMsg, NodeControlMsg};
-
-                // Create basic NackMsg - the receiver will need to handle correlation properly
-                let nack_msg = NackMsg::new("Test configured to Nack", data.clone());
-                if let Err(e) = self
-                    .control_sender
-                    .send(NodeControlMsg::Nack(nack_msg))
-                    .await
-                {
-                } else {
-                }
-
-                // TODO: For proper correlation, we need to use Context::next_nack()
-                // This requires access to otap-specific types not available in engine crate
+                self.send_prepared_nack(data.clone(), "always nack".into())
+                    .await?;
             }
             AutoAckBehavior::Manual => {}
         }
