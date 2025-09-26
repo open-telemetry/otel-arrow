@@ -52,6 +52,13 @@ impl Expression for CollectionScalarExpression {
             CollectionScalarExpression::List(_) => "CollectionScalar(List)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            CollectionScalarExpression::Concat(c) => c.fmt_with_indent(f, indent),
+            CollectionScalarExpression::List(c) => c.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +213,13 @@ impl Expression for CombineScalarExpression {
     fn get_name(&self) -> &'static str {
         "CombineScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "Concat(Scalar): ")?;
+        self.values_expression
+            .fmt_with_indent(f, format!("{indent}                ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +280,33 @@ impl Expression for ListScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ListScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "List")?;
+        let values = &self.value_expressions;
+        if values.is_empty() {
+            writeln!(f, "{indent}└── Values: []")?;
+        } else {
+            for (i, v) in values.iter().enumerate() {
+                let last = i + 1 == values.len();
+                let header = format!("Values[{i}](Scalar): ");
+                if last {
+                    write!(f, "{indent}└── {header}")?;
+                    v.fmt_with_indent(
+                        f,
+                        format!("{indent}    {}", " ".repeat(header.len())).as_str(),
+                    )?;
+                } else {
+                    write!(f, "{indent}├── {header}")?;
+                    v.fmt_with_indent(
+                        f,
+                        format!("{indent}│   {}", " ".repeat(header.len())).as_str(),
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
