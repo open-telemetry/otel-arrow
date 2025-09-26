@@ -147,6 +147,29 @@ impl DebugProcessor {
             sequence: 0,
         })
     }
+
+    /// Common method to handle Ack and Nack messages with detailed information
+    async fn handle_ack_nack_message(
+        &self,
+        message_type: &str,
+        data: &DebugData,
+        num_items: usize,
+        writer: &mut OutputWriter,
+    ) -> Result<(), Error> {
+        let current_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("2025")
+            .as_millis() as usize;
+        
+        let elapsed_millis = current_time.saturating_sub(data.unix_millis);
+        
+        writer
+            .write(&format!(
+                "{} message received: sequence={}, elapsed_millis={}, num_items={}\n",
+                message_type, data.sequence, elapsed_millis, num_items
+            ))
+            .await
+    }
 }
 
 #[derive(Debug)]
@@ -216,14 +239,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     NodeControlMsg::Ack(ack) => {
                         let data: DebugData = ack.calldata.expect("valid").into();
-                        writer
-                            .write(format!("Ack message received: {:?}\n", &data).as_str())
+                        self.handle_ack_nack_message("Ack", &data, ack.accepted.num_items(), &mut writer)
                             .await?;
                     }
                     NodeControlMsg::Nack(nack) => {
                         let data: DebugData = nack.calldata.expect("valid").into();
-                        writer
-                            .write(format!("Nack message received: {:?}\n", &data).as_str())
+                        self.handle_ack_nack_message("Nack", &data, nack.refused.num_items(), &mut writer)
                             .await?;
                     }
                     NodeControlMsg::CollectTelemetry {
