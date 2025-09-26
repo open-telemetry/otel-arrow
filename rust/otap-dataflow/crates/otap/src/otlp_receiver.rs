@@ -152,7 +152,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         }
 
         let server = Server::builder()
-            .timeout(Duration::from_secs(30)) // Default server timeout - respects client grpc-timeout headers
+            .timeout(Duration::from_secs(30))
             .add_service(logs_service_server)
             .add_service(metrics_service_server)
             .add_service(trace_service_server);
@@ -168,7 +168,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             return Ok(());
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
-                            // Route Ack response to the correct correlation state based on signal type
                             let signal_type = ack_msg.accepted.signal_type();
                             let correlation_state = select_correlation_state(
                                 signal_type,
@@ -179,7 +178,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             route_ack_response(correlation_state, ack_msg);
                         },
                         Ok(NodeControlMsg::Nack(nack_msg)) => {
-                            // Route Nack response to the correct correlation state based on signal type
                             let signal_type = nack_msg.refused.signal_type();
                             let correlation_state = select_correlation_state(
                                 signal_type,

@@ -188,39 +188,20 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                         PipelineControlMsg::DeliverAck { node_id, ack } => {
                             if let Some(sender) = self.control_senders.get(node_id) {
-                                let msg = NodeControlMsg::Ack(ack);
-                                match sender.try_send(msg) {
-                                    Ok(()) => {}
-                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
-                                        let _ = sender.send(msg).await;
-                                    }
-                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
-                                }
-                            }
+                // ToDo error handling
+                                let _ = sender.send(NodeControlMsg::Ack(ack)).await;
+                }
                         }
                         PipelineControlMsg::DeliverNack { node_id, nack } => {
                             if let Some(sender) = self.control_senders.get(node_id) {
-                                let msg = NodeControlMsg::Nack(nack);
-                                match sender.try_send(msg) {
-                                    Ok(()) => {}
-                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
-                                        let _ = sender.send(msg).await;
-                                    }
-                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
-                                }
+                // ToDo error handling
+                                let _ = sender.send(NodeControlMsg::Nack(nack)).await;
                             }
                         }
                         PipelineControlMsg::DelayData { node_id, data, when } => {
-                            // Stub implementation: pass through immediately instead of delaying
+                            // ToDo: passing through immediately instead of delaying
                             if let Some(sender) = self.control_senders.get(node_id) {
-                                let msg = NodeControlMsg::DelayedData { data, when };
-                                match sender.try_send(msg) {
-                                    Ok(()) => {}
-                                    Err(otap_df_channel::error::SendError::Full(msg)) => {
-                                        let _ = sender.send(msg).await;
-                                    }
-                                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
-                                }
+                                let _ = sender.send(NodeControlMsg::DelayedData { data, when }).await;
                             }
                         }
                     }
