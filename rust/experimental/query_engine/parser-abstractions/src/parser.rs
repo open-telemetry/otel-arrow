@@ -235,6 +235,25 @@ impl ParserMapKeySchema {
     }
 }
 
+impl std::fmt::Display for ParserMapKeySchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v = match self {
+            ParserMapKeySchema::Any => "Any",
+            ParserMapKeySchema::Array => "Array",
+            ParserMapKeySchema::Boolean => "Boolean",
+            ParserMapKeySchema::DateTime => "DateTime",
+            ParserMapKeySchema::Double => "Double",
+            ParserMapKeySchema::Integer => "Integer",
+            ParserMapKeySchema::Map(_) => "Map",
+            ParserMapKeySchema::Regex => "Regex",
+            ParserMapKeySchema::String => "String",
+            ParserMapKeySchema::TimeSpan => "TimeSpan",
+        };
+
+        write!(f, "{v}")
+    }
+}
+
 impl TryFrom<&str> for ParserMapKeySchema {
     type Error = ();
 
