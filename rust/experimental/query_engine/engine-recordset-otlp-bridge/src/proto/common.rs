@@ -217,7 +217,7 @@ impl ArrayValue for ByteArrayValueStorage {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+    fn get(&self, index: usize) -> Option<&dyn AsValue> {
         self.values.get(index).map(|v| v as &dyn AsValue)
     }
 

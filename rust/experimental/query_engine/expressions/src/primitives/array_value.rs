@@ -10,7 +10,7 @@ pub trait ArrayValue: Debug {
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)>;
+    fn get(&self, index: usize) -> Option<&dyn AsValue>;
 
     // Note: Used to update the RefCell borrow when accessing sub-elements of
     // the source or variables which use interior mutability. In arrays that

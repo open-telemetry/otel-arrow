@@ -173,7 +173,7 @@ impl Default for Producer {
 mod test {
     use crate::Consumer;
     use crate::otap::{Logs, from_record_messages};
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::schema::{FieldExt, consts};
 
     use super::*;

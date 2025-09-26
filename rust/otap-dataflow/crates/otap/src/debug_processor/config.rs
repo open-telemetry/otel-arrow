@@ -3,11 +3,13 @@
 
 //! Implementation of the configuration of the debug processor
 
+use super::filter::FilterRules;
 use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashSet;
 
 /// Enum that allows the user to specify how much information they want displayed
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verbosity {
     /// displays the number of received signals + extracts all of the fields in the signal object
@@ -18,8 +20,17 @@ pub enum Verbosity {
     Basic,
 }
 
+/// Enum that describes how the output should be handled
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    /// output the whole batch at once
+    Batch,
+    /// output per signal
+    Signal,
+}
 /// Enum that defines which signals to debug for
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalActive {
     Metrics,
@@ -28,13 +39,17 @@ pub enum SignalActive {
 }
 
 /// Defines the settings of the debug processor, controls the level of verbosity the processor outputs
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
+    #[serde(default = "default_output_mode")]
+    mode: OutputMode,
     #[serde(default = "default_active_signal")]
     signals: HashSet<SignalActive>,
+    #[serde(default = "default_filters")]
+    filters: Vec<FilterRules>,
 }
 
 fn default_verbosity() -> Verbosity {
@@ -48,11 +63,30 @@ fn default_active_signal() -> HashSet<SignalActive> {
         SignalActive::Spans,
     ])
 }
+
+fn default_filters() -> Vec<FilterRules> {
+    Vec::new()
+}
+
+fn default_output_mode() -> OutputMode {
+    OutputMode::Batch
+}
+
 impl Config {
     /// Create a new Config object
     #[must_use]
-    pub fn new(verbosity: Verbosity, signals: HashSet<SignalActive>) -> Self {
-        Self { verbosity, signals }
+    pub fn new(
+        verbosity: Verbosity,
+        mode: OutputMode,
+        signals: HashSet<SignalActive>,
+        filters: Vec<FilterRules>,
+    ) -> Self {
+        Self {
+            verbosity,
+            mode,
+            signals,
+            filters,
+        }
     }
     /// get the verbosity level
     #[must_use]
@@ -65,13 +99,25 @@ impl Config {
     pub const fn signals(&self) -> &HashSet<SignalActive> {
         &self.signals
     }
+
+    #[must_use]
+    pub const fn mode(&self) -> OutputMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub const fn filters(&self) -> &Vec<FilterRules> {
+        &self.filters
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             verbosity: default_verbosity(),
+            mode: default_output_mode(),
             signals: default_active_signal(),
+            filters: default_filters(),
         }
     }
 }

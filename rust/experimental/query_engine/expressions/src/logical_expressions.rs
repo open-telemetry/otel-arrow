@@ -28,9 +28,11 @@ pub enum LogicalExpression {
     /// Returns true if the inner logical expression returns false.
     Not(NotLogicalExpression),
 
-    /// Returns the result of a sequence of logical expressions chained using
-    /// logical `AND(&&)` and/or `OR(||)` operations.
-    Chain(ChainLogicalExpression),
+    /// Returns true if both of the inner logical expressions return true.
+    And(AndLogicalExpression),
+
+    /// Returns true if either of the inner logical expressions return true.
+    Or(OrLogicalExpression),
 
     /// Returns true if the haystack contains the needle.
     Contains(ContainsLogicalExpression),
@@ -50,7 +52,8 @@ impl LogicalExpression {
             LogicalExpression::GreaterThan(g) => g.try_resolve_static(scope),
             LogicalExpression::GreaterThanOrEqualTo(g) => g.try_resolve_static(scope),
             LogicalExpression::Not(n) => n.try_resolve_static(scope),
-            LogicalExpression::Chain(c) => c.try_resolve_static(scope),
+            LogicalExpression::And(a) => a.try_resolve_static(scope),
+            LogicalExpression::Or(o) => o.try_resolve_static(scope),
             LogicalExpression::Contains(c) => c.try_resolve_static(scope),
             LogicalExpression::Matches(m) => m.try_resolve_static(scope),
         }? {
@@ -90,6 +93,21 @@ impl LogicalExpression {
             Ok(None)
         }
     }
+
+    fn fmt_binary_with_indent(
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+        name: &str,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+    ) -> std::fmt::Result {
+        writeln!(f, "{name}")?;
+        write!(f, "{indent}├── Left(Scalar): ")?;
+        left.fmt_with_indent(f, format!("{indent}│                 ").as_str())?;
+        write!(f, "{indent}└── Right(Scalar): ")?;
+        right.fmt_with_indent(f, format!("{indent}                   ").as_str())?;
+        Ok(())
+    }
 }
 
 impl Expression for LogicalExpression {
@@ -100,7 +118,8 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThan(g) => g.get_query_location(),
             LogicalExpression::GreaterThanOrEqualTo(g) => g.get_query_location(),
             LogicalExpression::Not(n) => n.get_query_location(),
-            LogicalExpression::Chain(c) => c.get_query_location(),
+            LogicalExpression::And(a) => a.get_query_location(),
+            LogicalExpression::Or(o) => o.get_query_location(),
             LogicalExpression::Contains(c) => c.get_query_location(),
             LogicalExpression::Matches(m) => m.get_query_location(),
         }
@@ -113,106 +132,186 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThan(_) => "LogicalExpression(GreaterThan)",
             LogicalExpression::GreaterThanOrEqualTo(_) => "LogicalExpression(GreaterThanOrEqualTo)",
             LogicalExpression::Not(_) => "LogicalExpression(Not)",
-            LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
+            LogicalExpression::And(_) => "LogicalExpression(And)",
+            LogicalExpression::Or(_) => "LogicalExpression(Or)",
             LogicalExpression::Contains(_) => "LogicalExpression(Contains)",
             LogicalExpression::Matches(_) => "LogicalExpression(Matches)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            LogicalExpression::Scalar(s) => s.fmt_with_indent(f, indent),
+            LogicalExpression::EqualTo(e) => {
+                Self::fmt_binary_with_indent(f, indent, "EqualTo", &e.left, &e.right)
+            }
+            LogicalExpression::GreaterThan(g) => {
+                Self::fmt_binary_with_indent(f, indent, "GreaterThan", &g.left, &g.right)
+            }
+            LogicalExpression::GreaterThanOrEqualTo(g) => {
+                Self::fmt_binary_with_indent(f, indent, "GreaterThanOrEqualTo", &g.left, &g.right)
+            }
+            LogicalExpression::Not(n) => n.fmt_with_indent(f, indent),
+            LogicalExpression::And(a) => a.fmt_with_indent(f, indent),
+            LogicalExpression::Or(o) => o.fmt_with_indent(f, indent),
+            LogicalExpression::Contains(c) => c.fmt_with_indent(f, indent),
+            LogicalExpression::Matches(m) => m.fmt_with_indent(f, indent),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChainLogicalExpression {
+pub struct AndLogicalExpression {
     query_location: QueryLocation,
-    first_expression: Box<LogicalExpression>,
-    chain_expressions: Vec<ChainedLogicalExpression>,
+    left: Box<LogicalExpression>,
+    right: Box<LogicalExpression>,
 }
 
-impl ChainLogicalExpression {
+impl AndLogicalExpression {
     pub fn new(
         query_location: QueryLocation,
-        first_expression: LogicalExpression,
-    ) -> ChainLogicalExpression {
+        left: LogicalExpression,
+        right: LogicalExpression,
+    ) -> AndLogicalExpression {
         Self {
             query_location,
-            first_expression: first_expression.into(),
-            chain_expressions: Vec::new(),
+            left: left.into(),
+            right: right.into(),
         }
     }
 
-    pub fn push_or(&mut self, expression: LogicalExpression) {
-        self.chain_expressions
-            .push(ChainedLogicalExpression::Or(expression));
+    pub fn get_left(&self) -> &LogicalExpression {
+        &self.left
     }
 
-    pub fn push_and(&mut self, expression: LogicalExpression) {
-        self.chain_expressions
-            .push(ChainedLogicalExpression::And(expression));
-    }
-
-    pub fn get_expressions(&self) -> (&LogicalExpression, &[ChainedLogicalExpression]) {
-        (&self.first_expression, &self.chain_expressions)
+    pub fn get_right(&self) -> &LogicalExpression {
+        &self.right
     }
 
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> ScalarStaticResolutionResult<'_> {
-        if let Some(b) = self.first_expression.try_resolve_static(scope)? {
-            let mut result = b;
+        let left = self.left.try_resolve_static(scope)?;
+        let right = self.right.try_resolve_static(scope)?;
 
-            for c in &mut self.chain_expressions {
-                match c {
-                    ChainedLogicalExpression::Or(or) => {
-                        if result {
-                            // Short-circuiting chain because left-hand side of OR is true
-                            break;
-                        }
-
-                        match or.try_resolve_static(scope)? {
-                            Some(b) => result = b,
-                            None => return Ok(None),
-                        }
-                    }
-                    ChainedLogicalExpression::And(and) => {
-                        if !result {
-                            // Short-circuiting chain because left-hand side of AND is false
-                            break;
-                        }
-
-                        match and.try_resolve_static(scope)? {
-                            Some(b) => result = b,
-                            None => return Ok(None),
-                        }
-                    }
-                }
-            }
-
-            Ok(Some(ResolvedStaticScalarExpression::Computed(
+        Ok(match left {
+            None => None,
+            Some(false) => Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                     self.query_location.clone(),
-                    result,
+                    false,
                 )),
-            )))
-        } else {
-            Ok(None)
-        }
+            )),
+            Some(true) => match right {
+                None => None,
+                Some(v) => Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.query_location.clone(),
+                        v,
+                    )),
+                )),
+            },
+        })
     }
 }
 
-impl Expression for ChainLogicalExpression {
+impl Expression for AndLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 
     fn get_name(&self) -> &'static str {
-        "ChainLogicalExpression"
+        "AndLogicalExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "And")?;
+        write!(f, "{indent}├── Left(Logical): ")?;
+        self.left
+            .fmt_with_indent(f, format!("{indent}│                  ").as_str())?;
+        write!(f, "{indent}└── Right(Logical): ")?;
+        self.right
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ChainedLogicalExpression {
-    Or(LogicalExpression),
-    And(LogicalExpression),
+pub struct OrLogicalExpression {
+    query_location: QueryLocation,
+    left: Box<LogicalExpression>,
+    right: Box<LogicalExpression>,
+}
+
+impl OrLogicalExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        left: LogicalExpression,
+        right: LogicalExpression,
+    ) -> OrLogicalExpression {
+        Self {
+            query_location,
+            left: left.into(),
+            right: right.into(),
+        }
+    }
+
+    pub fn get_left(&self) -> &LogicalExpression {
+        &self.left
+    }
+
+    pub fn get_right(&self) -> &LogicalExpression {
+        &self.right
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let left = self.left.try_resolve_static(scope)?;
+        let right = self.right.try_resolve_static(scope)?;
+
+        Ok(match left {
+            None => None,
+            Some(true) => Some(ResolvedStaticScalarExpression::Computed(
+                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    self.query_location.clone(),
+                    true,
+                )),
+            )),
+            Some(false) => match right {
+                None => None,
+                Some(v) => Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        self.query_location.clone(),
+                        v,
+                    )),
+                )),
+            },
+        })
+    }
+}
+
+impl Expression for OrLogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "OrLogicalExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Or")?;
+        write!(f, "{indent}├── Left(Logical): ")?;
+        self.left
+            .fmt_with_indent(f, format!("{indent}│                  ").as_str())?;
+        write!(f, "{indent}└── Right(Logical): ")?;
+        self.right
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -456,6 +555,13 @@ impl Expression for NotLogicalExpression {
     fn get_name(&self) -> &'static str {
         "NotLogicalExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "Not(Logical): ")?;
+        self.inner_expression
+            .fmt_with_indent(f, format!("{indent}              ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -531,6 +637,18 @@ impl Expression for ContainsLogicalExpression {
     fn get_name(&self) -> &'static str {
         "ContainsLogicalExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Contains")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Needle(Scalar): ")?;
+        self.needle
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        writeln!(f, "{indent}└── CaseInsensitive: {}", self.case_insensitive)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -590,6 +708,17 @@ impl Expression for MatchesLogicalExpression {
 
     fn get_name(&self) -> &'static str {
         "MatchesLogicalExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Matches")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}└── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+        Ok(())
     }
 }
 
@@ -823,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_try_resolve_static() {
+    fn test_and_or_try_resolve_static() {
         let run_test = |mut input: LogicalExpression, expected: Option<bool>| {
             let pipeline: PipelineExpression = Default::default();
 
@@ -834,9 +963,54 @@ mod tests {
             assert_eq!(expected, r)
         };
 
+        // true || now() will evaluate to true because now() gets short-circuited
         run_test(
-            LogicalExpression::Chain(ChainLogicalExpression::new(
+            LogicalExpression::Or(OrLogicalExpression::new(
                 QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Temporal(
+                    TemporalScalarExpression::Now(NowScalarExpression::new(
+                        QueryLocation::new_fake(),
+                    )),
+                )),
+            )),
+            Some(true),
+        );
+
+        // flase && now() will evaluate to false because now() gets short-circuited
+        run_test(
+            LogicalExpression::And(AndLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Temporal(
+                    TemporalScalarExpression::Now(NowScalarExpression::new(
+                        QueryLocation::new_fake(),
+                    )),
+                )),
+            )),
+            Some(false),
+        );
+
+        // false || true evaluates to true
+        run_test(
+            LogicalExpression::Or(OrLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -847,77 +1021,25 @@ mod tests {
             Some(true),
         );
 
+        // true && true evaluates to true
         run_test(
-            LogicalExpression::Chain(ChainLogicalExpression::new(
+            LogicalExpression::And(AndLogicalExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Temporal(
-                    TemporalScalarExpression::Now(NowScalarExpression::new(
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
                     )),
                 )),
             )),
-            None,
+            Some(true),
         );
-
-        let mut c1 = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            ))),
-        );
-
-        c1.push_or(LogicalExpression::Scalar(ScalarExpression::Temporal(
-            TemporalScalarExpression::Now(NowScalarExpression::new(QueryLocation::new_fake())),
-        )));
-
-        // true || now() will evaluate to true because now() gets short-circuited
-        run_test(LogicalExpression::Chain(c1), Some(true));
-
-        let mut c2 = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
-            ))),
-        );
-
-        c2.push_and(LogicalExpression::Scalar(ScalarExpression::Temporal(
-            TemporalScalarExpression::Now(NowScalarExpression::new(QueryLocation::new_fake())),
-        )));
-
-        // flase && now() will evaluate to false because now() gets short-circuited
-        run_test(LogicalExpression::Chain(c2), Some(false));
-
-        let mut c3 = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
-            ))),
-        );
-
-        c3.push_or(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                true,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(c3), Some(true));
-
-        let mut c4 = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            ))),
-        );
-
-        c4.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                true,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(c4), Some(true));
     }
 
     #[test]

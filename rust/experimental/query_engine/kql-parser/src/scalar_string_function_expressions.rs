@@ -7,7 +7,24 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_strlen_expression(
+pub(crate) fn parse_string_expressions(
+    string_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = string_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::strlen_expression => parse_strlen_expression(rule, scope),
+        Rule::replace_string_expression => parse_replace_string_expression(rule, scope),
+        Rule::substring_expression => parse_substring_expression(rule, scope),
+        Rule::strcat_expression => parse_strcat_expression(rule, scope),
+        Rule::strcat_delim_expression => parse_strcat_delim_expression(rule, scope),
+        Rule::extract_expression => parse_extract_expression(rule, scope),
+        _ => panic!("Unexpected rule in string_expressions_rule: {rule}"),
+    }
+}
+
+fn parse_strlen_expression(
     strlen_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -35,7 +52,7 @@ pub(crate) fn parse_strlen_expression(
     )))
 }
 
-pub(crate) fn parse_replace_string_expression(
+fn parse_replace_string_expression(
     replace_string_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -75,7 +92,7 @@ pub(crate) fn parse_replace_string_expression(
     }
 }
 
-pub(crate) fn parse_substring_expression(
+fn parse_substring_expression(
     substring_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -125,13 +142,17 @@ pub(crate) fn parse_substring_expression(
     )))
 }
 
-pub(crate) fn parse_strcat_expression(
+fn parse_strcat_expression(
     strcat_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strcat_expression_rule);
 
-    let strcat_rules = strcat_expression_rule.into_inner();
+    let strcat_rules = strcat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 
@@ -151,7 +172,7 @@ pub(crate) fn parse_strcat_expression(
     )))
 }
 
-pub(crate) fn parse_strcat_delim_expression(
+fn parse_strcat_delim_expression(
     strcat_delim_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -180,7 +201,7 @@ pub(crate) fn parse_strcat_delim_expression(
     )))
 }
 
-pub(crate) fn parse_extract_expression(
+fn parse_extract_expression(
     extract_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
