@@ -58,10 +58,14 @@ pub fn parse_kql_query_into_pipeline(
 
         log_record_schema = log_record_schema.with_key_definition(
             "Attributes",
-            ParserMapKeySchema::Map(Some(attributes_schema)));
+            ParserMapKeySchema::Map(Some(attributes_schema)),
+        );
     }
 
-    KqlParser::parse_with_options(query, parser_options.with_source_map_schema(log_record_schema))
+    KqlParser::parse_with_options(
+        query,
+        parser_options.with_source_map_schema(log_record_schema),
+    )
 }
 
 pub fn register_pipeline_for_kql_query(
