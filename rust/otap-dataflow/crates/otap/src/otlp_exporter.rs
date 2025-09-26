@@ -182,10 +182,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             // Note! We could clone the bytes (or not subject to TODO above)
                             // and return it in the Ack or Nack.
                             // For here and now, returning the original otap_batch.
-                            let mut saved: OtapPayload = otap_batch.into();
+                            let saved: OtapPayload = otap_batch.into();
                             match logs_client.export(bytes).await {
                                 Ok(_ignored) => {
-                                    _ = saved.take_payload(); // Dump payload
                                     effect_handler
                                         .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
                                         .await?;
@@ -216,10 +215,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
-                            let mut saved: OtapPayload = otap_batch.into();
+                            let saved: OtapPayload = otap_batch.into();
                             match metrics_client.export(bytes).await {
                                 Ok(_ignored) => {
-                                    _ = saved.take_payload(); // Dump payload
                                     effect_handler
                                         .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
                                         .await?;
@@ -250,10 +248,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
-                            let mut saved: OtapPayload = otap_batch.into();
+                            let saved: OtapPayload = otap_batch.into();
                             match trace_client.export(bytes).await {
                                 Ok(_ignored) => {
-                                    _ = saved.take_payload(); // Dump payload
                                     effect_handler
                                         .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
                                         .await?;
@@ -275,12 +272,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             // TODO: This is a clone of the bytes used for responding in the Nack. It's
                             // an unnecessary clone in the Ack case, but we ought to borrow a slice for
                             // the export(), in which case this clone wouldn't be required.
-                            let mut saved: OtapPayload = service_req.clone().into();
+                            let saved: OtapPayload = service_req.clone().into();
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     match logs_client.export(bytes).await {
                                         Ok(_ignored) => {
-                                            _ = saved.take_payload(); // Dump payload
                                             effect_handler
                                                 .notify_ack(AckMsg::new(OtapPdata::new(
                                                     context, saved,
@@ -300,33 +296,30 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         }
                                     }
                                 }
-                                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    match metrics_client.export(bytes).await {
-                                        Ok(_ignored) => {
-                                            _ = saved.take_payload(); // Dump payload
-                                            effect_handler
-                                                .notify_ack(AckMsg::new(OtapPdata::new(
-                                                    context, saved,
-                                                )))
-                                                .await?;
-                                            self.pdata_metrics.metrics_exported.inc();
-                                        }
-                                        Err(e) => {
-                                            let estr = e.to_string();
-                                            effect_handler
-                                                .notify_nack(NackMsg::new(
-                                                    &estr,
-                                                    OtapPdata::new(context, saved),
-                                                ))
-                                                .await?;
-                                            self.pdata_metrics.metrics_failed.inc();
-                                        }
+                                OtlpProtoBytes::ExportMetricsRequest(bytes) => match metrics_client
+                                    .export(bytes)
+                                    .await
+                                {
+                                    Ok(_ignored) => {
+                                        effect_handler
+                                            .notify_ack(AckMsg::new(OtapPdata::new(context, saved)))
+                                            .await?;
+                                        self.pdata_metrics.metrics_exported.inc();
                                     }
-                                }
+                                    Err(e) => {
+                                        let estr = e.to_string();
+                                        effect_handler
+                                            .notify_nack(NackMsg::new(
+                                                &estr,
+                                                OtapPdata::new(context, saved),
+                                            ))
+                                            .await?;
+                                        self.pdata_metrics.metrics_failed.inc();
+                                    }
+                                },
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
                                     match trace_client.export(bytes).await {
                                         Ok(_ignored) => {
-                                            _ = saved.take_payload(); // Dump payload
                                             effect_handler
                                                 .notify_ack(AckMsg::new(OtapPdata::new(
                                                     context, saved,
