@@ -18,6 +18,9 @@ pub enum ParserError {
         diagnostic_id: &'static str,
         message: String,
     },
+
+    #[error("{0}")]
+    SchemaError(String),
 }
 
 impl From<&ExpressionError> for ParserError {
