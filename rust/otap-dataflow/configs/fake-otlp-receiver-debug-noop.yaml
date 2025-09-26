@@ -1,0 +1,75 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  # Fake signal generator
+  fake_generator:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - otlp_exporter
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        signals_per_second: 10
+        max_signal_count: 100
+        metric_weight: 30
+        trace_weight: 30
+        log_weight: 30
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+  # OTLP Exporter (sends via gRPC to OTLP receiver)
+  otlp_exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otlp:exporter"
+    config:
+      grpc_endpoint: "http://127.0.0.1:4317"
+
+  # OTLP Receiver (receives gRPC calls from OTLP exporter)
+  otlp_receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - debug_processor
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4317"
+
+  # Debug processor (logs received data)
+  debug_processor:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - retry_processor
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
+
+  # Retry processor (tests Ack/Nack delivery mechanism)
+  retry_processor:
+    kind: processor
+    plugin_urn: "urn:otap:processor:retry_processor"
+    out_ports:
+      out_port:
+        destinations:
+          - noop_exporter
+        dispatch_strategy: round_robin
+    config:
+      max_retries: 2
+      initial_retry_delay_ms: 100
+      max_retry_delay_ms: 1000
+      backoff_multiplier: 1.5
+
+  # Noop exporter (discards data)
+  noop_exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
