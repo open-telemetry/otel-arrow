@@ -35,7 +35,6 @@ use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
@@ -45,20 +44,16 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otap::{
-    OtapArrowRecords,
-    transform::{
-        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
-    },
-};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_rust::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) mod metrics;
+pub(crate) mod shared;
 use self::metrics::AttributesProcessorMetrics;
+use self::shared::{AttributesProcessorTrait, process_attributes};
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otap:processor:attributes_processor";
@@ -157,12 +152,12 @@ impl AttributesProcessor {
             }
         }
 
-        let domains = parse_apply_to(config.apply_to.as_ref());
+        let domains = shared::parse_apply_to(config.apply_to.as_ref());
 
         // Pre-compute domain checks
-        let has_resource_domain = domains.contains(&ApplyDomain::Resource);
-        let has_scope_domain = domains.contains(&ApplyDomain::Scope);
-        let has_signal_domain = domains.contains(&ApplyDomain::Signal);
+        let has_resource_domain = domains.contains(&shared::ApplyDomain::Resource);
+        let has_scope_domain = domains.contains(&shared::ApplyDomain::Scope);
+        let has_signal_domain = domains.contains(&shared::ApplyDomain::Signal);
 
         // TODO: Optimize action composition into a valid AttributesTransform that
         // still reflects the user's intended semantics. Consider:
@@ -198,80 +193,23 @@ impl AttributesProcessor {
             metrics: None,
         })
     }
+}
 
-    #[inline]
-    const fn is_noop(&self) -> bool {
-        self.transform.rename.is_none() && self.transform.delete.is_none()
+impl AttributesProcessorTrait for AttributesProcessor {
+    fn transform(&self) -> &AttributesTransform {
+        &self.transform
     }
 
-    #[inline]
-    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
-        use payload_sets::*;
-
-        match (
+    fn domain_flags(&self) -> (bool, bool, bool) {
+        (
             self.has_resource_domain,
             self.has_scope_domain,
             self.has_signal_domain,
-            signal,
-        ) {
-            // Empty cases
-            (false, false, false, _) => EMPTY,
-
-            // Signal only
-            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
-            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
-            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-
-            // Resource only
-            (true, false, false, _) => RESOURCE_ONLY,
-
-            // Scope only
-            (false, true, false, _) => SCOPE_ONLY,
-
-            // Resource + Signal
-            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-
-            // Scope + Signal
-            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-
-            // Resource + Scope (no signal)
-            (true, true, false, _) => RESOURCE_SCOPE,
-
-            // All three
-            (true, true, true, SignalType::Logs) => LOGS_ALL,
-            (true, true, true, SignalType::Metrics) => METRICS_ALL,
-            (true, true, true, SignalType::Traces) => TRACES_ALL,
-        }
+        )
     }
 
-    #[allow(clippy::result_large_err)]
-    fn apply_transform_with_stats(
-        &self,
-        records: &mut OtapArrowRecords,
-        signal: SignalType,
-    ) -> Result<(u64, u64), EngineError> {
-        let mut deleted_total: u64 = 0;
-        let mut renamed_total: u64 = 0;
-
-        // Only apply if we have transforms to apply
-        if !self.is_noop() {
-            let payloads = self.attrs_payloads(signal);
-            for &payload_ty in payloads {
-                if let Some(rb) = records.get(payload_ty) {
-                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
-                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                    deleted_total += stats.deleted_entries;
-                    renamed_total += stats.renamed_entries;
-                    records.set(payload_ty, rb);
-                }
-            }
-        }
-
-        Ok((deleted_total, renamed_total))
+    fn metrics_mut(&mut self) -> &mut Option<MetricSet<AttributesProcessorMetrics>> {
+        &mut self.metrics
     }
 }
 
@@ -282,130 +220,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        match msg {
-            Message::Control(control_msg) => match control_msg {
-                otap_df_engine::control::NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } => {
-                    if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(metrics);
-                    }
-                    Ok(())
-                }
-                _ => Ok(()),
-            },
-            Message::PData(pdata) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.msgs_consumed.inc();
-                }
-
-                // Fast path: no actions to apply
-                if self.is_noop() {
-                    let res = effect_handler
-                        .send_message(pdata)
-                        .await
-                        .map_err(|e| e.into());
-                    if res.is_ok() {
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.msgs_forwarded.inc();
-                        }
-                    }
-                    return res;
-                }
-
-                let signal = pdata.signal_type();
-                let (context, payload) = pdata.into_parts();
-
-                let mut records: OtapArrowRecords = payload.try_into()?;
-
-                // Update domain counters (count once per message when domains are enabled)
-                if let Some(m) = self.metrics.as_mut() {
-                    if self.has_resource_domain {
-                        m.domains_resource.inc();
-                    }
-                    if self.has_scope_domain {
-                        m.domains_scope.inc();
-                    }
-                    if self.has_signal_domain {
-                        m.domains_signal.inc();
-                    }
-                }
-                // Apply transform across selected domains and collect exact stats
-                match self.apply_transform_with_stats(&mut records, signal) {
-                    Ok((deleted_total, renamed_total)) => {
-                        if let Some(m) = self.metrics.as_mut() {
-                            if deleted_total > 0 {
-                                m.deleted_entries.add(deleted_total);
-                            }
-                            if renamed_total > 0 {
-                                m.renamed_entries.add(renamed_total);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.transform_failed.inc();
-                        }
-                        return Err(e);
-                    }
-                }
-
-                let res = effect_handler
-                    .send_message(OtapPdata::new(context, records.into()))
-                    .await
-                    .map_err(|e| e.into());
-                if res.is_ok() {
-                    if let Some(m) = self.metrics.as_mut() {
-                        m.msgs_forwarded.inc();
-                    }
-                }
-                res
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ApplyDomain {
-    Signal,
-    Resource,
-    Scope,
-}
-
-fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
-    let mut set = HashSet::new();
-    match apply_to {
-        None => {
-            let _ = set.insert(ApplyDomain::Signal);
-        }
-        Some(list) => {
-            for item in list {
-                match item.as_str() {
-                    "signal" => {
-                        let _ = set.insert(ApplyDomain::Signal);
-                    }
-                    "resource" => {
-                        let _ = set.insert(ApplyDomain::Resource);
-                    }
-                    "scope" => {
-                        let _ = set.insert(ApplyDomain::Scope);
-                    }
-                    _ => {
-                        // Unknown entry: ignore for now; could return config error in future
-                    }
-                }
-            }
-            if set.is_empty() {
-                let _ = set.insert(ApplyDomain::Signal);
-            }
-        }
-    }
-    set
-}
-
-fn engine_err(msg: &str) -> EngineError {
-    EngineError::PdataConversionError {
-        error: msg.to_string(),
+        process_attributes(self, msg, effect_handler).await
     }
 }
 
@@ -443,132 +258,23 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
         },
     };
 
-// Pre-computed arrays for all domain combinations
-mod payload_sets {
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
-
-    pub(super) const EMPTY: &[A] = &[];
-
-    // Signal only
-    pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
-    pub(super) const METRICS_SIGNAL: &[A] = &[
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
-
-    // Resource only
-    pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
-
-    // Scope only
-    pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
-
-    // Resource + Signal
-    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
-    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Scope + Signal
-    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Resource + Scope
-    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
-
-    // All three: Resource + Scope + Signal
-    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-}
-
 #[cfg(test)]
 mod tests {
+    use super::shared::test::{build_logs_with_attrs, run_test_processor};
     use super::*;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use prost::Message as _;
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use serde_json::json;
 
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::{
-        collector::logs::v1::ExportLogsServiceRequest,
-        common::v1::{AnyValue, InstrumentationScope, KeyValue},
-        logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-        resource::v1::Resource,
-    };
-
-    fn build_logs_with_attrs(
-        res_attrs: Vec<KeyValue>,
-        scope_attrs: Vec<KeyValue>,
-        log_attrs: Vec<KeyValue>,
-    ) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource {
-                attributes: res_attrs,
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope {
-                    attributes: scope_attrs,
-                    ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
-                        .attributes(log_attrs)
-                        .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-        ])
+    fn run_processor(
+        cfg: Value,
+        input: otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest,
+    ) -> otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest {
+        run_test_processor(
+            ATTRIBUTES_PROCESSOR_URN,
+            cfg,
+            input,
+            create_attributes_processor,
+        )
     }
 
     #[test]
@@ -600,80 +306,33 @@ mod tests {
                 KeyValue::new("b", AnyValue::new_string("keep")),
             ],
         );
-
         let cfg = json!({
             "actions": [
                 {"action": "rename", "source_key": "a", "destination_key": "b"}
             ]
         });
-
-        // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        // Set up processor test runtime and run one message
-        let node = test_node("attributes-processor-test");
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        node_config.config = cfg;
-        let proc =
-            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
-        let phase = rt.set_processor(proc);
-
-        phase
-            .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
-                input.encode(&mut bytes).expect("encode");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(pdata_in))
-                    .await
-                    .expect("process");
-
-                // capture output
-                let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
-
-                // Convert output to OTLP bytes for easy assertions
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
-                let bytes = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(b) => b,
-                    _ => panic!("unexpected otlp variant"),
-                };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
-
-                // Resource should still have key "a"
-                let res_attrs = &decoded.resource_logs[0]
-                    .resource
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(!res_attrs.iter().any(|kv| kv.key == "b"));
-
-                // Scope should still have key "a"
-                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(!scope_attrs.iter().any(|kv| kv.key == "b"));
-
-                // Log attrs should have renamed to "b"
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(log_attrs.iter().any(|kv| kv.key == "b"));
-                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
-            })
-            .validate(|_| async move {});
+        let result = run_processor(cfg, input);
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(!res_attrs.iter().any(|kv| kv.key == "b"));
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(!scope_attrs.iter().any(|kv| kv.key == "b"));
+        let log_attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+        assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
     }
 
     #[test]
     fn test_delete_applies_to_signal_only_by_default() {
-        // Prepare input with same key present in resource, scope, and log attrs
         let input = build_logs_with_attrs(
             vec![KeyValue::new("a", AnyValue::new_string("rv"))],
             vec![KeyValue::new("a", AnyValue::new_string("sv"))],
@@ -682,79 +341,31 @@ mod tests {
                 KeyValue::new("b", AnyValue::new_string("keep")),
             ],
         );
-
         let cfg = json!({
             "actions": [
                 {"action": "delete", "key": "a"}
             ]
         });
-
-        // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        let node = test_node("attributes-processor-delete-test");
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        node_config.config = cfg;
-        let proc =
-            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
-        let phase = rt.set_processor(proc);
-
-        phase
-            .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
-                input.encode(&mut bytes).expect("encode");
-                let pdata_in = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(pdata_in))
-                    .await
-                    .expect("process");
-
-                let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
-
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
-                let bytes = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(b) => b,
-                    _ => panic!("unexpected otlp variant"),
-                };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
-
-                // Resource should still have key "a"
-                let res_attrs = &decoded.resource_logs[0]
-                    .resource
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
-
-                // Scope should still have key "a"
-                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
-                // Log attrs should have deleted "a" but still contain other keys
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(log_attrs.iter().any(|kv| {
-                    if kv.key != "b" { return false; }
-                    match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-                        Some(otel_arrow_rust::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
-                        _ => false,
-                    }
-                }));
-            })
-            .validate(|_| async move {});
+        let result = run_processor(cfg, input);
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+        let log_attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(log_attrs.iter().any(|kv| kv.key == "b"));
     }
 
     #[test]
     fn test_delete_scoped_to_resource_only_logs() {
-        // Resource has 'a', scope has 'a', log has 'a' and another key to keep batch non-empty
         let input = build_logs_with_attrs(
             vec![
                 KeyValue::new("a", AnyValue::new_string("rv")),
@@ -766,70 +377,29 @@ mod tests {
                 KeyValue::new("b", AnyValue::new_string("keep")),
             ],
         );
-
         let cfg = json!({
             "actions": [ {"action": "delete", "key": "a"} ],
             "apply_to": ["resource"]
         });
-
-        // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        let node = test_node("attributes-processor-delete-resource");
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        node_config.config = cfg;
-        let proc =
-            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
-        let phase = rt.set_processor(proc);
-
-        phase
-            .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
-                input.encode(&mut bytes).expect("encode");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(pdata_in))
-                    .await
-                    .expect("process");
-
-                let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
-                let bytes = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(b) => b,
-                    _ => panic!("unexpected otlp variant"),
-                };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
-
-                // Resource 'a' should be deleted
-                let res_attrs = &decoded.resource_logs[0]
-                    .resource
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
-                // Scope 'a' should remain
-                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
-                // Log 'a' should remain
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(log_attrs.iter().any(|kv| kv.key == "a"));
-            })
-            .validate(|_| async move {});
+        let result = run_processor(cfg, input);
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+        let log_attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(log_attrs.iter().any(|kv| kv.key == "a"));
     }
 
     #[test]
     fn test_delete_scoped_to_scope_only_logs() {
-        // Resource has 'a', scope has 'a' plus another key, log has 'a' and another key to keep batches non-empty
         let input = build_logs_with_attrs(
             vec![KeyValue::new("a", AnyValue::new_string("rv"))],
             vec![
@@ -841,71 +411,29 @@ mod tests {
                 KeyValue::new("b", AnyValue::new_string("keep")),
             ],
         );
-
         let cfg = json!({
             "actions": [ {"action": "delete", "key": "a"} ],
             "apply_to": ["scope"]
         });
-
-        // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        let node = test_node("attributes-processor-delete-scope");
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        node_config.config = cfg;
-        let proc =
-            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
-        let phase = rt.set_processor(proc);
-
-        phase
-            .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
-                input.encode(&mut bytes).expect("encode");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(pdata_in))
-                    .await
-                    .expect("process");
-
-                let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
-                let bytes = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(b) => b,
-                    _ => panic!("unexpected otlp variant"),
-                };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
-
-                // Resource 'a' should remain
-                let res_attrs = &decoded.resource_logs[0]
-                    .resource
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
-                // Scope 'a' should be deleted
-                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(!scope_attrs.iter().any(|kv| kv.key == "a"));
-                // Log 'a' should remain
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(log_attrs.iter().any(|kv| kv.key == "a"));
-            })
-            .validate(|_| async move {});
+        let result = run_processor(cfg, input);
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(!scope_attrs.iter().any(|kv| kv.key == "a"));
+        let log_attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(log_attrs.iter().any(|kv| kv.key == "a"));
     }
 
     #[test]
     fn test_delete_scoped_to_signal_and_resource() {
-        // Resource has 'a' and 'r', scope has 'a' and 's', log has 'a' and 'b'
-        // Deleting 'a' for [signal, resource] should remove it from resource and logs, keep in scope.
         let input = build_logs_with_attrs(
             vec![
                 KeyValue::new("a", AnyValue::new_string("rv")),
@@ -920,70 +448,28 @@ mod tests {
                 KeyValue::new("b", AnyValue::new_string("keep")),
             ],
         );
-
         let cfg = json!({
             "actions": [ {"action": "delete", "key": "a"} ],
             "apply_to": ["signal", "resource"]
         });
-
-        // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        let node = test_node("attributes-processor-delete-signal-and-resource");
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        node_config.config = cfg;
-        let proc =
-            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
-        let phase = rt.set_processor(proc);
-
-        phase
-            .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
-                input.encode(&mut bytes).expect("encode");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(pdata_in))
-                    .await
-                    .expect("process");
-
-                let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
-                let bytes = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(b) => b,
-                    _ => panic!("unexpected otlp variant"),
-                };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
-
-                // Resource 'a' should be deleted; 'r' should remain
-                let res_attrs = &decoded.resource_logs[0]
-                    .resource
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(res_attrs.iter().any(|kv| kv.key == "r"));
-
-                // Scope 'a' should remain
-                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .attributes;
-                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(scope_attrs.iter().any(|kv| kv.key == "s"));
-
-                // Log 'a' should be deleted; 'b' should remain
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
-                assert!(log_attrs.iter().any(|kv| kv.key == "b"));
-            })
-            .validate(|_| async move {});
+        let result = run_processor(cfg, input);
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(res_attrs.iter().any(|kv| kv.key == "r"));
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(scope_attrs.iter().any(|kv| kv.key == "s"));
+        let log_attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+        assert!(log_attrs.iter().any(|kv| kv.key == "b"));
     }
 }
 
