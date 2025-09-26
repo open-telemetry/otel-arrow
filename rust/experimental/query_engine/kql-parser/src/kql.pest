@@ -212,6 +212,11 @@ temporal_expressions = {
     now_expression
 }
 
+not_expression = { "not" ~ "(" ~ logical_expression ~ ")" }
+logical_function_expressions = {
+    not_expression
+}
+
 /* Note: Order is imporant here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
@@ -224,6 +229,7 @@ scalar_unary_expression = {
     | array_expressions
     | math_expressions
     | temporal_expressions
+    | logical_function_expressions
     | parse_expressions
     | accessor_expression
     | "(" ~ scalar_expression ~ ")"
