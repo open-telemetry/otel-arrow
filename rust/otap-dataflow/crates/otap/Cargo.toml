@@ -38,6 +38,7 @@ tonic-middleware = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 
+otap-df-controller = { path = "../controller" }
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }

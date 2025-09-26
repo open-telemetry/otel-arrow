@@ -72,3 +72,61 @@ pub mod otlp_grpc;
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
+
+#[cfg(test)]
+mod tests {
+    use otap_df_config::{
+        engine::HttpAdminSettings,
+        pipeline::PipelineConfig,
+        pipeline_group::{CoreAllocation, Quota},
+    };
+    use otap_df_controller::Controller;
+
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    /// Test this pipeline factory with an invalid confguration.
+
+    #[test]
+    fn test_invalid_config_fails_fast() {
+        let path = Path::new("configs/test-invalid-config.yaml");
+        assert!(path.exists(), "test config not found: {path:?}",);
+
+        let pipeline_cfg =
+            PipelineConfig::from_file("test_group".into(), "test_pipeline".into(), path)
+                .expect("is OK");
+
+        let controller = Controller::new(&super::OTAP_PIPELINE_FACTORY);
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreCount { count: 1 },
+        };
+        let admin_settings = HttpAdminSettings {
+            bind_address: "127.0.0.1:0".to_string(),
+        };
+
+        let start_time = Instant::now();
+
+        let result = controller.run_forever(
+            "test_group".into(),
+            "test_pipeline".into(),
+            pipeline_cfg,
+            quota,
+            admin_settings,
+        );
+
+        let elapsed = start_time.elapsed();
+
+        // Verify it failed (didn't hang), within 5s, with a "retry" substring.
+        assert!(result.is_err(), "expected configuration error");
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "controller should fail fast, took {:?}",
+            elapsed
+        );
+        assert!(
+            error_msg.contains("retry"),
+            "error should mention retry config issue: {error_msg}",
+        );
+    }
+}
