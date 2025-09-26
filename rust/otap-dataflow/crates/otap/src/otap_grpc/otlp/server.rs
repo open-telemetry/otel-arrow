@@ -130,14 +130,9 @@ pub fn route_response(
     calldata: Option<CallData>,
     result: Result<(), NackMsg<OtapPdata>>,
 ) {
-    println!("[ROUTE DEBUG] route_response called");
     let calldata = match calldata {
-        Some(data) => {
-            println!("[ROUTE DEBUG] Calldata present: {:?}", data);
-            data
-        }
+        Some(data) => data,
         None => {
-            println!("[ROUTE DEBUG] No calldata - cannot route response");
             return;
         }
     };
@@ -145,19 +140,14 @@ pub fn route_response(
     let slot_index = SlotIndex(calldata[0].into());
     let generation = SlotGeneration(calldata[1].into());
     let slot_key = SlotKey::new(slot_index, generation);
-    println!("[ROUTE DEBUG] Routing to slot_key: index={}, generation={}", slot_index.0, generation.0);
 
     let mut state = state.lock().unwrap();
-    println!("[ROUTE DEBUG] Acquired state lock, calling deliver_response");
     state.deliver_response(slot_key, result);
-    println!("[ROUTE DEBUG] deliver_response completed");
 }
 
 /// Route the ack
 pub fn route_ack_response(state: &SharedCorrelationState, ack: AckMsg<OtapPdata>) {
-    println!("[ROUTE DEBUG] route_ack_response called");
     route_response(state, ack.calldata, Ok(()));
-    println!("[ROUTE DEBUG] route_ack_response completed");
 }
 
 /// Route a Nack response back to the appropriate correlation slot  
@@ -188,25 +178,20 @@ impl ServerState {
         &mut self,
         channel: oneshot::Sender<Result<(), NackMsg<OtapPdata>>>,
     ) -> Option<SlotKey> {
-        println!("[ALLOC DEBUG] allocate_slot called");
         if let Some(slot_index) = self.free_slots.pop() {
-            println!("[ALLOC DEBUG] Reusing free slot at index {}", slot_index.as_usize());
             let unused_generation = self
                 .slots
                 .get_mut(slot_index.as_usize())
                 .map(|data| {
-                    println!("[ALLOC DEBUG] Current generation for slot {}: {}", slot_index.as_usize(), data.generation.0);
                     data.channel = Some(channel);
                     // generation is incremented when it is placed in free_slots.
                     data.generation
                 })
                 .expect("some");
 
-            println!("[ALLOC DEBUG] ✅ Allocated existing slot: index={}, generation={}", slot_index.as_usize(), unused_generation.0);
             return Some(SlotKey::new(slot_index, unused_generation));
         }
 
-        println!("[ALLOC DEBUG] No free slots available, checking if can grow");
         // If no free slots and we can still grow
         if self.slots.len() < self.config.max_slots {
             let slot_index = SlotIndex(self.slots.len());
@@ -229,53 +214,31 @@ impl ServerState {
         slot_key: SlotKey,
         result: Result<(), NackMsg<OtapPdata>>,
     ) {
-        println!("[DELIVER DEBUG] deliver_response called with slot_key: index={}, generation={}", 
-                slot_key.index().0, slot_key.generation().0);
-        
         let slot_index = slot_key.index();
-        println!("[DELIVER DEBUG] Looking up slot at index {}", slot_index.as_usize());
 
         let data = self.slots.get_mut(slot_index.as_usize()).expect("some");
-        println!("[DELIVER DEBUG] Found slot data, generation check: slot.generation={}, key.generation={}", 
-                data.generation.0, slot_key.generation().0);
-        
+
         if data.generation == slot_key.generation() {
-            println!("[DELIVER DEBUG] Generation matches! Attempting to send result...");
-            match data.channel.take().map(|sender| sender.send(result)) {
-                Some(Ok(_)) => {
-                    println!("[DELIVER DEBUG] ✅ Result sent successfully to channel!");
+            if let Some(chan) = data.channel.take() {
+                match chan.send(result) {
+                    Ok(_) => {}
+                    Err(_) => {}
                 }
-                Some(Err(_)) => {
-                    println!("[DELIVER DEBUG] ❌ Failed to send result to channel (receiver dropped?)");
-                }
-                None => {
-                    println!("[DELIVER DEBUG] ❌ No channel available (already taken/canceled/timed out)");
-                }
-            };
+            }
             data.generation = data.generation.increment();
             self.free_slots.push(slot_index);
-            println!("[DELIVER DEBUG] Slot freed and generation incremented to {}", data.generation.0);
-        } else {
-            println!("[DELIVER DEBUG] ❌ Generation mismatch! Ignoring stale response.");
         }
     }
 
     /// Free a slot when a gRPC request is cancelled
     pub(crate) fn free_slot(&mut self, slot_key: SlotKey) {
-        println!("[FREE DEBUG] free_slot called for slot: index={}, generation={}", 
-                slot_key.index().0, slot_key.generation().0);
         let slot_index = slot_key.index();
 
         let data = self.slots.get_mut(slot_index.as_usize()).expect("some");
-        println!("[FREE DEBUG] Current slot generation: {}", data.generation.0);
-        
+
         if data.generation == slot_key.generation() {
-            println!("[FREE DEBUG] ✅ Generation matches - freeing slot and incrementing generation");
             data.generation = data.generation.increment();
-            println!("[FREE DEBUG] New generation after increment: {}", data.generation.0);
             self.free_slots.push(slot_index);
-        } else {
-            println!("[FREE DEBUG] ❌ Generation mismatch - not freeing slot");
         }
     }
 }
@@ -400,20 +363,13 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         let state = self.state.clone();
 
         Box::pin(async move {
-            println!("[GRPC DEBUG] gRPC service call started");
             let (tx, rx) = oneshot::channel();
-            println!("[GRPC DEBUG] Created oneshot channel for correlation");
 
             let slot_key = {
                 let mut state = state.lock().unwrap();
-                println!("[GRPC DEBUG] Acquired state lock for slot allocation");
                 match state.allocate_slot(tx) {
-                    Some(key) => {
-                        println!("[GRPC DEBUG] ✅ Allocated slot: index={}, generation={}", key.index().0, key.generation().0);
-                        key
-                    }
+                    Some(key) => key,
                     None => {
-                        println!("[GRPC DEBUG] ❌ Failed to allocate slot - too many concurrent requests");
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                 }
@@ -427,8 +383,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
             impl Drop for SlotGuard {
                 fn drop(&mut self) {
-                    println!("[GRPC DEBUG] 🧹 SlotGuard dropping - gRPC call cancelled/completed: slot={}, gen={}", 
-                            self.slot_key.index().0, self.slot_key.generation().0);
                     if let Ok(mut state) = self.state.lock() {
                         state.free_slot(self.slot_key);
                     }
@@ -456,15 +410,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             // Send message to pipeline
             match effect_handler.send_message(otap_batch).await {
                 Ok(_) => {
-                    println!("[GRPC DEBUG] Message sent to pipeline, waiting for Ack/Nack response...");
                     // Wait for Ack/Nack response
                     match rx.await {
-                        Ok(Ok(())) => {
-                            println!("[GRPC DEBUG] ✅ Received successful Ack response!");
-                            Ok(tonic::Response::new(()))
-                        }
+                        Ok(Ok(())) => Ok(tonic::Response::new(())),
                         Ok(Err(nack_msg)) => {
-                            println!("[GRPC DEBUG] ❌ Received Nack response: {}", nack_msg.reason);
                             let status = if nack_msg.permanent {
                                 Status::invalid_argument(nack_msg.reason)
                             } else {
@@ -472,10 +421,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                             };
                             Err(status)
                         }
-                        Err(_) => {
-                            println!("[GRPC DEBUG] ❌ Channel closed while waiting for response");
-                            Err(Status::internal("Response channel closed unexpectedly"))
-                        }
+                        Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
                     }
                 }
                 Err(e) => {

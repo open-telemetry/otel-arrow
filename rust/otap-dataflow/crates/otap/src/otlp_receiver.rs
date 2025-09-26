@@ -162,32 +162,24 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
             // Process internal events
             ctrl_msg_result = async {
-                println!("[RECEIVER DEBUG] Starting control message loop");
                 loop {
-                    println!("[RECEIVER DEBUG] Waiting for control message...");
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
-                            println!("[RECEIVER DEBUG] Received shutdown message");
                             return Ok(());
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
                             // Route Ack response to the correct correlation state based on signal type
-                            println!("[RECEIVER DEBUG] Received Ack control message");
                             let signal_type = ack_msg.accepted.signal_type();
-                            println!("[RECEIVER DEBUG] Ack signal type: {:?}", signal_type);
                             let correlation_state = select_correlation_state(
                                 signal_type,
                                 &logs_correlation_state,
                                 &metrics_correlation_state,
                                 &trace_correlation_state,
                             );
-                            println!("[RECEIVER DEBUG] Routing Ack to correlation state");
                             route_ack_response(correlation_state, ack_msg);
-                            println!("[RECEIVER DEBUG] Ack routed successfully, continuing loop");
                         },
                         Ok(NodeControlMsg::Nack(nack_msg)) => {
                             // Route Nack response to the correct correlation state based on signal type
-                            println!("[RECEIVER DEBUG] Received Nack control message");
                             let signal_type = nack_msg.refused.signal_type();
                             let correlation_state = select_correlation_state(
                                 signal_type,
@@ -196,13 +188,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                                 &trace_correlation_state,
                             );
                             route_nack_response(correlation_state, nack_msg);
-                            println!("[RECEIVER DEBUG] Nack routed successfully, continuing loop");
                         },
-                        Ok(other_msg) => {
-                            println!("[RECEIVER DEBUG] Received other control message: {:?}", other_msg);
+                        Ok(_other_msg) => {
                         },
                         Err(e) => {
-                            eprintln!("[RECEIVER ERROR] Control message recv error: {:?}", e);
                             return Err(Error::ChannelRecvError(e));
                         }
                     }
@@ -235,20 +224,24 @@ mod tests {
     use std::pin::Pin;
     use std::time::Duration;
 
-    use otap_df_engine::testing::receiver::TestCorrelationHandler;
-    use otap_df_engine::control::{AckMsg, NackMsg};
     use crate::pdata::Context;
-    
+    use otap_df_engine::control::{AckMsg, NackMsg};
+    use otap_df_engine::testing::receiver::TestCorrelationHandler;
+
     /// OTLP-specific correlation handler that implements proper Context::next_ack/next_nack
     struct OtapCorrelationHandler;
-    
+
     impl TestCorrelationHandler<OtapPdata> for OtapCorrelationHandler {
         fn prepare_ack(&self, data: OtapPdata) -> Option<(usize, AckMsg<OtapPdata>)> {
             let ack = AckMsg::new(data);
             Context::next_ack(ack)
         }
-        
-        fn prepare_nack(&self, data: OtapPdata, reason: String) -> Option<(usize, NackMsg<OtapPdata>)> {
+
+        fn prepare_nack(
+            &self,
+            data: OtapPdata,
+            reason: String,
+        ) -> Option<(usize, NackMsg<OtapPdata>)> {
             let nack = NackMsg::new(reason, data);
             Context::next_nack(nack)
         }
@@ -357,19 +350,15 @@ mod tests {
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                println!("[SCENARIO DEBUG] Starting test scenario");
-
                 let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Logs Service Client");
 
-                println!("[SCENARIO DEBUG] Sending logs export request");
                 let logs_response = logs_client
                     .export(create_logs_service_request())
                     .await
                     .expect("Can send log request")
                     .into_inner();
-                println!("[SCENARIO DEBUG] Logs export request completed successfully");
                 assert_eq!(
                     logs_response,
                     ExportLogsServiceResponse {
@@ -380,13 +369,11 @@ mod tests {
                 let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Metrics Service Client");
-                println!("[SCENARIO DEBUG] Sending metrics export request");
                 let metrics_response = metrics_client
                     .export(create_metrics_service_request())
                     .await
                     .expect("can send metrics request")
                     .into_inner();
-                println!("[SCENARIO DEBUG] Metrics export request completed successfully");
                 assert_eq!(
                     metrics_response,
                     ExportMetricsServiceResponse {
@@ -397,13 +384,11 @@ mod tests {
                 let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Traces Service Client");
-                println!("[SCENARIO DEBUG] Sending traces export request");
                 let traces_response = traces_client
                     .export(create_traces_service_request())
                     .await
                     .expect("can send traces request")
                     .into_inner();
-                println!("[SCENARIO DEBUG] Traces export request completed successfully");
                 assert_eq!(
                     traces_response,
                     ExportTraceServiceResponse {
@@ -427,17 +412,15 @@ mod tests {
             Box::pin(async move {
                 // Set up the OTLP correlation handler for proper Ack handling
                 ctx.set_correlation_handler(Box::new(OtapCorrelationHandler));
-                
-                println!("[VALIDATION DEBUG] Receiving logs message...");
+
                 let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
-                
-                println!("[VALIDATION DEBUG] Sending prepared logs Ack...");
-                ctx.send_prepared_ack(logs_pdata.clone()).await
+
+                ctx.send_prepared_ack(logs_pdata.clone())
+                    .await
                     .expect("Failed to send prepared logs Ack");
-                println!("[VALIDATION DEBUG] Prepared logs Ack sent successfully");
 
                 let logs_pdata: OtlpProtoBytes = logs_pdata
                     .payload()
@@ -449,43 +432,45 @@ mod tests {
                 expected.encode(&mut expected_bytes).unwrap();
                 assert_eq!(&expected_bytes, logs_pdata.as_bytes());
 
-                println!("[VALIDATION DEBUG] Receiving metrics message...");
                 let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for metrics message")
                     .expect("No metrics message received");
-                
-                println!("[VALIDATION DEBUG] Sending prepared metrics Ack...");
-                ctx.send_prepared_ack(metrics_pdata.clone()).await
+
+                ctx.send_prepared_ack(metrics_pdata.clone())
+                    .await
                     .expect("Failed to send prepared metrics Ack");
-                println!("[VALIDATION DEBUG] Prepared metrics Ack sent successfully");
 
                 let metrics_pdata: OtlpProtoBytes = metrics_pdata
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(metrics_pdata, OtlpProtoBytes::ExportMetricsRequest(_)));
+                assert!(matches!(
+                    metrics_pdata,
+                    OtlpProtoBytes::ExportMetricsRequest(_)
+                ));
                 let expected = create_metrics_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
                 assert_eq!(&expected_bytes, metrics_pdata.as_bytes());
 
-                println!("[VALIDATION DEBUG] Receiving traces message...");
                 let trace_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for traces message")
                     .expect("No traces message received");
-                
-                println!("[VALIDATION DEBUG] Sending prepared traces Ack...");
-                ctx.send_prepared_ack(trace_pdata.clone()).await
+
+                ctx.send_prepared_ack(trace_pdata.clone())
+                    .await
                     .expect("Failed to send prepared traces Ack");
-                println!("[VALIDATION DEBUG] Prepared traces Ack sent successfully");
 
                 let trace_pdata: OtlpProtoBytes = trace_pdata
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(trace_pdata, OtlpProtoBytes::ExportTracesRequest(_)));
+                assert!(matches!(
+                    trace_pdata,
+                    OtlpProtoBytes::ExportTracesRequest(_)
+                ));
                 let expected = create_traces_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
