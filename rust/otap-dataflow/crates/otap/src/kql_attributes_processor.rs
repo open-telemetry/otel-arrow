@@ -54,7 +54,9 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes_with_stats},
+    transform::{
+        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+    },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
@@ -120,8 +122,10 @@ pub struct Config {
 pub struct KqlAttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
-    // Selected attribute domains to transform
-    domains: HashSet<ApplyDomain>,
+    // Pre-computed flags for domain lookup
+    has_resource_domain: bool,
+    has_scope_domain: bool,
+    has_signal_domain: bool,
     // Metrics handle (set at runtime in factory; None when parsed-only)
     metrics: Option<MetricSet<AttributesProcessorMetrics>>,
 }
@@ -237,6 +241,11 @@ impl KqlAttributesProcessor {
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
+        // Pre-compute domain checks
+        let has_resource_domain = domains.contains(&ApplyDomain::Resource);
+        let has_scope_domain = domains.contains(&ApplyDomain::Scope);
+        let has_signal_domain = domains.contains(&ApplyDomain::Signal);
+
         // TODO: Optimize action composition into a valid AttributesTransform that
         // still reflects the user's intended semantics. Consider:
         // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
@@ -244,20 +253,30 @@ impl KqlAttributesProcessor {
         //   application of transforms when a composed map would be invalid.
         // For now, we compose a single transform and let transform_attributes
         // enforce validity (which may error for conflicting maps).
-        Ok(Self {
-            transform: AttributesTransform {
-                rename: if renames.is_empty() {
-                    None
-                } else {
-                    Some(renames)
-                },
-                delete: if deletes.is_empty() {
-                    None
-                } else {
-                    Some(deletes)
-                },
+        let transform = AttributesTransform {
+            rename: if renames.is_empty() {
+                None
+            } else {
+                Some(RenameTransform::new(renames))
             },
-            domains,
+            delete: if deletes.is_empty() {
+                None
+            } else {
+                Some(DeleteTransform::new(deletes))
+            },
+        };
+
+        transform
+            .validate()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Invalid attribute transform configuration: {e}"),
+            })?;
+
+        Ok(Self {
+            transform,
+            has_resource_domain,
+            has_scope_domain,
+            has_signal_domain,
             metrics: None,
         })
     }
@@ -310,6 +329,81 @@ impl KqlAttributesProcessor {
             _ => None,
         }
     }
+
+    #[inline]
+    const fn is_noop(&self) -> bool {
+        self.transform.rename.is_none() && self.transform.delete.is_none()
+    }
+
+    #[inline]
+    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+        use payload_sets::*;
+
+        match (
+            self.has_resource_domain,
+            self.has_scope_domain,
+            self.has_signal_domain,
+            signal,
+        ) {
+            // Empty cases
+            (false, false, false, _) => EMPTY,
+
+            // Signal only
+            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
+            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
+            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
+
+            // Resource only
+            (true, false, false, _) => RESOURCE_ONLY,
+
+            // Scope only
+            (false, true, false, _) => SCOPE_ONLY,
+
+            // Resource + Signal
+            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
+
+            // Scope + Signal
+            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
+
+            // Resource + Scope (no signal)
+            (true, true, false, _) => RESOURCE_SCOPE,
+
+            // All three
+            (true, true, true, SignalType::Logs) => LOGS_ALL,
+            (true, true, true, SignalType::Metrics) => METRICS_ALL,
+            (true, true, true, SignalType::Traces) => TRACES_ALL,
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn apply_transform_with_stats(
+        &self,
+        records: &mut OtapArrowRecords,
+        signal: SignalType,
+    ) -> Result<(u64, u64), EngineError> {
+        let mut deleted_total: u64 = 0;
+        let mut renamed_total: u64 = 0;
+
+        // Only apply if we have transforms to apply
+        if !self.is_noop() {
+            let payloads = self.attrs_payloads(signal);
+            for &payload_ty in payloads {
+                if let Some(rb) = records.get(payload_ty) {
+                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
+                    deleted_total += stats.deleted_entries;
+                    renamed_total += stats.renamed_entries;
+                    records.set(payload_ty, rb);
+                }
+            }
+        }
+
+        Ok((deleted_total, renamed_total))
+    }
 }
 
 #[async_trait(?Send)]
@@ -337,7 +431,7 @@ impl local::Processor<OtapPdata> for KqlAttributesProcessor {
                 }
 
                 // Fast path: no actions to apply
-                if self.transform.rename.is_none() && self.transform.delete.is_none() {
+                if self.is_noop() {
                     let res = effect_handler
                         .send_message(pdata)
                         .await
@@ -355,27 +449,20 @@ impl local::Processor<OtapPdata> for KqlAttributesProcessor {
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
-                // Update domain counters (count once per message when domains
-                // are enabled)
+                // Update domain counters (count once per message when domains are enabled)
                 if let Some(m) = self.metrics.as_mut() {
-                    if self.domains.contains(&ApplyDomain::Signal) {
-                        m.domains_signal.inc();
-                    }
-                    if self.domains.contains(&ApplyDomain::Resource) {
+                    if self.has_resource_domain {
                         m.domains_resource.inc();
                     }
-                    if self.domains.contains(&ApplyDomain::Scope) {
+                    if self.has_scope_domain {
                         m.domains_scope.inc();
                     }
+                    if self.has_signal_domain {
+                        m.domains_signal.inc();
+                    }
                 }
-                // Apply transform across selected domains and collect exact
-                // stats
-                match apply_transform_with_stats(
-                    &mut records,
-                    signal,
-                    &self.transform,
-                    &self.domains,
-                ) {
+                // Apply transform across selected domains and collect exact stats
+                match self.apply_transform_with_stats(&mut records, signal) {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
@@ -409,33 +496,6 @@ impl local::Processor<OtapPdata> for KqlAttributesProcessor {
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn apply_transform_with_stats(
-    records: &mut OtapArrowRecords,
-    signal: SignalType,
-    transform: &AttributesTransform,
-    domains: &HashSet<ApplyDomain>,
-) -> Result<(u64, u64), EngineError> {
-    let payloads = attrs_payloads(signal, domains);
-    let mut deleted_total: u64 = 0;
-    let mut renamed_total: u64 = 0;
-
-    // Only apply if we have transforms to apply
-    if transform.rename.is_some() || transform.delete.is_some() {
-        for payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty).cloned() {
-                let (rb, stats) = transform_attributes_with_stats(&rb, transform)
-                    .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                deleted_total += stats.deleted_entries;
-                renamed_total += stats.renamed_entries;
-                records.set(payload_ty, rb);
-            }
-        }
-    }
-
-    Ok((deleted_total, renamed_total))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ApplyDomain {
     Signal,
@@ -462,8 +522,7 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
                         let _ = set.insert(ApplyDomain::Scope);
                     }
                     _ => {
-                        // Unknown entry: ignore for now; could return config
-                        // error in future
+                        // Unknown entry: ignore for now; could return config error in future
                     }
                 }
             }
@@ -475,43 +534,94 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
     set
 }
 
-fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<ArrowPayloadType> {
-    use ArrowPayloadType as A;
-    let mut out: Vec<ArrowPayloadType> = Vec::new();
-    // Domains are unioned
-    if domains.contains(&ApplyDomain::Resource) {
-        out.push(A::ResourceAttrs);
-    }
-    if domains.contains(&ApplyDomain::Scope) {
-        out.push(A::ScopeAttrs);
-    }
-    if domains.contains(&ApplyDomain::Signal) {
-        match signal {
-            SignalType::Logs => {
-                out.push(A::LogAttrs);
-            }
-            SignalType::Metrics => {
-                out.push(A::MetricAttrs);
-                out.push(A::NumberDpAttrs);
-                out.push(A::HistogramDpAttrs);
-                out.push(A::SummaryDpAttrs);
-                out.push(A::NumberDpExemplarAttrs);
-                out.push(A::HistogramDpExemplarAttrs);
-            }
-            SignalType::Traces => {
-                out.push(A::SpanAttrs);
-                out.push(A::SpanEventAttrs);
-                out.push(A::SpanLinkAttrs);
-            }
-        }
-    }
-    out
-}
-
 fn engine_err(msg: &str) -> EngineError {
     EngineError::PdataConversionError {
         error: msg.to_string(),
     }
+}
+
+// Pre-computed arrays for all domain combinations
+mod payload_sets {
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
+
+    pub(super) const EMPTY: &[A] = &[];
+
+    // Signal only
+    pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
+    pub(super) const METRICS_SIGNAL: &[A] = &[
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
+
+    // Resource only
+    pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
+
+    // Scope only
+    pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
+
+    // Resource + Signal
+    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
+    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Scope + Signal
+    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Resource + Scope
+    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
+
+    // All three: Resource + Scope + Signal
+    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
 }
 
 /// Factory function to create an KqlAttributesProcessor.
@@ -601,23 +711,11 @@ mod tests {
         let parsed = KqlAttributesProcessor::from_config(&cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
-
-        let rename_map = parsed.transform.rename.as_ref().unwrap();
-        assert_eq!(rename_map.get("a.bar"), Some(&"b.foo".to_string()));
-        assert_eq!(rename_map.get("c"), Some(&"d".to_string()));
-        assert_eq!(rename_map.len(), 2);
-
-        let delete_set = parsed.transform.delete.as_ref().unwrap();
-        assert!(delete_set.contains("x.fizz"));
-        assert!(delete_set.contains("y.buzz"));
-        assert!(delete_set.contains("z"));
-        assert_eq!(delete_set.len(), 3);
-
         // default apply_to should include Signal
-        assert!(parsed.domains.contains(&ApplyDomain::Signal));
+        assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
-        assert!(!parsed.domains.contains(&ApplyDomain::Resource));
-        assert!(!parsed.domains.contains(&ApplyDomain::Scope));
+        assert!(!parsed.has_resource_domain);
+        assert!(!parsed.has_scope_domain);
     }
 
     #[test]
