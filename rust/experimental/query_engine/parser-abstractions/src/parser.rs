@@ -95,8 +95,12 @@ impl ParserMapSchema {
         self
     }
 
-    pub fn get_schema_for_keys(&self) -> &HashMap<Box<str>, ParserMapKeySchema> {
+    pub fn get_schema(&self) -> &HashMap<Box<str>, ParserMapKeySchema> {
         &self.keys
+    }
+
+    pub fn get_schema_mut(&mut self) -> &mut HashMap<Box<str>, ParserMapKeySchema> {
+        &mut self.keys
     }
 
     pub fn get_schema_for_key(&self, name: &str) -> Option<&ParserMapKeySchema> {
@@ -228,6 +232,25 @@ impl ParserMapKeySchema {
             ParserMapKeySchema::String => Some(ValueType::String),
             ParserMapKeySchema::TimeSpan => Some(ValueType::TimeSpan),
         }
+    }
+}
+
+impl std::fmt::Display for ParserMapKeySchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v = match self {
+            ParserMapKeySchema::Any => "Any",
+            ParserMapKeySchema::Array => "Array",
+            ParserMapKeySchema::Boolean => "Boolean",
+            ParserMapKeySchema::DateTime => "DateTime",
+            ParserMapKeySchema::Double => "Double",
+            ParserMapKeySchema::Integer => "Integer",
+            ParserMapKeySchema::Map(_) => "Map",
+            ParserMapKeySchema::Regex => "Regex",
+            ParserMapKeySchema::String => "String",
+            ParserMapKeySchema::TimeSpan => "TimeSpan",
+        };
+
+        write!(f, "{v}")
     }
 }
 
