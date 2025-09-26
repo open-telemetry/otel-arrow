@@ -125,6 +125,8 @@ pub enum NodeControlMsg<PData> {
     DelayedData {
         /// The data; may or may not have subscribe_to called
         data: Box<PData>,
+        /// The indicated instant
+        when: Instant,
     },
 
     /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
