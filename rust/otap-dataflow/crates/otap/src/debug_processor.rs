@@ -30,6 +30,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{CallData, Interests, ProducerEffectHandlerExtension};
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::{
     logs::v1::LogsData,
@@ -39,6 +40,7 @@ use otel_arrow_rust::proto::opentelemetry::{
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -83,6 +85,7 @@ pub struct DebugProcessor {
     config: Config,
     output: Option<String>,
     metrics: MetricSet<DebugPdataMetrics>,
+    sequence: usize,
 }
 
 /// Factory function to create an DebugProcessor.
@@ -126,6 +129,7 @@ impl DebugProcessor {
             config,
             output,
             metrics,
+            sequence: 0,
         }
     }
 
@@ -140,7 +144,29 @@ impl DebugProcessor {
             config,
             output: None,
             metrics,
+            sequence: 0,
         })
+    }
+}
+
+#[derive(Debug)]
+struct DebugData {
+    sequence: usize,
+    unix_millis: usize,
+}
+
+impl From<CallData> for DebugData {
+    fn from(value: CallData) -> Self {
+        Self {
+            sequence: value[0].into(),
+            unix_millis: value[1].into(),
+        }
+    }
+}
+
+impl From<DebugData> for CallData {
+    fn from(value: DebugData) -> Self {
+        smallvec::smallvec![value.sequence.into(), value.unix_millis.into()]
     }
 }
 
@@ -167,6 +193,15 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let raw_writer = get_writer(&self.output).await;
         let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
 
+        self.sequence += 1;
+        let calldata = DebugData {
+            sequence: self.sequence,
+            unix_millis: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("2025")
+                .as_millis() as usize,
+        };
+
         match msg {
             Message::Control(control) => {
                 match control {
@@ -179,19 +214,39 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     NodeControlMsg::Shutdown { .. } => {
                         writer.write("Shutdown message received\n").await?;
                     }
+                    NodeControlMsg::Ack(ack) => {
+                        let data: DebugData = ack.calldata.expect("valid").into();
+                        writer
+                            .write(format!("Ack message received: {:?}\n", &data).as_str())
+                            .await?;
+                    }
+                    NodeControlMsg::Nack(nack) => {
+                        let data: DebugData = nack.calldata.expect("valid").into();
+                        writer
+                            .write(format!("Nack message received: {:?}\n", &data).as_str())
+                            .await?;
+                    }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
                         _ = metrics_reporter.report(&mut self.metrics);
                     }
-                    _ => {}
+                    _ => {
+                        writer.write("Unknown message received\n").await?;
+                    }
                 }
                 Ok(())
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 // make a copy of the data and convert it to protobytes that we will later convert to the views
                 let data_copy = pdata.clone();
+
                 // forward the data to the next node
+                effect_handler.subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata.into(),
+                    &mut pdata,
+                );
                 effect_handler.send_message(pdata).await?;
 
                 let (_context, payload) = data_copy.into_parts();

@@ -11,16 +11,28 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - otlp_exporter
+          - debug_processor
         dispatch_strategy: round_robin
     config:
       traffic_config:
         signals_per_second: 10
         max_signal_count: 100
-        metric_weight: 30
+        metric_weight: 0
         trace_weight: 30
         log_weight: 30
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+  # Debug processor (logs acks)
+  debug_processor:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - otlp_exporter
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
 
   # OTLP Exporter (sends via gRPC to OTLP receiver)
   otlp_exporter:
@@ -36,22 +48,10 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - debug_processor
-        dispatch_strategy: round_robin
-    config:
-      listening_addr: "127.0.0.1:4317"
-
-  # Debug processor (logs received data)
-  debug_processor:
-    kind: processor
-    plugin_urn: "urn:otel:debug:processor"
-    out_ports:
-      out_port:
-        destinations:
           - retry_processor
         dispatch_strategy: round_robin
     config:
-      verbosity: basic
+      listening_addr: "127.0.0.1:4317"
 
   # Retry processor (tests Ack/Nack delivery mechanism)
   retry_processor:

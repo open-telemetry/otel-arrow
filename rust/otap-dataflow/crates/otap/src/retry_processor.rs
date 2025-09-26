@@ -232,23 +232,18 @@ pub fn create_retry_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    // Deserialize the (currently empty) router configuration
     let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
             error: format!("Failed to parse retry configuration: {e}"),
         }
     })?;
 
-    // Create the router processor with metrics registered for this node
-    let router = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config);
-
-    // Create NodeUserConfig and wrap as local processor
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
+    let processor = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config);
 
     Ok(ProcessorWrapper::local(
-        router,
+        processor,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }
