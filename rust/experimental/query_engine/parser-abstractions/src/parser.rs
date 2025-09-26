@@ -95,8 +95,12 @@ impl ParserMapSchema {
         self
     }
 
-    pub fn get_schema_for_keys(&self) -> &HashMap<Box<str>, ParserMapKeySchema> {
+    pub fn get_schema(&self) -> &HashMap<Box<str>, ParserMapKeySchema> {
         &self.keys
+    }
+
+    pub fn get_schema_mut(&mut self) -> &mut HashMap<Box<str>, ParserMapKeySchema> {
+        &mut self.keys
     }
 
     pub fn get_schema_for_key(&self, name: &str) -> Option<&ParserMapKeySchema> {
