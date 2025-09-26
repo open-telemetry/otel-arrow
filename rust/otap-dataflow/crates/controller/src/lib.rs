@@ -208,13 +208,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        // Check if any threads failed and return the first error
-        for result in results {
-            if let Err(e) = result {
-                return Err(e);
-            }
-        }
-
         // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.
 
         // In this project phase (alpha), we park the main thread indefinitely. This is useful for
