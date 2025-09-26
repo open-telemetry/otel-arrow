@@ -216,15 +216,6 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let raw_writer = get_writer(&self.output).await;
         let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
 
-        self.sequence += 1;
-        let calldata = DebugData {
-            sequence: self.sequence,
-            unix_millis: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("2025")
-                .as_millis() as usize,
-        };
-
         match msg {
             Message::Control(control) => {
                 match control {
@@ -259,6 +250,16 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 Ok(())
             }
             Message::PData(mut pdata) => {
+                // Increment sequence only for PData messages that will be forwarded with calldata
+                self.sequence += 1;
+                let calldata = DebugData {
+                    sequence: self.sequence,
+                    unix_millis: SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .expect("2025")
+                        .as_millis() as usize,
+                };
+
                 // make a copy of the data and convert it to protobytes that we will later convert to the views
                 let data_copy = pdata.clone();
 
