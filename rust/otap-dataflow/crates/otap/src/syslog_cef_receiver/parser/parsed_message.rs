@@ -253,7 +253,8 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records
                     .append_str(std::str::from_utf8(msg.severity).unwrap_or_default());
 
-                while let Some((key, value)) = msg.parse_extensions().next_extension() {
+                let mut extensions_iter = msg.parse_extensions();
+                while let Some((key, value)) = extensions_iter.next_extension() {
                     log_attributes_arrow_records
                         .append_key(std::str::from_utf8(key).unwrap_or_default());
                     log_attributes_arrow_records
