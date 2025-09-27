@@ -271,7 +271,7 @@ mod tests {
         let result = parse_cef(input);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_cef_without_extensions() {
         let input = b"CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|";
