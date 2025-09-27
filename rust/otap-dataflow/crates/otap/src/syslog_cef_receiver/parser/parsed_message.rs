@@ -243,7 +243,7 @@ impl ParsedSyslogMessage<'_> {
 
                 log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.signature_id).unwrap_or_default());
+                    .append_str(std::str::from_utf8(msg.device_event_class_id).unwrap_or_default());
 
                 log_attributes_arrow_records.append_key(CEF_NAME);
                 log_attributes_arrow_records
