@@ -8,7 +8,7 @@ pub struct CefMessage<'a> {
     pub(super) device_vendor: &'a [u8],
     pub(super) device_product: &'a [u8],
     pub(super) device_version: &'a [u8],
-    pub(super) signature_id: &'a [u8],
+    pub(super) device_event_class_id: &'a [u8],
     pub(super) name: &'a [u8],
     pub(super) severity: &'a [u8],
     pub(super) extensions: &'a [u8],
@@ -69,7 +69,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         Some(device_vendor),
         Some(device_product),
         Some(device_version),
-        Some(signature_id),
+        Some(device_event_class_id),
         Some(name),
         Some(severity),
     ) = (
@@ -97,7 +97,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         device_vendor,
         device_product,
         device_version,
-        signature_id,
+        device_event_class_id,
         name,
         severity,
         extensions,
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(result.device_vendor, b"Security".as_slice());
         assert_eq!(result.device_product, b"threatmanager".as_slice());
         assert_eq!(result.device_version, b"1.0".as_slice());
-        assert_eq!(result.signature_id, b"100".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
 
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(result.device_vendor, b"Security".as_slice());
         assert_eq!(result.device_product, b"threatmanager".as_slice());
         assert_eq!(result.device_version, b"1.0".as_slice());
-        assert_eq!(result.signature_id, b"100".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
 
