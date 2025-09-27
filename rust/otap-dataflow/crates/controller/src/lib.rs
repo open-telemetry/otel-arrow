@@ -31,9 +31,9 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_state::DeployedPipelineKey;
+use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::{ObservedEvent, ObservedStateStore};
+use otap_df_state::store::{ConditionStatus, ConditionType, ObservedEvent, ObservedStateStore};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -190,13 +190,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     obs_evt_reporter.report(ObservedEvent::pipeline_stopped(pipeline_key));
                 }
                 Ok(Err(e)) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
-                    // ToDo Report errors as a `condition object` to the pipeline status.
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key,
+                        ConditionType::StartError,
+                        ConditionStatus::True,
+                        e.to_string(),
+                        "The pipeline failed to start.".to_owned()
+                        )
+                    );
                     results.push(Err(e));
                 }
                 Err(e) => {
-                    // ToDo Report errors as a `condition object` to the pipeline status.
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key,
+                        ConditionType::Panic,
+                        ConditionStatus::True,
+                        format!("{e:?}"),
+                        "The pipeline panicked during execution.".to_owned()
+                    )
+                    );
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
                         thread_name,

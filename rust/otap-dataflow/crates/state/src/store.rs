@@ -6,10 +6,14 @@
 use crate::config::Config;
 use crate::error::Error;
 use crate::reporter::ObservedEventReporter;
+use crate::store::ConditionStatus::{False, True, Unknown};
 use crate::{CoreId, DeployedPipelineKey, PipelineKey};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +51,7 @@ pub enum ObservedEvent {
         /// New phase of the pipeline instance.
         phase: PipelinePhase,
     },
+
     /// A periodic heartbeat event indicating the pipeline is alive.
     Heartbeat {
         /// Unique key identifying the pipeline instance.
@@ -54,6 +59,123 @@ pub enum ObservedEvent {
         /// Core ID sending the heartbeat.
         core_id: CoreId,
     },
+
+    /// A condition update emitted by the engine.
+    ///
+    /// The controller should **aggregate** these into pipeline-level
+    /// `PipelineStatus.conditions`. For example, set `Healthy=True` only if
+    /// *all* cores report `Healthy=True`; if any core is `False` then aggregate
+    /// to `False`, and if any core is `Unknown` (and none are `False`), aggregate
+    /// to `Unknown`.
+    Condition {
+        /// Unique key identifying the pipeline instance.
+        key: PipelineKey,
+        /// Core ID that observed this condition.
+        core_id: CoreId,
+        /// Condition emitted by the engine.
+        condition: Condition,
+    },
+}
+
+/// Status of a condition (tri-state).
+///
+/// Mirrors Kubernetes’ `ConditionStatus` (`True|False|Unknown`) to clearly
+/// separate the **facet** (see [`ConditionType`]) from its current **truth value**.
+///
+/// See K8S references:
+/// - API conventions – *Conditions*: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#conditions
+/// - Go type `ConditionStatus`: https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#ConditionStatus
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ConditionStatus {
+    /// Predicate holds (e.g. Healthy=True)
+    True,
+    /// Predicate explicitly does not hold (e.g. Healthy=False)
+    False,
+    /// Controller cannot determine; gate conservatively
+    Unknown,
+}
+
+/// Condition *type* is an **open set**: well-known variants + plugin/vendor customs.
+///
+/// See K8S reference: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#conditions
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConditionType {
+    /// SLO health of the pipeline (latency/errors/backpressure within limits).
+    /// May be `False` while `Ready=True` (serving but degraded).
+    Healthy,
+
+    /// Admission/readiness: "can accept/switch traffic now".
+    /// Recommended to gate **traffic flips** on `Ready=True`, and gate **rollout
+    /// waves** on `Healthy=True`. `Ready` does **not** imply `Healthy` here.
+    /// Related K8s concept: Pod readiness.
+    /// Docs: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions
+    Ready,
+
+    /// Ingress backpressure is high (e.g. queue depth/drops exceeded thresholds).
+    /// Often implies `Healthy=False`, but is kept separate for explainability.
+    BackpressureHigh,
+
+    /// Heartbeats are stale/missing past freshness window; typically forces
+    /// `Ready=False` and may set `Healthy=Unknown` until state is clear.
+    HeartbeatMissing,
+
+    /// A rollout/canary/wave is currently in progress (transitional state).
+    /// Helps UIs and policies distinguish rollout work from steady state.
+    RolloutInProgress,
+
+    /// Spec/plan validation/apply failed on one or more cores. Keep `status=True`
+    /// until resolved; set a concise `reason` for automation.
+    ConfigRejected,
+
+    /// The pipeline encountered a panic during startup or runtime execution.
+    Panic,
+
+    /// The pipeline failed to start properly due to an error
+    /// encountered during its startup sequence (not a panic).
+    StartError,
+
+    /// Catch-all for plugin/vendor-specific facets; preserves original identifier.
+    Custom(String),
+}
+
+/// A fine-grained, typed facet of status used for health/rollout gating.
+///
+/// **Rationale**
+/// - Keep high-level `PipelinePhase` **coarse** (Pending/Running/...).
+/// - Encode orthogonal axes here (health, readiness, backpressure, rollout, config errors).
+/// - Use **two gates**:
+///   - Advance **rollout waves** when `Healthy=True`
+///   - Flip/switch **traffic** when `Ready=True`
+///
+/// **Ready vs Healthy: tiny rule-of-thumb table**
+///
+/// | Scenario                         | Ready | Healthy | Meaning                                                  |
+/// |----------------------------------|:-----:|:-------:|----------------------------------------------------------|
+/// | Serving, backpressure high       |  T   |   F    | Admit traffic but degraded; throttle rollouts/alerts fire|
+/// | Rollout/drain pause              |  F   |   T    | Healthy but intentionally not serving (maintenance)      |
+/// | All good                         |  T   |   T    | Green; safe to serve and to advance rollouts             |
+/// | Sick and not serving             |  F   |   F    | Draining/crashed/overloaded                              |
+///
+/// References:
+/// - API conventions:
+///   https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#conditions
+/// - Pod conditions example:
+///   https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions
+#[derive(Debug, Clone, Serialize)]
+pub struct Condition {
+    /// Condition category (extensible identifier).
+    pub r#type: ConditionType,
+    /// Tri-state truth value (`True|False|Unknown`).
+    pub status: ConditionStatus,
+    /// Short, stable machine-readable reason code (e.g. `AllCoresHealthy`).
+    pub reason: String,
+    /// Human-readable context (concise; details go to logs/metrics).
+    pub message: String,
+    /// Timestamp of the last `(type,status)` transition. Do **not** change when only
+    /// `reason`/`message` are updated (keeps transition history meaningful).
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    pub last_transition_time: SystemTime,
 }
 
 /// The per-core view of a pipeline instance, as reported by an engine.
@@ -61,9 +183,16 @@ pub enum ObservedEvent {
 pub struct CoreStatus {
     /// Current phase of the pipeline instance.
     pub phase: PipelinePhase,
+
     /// Timestamp of the most recent event/heartbeat received for this core.
     #[serde(serialize_with = "ts_to_rfc3339")]
     last_beat: SystemTime,
+
+    /// Latest observed conditions from this core, keyed by `ConditionType`.
+    /// The controller should aggregate these into `PipelineStatus.conditions`.
+    /// ToDo Should we skip this field for the serialization `#[serde(skip)]` ?
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    pub conditions: HashMap<ConditionType, Condition>,
 }
 
 /// Aggregated, controller-synthesized view for a pipeline across all targeted
@@ -72,6 +201,9 @@ pub struct CoreStatus {
 pub struct PipelineStatus {
     /// Coarse phase synthesized from all per-core phases.
     phase: PipelinePhase,
+    /// Typed facets (health, rollout, backpressure, ...).
+    /// Treat logically as a map keyed by `type`.
+    conditions: Vec<Condition>,
     /// Per-core details to aid debugging and aggregation.
     per_core: HashMap<CoreId, CoreStatus>,
 }
@@ -107,6 +239,115 @@ where
 {
     let dt: chrono::DateTime<chrono::Utc> = (*t).into();
     s.serialize_str(&dt.to_rfc3339())
+}
+
+impl ConditionType {
+    /// Returns the string representation of the condition type.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        match self {
+            ConditionType::Healthy => "Healthy",
+            ConditionType::Ready => "Ready",
+            ConditionType::BackpressureHigh => "BackpressureHigh",
+            ConditionType::HeartbeatMissing => "HeartbeatMissing",
+            ConditionType::RolloutInProgress => "RolloutInProgress",
+            ConditionType::ConfigRejected => "ConfigRejected",
+            ConditionType::Panic => "Panic",
+            ConditionType::StartError => "StartError",
+            ConditionType::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl Display for ConditionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ConditionType {
+    type Err = core::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "Healthy" => ConditionType::Healthy,
+            "Ready" => ConditionType::Ready,
+            "BackpressureHigh" => ConditionType::BackpressureHigh,
+            "HeartbeatMissing" => ConditionType::HeartbeatMissing,
+            "RolloutInProgress" => ConditionType::RolloutInProgress,
+            "ConfigRejected" => ConditionType::ConfigRejected,
+            other => ConditionType::Custom(other.to_string()),
+        })
+    }
+}
+
+impl Serialize for ConditionType {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl PipelineStatus {
+    /// Upsert a condition with correct transition semantics.
+    ///
+    /// # Rationale
+    /// - **Uniqueness by `type`**: there should be **at most one** entry per `ConditionType`.
+    ///   This method enforces "last-writer-wins" for that key.
+    /// - **Transition time discipline**: we update `last_transition_time` **only when the
+    ///   `(type, status)` pair changes**. This keeps transition timestamps meaningful for
+    ///   alerting, SLO burn analysis, and UIs (you don't want clock churn when only
+    ///   `reason`/`message` text changes).
+    /// - **Idempotence**: calling this repeatedly with the same `(type, status)` and the
+    ///   same (or different) reason/message will not alter the transition time, which
+    ///   makes it safe to emit on every reconcile loop or heartbeat.
+    /// - **Unknown is first-class**: passing `ConditionStatus::Unknown` preserves the
+    ///   invariant that lack of signal is not treated as success; use it to gate
+    ///   conservatively.
+    ///
+    /// # Complexity
+    /// - **O(n)** scan over `conditions` (a `Vec`). This is fine for small N. If the set
+    ///   grows, we will consider a `HashMap<ConditionType, Condition>` internally and derive order
+    ///   from keys (for stability).
+    pub fn upsert_condition(
+        &mut self,
+        r#type: ConditionType,
+        status: ConditionStatus,
+        reason: impl Into<String>,
+        message: impl Into<String>,
+        now: SystemTime,
+    ) {
+        // Try to find an existing condition with the same type.
+        if let Some(c) = self.conditions.iter_mut().find(|c| c.r#type == r#type) {
+            // Only bump the transition timestamp if the truth value actually changed.
+            if c.status != status {
+                c.status = status;
+                c.last_transition_time = now;
+            }
+            // Always refresh reason/message so operators see the latest context,
+            // without polluting the transition history.
+            c.reason = reason.into();
+            c.message = message.into();
+            return;
+        }
+
+        // Not present: create a new condition entry initialized with the current time.
+        self.conditions.push(Condition {
+            r#type,
+            status,
+            reason: reason.into(),
+            message: message.into(),
+            last_transition_time: now,
+        });
+    }
+
+    /// Returns a reference to a condition by its type, if it exists.
+    pub fn get_condition(&self, t: &ConditionType) -> Option<&Condition> {
+        self.conditions.iter().find(|c| &c.r#type == t)
+    }
+
+    /// Returns an iterator of all conditions.
+    pub fn conditions(&self) -> impl Iterator<Item = &Condition> {
+        self.conditions.iter()
+    }
 }
 
 impl Default for ObservedStateStore {
@@ -158,6 +399,7 @@ impl ObservedStateStore {
                 let new_core_status = CoreStatus {
                     phase,
                     last_beat: now,
+                    conditions: Default::default(),
                 };
 
                 // Single lock acquisition for the entire update
@@ -170,6 +412,7 @@ impl ObservedStateStore {
 
                 let pipeline_status = pipelines.entry(key).or_insert_with(|| PipelineStatus {
                     phase: PipelinePhase::Pending,
+                    conditions: Default::default(),
                     per_core: HashMap::new(),
                 });
 
@@ -201,6 +444,7 @@ impl ObservedStateStore {
 
                 let pipeline_status = pipelines.entry(key).or_insert_with(|| PipelineStatus {
                     phase: PipelinePhase::Pending,
+                    conditions: Default::default(),
                     per_core: HashMap::new(),
                 });
 
@@ -213,9 +457,75 @@ impl ObservedStateStore {
                         CoreStatus {
                             phase: PipelinePhase::Pending,
                             last_beat: now,
+                            conditions: Default::default(),
                         },
                     );
                 }
+            }
+            ObservedEvent::Condition {
+                key,
+                core_id,
+                condition
+            } => {
+                let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+                    // Rational: We prefer to prioritize availability of the data plane over the
+                    // observed state store's consistency. Anyway, future heartbeats will correct
+                    // any inconsistency.
+                    log::warn!("ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state");
+                    poisoned.into_inner()
+                });
+
+                let ps = pipelines.entry(key).or_insert_with(|| PipelineStatus {
+                    phase: PipelinePhase::Pending,
+                    conditions: Default::default(),
+                    per_core: HashMap::new(),
+                });
+
+                // Upsert the core record and its condition snapshot
+                let cs = ps.per_core.entry(core_id).or_insert(CoreStatus {
+                    phase: PipelinePhase::Pending,
+                    last_beat: condition.last_transition_time,
+                    conditions: Default::default(),
+                });
+                cs.last_beat = condition.last_transition_time;
+                let ctype = condition.r#type.clone();
+                let message = condition.message.clone();
+                let ts = condition.last_transition_time;
+                _ = cs.conditions.insert(ctype.clone(), condition);
+
+                // Aggregate this condition type across cores
+                let agg = aggregate_condition_status(
+                    ps.per_core
+                        .values()
+                        .filter_map(|c| c.conditions.get(&ctype))
+                        .map(|c| c.status.clone()),
+                );
+
+                // Compose a concise summary and upsert the pipeline-level condition
+                let (mut t, mut f, mut u) = (0, 0, 0);
+                for s in ps
+                    .per_core
+                    .values()
+                    .filter_map(|c| c.conditions.get(&ctype))
+                    .map(|c| &c.status)
+                {
+                    match s {
+                        True => t += 1,
+                        False => f += 1,
+                        Unknown => u += 1,
+                    }
+                }
+                let agg_reason = match agg {
+                    True => format!("AllCores{}True", ctype.as_str()),
+                    False => format!("SomeCores{}False", ctype.as_str()),
+                    Unknown => format!("SomeCores{}Unknown", ctype.as_str()),
+                };
+                let agg_message = format!(
+                    "{} (cores: true={}, false={}, unknown={})",
+                    message, t, f, u
+                );
+
+                ps.upsert_condition(ctype, agg, agg_reason, agg_message, ts);
             }
         }
     }
@@ -309,6 +619,31 @@ impl ObservedEvent {
             pipeline_key.core_id,
             PipelinePhase::Stopped,
         )
+    }
+
+    /// Creates a new `PipelinePhase::Condition` event.
+    #[must_use]
+    pub fn pipeline_condition(
+        pipeline_key: DeployedPipelineKey,
+        ctype: ConditionType,
+        status: ConditionStatus,
+        reason: String,
+        message: String,
+    ) -> Self {
+        ObservedEvent::Condition {
+            key: PipelineKey {
+                pipeline_group_id: pipeline_key.pipeline_group_id,
+                pipeline_id: pipeline_key.pipeline_id,
+            },
+            core_id: pipeline_key.core_id,
+            condition: Condition {
+                r#type: ctype,
+                status,
+                reason,
+                message,
+                last_transition_time: SystemTime::now(),
+            },
+        }
     }
 
     /// Creates a new `PipelinePhase::Failed` event.
@@ -443,6 +778,35 @@ where
         return Unknown;
     }
     Unknown
+}
+
+fn aggregate_condition_status<I>(statuses: I) -> ConditionStatus
+where
+    I: IntoIterator<Item = ConditionStatus>,
+{
+    let mut saw_any = false;
+    let mut any_false = false;
+    let mut any_unknown = false;
+
+    for s in statuses {
+        saw_any = true;
+        match s {
+            False => any_false = true,
+            Unknown => any_unknown = true,
+            True => {}
+        }
+    }
+
+    if !saw_any {
+        return Unknown;
+    }
+    if any_false {
+        return False;
+    }
+    if any_unknown {
+        return Unknown;
+    }
+    True
 }
 
 #[cfg(test)]
