@@ -3,13 +3,25 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::control::{AckMsg, CallData, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
+use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
+
+bitflags::bitflags! {
+    /// Types of subscription that a PData can have.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Interests: u8 {
+    /// Acks interest
+        const ACKS   = 1 << 0;
+    /// Nacks interest
+        const NACKS  = 1 << 1;
+    }
+}
 
 /// Common implementation of all effect handlers.
 ///
@@ -200,6 +212,56 @@ impl<PData> EffectHandlerCore<PData> {
             pipeline_ctrl_msg_sender,
         })
     }
+
+    /// Delay a message until a future time; will resume in the same
+    /// effect handler with Message::Control(NodeControlMsg::DelayedData).
+    pub async fn delay_message(
+        &self,
+        _data: Box<PData>,
+        _resume: Instant,
+    ) -> Result<(), TypedError<PData>> {
+        // TODO: Return to this component for sending.
+        Ok(())
+    }
+
+    /// Send a Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        if let Some((_node_id, _ack)) = cxf(ack) {
+            // TODO! send an ack-delivery request to the pipeline controller
+        }
+        Ok(())
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, ack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        if let Some((_node_id, _nack)) = cxf(ack) {
+            // TODO! send an nack-delivery request to the pipeline controller
+        }
+        Ok(())
+    }
+}
+
+/// Effect handler extensions for producers specific to data type.
+#[async_trait(?Send)]
+pub trait ProducerEffectHandlerExtension<PData> {
+    /// Subscribe to a set of interests.
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+}
+
+/// Effect handler extensions for consumers specific to data type.
+#[async_trait(?Send)]
+pub trait ConsumerEffectHandlerExtension<PData> {
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
+
+    /// Triggers the next step of work (if any) in Ack processing.
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
 }
 
 /// Handle to cancel a running timer.
