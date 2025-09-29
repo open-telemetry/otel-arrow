@@ -1077,170 +1077,193 @@ mod telemetry_tests {
         out
     }
 
-    #[tokio::test(flavor = "current_thread")] // receiver uses spawn_local in some paths
-    async fn test_udp_metrics_success_and_failure_collect() {
-        // Ensure spawn_local is called within a LocalSet context
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                // Telemetry system
-                let ms = MetricsSystem::default();
-                let registry = ms.registry();
-                let reporter = ms.reporter();
-                let _collector = tokio::spawn(ms.run_collection_loop());
+    // Telemetry helpers mirroring signal_type_router tests
+    mod telemetry_helpers {
+        use super::*;
+        use otap_df_telemetry::config::Config as TelemetryConfig;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use tokio::task::JoinHandle;
 
-                // Pipeline context
-                let controller = otap_df_engine::context::ControllerContext::new(registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        pub fn start_telemetry() -> (MetricsRegistryHandle, MetricsReporter, JoinHandle<()>) {
+            let telemetry = MetricsSystem::new(TelemetryConfig::default());
+            let registry = telemetry.registry();
+            let reporter = telemetry.reporter();
+            let collector_task = tokio::task::spawn_local(async move {
+                let _ = telemetry.run_collection_loop().await;
+            });
+            (registry, reporter, collector_task)
+        }
 
-                // UDP config
-                let port = pick_unused_port().expect("No free UDP port");
-                let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-                let cfg_json = serde_json::json!({
-                    "listening_addr": addr,
-                    "protocol": "udp"
-                });
-                let receiver = SyslogCefReceiver::from_config(pipeline, &cfg_json).expect("config");
-
-                // Out channel (keep receiver alive to avoid refused)
-                let (out_tx, mut _out_rx) = mpsc::Channel::new(8);
-                let mut senders = HashMap::new();
-                let _ = senders.insert("".into(), LocalSender::MpscSender(out_tx));
-
-                // Pipeline control for effect handler
-                let (pipe_tx, _pipe_rx) = pipeline_ctrl_msg_channel(10);
-                let eh = EffectHandler::new(test_node("syslog_udp_ok"), senders, None, pipe_tx);
-
-                // Control channel for receiver
-                let (ctrl_tx, ctrl_rx) = mpsc::Channel::new(16);
-                let ctrl_rx = EngineReceiver::Local(LocalReceiver::MpscReceiver(ctrl_rx));
-                let ctrl_chan = ControlChannel::new(ctrl_rx);
-
-                // Start receiver
-                let handle = tokio::task::spawn_local(async move {
-                    let _ = Box::new(receiver).start(ctrl_chan, eh).await;
-                });
-
-                // Give it a moment to bind
-                sleep(Duration::from_millis(50)).await;
-
-                // Send one valid CEF and one invalid message
-                let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-                let _ = sock
-                    .send_to(
-                        b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1",
-                        addr,
-                    )
-                    .await
-                    .unwrap();
-                let _ = sock.send_to(b"INVALID", addr).await.unwrap();
-
-                // Wait for flush interval
-                sleep(Duration::from_millis(150)).await;
-
-                // Trigger telemetry snapshot
-                let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter.clone(),
-                });
-                sleep(Duration::from_millis(50)).await;
-
-                // Inspect metrics
-                let map = collect_syslog_metrics_map(&registry);
-                let get = |k: &str| map.get(k).copied().unwrap_or(0);
-                assert!(get("received.items.logs.success") >= 1, "success >= 1");
-                assert!(get("received.items.logs.failure") >= 1, "failure >= 1");
-                assert!(get("received.items.logs.refused") == 0, "refused == 0");
-
-                // Shutdown receiver
-                let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(50),
-                    reason: "test done".into(),
-                });
-                let _ = handle.await;
-            })
-            .await;
+        pub fn stop_telemetry(reporter: MetricsReporter, collector_task: JoinHandle<()>) {
+            drop(reporter);
+            collector_task.abort();
+        }
     }
 
-    #[tokio::test(flavor = "current_thread")] // spawn_local compatibility
-    async fn test_udp_metrics_refused_on_closed_downstream() {
-        // Ensure spawn_local is called within a LocalSet context
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                // Telemetry system
-                let ms = MetricsSystem::default();
-                let registry = ms.registry();
-                let reporter = ms.reporter();
-                let _collector = tokio::spawn(ms.run_collection_loop());
+    #[test]
+    fn test_udp_metrics_success_and_failure_collect() {
+        use otap_df_engine::testing::setup_test_runtime;
+        use telemetry_helpers::{start_telemetry, stop_telemetry};
 
-                // Pipeline context
-                let controller = otap_df_engine::context::ControllerContext::new(registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            // Telemetry setup
+            let (registry, reporter, collector_task) = start_telemetry();
 
-                // UDP config
-                let port = pick_unused_port().expect("No free UDP port");
-                let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-                let cfg_json = serde_json::json!({
-                    "listening_addr": addr,
-                    "protocol": "udp"
-                });
-                let receiver = SyslogCefReceiver::from_config(pipeline, &cfg_json).expect("config");
+            // Pipeline context
+            let controller = otap_df_engine::context::ControllerContext::new(registry.clone());
+            let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
-                // Out channel: drop receiver side to force send error => refused
-                let (out_tx, out_rx) = mpsc::Channel::new(1);
-                drop(out_rx); // downstream closed
-                let mut senders = HashMap::new();
-                let _ = senders.insert("".into(), LocalSender::MpscSender(out_tx));
+            // UDP config + receiver instance (with pipeline-bound metrics)
+            let port = pick_unused_port().expect("No free UDP port");
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let cfg_json = serde_json::json!({
+                "listening_addr": addr,
+                "protocol": "udp"
+            });
+            let receiver = SyslogCefReceiver::from_config(pipeline, &cfg_json).expect("config");
 
-                // Pipeline control for effect handler
-                let (pipe_tx, _pipe_rx) = pipeline_ctrl_msg_channel(10);
-                let eh =
-                    EffectHandler::new(test_node("syslog_udp_refused"), senders, None, pipe_tx);
+            // Out channel (keep receiver alive to avoid refused)
+            let (out_tx, mut _out_rx) = mpsc::Channel::new(8);
+            let mut senders = HashMap::new();
+            let _ = senders.insert("".into(), LocalSender::MpscSender(out_tx));
 
-                // Control channel
-                let (ctrl_tx, ctrl_rx) = mpsc::Channel::new(16);
-                let ctrl_rx = EngineReceiver::Local(LocalReceiver::MpscReceiver(ctrl_rx));
-                let ctrl_chan = ControlChannel::new(ctrl_rx);
+            // Pipeline control for effect handler
+            let (pipe_tx, _pipe_rx) = pipeline_ctrl_msg_channel(10);
+            let eh = EffectHandler::new(test_node("syslog_udp_ok"), senders, None, pipe_tx);
 
-                // Start receiver
-                let handle = tokio::task::spawn_local(async move {
-                    let _ = Box::new(receiver).start(ctrl_chan, eh).await;
-                });
+            // Control channel for receiver
+            let (ctrl_tx, ctrl_rx) = mpsc::Channel::new(16);
+            let ctrl_rx = EngineReceiver::Local(LocalReceiver::MpscReceiver(ctrl_rx));
+            let ctrl_chan = ControlChannel::new(ctrl_rx);
 
-                // Give it a moment to bind
-                sleep(Duration::from_millis(50)).await;
+            // Start receiver inside LocalSet
+            let handle = tokio::task::spawn_local(async move {
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+            });
 
-                // Send a valid message that will be flushed and refused downstream
-                let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-                let _ = sock
-                    .send_to(
-                        b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1",
-                        addr,
-                    )
-                    .await
-                    .unwrap();
+            // Give it a moment to bind
+            sleep(Duration::from_millis(50)).await;
 
-                // Wait for flush interval
-                sleep(Duration::from_millis(150)).await;
+            // Send one valid CEF and one invalid message
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = sock
+                .send_to(
+                    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1",
+                    addr,
+                )
+                .await
+                .unwrap();
+            let _ = sock.send_to(b"INVALID", addr).await.unwrap();
 
-                // Trigger telemetry snapshot
-                let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter.clone(),
-                });
-                sleep(Duration::from_millis(50)).await;
+            // Wait for flush interval
+            sleep(Duration::from_millis(150)).await;
 
-                // Inspect metrics
-                let map = collect_syslog_metrics_map(&registry);
-                let get = |k: &str| map.get(k).copied().unwrap_or(0);
-                assert!(get("received.items.logs.refused") >= 1, "refused >= 1");
+            // Trigger telemetry snapshot
+            let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            });
+            sleep(Duration::from_millis(50)).await;
 
-                // Shutdown receiver
-                let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(50),
-                    reason: "test done".into(),
-                });
-                let _ = handle.await;
-            })
-            .await;
+            // Inspect metrics
+            let map = collect_syslog_metrics_map(&registry);
+            let get = |k: &str| map.get(k).copied().unwrap_or(0);
+            assert!(get("received.items.logs.success") >= 1, "success >= 1");
+            assert!(get("received.items.logs.failure") >= 1, "failure >= 1");
+            assert!(get("received.items.logs.refused") == 0, "refused == 0");
+
+            // Shutdown receiver to allow LocalSet to complete
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Duration::from_millis(50),
+                reason: "test done".into(),
+            });
+            let _ = handle.await;
+
+            // Stop telemetry collector
+            stop_telemetry(reporter, collector_task);
+        }));
+    }
+
+    #[test]
+    fn test_udp_metrics_refused_on_closed_downstream() {
+        use otap_df_engine::testing::setup_test_runtime;
+        use telemetry_helpers::{start_telemetry, stop_telemetry};
+
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            // Telemetry system
+            let (registry, reporter, collector_task) = start_telemetry();
+
+            // Pipeline context
+            let controller = otap_df_engine::context::ControllerContext::new(registry.clone());
+            let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+
+            // UDP config
+            let port = pick_unused_port().expect("No free UDP port");
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let cfg_json = serde_json::json!({
+                "listening_addr": addr,
+                "protocol": "udp"
+            });
+            let receiver = SyslogCefReceiver::from_config(pipeline, &cfg_json).expect("config");
+
+            // Out channel: drop receiver side to force send error => refused
+            let (out_tx, out_rx) = mpsc::Channel::new(1);
+            drop(out_rx); // downstream closed
+            let mut senders = HashMap::new();
+            let _ = senders.insert("".into(), LocalSender::MpscSender(out_tx));
+
+            // Pipeline control for effect handler
+            let (pipe_tx, _pipe_rx) = pipeline_ctrl_msg_channel(10);
+            let eh = EffectHandler::new(test_node("syslog_udp_refused"), senders, None, pipe_tx);
+
+            // Control channel
+            let (ctrl_tx, ctrl_rx) = mpsc::Channel::new(16);
+            let ctrl_rx = EngineReceiver::Local(LocalReceiver::MpscReceiver(ctrl_rx));
+            let ctrl_chan = ControlChannel::new(ctrl_rx);
+
+            // Start receiver
+            let handle = tokio::task::spawn_local(async move {
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+            });
+
+            // Give it a moment to bind
+            sleep(Duration::from_millis(50)).await;
+
+            // Send a valid message that will be flushed and refused downstream
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = sock
+                .send_to(
+                    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1",
+                    addr,
+                )
+                .await
+                .unwrap();
+
+            // Wait for flush interval
+            sleep(Duration::from_millis(150)).await;
+
+            // Trigger telemetry snapshot
+            let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            });
+            sleep(Duration::from_millis(50)).await;
+
+            // Inspect metrics
+            let map = collect_syslog_metrics_map(&registry);
+            let get = |k: &str| map.get(k).copied().unwrap_or(0);
+            assert!(get("received.items.logs.refused") >= 1, "refused >= 1");
+
+            // Shutdown receiver
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Duration::from_millis(50),
+                reason: "test done".into(),
+            });
+            let _ = handle.await;
+
+            // Stop telemetry collector
+            stop_telemetry(reporter, collector_task);
+        }));
     }
 }
