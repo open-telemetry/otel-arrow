@@ -128,6 +128,8 @@ where
         val: &[Self::Native],
         n: usize,
     ) -> super::dictionary::checked::Result<usize> {
+        // TODO use optimized method once we upgrade to latest arrow:
+        // https://github.com/apache/arrow-rs/pull/8498
         let mut index = 0;
         for _ in 0..n {
             index = self.append_slice(val)?;
