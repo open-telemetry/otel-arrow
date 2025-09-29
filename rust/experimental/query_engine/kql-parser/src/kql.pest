@@ -212,6 +212,7 @@ temporal_unary_expressions = {
     now_expression
 }
 
+not_expression = { "not" ~ "(" ~ logical_expression ~ ")" }
 logical_unary_expressions = {
     not_expression
 }
