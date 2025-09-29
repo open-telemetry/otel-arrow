@@ -228,7 +228,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             let is_complete_line = line_bytes.last() == Some(&b'\n');
                                                             if !is_complete_line {
-                                                                // Incomplete line: do nothing for now.
+                                                                // ToDo: Handle incomplete lines
+                                                                // Do we process the incomplete line with partial data or discard it?
+                                                                // Handle incomplete line (log, emit metrics, etc.)
                                                             }
 
                                                             // Strip the newline character for parsing
@@ -254,31 +256,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Clear the bytes for the next iteration
                                                             line_bytes.clear();
 
-                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
-                                                                // Build the Arrow records to send them
-                                                                let items = u64::from(arrow_records_builder.len());
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                                // Reset the builder for the next batch
-                                                                arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                                // Reset the timer since we already built an arrow record batch due to size constraint
-                                                                interval.reset();
-
-                                                                metrics.batches_built.inc();
-                                                                match effect_handler.send_message(
-                                                                    OtapPdata::new_todo_context(arrow_records.into()),
-                                                                ).await
-                                                                {
-                                                                    Ok(_) => metrics.received_items_logs_success.add(items),
-                                                                    Err(_) => {
-                                                                        metrics
-                                                                            .received_items_logs_refused
-                                                                            .add(items);
-                                                                        return; // Break out of the entire task
-                                                                    }
-                                                                }
-                                                            }
                                                         },
                                                         Err(_e) => {
                                                             // Send any remaining records before closing due to error
