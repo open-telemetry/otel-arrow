@@ -86,32 +86,39 @@ impl ArrowRecordsBuilder {
             .append_dropped_attributes_count_n(0, log_record_count);
 
         let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        for _ in 0..log_record_count {
-            self.logs
-                .append_observed_time_unix_nano(Some(observed_time));
-        }
+        self.logs
+            .append_observed_time_unix_nano_n(Some(observed_time), log_record_count);
+        // for _ in 0..log_record_count {
+        //     self.logs
+        //         .append_observed_time_unix_nano(Some(observed_time));
+        // }
 
         self.logs.append_schema_url_n(None, log_record_count);
 
-        for _ in 0..log_record_count {
-            self.logs.append_dropped_attributes_count(0);
-        }
+        // for _ in 0..log_record_count {
+        //     self.logs.append_dropped_attributes_count(0);
+        // }
+        self.logs
+            .append_dropped_attributes_count_n(0, log_record_count);
 
-        for _ in 0..log_record_count {
-            self.logs.append_flags(None);
-        }
+        self.logs.append_flags_n(None, log_record_count);
+        // for _ in 0..log_record_count {
+        //     self.logs.append_flags(None);
+        // }
 
-        for _ in 0..log_record_count {
-            _ = self.logs.append_trace_id(None);
-        }
+        _ = self.logs.append_trace_id_n(None, log_record_count);
+        _ = self.logs.append_span_id_n(None, log_record_count);
+        // for _ in 0..log_record_count {
+        //     _ = self.logs.append_trace_id(None);
+        // }
 
-        for _logs in 0..log_record_count {
-            _ = self.logs.append_trace_id(None);
-        }
+        // for _logs in 0..log_record_count {
+        //     _ = self.logs.append_trace_id(None);
+        // }
 
-        for _logs in 0..log_record_count {
-            _ = self.logs.append_span_id(None);
-        }
+        // for _logs in 0..log_record_count {
+        //     _ = self.logs.append_span_id(None);
+        // }
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
 

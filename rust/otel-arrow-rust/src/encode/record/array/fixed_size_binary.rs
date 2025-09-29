@@ -50,6 +50,14 @@ impl CheckedArrayAppendSlice for FixedSizeBinaryBuilder {
     fn append_slice(&mut self, val: &[Self::Native]) -> Result<(), ArrowError> {
         self.append_value(val)
     }
+
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> Result<(), ArrowError> {
+        for _ in 0..n {
+            self.append_value(val)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl ArrayAppendNulls for FixedSizeBinaryBuilder {
@@ -113,6 +121,15 @@ where
                 },
             ),
         }
+    }
+
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> super::dictionary::checked::Result<usize> {
+        let mut index = 0;
+        for _ in 0..n {
+            index = self.append_slice(val)?;
+        }
+
+        Ok(index)
     }
 }
 

@@ -142,6 +142,12 @@ impl LogsRecordBatchBuilder {
         self.observed_time_unix_nano.append_value(&val);
     }
 
+    /// append a value to the `observed_time_unix_nano` array `n` times
+    pub fn append_observed_time_unix_nano_n(&mut self, val: Option<i64>, n: usize) {
+        let val = val.unwrap_or(0);
+        self.observed_time_unix_nano.append_value_n(&val, n);
+    }
+
     /// append a value to the `severity_number` array
     pub fn append_severity_number(&mut self, val: Option<i32>) {
         if let Some(val) = val {
@@ -183,12 +189,26 @@ impl LogsRecordBatchBuilder {
         self.dropped_attributes_count.append_value(&val);
     }
 
+    /// append a value to the `dropped_attributes_count` array n times
+    pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
+        self.dropped_attributes_count.append_value_n(&val, n);
+    }
+
     /// append a value to the `flags` array
     pub fn append_flags(&mut self, val: Option<u32>) {
         if let Some(val) = val {
             self.flags.append_value(&val);
         } else {
             self.flags.append_null();
+        }
+    }
+
+    /// append a value to the `flags` array n times
+    pub fn append_flags_n(&mut self, val: Option<u32>, n: usize) {
+        if let Some(val) = val {
+            self.flags.append_value_n(&val, n);
+        } else {
+            self.flags.append_nulls(n);
         }
     }
 
@@ -202,12 +222,32 @@ impl LogsRecordBatchBuilder {
         }
     }
 
+    /// append a value to the `trace_id` array `n` times
+    pub fn append_trace_id_n(&mut self, val: Option<&TraceId>, n: usize) -> Result<(), ArrowError> {
+        if let Some(val) = val {
+            self.trace_id.append_slice_n(val, n)
+        } else {
+            self.trace_id.append_nulls(n);
+            Ok(())
+        }
+    }
+
     /// append a value to the `span_id` array
     pub fn append_span_id(&mut self, val: Option<&SpanId>) -> Result<(), ArrowError> {
         if let Some(val) = val {
             self.span_id.append_slice(val)
         } else {
             self.span_id.append_null();
+            Ok(())
+        }
+    }
+
+    /// append a value to the `span_id` array `n` times
+    pub fn append_span_id_n(&mut self, val: Option<&SpanId>, n: usize) -> Result<(), ArrowError> {
+        if let Some(val) = val {
+            self.span_id.append_slice_n(val, n)
+        } else {
+            self.span_id.append_nulls(n);
             Ok(())
         }
     }
