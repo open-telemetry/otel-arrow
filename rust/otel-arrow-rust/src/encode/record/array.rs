@@ -1223,6 +1223,7 @@ pub mod test {
         assert!(builder.append_slice(&valid_values[0]).is_ok());
         assert!(builder.append_slice(&valid_values[1]).is_ok());
         builder.append_nulls(2);
+        assert!(builder.append_slice_n(&valid_values[1], 2).is_ok());
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -1232,7 +1233,7 @@ pub mod test {
                 Box::new(DataType::FixedSizeBinary(1))
             )
         );
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -1241,7 +1242,17 @@ pub mod test {
         let dict_keys = dict_array.keys();
         assert_eq!(
             dict_keys,
-            &UInt8Array::from_iter(vec![Some(0), Some(1), None, Some(0), Some(1), None, None])
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(1),
+                None,
+                None,
+                Some(1),
+                Some(1)
+            ])
         );
         let dict_values = dict_array
             .values()
