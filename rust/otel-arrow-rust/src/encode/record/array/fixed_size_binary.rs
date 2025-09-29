@@ -123,7 +123,11 @@ where
         }
     }
 
-    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> super::dictionary::checked::Result<usize> {
+    fn append_slice_n(
+        &mut self,
+        val: &[Self::Native],
+        n: usize,
+    ) -> super::dictionary::checked::Result<usize> {
         let mut index = 0;
         for _ in 0..n {
             index = self.append_slice(val)?;

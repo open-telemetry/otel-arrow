@@ -599,7 +599,7 @@ where
         loop {
             let append_result = match &mut self.variant {
                 DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice_n(value, n),
-                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice_n(value, n)
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice_n(value, n),
             };
 
             match append_result {
@@ -618,7 +618,7 @@ where
                     })?;
                     // continue the loop and retry
                 }
-                other => return other, 
+                other => return other,
             }
         }
     }
