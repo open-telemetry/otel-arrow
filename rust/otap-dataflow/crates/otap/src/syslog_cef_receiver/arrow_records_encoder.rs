@@ -55,7 +55,7 @@ impl ArrowRecordsBuilder {
 
         self.logs.body.append_str(syslog_message.input().as_bytes());
 
-        let attributes_added = syslog_message.add_attribues_to_arrow(&mut self.log_attrs);
+        let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
         for _ in 0..attributes_added {
             self.log_attrs.append_parent_id(&self.curr_log_id);

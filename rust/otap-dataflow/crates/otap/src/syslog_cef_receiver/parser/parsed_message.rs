@@ -118,7 +118,7 @@ impl ParsedSyslogMessage<'_> {
     /// Adds attributes to the log record attributes Arrow record batch.
     /// Returns the number of attributes added.
     #[must_use]
-    pub(crate) fn add_attribues_to_arrow(
+    pub(crate) fn add_attributes_to_arrow(
         &self,
         log_attributes_arrow_records: &mut AttributesRecordBatchBuilder<u16>,
     ) -> u16 {
