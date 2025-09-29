@@ -10,7 +10,7 @@ use pest::{iterators::Pair, pratt_parser::*};
 use crate::{
     Rule, logical_expressions::to_logical_expression, scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_logical_unary_expressions::*, scalar_mathematical_function_expressions::*,
+    scalar_logical_function_expressions::*, scalar_mathematical_function_expressions::*,
     scalar_parse_function_expressions::*, scalar_primitive_expressions::*,
     scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
 };

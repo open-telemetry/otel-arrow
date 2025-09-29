@@ -255,10 +255,8 @@ scalar_list_expression = {
     "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
 }
 
-not_expression = { "not" ~ "(" ~ scalar_expression ~ ")" }
 logical_expression = {
     scalar_expression
-    not_expression
 }
 
 assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
