@@ -4,6 +4,7 @@
 //! Implementation of the configuration of the debug processor
 
 use super::filter::FilterRules;
+use super::output::OutputMode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -39,7 +40,7 @@ pub enum SignalActive {
 }
 
 /// Defines the settings of the debug processor, controls the level of verbosity the processor outputs
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_verbosity")]
@@ -49,7 +50,7 @@ pub struct Config {
     #[serde(default = "default_active_signal")]
     signals: HashSet<SignalActive>,
     #[serde(default = "default_output_mode")]
-    output: OutputMode
+    output: OutputMode,
     #[serde(default = "default_filters")]
     filters: Vec<FilterRules>,
 }
@@ -115,8 +116,8 @@ impl Config {
 
     /// get output mode
     #[must_use]
-    pub const fn output(&self) -> OutputMode {
-        self.output
+    pub fn output(&self) -> OutputMode {
+        self.output.clone()
     }
     #[must_use]
     pub const fn filters(&self) -> &Vec<FilterRules> {
@@ -128,7 +129,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             verbosity: default_verbosity(),
-            mode: default_output_mode(),
+            mode: default_display_mode(),
             signals: default_active_signal(),
             output: default_output_mode(),
             filters: default_filters(),
