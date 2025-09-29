@@ -159,9 +159,11 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         return Err(super::ParseError::InvalidCef);
     };
 
-    let version: u8 = match version_bytes {
-        b"0" => 0,
-        b"1" => 1,
+    // Parse version according to CEF spec: supports "0", "1", "0.x", "1.x" etc.
+    // Only the major version number (before the dot) is significant
+    let version: u8 = match version_bytes.first() {
+        Some(b'0') => 0,
+        Some(b'1') => 1,
         _ => return Err(super::ParseError::InvalidCef),
     };
 
@@ -358,6 +360,29 @@ mod tests {
             (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
             (b"spt".as_slice(), b"1232".as_slice())
         );
+    }
+
+    #[test]
+    fn test_cef_version_with_minor() {
+        // Test version 0.5
+        let input = b"CEF:0.5|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+
+        // Test version 1.2
+        let input = b"CEF:1.2|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 1);
+
+        // Test version 0.0
+        let input = b"CEF:0.0|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+
+        // Test invalid major version
+        let input = b"CEF:2.0|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input);
+        assert!(result.is_err());
     }
 
     #[test]
