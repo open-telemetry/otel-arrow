@@ -49,8 +49,10 @@ where
 {
     match source.value_type() {
         ValueType::String => {
-            let s = source.as_string().expect("expected string");
-            serializer.serialize_str(s)
+            let s_bytes = source.as_string().expect("expected string");
+            // TODO
+            let s_str = str::from_utf8(s_bytes).expect("TODO");
+            serializer.serialize_str(s_str)
         }
         ValueType::Bool => {
             let b = source.as_bool().expect("expected bool");

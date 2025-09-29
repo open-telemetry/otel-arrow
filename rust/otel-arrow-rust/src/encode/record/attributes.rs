@@ -31,9 +31,9 @@ where
     T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
     parent_id: PrimitiveArrayBuilder<T::ArrayType>,
-    keys: StringArrayBuilder,
+    keys: BinaryArrayBuilder,
     value_type: UInt8ArrayBuilder,
-    string_value: StringArrayBuilder,
+    string_value: BinaryArrayBuilder,
     int_value: Int64ArrayBuilder,
     double_value: Float64ArrayBuilder,
     bool_value: AdaptiveBooleanArrayBuilder,
@@ -57,7 +57,7 @@ where
     pub fn new() -> Self {
         Self {
             parent_id: PrimitiveArrayBuilder::new(T::parent_id_array_options()),
-            keys: StringArrayBuilder::new(ArrayOptions {
+            keys: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -67,7 +67,7 @@ where
                 dictionary_options: None,
                 ..Default::default()
             }),
-            string_value: StringArrayBuilder::new(ArrayOptions {
+            string_value: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict16()),
                 ..Default::default()
@@ -111,12 +111,12 @@ where
     }
 
     /// Append the attribute key to the builder for this array
-    pub fn append_key(&mut self, val: &str) {
-        self.keys.append_str(val);
+    pub fn append_key(&mut self, val: &[u8]) {
+        self.keys.append_slice(val);
     }
 
     /// Append a string value to the body.
-    pub fn append_str(&mut self, val: &str) {
+    pub fn append_str(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Str as u8));
 
@@ -125,7 +125,7 @@ where
             self.string_value.append_nulls(self.pending_string_nulls);
             self.pending_string_nulls = 0;
         }
-        self.string_value.append_str(val);
+        self.string_value.append_slice(val);
 
         // Increment pending nulls for all other arrays
         self.pending_int_nulls += 1;

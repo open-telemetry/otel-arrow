@@ -14,10 +14,11 @@ use arrow::{
 use crate::{
     encode::record::{
         array::{
-            ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, CheckedArrayAppendSlice,
-            DurationNanosecondArrayBuilder, FixedSizeBinaryArrayBuilder, Int32ArrayBuilder,
-            StringArrayBuilder, TimestampNanosecondArrayBuilder, UInt16ArrayBuilder,
-            UInt32ArrayBuilder, dictionary::DictionaryOptions,
+            ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayAppendStr, ArrayOptions,
+            BinaryArrayBuilder, CheckedArrayAppendSlice, DurationNanosecondArrayBuilder,
+            FixedSizeBinaryArrayBuilder, Int32ArrayBuilder, StringArrayBuilder,
+            TimestampNanosecondArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
+            dictionary::DictionaryOptions,
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
@@ -34,15 +35,15 @@ pub struct TracesRecordBatchBuilder {
     /// the builder for the scope struct for this metric record batch
     pub scope: ScopeBuilder,
 
-    schema_url: StringArrayBuilder,
+    schema_url: BinaryArrayBuilder,
     start_time_unix_nano: TimestampNanosecondArrayBuilder,
     duration_time_unix_nano: DurationNanosecondArrayBuilder,
     trace_id: FixedSizeBinaryArrayBuilder,
     span_id: FixedSizeBinaryArrayBuilder,
-    trace_state: StringArrayBuilder,
+    trace_state: BinaryArrayBuilder,
     parent_span_id: FixedSizeBinaryArrayBuilder,
     flags: UInt32ArrayBuilder,
-    name: StringArrayBuilder,
+    name: BinaryArrayBuilder,
     kind: Int32ArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
     dropped_events_count: UInt32ArrayBuilder,
@@ -64,7 +65,7 @@ impl TracesRecordBatchBuilder {
             }),
             resource: ResourceBuilder::new(),
             scope: ScopeBuilder::new(),
-            schema_url: StringArrayBuilder::new(ArrayOptions {
+            schema_url: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -95,7 +96,7 @@ impl TracesRecordBatchBuilder {
                 },
                 8,
             ),
-            trace_state: StringArrayBuilder::new(ArrayOptions {
+            trace_state: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -113,7 +114,7 @@ impl TracesRecordBatchBuilder {
                 optional: true,
                 ..Default::default()
             }),
-            name: StringArrayBuilder::new(ArrayOptions {
+            name: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -151,17 +152,17 @@ impl TracesRecordBatchBuilder {
     }
 
     /// Append a value to the `schema_url` array.
-    pub fn append_schema_url(&mut self, val: Option<&str>) {
+    pub fn append_schema_url(&mut self, val: Option<&[u8]>) {
         match val {
-            Some(val) => self.schema_url.append_str(val),
+            Some(val) => self.schema_url.append_slice(val),
             None => self.schema_url.append_null(),
         }
     }
 
     /// Append a value to the `schema_url` array `n` times.
-    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+    pub fn append_schema_url_n(&mut self, val: Option<&[u8]>, n: usize) {
         match val {
-            Some(val) => self.schema_url.append_str_n(val, n),
+            Some(val) => self.schema_url.append_slice_n(val, n),
             None => self.schema_url.append_nulls(n),
         }
     }
@@ -187,9 +188,9 @@ impl TracesRecordBatchBuilder {
     }
 
     /// Append a value to the `trace_state` array.
-    pub fn append_trace_state(&mut self, val: Option<&str>) {
+    pub fn append_trace_state(&mut self, val: Option<&[u8]>) {
         match val {
-            Some(val) => self.trace_state.append_str(val),
+            Some(val) => self.trace_state.append_slice(val),
             None => self.trace_state.append_null(),
         }
     }
@@ -215,8 +216,8 @@ impl TracesRecordBatchBuilder {
     }
 
     /// Append a value to the `name` array.
-    pub fn append_name(&mut self, val: &str) {
-        self.name.append_str(val);
+    pub fn append_name(&mut self, val: &[u8]) {
+        self.name.append_slice(val);
     }
 
     /// Append a value to the `kind` array.
@@ -435,7 +436,7 @@ pub struct EventsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt16ArrayBuilder,
     time_unix_nano: TimestampNanosecondArrayBuilder,
-    name: StringArrayBuilder,
+    name: BinaryArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
 }
 
@@ -459,7 +460,7 @@ impl EventsRecordBatchBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            name: StringArrayBuilder::new(ArrayOptions {
+            name: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -494,8 +495,8 @@ impl EventsRecordBatchBuilder {
     }
 
     /// Append a value to the `name` array.
-    pub fn append_name(&mut self, val: &str) {
-        self.name.append_str(val);
+    pub fn append_name(&mut self, val: &[u8]) {
+        self.name.append_slice(val);
     }
 
     /// Append a value to the `dropped_attributes_count` array.
@@ -570,7 +571,7 @@ pub struct LinksRecordBatchBuilder {
     parent_id: UInt16ArrayBuilder,
     trace_id: FixedSizeBinaryArrayBuilder,
     span_id: FixedSizeBinaryArrayBuilder,
-    trace_state: StringArrayBuilder,
+    trace_state: BinaryArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
     flags: UInt32ArrayBuilder,
 }
@@ -606,7 +607,7 @@ impl LinksRecordBatchBuilder {
                 },
                 8,
             ),
-            trace_state: StringArrayBuilder::new(ArrayOptions {
+            trace_state: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -660,9 +661,9 @@ impl LinksRecordBatchBuilder {
     }
 
     /// Append a value to the `trace_state` array.
-    pub fn append_trace_state(&mut self, val: Option<&str>) {
+    pub fn append_trace_state(&mut self, val: Option<&[u8]>) {
         match val {
-            Some(val) => self.trace_state.append_str(val),
+            Some(val) => self.trace_state.append_slice(val),
             None => self.trace_state.append_null(),
         }
     }
@@ -763,7 +764,7 @@ impl LinksRecordBatchBuilder {
 /// Record batch builder for status
 pub struct StatusRecordBatchBuilder {
     code: Int32ArrayBuilder,
-    status_message: StringArrayBuilder,
+    status_message: BinaryArrayBuilder,
 }
 
 impl StatusRecordBatchBuilder {
@@ -776,7 +777,7 @@ impl StatusRecordBatchBuilder {
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
             }),
-            status_message: StringArrayBuilder::new(ArrayOptions {
+            status_message: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -793,9 +794,9 @@ impl StatusRecordBatchBuilder {
     }
 
     /// Append a value to the `status_message` array.
-    pub fn append_status_message(&mut self, val: Option<&str>) {
+    pub fn append_status_message(&mut self, val: Option<&[u8]>) {
         match val {
-            Some(val) => self.status_message.append_str(val),
+            Some(val) => self.status_message.append_slice(val),
             None => self.status_message.append_null(),
         }
     }

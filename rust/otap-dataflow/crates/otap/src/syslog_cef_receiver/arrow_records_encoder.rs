@@ -50,9 +50,10 @@ impl ArrowRecordsBuilder {
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
         self.logs.append_severity_number(Some(severity_number));
-        self.logs.append_severity_text(Some(severity_text));
+        self.logs
+            .append_severity_text(Some(severity_text.as_bytes()));
 
-        self.logs.body.append_str(syslog_message.input().as_ref());
+        self.logs.body.append_str(syslog_message.input().as_bytes());
 
         let attributes_added = syslog_message.add_attribues_to_arrow(&mut self.log_attrs);
 

@@ -9,30 +9,30 @@ use otel_arrow_rust::encode::record::attributes::AttributesRecordBatchBuilder;
 use std::borrow::Cow;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
-const SYSLOG_FACILITY: &str = "syslog.facility";
-const SYSLOG_SEVERITY: &str = "syslog.severity";
-const SYSLOG_HOST_NAME: &str = "syslog.host_name";
-const SYSLOG_MESSAGE: &str = "syslog.message";
+const SYSLOG_FACILITY: &[u8] = b"syslog.facility";
+const SYSLOG_SEVERITY: &[u8] = b"syslog.severity";
+const SYSLOG_HOST_NAME: &[u8] = b"syslog.host_name";
+const SYSLOG_MESSAGE: &[u8] = b"syslog.message";
 
 // Attribute key constants for RFC5424 messages
-const SYSLOG_VERSION: &str = "syslog.version";
-const SYSLOG_APP_NAME: &str = "syslog.app_name";
-const SYSLOG_PROCESS_ID: &str = "syslog.process_id";
-const SYSLOG_MSG_ID: &str = "syslog.msg_id";
-const SYSLOG_STRUCTURED_DATA: &str = "syslog.structured_data";
+const SYSLOG_VERSION: &[u8] = b"syslog.version";
+const SYSLOG_APP_NAME: &[u8] = b"syslog.app_name";
+const SYSLOG_PROCESS_ID: &[u8] = b"syslog.process_id";
+const SYSLOG_MSG_ID: &[u8] = b"syslog.msg_id";
+const SYSLOG_STRUCTURED_DATA: &[u8] = b"syslog.structured_data";
 
 // Attribute key constants for RFC3164 messages
-const SYSLOG_TAG: &str = "syslog.tag";
-const SYSLOG_CONTENT: &str = "syslog.content";
+const SYSLOG_TAG: &[u8] = b"syslog.tag";
+const SYSLOG_CONTENT: &[u8] = b"syslog.content";
 
 // Attribute key constants for CEF messages
-const CEF_VERSION: &str = "cef.version";
-const CEF_DEVICE_VENDOR: &str = "cef.device_vendor";
-const CEF_DEVICE_PRODUCT: &str = "cef.device_product";
-const CEF_DEVICE_VERSION: &str = "cef.device_version";
-const CEF_SIGNATURE_ID: &str = "cef.signature_id";
-const CEF_NAME: &str = "cef.name";
-const CEF_SEVERITY: &str = "cef.severity";
+const CEF_VERSION: &[u8] = b"cef.version";
+const CEF_DEVICE_VENDOR: &[u8] = b"cef.device_vendor";
+const CEF_DEVICE_PRODUCT: &[u8] = b"cef.device_product";
+const CEF_DEVICE_VERSION: &[u8] = b"cef.device_version";
+const CEF_SIGNATURE_ID: &[u8] = b"cef.signature_id";
+const CEF_NAME: &[u8] = b"cef.name";
+const CEF_SEVERITY: &[u8] = b"cef.severity";
 
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
@@ -138,15 +138,13 @@ impl ParsedSyslogMessage<'_> {
 
                 if let Some(hostname) = msg.hostname {
                     log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(hostname).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(hostname);
                     attributes_count += 1;
                 }
 
                 if let Some(appname) = msg.app_name {
                     log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(appname).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(appname);
                     attributes_count += 1;
                 }
 
@@ -163,22 +161,19 @@ impl ParsedSyslogMessage<'_> {
 
                 if let Some(msg_id) = msg.msg_id {
                     log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(msg_id).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(msg_id);
                     attributes_count += 1;
                 }
 
                 if let Some(structured_data) = &msg.structured_data {
                     log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(structured_data).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(structured_data);
                     attributes_count += 1;
                 }
 
                 if let Some(message) = msg.message {
                     log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(message).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(message);
                     attributes_count += 1;
                 }
 
@@ -195,29 +190,25 @@ impl ParsedSyslogMessage<'_> {
 
                 if let Some(hostname) = msg.hostname {
                     log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(hostname).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(hostname);
                     attributes_count += 1;
                 }
 
                 if let Some(tag) = msg.tag {
                     log_attributes_arrow_records.append_key(SYSLOG_TAG);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(tag).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(tag);
                     attributes_count += 1;
                 }
 
                 if let Some(content) = msg.content {
                     log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(content).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(content);
                     attributes_count += 1;
                 }
 
                 if let Some(message) = msg.message {
                     log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(message).unwrap_or_default());
+                    log_attributes_arrow_records.append_str(message);
                     attributes_count += 1;
                 }
 
@@ -230,34 +221,26 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records.append_int(msg.version.into());
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_vendor).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.device_vendor);
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_product).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.device_product);
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_version).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.device_version);
 
                 log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.signature_id).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.signature_id);
 
                 log_attributes_arrow_records.append_key(CEF_NAME);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.name).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.name);
 
                 log_attributes_arrow_records.append_key(CEF_SEVERITY);
-                log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.severity).unwrap_or_default());
+                log_attributes_arrow_records.append_str(msg.severity);
 
                 for (key, value) in msg.parse_extensions() {
-                    log_attributes_arrow_records
-                        .append_key(std::str::from_utf8(key).unwrap_or_default());
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(value).unwrap_or_default());
+                    log_attributes_arrow_records.append_key(key);
+                    log_attributes_arrow_records.append_str(value);
                     attributes_count += 1;
                 }
 

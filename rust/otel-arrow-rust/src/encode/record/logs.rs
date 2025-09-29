@@ -37,16 +37,16 @@ pub struct LogsRecordBatchBuilder {
     /// the builder for the body of the log record
     pub body: LogsBodyBuilder,
 
-    schema_url: StringArrayBuilder,
+    schema_url: BinaryArrayBuilder,
     time_unix_nano: TimestampNanosecondArrayBuilder,
     observed_time_unix_nano: TimestampNanosecondArrayBuilder,
     severity_number: Int32ArrayBuilder,
-    severity_text: StringArrayBuilder,
+    severity_text: BinaryArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
     flags: UInt32ArrayBuilder,
     trace_id: FixedSizeBinaryArrayBuilder,
     span_id: FixedSizeBinaryArrayBuilder,
-    event_name: StringArrayBuilder,
+    event_name: BinaryArrayBuilder,
 }
 
 impl LogsRecordBatchBuilder {
@@ -62,7 +62,7 @@ impl LogsRecordBatchBuilder {
                 dictionary_options: None,
                 default_values_optional: false,
             }),
-            schema_url: StringArrayBuilder::new(ArrayOptions {
+            schema_url: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -82,7 +82,7 @@ impl LogsRecordBatchBuilder {
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
             }),
-            severity_text: StringArrayBuilder::new(ArrayOptions {
+            severity_text: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -113,7 +113,7 @@ impl LogsRecordBatchBuilder {
                 },
                 8,
             ),
-            event_name: StringArrayBuilder::new(ArrayOptions {
+            event_name: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -152,27 +152,27 @@ impl LogsRecordBatchBuilder {
     }
 
     /// append a value to the `schema_url` array
-    pub fn append_schema_url(&mut self, val: Option<&str>) {
+    pub fn append_schema_url(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.schema_url.append_str(val);
+            self.schema_url.append_slice(val);
         } else {
             self.schema_url.append_null();
         }
     }
 
     /// append a value to the `schema_url` array `n` times
-    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+    pub fn append_schema_url_n(&mut self, val: Option<&[u8]>, n: usize) {
         if let Some(val) = val {
-            self.schema_url.append_str_n(val, n);
+            self.schema_url.append_slice_n(val, n);
         } else {
             self.schema_url.append_nulls(n);
         }
     }
 
     /// append a value to the `severity_text` array
-    pub fn append_severity_text(&mut self, val: Option<&str>) {
+    pub fn append_severity_text(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.severity_text.append_str(val)
+            self.severity_text.append_slice(val)
         } else {
             self.severity_text.append_null();
         }
@@ -213,9 +213,9 @@ impl LogsRecordBatchBuilder {
     }
 
     /// append a value to the `event_name` array
-    pub fn append_event_name(&mut self, val: Option<&str>) {
+    pub fn append_event_name(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.event_name.append_str(val);
+            self.event_name.append_slice(val);
         } else {
             self.event_name.append_null();
         }
@@ -339,7 +339,7 @@ impl LogsRecordBatchBuilder {
 /// Builder for the body of a log record.
 pub struct LogsBodyBuilder {
     value_type: UInt8ArrayBuilder,
-    string_value: StringArrayBuilder,
+    string_value: BinaryArrayBuilder,
     int_value: Int64ArrayBuilder,
     double_value: Float64ArrayBuilder,
     bool_value: AdaptiveBooleanArrayBuilder,
@@ -365,7 +365,7 @@ impl LogsBodyBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            string_value: StringArrayBuilder::new(ArrayOptions {
+            string_value: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict16()),
                 ..Default::default()
@@ -402,7 +402,7 @@ impl LogsBodyBuilder {
     }
 
     /// Append a string value to the body.
-    pub fn append_str(&mut self, val: &str) {
+    pub fn append_str(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Str as u8));
 
@@ -411,7 +411,7 @@ impl LogsBodyBuilder {
             self.string_value.append_nulls(self.pending_string_nulls);
             self.pending_string_nulls = 0;
         }
-        self.string_value.append_str(val);
+        self.string_value.append_slice(val);
 
         // Increment pending nulls for all other arrays
         self.pending_int_nulls += 1;
@@ -680,7 +680,7 @@ impl LogsBodyBuilder {
 /// Builder for the `resource` struct column of the logs OTAP record.
 pub struct ResourceBuilder {
     id: UInt16ArrayBuilder,
-    schema_url: StringArrayBuilder,
+    schema_url: BinaryArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
 }
 
@@ -694,7 +694,7 @@ impl ResourceBuilder {
                 dictionary_options: None,
                 default_values_optional: false,
             }),
-            schema_url: StringArrayBuilder::new(ArrayOptions {
+            schema_url: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -722,18 +722,18 @@ impl ResourceBuilder {
     }
 
     /// Append a value to the `schema_url` array
-    pub fn append_schema_url(&mut self, val: Option<&str>) {
+    pub fn append_schema_url(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.schema_url.append_str(val)
+            self.schema_url.append_slice(val)
         } else {
             self.schema_url.append_null();
         }
     }
 
     /// Append a value to the `schema_url` array `n` times
-    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+    pub fn append_schema_url_n(&mut self, val: Option<&[u8]>, n: usize) {
         if let Some(val) = val {
-            self.schema_url.append_str_n(val, n);
+            self.schema_url.append_slice_n(val, n);
         } else {
             self.schema_url.append_nulls(n);
         }
@@ -786,8 +786,8 @@ impl ResourceBuilder {
 /// Builder for the scope struct column of the logs OTAP batch
 pub struct ScopeBuilder {
     id: UInt16ArrayBuilder,
-    name: StringArrayBuilder,
-    version: StringArrayBuilder,
+    name: BinaryArrayBuilder,
+    version: BinaryArrayBuilder,
     dropped_attributes_count: UInt32ArrayBuilder,
 }
 
@@ -801,12 +801,12 @@ impl ScopeBuilder {
                 dictionary_options: None,
                 default_values_optional: false,
             }),
-            name: StringArrayBuilder::new(ArrayOptions {
+            name: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
             }),
-            version: StringArrayBuilder::new(ArrayOptions {
+            version: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -834,36 +834,36 @@ impl ScopeBuilder {
     }
 
     /// Append a value to the `name` array
-    pub fn append_name(&mut self, val: Option<&str>) {
+    pub fn append_name(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.name.append_str(val)
+            self.name.append_slice(val)
         } else {
             self.name.append_null();
         }
     }
 
     /// Append a value to the `name` array n times
-    pub fn append_name_n(&mut self, val: Option<&str>, n: usize) {
+    pub fn append_name_n(&mut self, val: Option<&[u8]>, n: usize) {
         if let Some(val) = val {
-            self.name.append_str_n(val, n);
+            self.name.append_slice_n(val, n);
         } else {
             self.name.append_nulls(n);
         }
     }
 
     /// Append a value to the `version` array
-    pub fn append_version(&mut self, val: Option<&str>) {
+    pub fn append_version(&mut self, val: Option<&[u8]>) {
         if let Some(val) = val {
-            self.version.append_str(val);
+            self.version.append_slice(val);
         } else {
             self.version.append_null();
         }
     }
 
     /// Append a value to the `version` array n times`
-    pub fn append_version_n(&mut self, val: Option<&str>, n: usize) {
+    pub fn append_version_n(&mut self, val: Option<&[u8]>, n: usize) {
         if let Some(val) = val {
-            self.version.append_str_n(val, n);
+            self.version.append_slice_n(val, n);
         } else {
             self.version.append_nulls(n);
         }
@@ -892,11 +892,13 @@ impl ScopeBuilder {
         }
 
         if let Some(array) = self.name.finish() {
+            // TODO convert binary to string array
             fields.push(Field::new(consts::NAME, array.data_type().clone(), true));
             columns.push(array);
         }
 
         if let Some(array) = self.version.finish() {
+            // TODO convert binary to string array
             fields.push(Field::new(consts::VERSION, array.data_type().clone(), true));
             columns.push(array);
         }
