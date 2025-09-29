@@ -131,20 +131,20 @@ impl LogsRecordBatchBuilder {
     }
 
     /// append a value to the `time_unix_nano` array
-    pub fn append_time_unix_nano(&mut self, val: Option<i64>) {
-        let val = val.unwrap_or(0);
+    #[inline]
+    pub fn append_time_unix_nano(&mut self, val: i64) {
         self.time_unix_nano.append_value(&val);
     }
 
     /// append a value to the `observed_time_unix_nano` array
-    pub fn append_observed_time_unix_nano(&mut self, val: Option<i64>) {
-        let val = val.unwrap_or(0);
+    #[inline]
+    pub fn append_observed_time_unix_nano(&mut self, val: i64) {
         self.observed_time_unix_nano.append_value(&val);
     }
 
     /// append a value to the `observed_time_unix_nano` array `n` times
-    pub fn append_observed_time_unix_nano_n(&mut self, val: Option<i64>, n: usize) {
-        let val = val.unwrap_or(0);
+    #[inline]
+    pub fn append_observed_time_unix_nano_n(&mut self, val: i64, n: usize) {
         self.observed_time_unix_nano.append_value_n(&val, n);
     }
 

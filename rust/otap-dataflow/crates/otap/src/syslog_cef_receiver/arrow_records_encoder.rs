@@ -45,7 +45,7 @@ impl ArrowRecordsBuilder {
     /// Appends a parsed syslog message to the builder.
     pub fn append_syslog(&mut self, syslog_message: ParsedSyslogMessage<'_>) {
         self.logs
-            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64));
+            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64).unwrap_or(0));
 
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
@@ -87,7 +87,7 @@ impl ArrowRecordsBuilder {
 
         let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
         self.logs
-            .append_observed_time_unix_nano_n(Some(observed_time), log_record_count);
+            .append_observed_time_unix_nano_n(observed_time, log_record_count);
         self.logs.append_schema_url_n(None, log_record_count);
         self.logs
             .append_dropped_attributes_count_n(0, log_record_count);
