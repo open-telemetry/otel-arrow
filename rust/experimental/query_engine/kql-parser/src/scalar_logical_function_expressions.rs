@@ -7,18 +7,15 @@ use pest::iterators::Pair;
 
 use crate::{Rule, logical_expressions::parse_logical_expression};
 
-pub(crate) fn parse_logical_function_expressions(
-    logical_function_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_logical_unary_expressions(
+    logical_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = logical_function_expressions_rule
-        .into_inner()
-        .next()
-        .unwrap();
+    let rule = logical_unary_expressions_rule.into_inner().next().unwrap();
 
     match rule.as_rule() {
         Rule::not_expression => parse_not_expression(rule, scope),
-        _ => panic!("Unexpected rule in logical_function_expressions: {rule}"),
+        _ => panic!("Unexpected rule in logical_unary_expressions: {rule}"),
     }
 }
 
