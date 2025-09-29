@@ -42,10 +42,10 @@ pub struct ServerConfig {
 
 /// Data stored in each correlation slot
 struct SlotData {
-    /// Channel to send response back to gRPC handler
+    /// Channel to send response back to gRPC handler.
     channel: oneshot::Sender<Result<(), NackMsg<OtapPdata>>>,
 
-    /// Coutner
+    /// Generation is a counter.
     generation: SlotGeneration,
 }
 
@@ -57,7 +57,7 @@ struct SlotIndex(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SlotGeneration(usize);
 
-/// The value placed in CallData
+/// SlotKeys are used to correlate are placed into CtxData,
 #[derive(Clone, Copy, Debug)]
 pub struct SlotKey(SlotIndex, SlotGeneration);
 
@@ -91,6 +91,8 @@ impl SlotKey {
     }
 }
 
+/// GenMem is similar to an Option for SlotData, but the None state
+/// remembers the next available generation number for re-use.
 enum GenMem {
     Current(SlotData),
     Available(SlotGeneration),
@@ -99,17 +101,11 @@ enum GenMem {
 /// State for correlating gRPC requests with pipeline Ack/Nack responses
 pub struct ServerState {
     /// Current slots array, can safely grow because this means we retain
-    /// the generation; to support shrink would require not recycling
-    /// generation numbers.
-    ///
-    /// Functionally maps SlotIndex to Option<SlotData>, however uses
-    /// default values for all fields to avoid overhead. This is safe
-    /// because the oneshot has an inner Option.
+    /// the generation. (Cannot shrink without first recycling generation
+    /// numbers correctly.)
     slots: Vec<GenMem>,
 
-    /// Free slots, use to push/pop free SlotIndex values. When the
-    /// slots Vec grows we will add all the new SlotIndex values to
-    /// this set.
+    /// Free slots lets us quickly find a GenMem::Available()
     free_slots: Vec<SlotIndex>,
 
     /// Server configuration.

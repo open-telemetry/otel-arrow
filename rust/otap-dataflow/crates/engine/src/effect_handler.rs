@@ -33,6 +33,23 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
 }
 
+/// Effect handler extensions for producers specific to data type.
+#[async_trait(?Send)]
+pub trait ProducerEffectHandlerExtension<PData> {
+    /// Subscribe to a set of interests.
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+}
+
+/// Effect handler extensions for consumers specific to data type.
+#[async_trait(?Send)]
+pub trait ConsumerEffectHandlerExtension<PData> {
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
+
+    /// Triggers the next step of work (if any) in Ack processing.
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
+}
+
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id.
     pub(crate) fn new(node_id: NodeId) -> Self {
@@ -160,6 +177,26 @@ impl<PData> EffectHandlerCore<PData> {
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
     }
 
+    /// Helper method to get control channel w/ consistent error handling.
+    fn get_pipeline_control_channel(&self) -> PipelineCtrlMsgSender<PData> {
+        self.pipeline_ctrl_msg_sender.clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.")
+    }
+
+    /// Helper method to send pipeline control messages with error handling.
+    async fn send_pipeline_control_msg(
+        &self,
+        msg: PipelineControlMsg<PData>,
+    ) -> Result<PipelineCtrlMsgSender<PData>, TypedError<PData>> {
+        let channel = self.get_pipeline_control_channel();
+        channel.send(msg).await.map_err(|e| {
+            TypedError::Error(Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
+        })?;
+        Ok(channel)
+    }
+
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
     ///
@@ -168,15 +205,15 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
-            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        
         let msg = PipelineControlMsg::StartTimer {
             node_id: self.node_id.index,
             duration,
         };
-        
-        self.send_pipeline_control_msg(msg).await.map_err(|e: TypedError<PData>| -> Error { e.into() })?;
+
+        let pipeline_ctrl_msg_sender = self
+            .send_pipeline_control_msg(msg)
+            .await
+            .map_err(|e: TypedError<PData>| -> Error { e.into() })?;
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.index,
@@ -190,35 +227,20 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
-            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        
         let msg = PipelineControlMsg::StartTelemetryTimer {
             node_id: self.node_id.index,
             duration,
         };
-        
-        self.send_pipeline_control_msg(msg).await.map_err(|e: TypedError<PData>| -> Error { e.into() })?;
+
+        let pipeline_ctrl_msg_sender = self
+            .send_pipeline_control_msg(msg)
+            .await
+            .map_err(|e: TypedError<PData>| -> Error { e.into() })?;
 
         Ok(TelemetryTimerCancelHandle {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
-    }
-
-    /// Helper method to send pipeline control messages with error handling.
-    async fn send_pipeline_control_msg(
-        &self,
-        msg: PipelineControlMsg<PData>,
-    ) -> Result<(), TypedError<PData>> {
-        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
-            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender
-            .send(msg)
-            .await
-            .map_err(|e| TypedError::Error(Error::PipelineControlMsgError {
-                error: e.to_string(),
-            }))
     }
 
     /// Delay a message until a future time; will resume in the same
@@ -233,7 +255,7 @@ impl<PData> EffectHandlerCore<PData> {
             data,
             when: resume,
         };
-        self.send_pipeline_control_msg(msg).await
+        self.send_pipeline_control_msg(msg).await.map(|_| ())
     }
 
     /// Send a Ack to a node of known-interest.
@@ -243,7 +265,7 @@ impl<PData> EffectHandlerCore<PData> {
     {
         if let Some((node_id, ack)) = cxf(ack) {
             let msg = PipelineControlMsg::DeliverAck { node_id, ack };
-            self.send_pipeline_control_msg(msg).await?
+            self.send_pipeline_control_msg(msg).await.map(|_| ())?;
         }
         Ok(())
     }
@@ -255,27 +277,10 @@ impl<PData> EffectHandlerCore<PData> {
     {
         if let Some((node_id, nack)) = cxf(nack) {
             let msg = PipelineControlMsg::DeliverNack { node_id, nack };
-            self.send_pipeline_control_msg(msg).await?
+            self.send_pipeline_control_msg(msg).await.map(|_| ())?;
         }
         Ok(())
     }
-}
-
-/// Effect handler extensions for producers specific to data type.
-#[async_trait(?Send)]
-pub trait ProducerEffectHandlerExtension<PData> {
-    /// Subscribe to a set of interests.
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
-}
-
-/// Effect handler extensions for consumers specific to data type.
-#[async_trait(?Send)]
-pub trait ConsumerEffectHandlerExtension<PData> {
-    /// Triggers the next step of work (if any) in Nack processing.
-    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
-
-    /// Triggers the next step of work (if any) in Ack processing.
-    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
 }
 
 /// Handle to cancel a running timer.

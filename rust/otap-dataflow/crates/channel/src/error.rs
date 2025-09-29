@@ -19,7 +19,8 @@ pub enum SendError<T> {
 }
 
 impl<T> SendError<T> {
-    /// Retrieves inner. TODO: why discard full vs closed?
+    /// Retrieves inner, in cases where the specific condition is
+    /// not important the failed payload is needed.
     pub fn inner(self) -> T {
         match self {
             Self::Full(t) => t,

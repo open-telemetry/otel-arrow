@@ -17,29 +17,30 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-/// A context value
+/// A context value. Supports conversion to and from plain 8-byte data
+/// types.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CtxVal([u8; 8]);
 
 impl<T: Pod> From<T> for CtxVal {
-    /// From T
+    /// From T to CtxVal
     fn from(v: T) -> Self {
         Self(bytemuck::cast(v))
     }
 }
 
 impl From<CtxVal> for usize {
-    /// From T
+    /// From CtxVal to usize
     fn from(v: CtxVal) -> usize {
         bytemuck::cast(v.0)
     }
 }
 
-/// Standard context values
+/// Standard context values hold two caller-specified fields.
 pub type CallData = SmallVec<[CtxVal; 2]>;
 
-/// The ACK
+/// The ACK message.
 #[derive(Debug, Clone)]
 pub struct AckMsg<PData> {
     /// Accepteded pdata, presumed context-only.
@@ -50,7 +51,7 @@ pub struct AckMsg<PData> {
 }
 
 impl<PData> AckMsg<PData> {
-    /// Creates a new ACK
+    /// Creates a new ACK.
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
@@ -59,7 +60,7 @@ impl<PData> AckMsg<PData> {
     }
 }
 
-/// The NACK
+/// The NACK message.
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
     /// Human-readable reason for the NACK.
