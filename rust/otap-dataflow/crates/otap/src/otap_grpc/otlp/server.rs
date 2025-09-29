@@ -43,7 +43,7 @@ pub struct ServerConfig {
 /// Data stored in each correlation slot
 struct SlotData {
     /// Channel to send response back to gRPC handler
-    channel: Option<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>,
+    channel: oneshot::Sender<Result<(), NackMsg<OtapPdata>>>,
 
     /// Coutner
     generation: SlotGeneration,
@@ -60,16 +60,6 @@ struct SlotGeneration(usize);
 /// The value placed in CallData
 #[derive(Clone, Copy, Debug)]
 pub struct SlotKey(SlotIndex, SlotGeneration);
-
-// Default implementations for when slots are not in use
-impl Default for SlotData {
-    fn default() -> Self {
-        Self {
-            channel: None,
-            generation: SlotGeneration(0),
-        }
-    }
-}
 
 impl SlotIndex {
     fn as_usize(self) -> usize {
@@ -101,6 +91,11 @@ impl SlotKey {
     }
 }
 
+enum GenMem {
+    Current(SlotData),
+    Available(SlotGeneration),
+}
+
 /// State for correlating gRPC requests with pipeline Ack/Nack responses
 pub struct ServerState {
     /// Current slots array, can safely grow because this means we retain
@@ -110,7 +105,7 @@ pub struct ServerState {
     /// Functionally maps SlotIndex to Option<SlotData>, however uses
     /// default values for all fields to avoid overhead. This is safe
     /// because the oneshot has an inner Option.
-    slots: Vec<SlotData>,
+    slots: Vec<GenMem>,
 
     /// Free slots, use to push/pop free SlotIndex values. When the
     /// slots Vec grows we will add all the new SlotIndex values to
@@ -167,44 +162,9 @@ impl ServerState {
     /// Create new correlation state with specified limits
     fn new(config: ServerConfig) -> Self {
         Self {
-            slots: Vec::with_capacity(config.max_slots.min(1024)),
+            slots: Vec::new(),
             free_slots: Vec::new(),
             config,
-        }
-    }
-
-    /// Allocate a slot and return SlotKey or None if at capacity
-    fn allocate_slot(
-        &mut self,
-        channel: oneshot::Sender<Result<(), NackMsg<OtapPdata>>>,
-    ) -> Option<SlotKey> {
-        if let Some(slot_index) = self.free_slots.pop() {
-            let unused_generation = self
-                .slots
-                .get_mut(slot_index.as_usize())
-                .map(|data| {
-                    data.channel = Some(channel);
-                    // generation is incremented when it is placed in free_slots.
-                    data.generation
-                })
-                .expect("some");
-
-            return Some(SlotKey::new(slot_index, unused_generation));
-        }
-
-        // If no free slots and we can still grow
-        if self.slots.len() < self.config.max_slots {
-            let slot_index = SlotIndex(self.slots.len());
-            let generation = SlotGeneration(1);
-
-            self.slots.push(SlotData {
-                channel: Some(channel),
-                generation,
-            });
-
-            Some(SlotKey::new(slot_index, generation))
-        } else {
-            None // At capacity
         }
     }
 
@@ -214,31 +174,90 @@ impl ServerState {
         slot_key: SlotKey,
         result: Result<(), NackMsg<OtapPdata>>,
     ) {
-        let slot_index = slot_key.index();
+        let slot_index = slot_key.index().as_usize();
+        let slice = self.slots.as_mut_slice();
+        let slotref = &mut slice[slot_index];
 
-        let data = self.slots.get_mut(slot_index.as_usize()).expect("some");
-
-        if data.generation == slot_key.generation() {
-            if let Some(chan) = data.channel.take() {
-                match chan.send(result) {
-                    Ok(_) => {}
-                    Err(_) => {}
-                }
+        let mut replace = match slotref {
+            GenMem::Available(_) => {
+                return;
             }
-            data.generation = data.generation.increment();
-            self.free_slots.push(slot_index);
+            GenMem::Current(data) => {
+                if slot_key.generation() != data.generation {
+                    return;
+                }
+                GenMem::Available(data.generation.increment())
+            }
+        };
+
+        std::mem::swap(slotref, &mut replace);
+
+        match replace {
+            GenMem::Current(data) => {
+                let _ = data.channel.send(result);
+            }
+            _ => {}
         }
     }
 
     /// Free a slot when a gRPC request is cancelled
     pub(crate) fn free_slot(&mut self, slot_key: SlotKey) {
         let slot_index = slot_key.index();
+        let slice = self.slots.as_mut_slice();
+        let slotref = &mut slice[slot_index.as_usize()];
 
-        let data = self.slots.get_mut(slot_index.as_usize()).expect("some");
+        let mut replace = match slotref {
+            GenMem::Available(_) => {
+                return;
+            }
+            GenMem::Current(data) => {
+                if slot_key.generation() != data.generation {
+                    return;
+                }
+                GenMem::Available(data.generation.increment())
+            }
+        };
 
-        if data.generation == slot_key.generation() {
-            data.generation = data.generation.increment();
-            self.free_slots.push(slot_index);
+        std::mem::swap(slotref, &mut replace);
+        self.free_slots.push(slot_index);
+    }
+
+    /// Allocate a slot and return SlotKey or None if at capacity
+    fn allocate_slot(
+        &mut self,
+        channel: oneshot::Sender<Result<(), NackMsg<OtapPdata>>>,
+    ) -> Option<SlotKey> {
+        if let Some(slot_index) = self.free_slots.pop() {
+            let slice = self.slots.as_mut_slice();
+            let slotref = &mut slice[slot_index.as_usize()];
+
+            match slotref {
+                GenMem::Available(slotgen) => {
+                    let generation = *slotgen;
+                    let mut repl = GenMem::Current(SlotData {
+                        channel,
+                        generation,
+                    });
+                    std::mem::swap(slotref, &mut repl);
+                    return Some(SlotKey::new(slot_index, generation));
+                }
+                _ => {}
+            }
+        };
+
+        // If no free slots and we can still grow
+        if self.slots.len() < self.config.max_slots {
+            let slot_index = SlotIndex(self.slots.len());
+            let generation = SlotGeneration(1);
+
+            self.slots.push(GenMem::Current(SlotData {
+                channel,
+                generation,
+            }));
+
+            Some(SlotKey::new(slot_index, generation))
+        } else {
+            None // At capacity
         }
     }
 }
