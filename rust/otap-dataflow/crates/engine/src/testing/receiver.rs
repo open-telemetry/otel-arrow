@@ -195,7 +195,7 @@ pub struct ValidationPhase<PData> {
     // ToDo implement support for pipeline control messages in a future PR.
     #[allow(unused_variables)]
     #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {

@@ -18,8 +18,7 @@ where
     println!("Request:");
     println!("{records:?}");
 
-    println!("Pipeline:");
-    println!("{pipeline:?}");
+    println!("{pipeline}");
 
     let mut batch = engine.begin_batch(pipeline).unwrap();
 

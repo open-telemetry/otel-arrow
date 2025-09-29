@@ -19,7 +19,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_engine::control::PipelineControlMsg;
 use otap_df_state::store::ObservedStateHandle;
 use serde::Serialize;
 
@@ -50,9 +49,7 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
         .iter()
         .filter_map(|sender| {
             sender
-                .try_send(PipelineControlMsg::Shutdown {
-                    reason: "admin requested shutdown".to_owned(), // ToDo we probably need to codify reasons in the future
-                })
+                .try_send_shutdown("admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
                 .err()
         })
         .map(|e| e.to_string())

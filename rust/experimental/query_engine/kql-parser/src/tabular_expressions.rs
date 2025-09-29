@@ -795,13 +795,13 @@ where
     if cfg!(test) {
         // Note: When building tests we sort the key list so that it is
         // deterministice.
-        let mut source_keys: Vec<&Box<str>> = schema.get_schema_for_keys().keys().collect();
+        let mut source_keys: Vec<&Box<str>> = schema.get_schema().keys().collect();
         source_keys.sort();
         for k in source_keys {
             (action)(k)
         }
     } else {
-        let source_keys = schema.get_schema_for_keys().keys();
+        let source_keys = schema.get_schema().keys();
         for k in source_keys {
             (action)(k)
         }
@@ -3400,6 +3400,8 @@ mod tests {
     #[test]
     fn test_parse_tabular_expression() {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
+            println!("Testing: {input}");
+
             let state = ParserState::new(input);
 
             let mut result = KqlPestParser::parse(Rule::tabular_expression, input).unwrap();

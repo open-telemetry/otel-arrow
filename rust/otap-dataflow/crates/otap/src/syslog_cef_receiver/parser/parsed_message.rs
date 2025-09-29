@@ -243,7 +243,7 @@ impl ParsedSyslogMessage<'_> {
 
                 log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.signature_id).unwrap_or_default());
+                    .append_str(std::str::from_utf8(msg.device_event_class_id).unwrap_or_default());
 
                 log_attributes_arrow_records.append_key(CEF_NAME);
                 log_attributes_arrow_records
@@ -253,7 +253,8 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records
                     .append_str(std::str::from_utf8(msg.severity).unwrap_or_default());
 
-                for (key, value) in msg.parse_extensions() {
+                let mut extensions_iter = msg.parse_extensions();
+                while let Some((key, value)) = extensions_iter.next_extension() {
                     log_attributes_arrow_records
                         .append_key(std::str::from_utf8(key).unwrap_or_default());
                     log_attributes_arrow_records

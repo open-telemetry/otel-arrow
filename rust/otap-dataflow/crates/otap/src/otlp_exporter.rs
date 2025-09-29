@@ -101,7 +101,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let _ = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -147,7 +147,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                    _ = timer_cancel_handle.cancel().await;
+                    break;
+                }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
@@ -230,11 +233,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             })?;
                             self.pdata_metrics.traces_exported.inc();
                         }
-                        (_, payload) => {
-                            let service_req: OtlpProtoBytes = payload
-                                .try_into()
-                                .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
-
+                        (_, OtapPayload::OtlpBytes(service_req)) => {
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     _ = logs_client.export(bytes).await.map_err(|e| {

@@ -133,6 +133,7 @@ where
                 spans.append_span_id(span.span_id().copied().unwrap_or_default())?;
                 spans.append_trace_state(span.trace_state());
                 spans.append_parent_span_id(span.parent_span_id().copied())?;
+                spans.append_flags(span.flags());
                 spans.append_name(span.name().unwrap_or_default());
                 spans.append_kind(Some(span.kind()));
                 spans.append_dropped_attributes_count(Some(span.dropped_attributes_count()));
@@ -171,6 +172,7 @@ where
                     links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
                     links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
+                    links.append_flags(link.flags());
 
                     for kv in link.attributes() {
                         link_attrs.append_parent_id(&curr_link_id);
@@ -847,6 +849,7 @@ where
                             ehdp.append_flags(ehdp_view.flags().into_inner());
                             ehdp.append_min(ehdp_view.min());
                             ehdp.append_max(ehdp_view.max());
+                            ehdp.append_zero_threshold(ehdp_view.zero_threshold());
 
                             for exemplar in ehdp_view.exemplars() {
                                 append_exemplar(
@@ -974,6 +977,7 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::SpanFlags;
     use otel_arrow_rust::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
@@ -2070,6 +2074,7 @@ mod test {
                 Field::new("flags", DataType::UInt32, false),
                 Field::new("min", DataType::Float64, true),
                 Field::new("max", DataType::Float64, true),
+                Field::new("zero_threshold", DataType::Float64, true),
             ])),
             vec![
                 // id
@@ -2098,6 +2103,8 @@ mod test {
                 Arc::new(Float64Array::from_iter(vec![Some(4.0)])),
                 // max
                 Arc::new(Float64Array::from_iter(vec![Some(44.0)])),
+                // zero threshold
+                Arc::new(Float64Array::from_iter(vec![Some(-1.1)])),
             ],
         )
         .unwrap();
@@ -3862,6 +3869,7 @@ mod test {
                     .trace_state("some_state")
                     .end_time_unix_nano(1999u64)
                     .parent_span_id(a_parent_span_id.to_vec())
+                    .flags(SpanFlags::TraceFlagsMask)
                     .dropped_attributes_count(7u32)
                     .dropped_events_count(11u32)
                     .dropped_links_count(29u32)
@@ -3885,6 +3893,7 @@ mod test {
                                 "link_attr1",
                                 AnyValue::new_string("hello"),
                             )])
+                            .flags(255u32)
                             .finish(),
                     ])
                     .finish(),
@@ -3980,6 +3989,7 @@ mod test {
                     true,
                 ),
                 Field::new("parent_span_id", DataType::FixedSizeBinary(8), true),
+                Field::new("flags", DataType::UInt32, true),
                 Field::new(
                     "name",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -4138,6 +4148,8 @@ mod test {
                     )
                     .unwrap(),
                 ),
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -4257,6 +4269,7 @@ mod test {
                     true,
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, true),
+                Field::new("flags", DataType::UInt32, true),
             ])),
             vec![
                 // id
@@ -4286,6 +4299,8 @@ mod test {
                 )) as ArrayRef,
                 // dropped_attributes_count
                 Arc::new(UInt32Array::from(vec![567])) as ArrayRef,
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
             ],
         )
         .unwrap();

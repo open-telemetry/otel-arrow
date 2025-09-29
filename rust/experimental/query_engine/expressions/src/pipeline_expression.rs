@@ -103,6 +103,64 @@ impl Expression for PipelineExpression {
     }
 }
 
+impl std::fmt::Display for PipelineExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Pipeline")?;
+
+        writeln!(f, "├── Query: {:?}", self.query)?;
+
+        if self.constants.is_empty() {
+            writeln!(f, "├── Constants: []")?;
+        } else {
+            writeln!(f, "├── Constants:")?;
+            let last_idx = self.constants.len() - 1;
+            for (i, c) in self.constants.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "│   └── {i} = ")?;
+                    c.fmt_with_indent(f, "│       ")?;
+                } else {
+                    write!(f, "│   ├── {i} = ")?;
+                    c.fmt_with_indent(f, "│   │   ")?;
+                }
+            }
+        }
+
+        if self.initializations.is_empty() {
+            writeln!(f, "├── Initializations: []")?;
+        } else {
+            writeln!(f, "├── Initializations:")?;
+            let last_idx = self.initializations.len() - 1;
+            for (i, e) in self.initializations.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "│   └── ")?;
+                    e.fmt_with_indent(f, "│       ")?;
+                } else {
+                    write!(f, "│   ├── ")?;
+                    e.fmt_with_indent(f, "│   │   ")?;
+                }
+            }
+        }
+
+        if self.expressions.is_empty() {
+            writeln!(f, "└── Expressions: []")?;
+        } else {
+            writeln!(f, "└── Expressions:")?;
+            let last_idx = self.expressions.len() - 1;
+            for (i, e) in self.expressions.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "    └── ")?;
+                    e.fmt_with_indent(f, "        ")?;
+                } else {
+                    write!(f, "    ├── ")?;
+                    e.fmt_with_indent(f, "    │   ")?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub struct PipelineResolutionScope<'a> {
     constants: &'a Vec<StaticScalarExpression>,
 }
@@ -119,6 +177,25 @@ pub enum PipelineInitialization {
         name: String,
         value: ScalarExpression,
     },
+}
+
+impl PipelineInitialization {
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        match self {
+            PipelineInitialization::SetGlobalVariable { name, value } => {
+                writeln!(f, "SetGlobalVariable")?;
+                writeln!(f, "{indent}├── Name: {name:?}")?;
+                write!(f, "{indent}└── Value(Scalar): ")?;
+                value.fmt_with_indent(f, format!("{indent}                   ").as_str())?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub struct PipelineExpressionBuilder {

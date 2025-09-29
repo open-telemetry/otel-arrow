@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::{AttributesTransform, transform_attributes};
+use otel_arrow_rust::otap::transform::{
+    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
+};
 use otel_arrow_rust::schema::consts;
 
 fn generate_native_keys_attr_batch(
@@ -61,11 +63,54 @@ fn generate_dict_keys_attribute_batch(
 }
 
 fn bench_transform_attributes(c: &mut Criterion) {
+    // Pre-create AttributesTransform instances to avoid measuring their creation cost
+    let single_replace_no_delete = AttributesTransform {
+        rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+            "attr24".into(),
+            "attr_24".into(),
+        )]))),
+        delete: None,
+    };
+
+    let single_replace_single_delete = AttributesTransform {
+        rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+            "attr24".into(),
+            "attr_24".into(),
+        )]))),
+        delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+    };
+
+    let no_replace_single_delete = AttributesTransform {
+        rename: None,
+        delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+    };
+
+    let attr3_replace_no_delete = AttributesTransform {
+        rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+            "attr3".into(),
+            "attr_3".into(),
+        )]))),
+        delete: None,
+    };
+
+    let no_replace_attr9_delete = AttributesTransform {
+        rename: None,
+        delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+    };
+
+    let attr3_replace_attr9_delete = AttributesTransform {
+        rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+            "attr3".into(),
+            "attr_3".into(),
+        )]))),
+        delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+    };
+
     let mut group = c.benchmark_group("transform_attributes_dict_keys");
     for (num_keys, num_rows) in [
         (32, 128),   // 32 keys, 128 rows, 4 rows/key
         (32, 1536),  // 32 keys, 1536 rows, 48 rows/key
-        (32, 8192),  // 2 keys, 8192 rows, 256 rows/key
+        (32, 8192),  // 32 keys, 8192 rows, 256 rows/key
         (128, 128),  // 128 keys, 128 rows, 1 rows/key
         (128, 1536), // 128 keys, 1536 rows, 12 rows/key
         (128, 8192), // 128 keys, 8192 rows, 64 rows/key
@@ -80,22 +125,12 @@ fn bench_transform_attributes(c: &mut Criterion) {
         let _ = group.bench_with_input(
             BenchmarkId::new("single_replace_no_deletes", &benchmark_id_param),
             &dict_transform_input,
-            |b, input| {
+            |b: &mut criterion::Bencher<'_>, input| {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr24".into(),
-                                    "attr_24".into(),
-                                )])),
-                                delete: None,
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &single_replace_no_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -109,18 +144,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr24".into(),
-                                    "attr_24".into(),
-                                )])),
-                                delete: Some(BTreeSet::from_iter(["attr15".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &single_replace_single_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -133,15 +158,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: None,
-                                delete: Some(BTreeSet::from_iter(["attr15".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &no_replace_single_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -166,18 +184,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr3".into(),
-                                    "attr_3".into(),
-                                )])),
-                                delete: None,
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &attr3_replace_no_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -190,15 +198,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: None,
-                                delete: Some(BTreeSet::from_iter(["attr9".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &no_replace_attr9_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -211,18 +212,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr3".into(),
-                                    "attr_3".into(),
-                                )])),
-                                delete: Some(BTreeSet::from_iter(["attr9".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &attr3_replace_attr9_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -241,18 +232,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr3".into(),
-                                    "attr_3".into(),
-                                )])),
-                                delete: None,
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &attr3_replace_no_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -266,15 +247,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: None,
-                                delete: Some(BTreeSet::from_iter(["attr9".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &no_replace_attr9_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
@@ -288,18 +262,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = transform_attributes(
-                            input,
-                            &AttributesTransform {
-                                rename: Some(BTreeMap::from_iter([(
-                                    "attr3".into(),
-                                    "attr_3".into(),
-                                )])),
-                                delete: Some(BTreeSet::from_iter(["attr9".into()])),
-                            },
-                        )
-                        .expect("expect no errors");
-                        _ = black_box(result)
+                        transform_attributes(black_box(input), &attr3_replace_attr9_delete)
+                            .expect("expect no errors")
                     },
                     BatchSize::SmallInput,
                 )
