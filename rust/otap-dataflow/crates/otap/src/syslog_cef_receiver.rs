@@ -133,183 +133,207 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                 loop {
                     tokio::select! {
-                                            biased; //Prioritize control messages over data
+                        biased; //Prioritize control messages over data
 
-                                            // Process incoming control messages.
-                                            ctrl_msg = ctrl_chan.recv() => {
-                                                match ctrl_msg {
-                                                    Ok(NodeControlMsg::Shutdown {..}) => break,
-                                                    Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                                        _ = metrics_reporter.report(&mut self.metrics);
-                                                    }
-                                                    Err(e) => {
-                                                        return Err(Error::ChannelRecvError(e));
-                                                    }
-                                                    _ => {
-                                                        // ToDo: Handle other control messages if needed
-                                                    }
-                                                }
-                                            }
+                        // Process incoming control messages.
+                        ctrl_msg = ctrl_chan.recv() => {
+                            match ctrl_msg {
+                                Ok(NodeControlMsg::Shutdown {..}) => break,
+                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                    _ = metrics_reporter.report(&mut self.metrics);
+                                }
+                                Err(e) => {
+                                    return Err(Error::ChannelRecvError(e));
+                                }
+                                _ => {
+                                    // ToDo: Handle other control messages if needed
+                                }
+                            }
+                        }
 
-                                            // Process incoming TCP connections.
-                                            accept_result = listener.accept() => {
-                                                match accept_result {
-                                                    Ok((socket, _peer_addr)) => {
-                                                        // Count accepted connections
-                                                        self.metrics.tcp_connections_accepted.inc();
-                                                        // Clone the effect handler and metrics so the spawned task can send messages and record telemetry.
-                                                        let effect_handler = effect_handler.clone();
-                                                        let mut metrics = self.metrics.clone();
-                                                        // Spawn a task to handle the connection.
-                                                        _ = tokio::task::spawn_local(async move {
-                                                            let mut reader = BufReader::new(socket);
-                                                            let mut line_bytes = Vec::new();
+                        // Process incoming TCP connections.
+                        accept_result = listener.accept() => {
+                            match accept_result {
+                                Ok((socket, _peer_addr)) => {
+                                    // Count accepted connections
+                                    self.metrics.tcp_connections_accepted.inc();
+                                    // Clone the effect handler and metrics so the spawned task can send messages and record telemetry.
+                                    let effect_handler = effect_handler.clone();
+                                    let mut metrics = self.metrics.clone();
+                                    // Spawn a task to handle the connection.
+                                    _ = tokio::task::spawn_local(async move {
+                                        let mut reader = BufReader::new(socket);
+                                        let mut line_bytes = Vec::new();
 
-                                                            let mut arrow_records_builder = ArrowRecordsBuilder::new();
+                                        let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                            let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                                                            let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                                        let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
+                                        let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
 
-                                                            loop {
-                                                                tokio::select! {
-                                                                    biased; // Prioritize incoming data over timeout
+                                        loop {
+                                            tokio::select! {
+                                                biased; // Prioritize incoming data over timeout
 
-                                                                    // Handle incoming data
-                                                                    read_result = reader.read_until(b'\n', &mut line_bytes) => {
-                                                                        // ToDo: Need to handle malicious input
-                                                                        // This could lead to memory exhaustion if there is no newline in the input.
-                                                                        match read_result {
-                                                                            Ok(0) => {
-                                                                                // EOF reached - connection closed
-                                                                                // Check if there's an incomplete line to process
-                                                                                if !line_bytes.is_empty() {
-                                                                                    // Remove trailing newline if present
-                                                                                    let message_bytes = if line_bytes.last() == Some(&b'\n') {
-                                                                                        &line_bytes[..line_bytes.len()-1]
-                                                                                    } else {
-                                                                                        &line_bytes[..]
-                                                                                    };
-                                                                                    match parser::parse(message_bytes) {
-                                                                                        Ok(parsed_message) => {
-                                                                                            arrow_records_builder.append_syslog(parsed_message);
-                                                                                        }
-                                                                                        Err(_e) => {
-                                                                                            // parse error => count one failed item
-                                                                                            metrics.received_items_logs_failure.inc();
-                                                                                        }
-                                                                                    }
-                                                                                }
-
-                                                                                // Send any remaining records before closing
-                                                                                if arrow_records_builder.len() > 0 {
-                                                                                    let items = u64::from(arrow_records_builder.len());
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                                    // record batch
-                                                                                    metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                                                        Ok(_) => metrics.received_items_logs_success.add(items),
-                                                                                        Err(_) => metrics.received_items_logs_refused.add(items),
-                                                                                    }
-                                                                                }
-                                                                                break;
-                                                                            },
-                                                                            Ok(_) => {
-
-                                                                                let is_complete_line = line_bytes.last() == Some(&b'\n');
-                                                                                if !is_complete_line {
-                                                                                    // Incomplete line: do nothing for now.
-                                                                                }
-
-                                                                                // Strip the newline character for parsing
-                                                                                let message_to_parse = if is_complete_line {
-                                                                                    &line_bytes[..line_bytes.len()-1]
-                                                                                } else {
-                                                                                    &line_bytes[..]
-                                                                                };
-
-                                                                                match parser::parse(message_to_parse) {
-                                                                                    Ok(parsed) => {
-                                                                                        arrow_records_builder.append_syslog(parsed);
-                                                                                    }
-                                                                                    Err(_e) => {
-                                                                                        // parsing error counts as one failed item
-                                                                                        metrics.received_items_logs_failure.inc();
-                                                                                        // Skip this message
-                                                                                        line_bytes.clear();
-                                                                                        continue;
-                                                                                    }
-                                                                                };
-
-                                                                                // Clear the bytes for the next iteration
-                                                                                line_bytes.clear();
-
-                                                                                if arrow_records_builder.len() >= MAX_BATCH_SIZE {
-                                                                                    // Build the Arrow records to send them
-                                                                                    let items = u64::from(arrow_records_builder.len());
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                                                    // Reset the builder for the next batch
-                                                                                    arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                                                    // Reset the timer since we already built an arrow record batch due to size constraint
-                                                                                    interval.reset();
-
-                                                                                    metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                                                        Ok(_) => metrics.received_items_logs_success.add(items),
-                                                                                        Err(_) => {
-                                                                                            metrics.received_items_logs_refused.add(items);
-                                                                                            return; // Break out of the entire task
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            },
-                                                                            Err(_e) => {
-                                                                                // Send any remaining records before closing due to error
-                                                                                if arrow_records_builder.len() > 0 {
-                                                                                    let items = u64::from(arrow_records_builder.len());
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                                    metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                                                        Ok(_) => metrics.received_items_logs_success.add(items),
-                                                                                        Err(_) => metrics.received_items_logs_refused.add(items),
-                                                                                    }
-                                                                                }
-                                                                                break; // ToDo: Handle read error properly
-                                                                            }
-                                                                        }
+                                                // Handle incoming data
+                                                read_result = reader.read_until(b'\n', &mut line_bytes) => {
+                                                    // ToDo: Need to handle malicious input
+                                                    // This could lead to memory exhaustion if there is no newline in the input.
+                                                    match read_result {
+                                                        Ok(0) => {
+                                                            // EOF reached - connection closed
+                                                            // Check if there's an incomplete line to process
+                                                            if !line_bytes.is_empty() {
+                                                                // Remove trailing newline if present
+                                                                let message_bytes = if line_bytes.last() == Some(&b'\n') {
+                                                                    &line_bytes[..line_bytes.len()-1]
+                                                                } else {
+                                                                    &line_bytes[..]
+                                                                };
+                                                                match parser::parse(message_bytes) {
+                                                                    Ok(parsed_message) => {
+                                                                        arrow_records_builder.append_syslog(parsed_message);
                                                                     }
-
-                                                                    // Handle timeout - send any accumulated records
-                                                                    _ = interval.tick() => {
-                                                                        if arrow_records_builder.len() > 0 {
-                                                                            // Build the Arrow records and send them
-                                                                            let items = u64::from(arrow_records_builder.len());
-                                                                            let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                                            // Reset the builder for the next batch
-                                                                            arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                                            metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                                                Ok(_) => metrics.received_items_logs_success.add(items),
-                                                                                Err(_) => {
-                                                                                    metrics.received_items_logs_refused.add(items);
-                                                                                    return; // Break out of the entire task
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    },
+                                                                    Err(_e) => {
+                                                                        // parse error => count one failed item
+                                                                        metrics.received_items_logs_failure.inc();
+                                                                    }
                                                                 }
                                                             }
-                                                        });
-                                                    },
-                                                    Err(e) => {
-                                                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
+
+                                                            // Send any remaining records before closing
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let items = u64::from(arrow_records_builder.len());
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                // record batch
+                                                                metrics.batches_built.inc();
+                                                                match effect_handler.send_message(
+                                                                    OtapPdata::new_todo_context(arrow_records.into()),
+                                                                ).await
+                                                                {
+                                                                    Ok(_) => {
+                                                                        metrics
+                                                                            .received_items_logs_success
+                                                                            .add(items)
+                                                                    }
+                                                                    Err(_) => {
+                                                                        metrics
+                                                                            .received_items_logs_refused
+                                                                            .add(items)
+                                                                    }
+                                                                }
+                                                            }
+                                                            break;
+                                                        },
+                                                        Ok(_) => {
+
+                                                            let is_complete_line = line_bytes.last() == Some(&b'\n');
+                                                            if !is_complete_line {
+                                                                // Incomplete line: do nothing for now.
+                                                            }
+
+                                                            // Strip the newline character for parsing
+                                                            let message_to_parse = if is_complete_line {
+                                                                &line_bytes[..line_bytes.len()-1]
+                                                            } else {
+                                                                &line_bytes[..]
+                                                            };
+
+                                                            match parser::parse(message_to_parse) {
+                                                                Ok(parsed) => {
+                                                                    arrow_records_builder.append_syslog(parsed);
+                                                                }
+                                                                Err(_e) => {
+                                                                    // parsing error counts as one failed item
+                                                                    metrics.received_items_logs_failure.inc();
+                                                                    // Skip this message
+                                                                    line_bytes.clear();
+                                                                    continue;
+                                                                }
+                                                            };
+
+                                                            // Clear the bytes for the next iteration
+                                                            line_bytes.clear();
+
+                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                                                // Build the Arrow records to send them
+                                                                let items = u64::from(arrow_records_builder.len());
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                                                // Reset the builder for the next batch
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                                // Reset the timer since we already built an arrow record batch due to size constraint
+                                                                interval.reset();
+
+                                                                metrics.batches_built.inc();
+                                                                match effect_handler.send_message(
+                                                                    OtapPdata::new_todo_context(arrow_records.into()),
+                                                                ).await
+                                                                {
+                                                                    Ok(_) => metrics.received_items_logs_success.add(items),
+                                                                    Err(_) => {
+                                                                        metrics
+                                                                            .received_items_logs_refused
+                                                                            .add(items);
+                                                                        return; // Break out of the entire task
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        Err(_e) => {
+                                                            // Send any remaining records before closing due to error
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let items = u64::from(arrow_records_builder.len());
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                metrics.batches_built.inc();
+                                                                match effect_handler.send_message(
+                                                                    OtapPdata::new_todo_context(arrow_records.into()),
+                                                                ).await
+                                                                {
+                                                                    Ok(_) => metrics.received_items_logs_success.add(items),
+                                                                    Err(_) => metrics.received_items_logs_refused.add(items),
+                                                                }
+                                                            }
+                                                            break; // ToDo: Handle read error properly
+                                                        }
                                                     }
                                                 }
+
+                                                // Handle timeout - send any accumulated records
+                                                _ = interval.tick() => {
+                                                    if arrow_records_builder.len() > 0 {
+                                                        // Build the Arrow records and send them
+                                                        let items = u64::from(arrow_records_builder.len());
+                                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                                        // Reset the builder for the next batch
+                                                        arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                        metrics.batches_built.inc();
+                                                        match effect_handler.send_message(
+                                                            OtapPdata::new_todo_context(arrow_records.into()),
+                                                        ).await
+                                                        {
+                                                            Ok(_) => metrics.received_items_logs_success.add(items),
+                                                            Err(_) => {
+                                                                metrics
+                                                                    .received_items_logs_refused
+                                                                    .add(items);
+                                                                return; // Break out of the entire task
+                                                            }
+                                                        }
+                                                    }
+                                                },
                                             }
                                         }
+                                    });
+                                },
+                                Err(e) => {
+                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Protocol::Udp => {
@@ -322,85 +346,91 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                 loop {
                     tokio::select! {
-                                            biased; //Prioritize control messages over data
+                        biased; //Prioritize control messages over data
 
-                                            // Process incoming control messages.
-                                            ctrl_msg = ctrl_chan.recv() => {
-                                                match ctrl_msg {
-                                                    Ok(NodeControlMsg::Shutdown {..}) => {
-                                                    // ToDo: Add proper deadline function
-                                                    break;
-                                                    },
-                                                    Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                                        _ = metrics_reporter.report(&mut self.metrics);
-                                                    }
-                                                    Err(e) => {
-                                                        return Err(Error::ChannelRecvError(e));
-                                                    }
-                                                    _ => {
-                                                        // ToDo: Handle other control messages if needed
-                                                    }
-                                                }
-                                            },
+                        // Process incoming control messages.
+                        ctrl_msg = ctrl_chan.recv() => {
+                            match ctrl_msg {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
+                                // ToDo: Add proper deadline function
+                                break;
+                                },
+                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                    _ = metrics_reporter.report(&mut self.metrics);
+                                }
+                                Err(e) => {
+                                    return Err(Error::ChannelRecvError(e));
+                                }
+                                _ => {
+                                    // ToDo: Handle other control messages if needed
+                                }
+                            }
+                        },
 
-                                            result = socket.recv_from(&mut buf) => {
-                                                match result {
-                                                    Ok((n, _peer_addr)) => {
-                                                        // ToDo: Validate the received data before processing
-                                                        // ToDo: Consider logging or using peer_addr for security/auditing
-                                                        match parser::parse(&buf[..n]) {
-                                                            Ok(parsed) => {
-                                                                arrow_records_builder.append_syslog(parsed);
-                                                            }
-                                                            Err(_e) => {
-                                                                // parsing failed => one failed item
-                                                                self.metrics.received_items_logs_failure.inc();
-                                                                continue; // Skip this message
-                                                            }
-                                                        };
-
-                                                        if arrow_records_builder.len() >= MAX_BATCH_SIZE {
-                                                            // Build the Arrow records to send them
-                                                            let items = u64::from(arrow_records_builder.len());
-                                                            let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                            // Reset the builder for the next batch
-                                                            arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                            // Reset the timer since we already built an arrow record batch due to size constraint
-                                                            interval.reset();
-
-                                                            self.metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                                Ok(_) => self.metrics.received_items_logs_success.add(items),
-                                                                Err(_) => self.metrics.received_items_logs_refused.add(items),
-                                                            }
-                                                        }
-                                                    },
-                                                    Err(e) => {
-                                                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
-                                                    }
-                                                }
-                                            },
-
-                                            _ = interval.tick() => {
-                                                // Check if we have any records to send
-                                                if arrow_records_builder.len() > 0 {
-                                                    // Build the Arrow records and send them
-                                                    let items = u64::from(arrow_records_builder.len());
-                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                    // Reset the builder for the next batch
-                                                    arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                    self.metrics.batches_built.inc();
-                    match effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await {
-                                                        Ok(_) => self.metrics.received_items_logs_success.add(items),
-                                                        Err(_) => self.metrics.received_items_logs_refused.add(items),
-                                                    }
-                                                }
-                                            },
+                        result = socket.recv_from(&mut buf) => {
+                            match result {
+                                Ok((n, _peer_addr)) => {
+                                    // ToDo: Validate the received data before processing
+                                    // ToDo: Consider logging or using peer_addr for security/auditing
+                                    match parser::parse(&buf[..n]) {
+                                        Ok(parsed) => {
+                                            arrow_records_builder.append_syslog(parsed);
                                         }
+                                        Err(_e) => {
+                                            // parsing failed => one failed item
+                                            self.metrics.received_items_logs_failure.inc();
+                                            continue; // Skip this message
+                                        }
+                                    };
+
+                                    if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                        // Build the Arrow records to send them
+                                        let items = u64::from(arrow_records_builder.len());
+                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                        // Reset the builder for the next batch
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                        // Reset the timer since we already built an arrow record batch due to size constraint
+                                        interval.reset();
+
+                                        self.metrics.batches_built.inc();
+                                        match effect_handler.send_message(
+                                            OtapPdata::new_todo_context(arrow_records.into()),
+                                        ).await
+                                        {
+                                            Ok(_) => self.metrics.received_items_logs_success.add(items),
+                                            Err(_) => self.metrics.received_items_logs_refused.add(items),
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
+                                }
+                            }
+                        },
+
+                        _ = interval.tick() => {
+                            // Check if we have any records to send
+                            if arrow_records_builder.len() > 0 {
+                                // Build the Arrow records and send them
+                                let items = u64::from(arrow_records_builder.len());
+                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                // Reset the builder for the next batch
+                                arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                self.metrics.batches_built.inc();
+                                match effect_handler.send_message(
+                                    OtapPdata::new_todo_context(arrow_records.into()),
+                                ).await
+                                {
+                                    Ok(_) => self.metrics.received_items_logs_success.add(items),
+                                    Err(_) => self.metrics.received_items_logs_refused.add(items),
+                                }
+                            }
+                        },
+                    }
                 }
             }
         }
