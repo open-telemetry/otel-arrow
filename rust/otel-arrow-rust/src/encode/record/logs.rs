@@ -13,11 +13,10 @@ use arrow::{
 
 use crate::{
     encode::record::array::{
-        ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions,
-        BinaryArrayBuilder, CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder,
-        Float64ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder,
-        TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
-        binary_to_utf8_array,
+        ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+        CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder, Float64ArrayBuilder,
+        Int32ArrayBuilder, Int64ArrayBuilder, TimestampNanosecondArrayBuilder, UInt8ArrayBuilder,
+        UInt16ArrayBuilder, UInt32ArrayBuilder, binary_to_utf8_array,
         boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
         dictionary::DictionaryOptions,
     },

@@ -17,11 +17,11 @@ use arrow::{
 use crate::{
     encode::record::{
         array::{
-            ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayAppendStr, ArrayOptions,
-            BinaryArrayBuilder, CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder,
-            Float64ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder, StringArrayBuilder,
-            TimestampNanosecondArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
-            UInt64ArrayBuilder, binary_to_utf8_array, dictionary::DictionaryOptions,
+            ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+            CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder, Float64ArrayBuilder,
+            Int32ArrayBuilder, Int64ArrayBuilder, TimestampNanosecondArrayBuilder,
+            UInt16ArrayBuilder, UInt32ArrayBuilder, UInt64ArrayBuilder, binary_to_utf8_array,
+            dictionary::DictionaryOptions,
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },

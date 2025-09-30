@@ -18,10 +18,9 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder,
-    BinaryDictionaryBuilder, DictionaryArray, FixedSizeBinaryBuilder,
-    FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringArray,
-    StringBuilder, StringDictionaryBuilder,
+    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
+    DictionaryArray, FixedSizeBinaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder,
+    PrimitiveDictionaryBuilder, StringArray, StringBuilder, StringDictionaryBuilder,
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
@@ -686,9 +685,9 @@ pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanose
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 /// Convert an array containing binary data to one which contains UTF-8 Data. This will handle
-/// converting either a native array (e.g. [`BinaryArray`] to [`StringArray`]) or 
+/// converting either a native array (e.g. [`BinaryArray`] to [`StringArray`]) or
 /// [`DictionaryArray`]s where the values are [`DataType::Binary`].
-/// 
+///
 /// Returns an error if the passed source array does not contain binary data.
 pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     let src_data_type = src.data_type();
@@ -757,7 +756,7 @@ fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
 pub mod test {
     use super::*;
 
-    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt16Array, UInt8Array};
+    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array, UInt16Array};
     use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -1522,10 +1521,13 @@ pub mod test {
         // check u8 dict
         let input = DictionaryArray::new(
             UInt8Array::from_iter_values([0, 1, 2]),
-            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"]))
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"])),
         );
         let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
-        let result = result.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
         assert_eq!(
             result,
             &DictionaryArray::new(
@@ -1537,10 +1539,13 @@ pub mod test {
         // check u16 dict
         let input = DictionaryArray::new(
             UInt16Array::from_iter_values([0, 1, 2]),
-            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"]))
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"])),
         );
         let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
-        let result = result.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
         assert_eq!(
             result,
             &DictionaryArray::new(
@@ -1548,6 +1553,26 @@ pub mod test {
                 Arc::new(StringArray::from_iter_values(["a", "b", "c"]))
             )
         );
-        
+
+        // check it returns an error about invalid type
+        let input = UInt8Array::from_iter_values([1, 2, 3]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found UInt8"
+        );
+
+        // check it returns error about invalid dict type
+        let input = DictionaryArray::new(
+            UInt16Array::from_iter_values([0, 0, 0]),
+            Arc::new(StringArray::from_iter_values(["terry"])),
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found Dictionary(UInt16, Utf8)"
+        );
     }
 }

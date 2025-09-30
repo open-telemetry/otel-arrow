@@ -13,10 +13,9 @@ use arrow::{
 
 use crate::{
     encode::record::array::{
-        ArrayAppend, ArrayAppendNulls, ArrayOptions, BinaryArrayBuilder,
-        Float64ArrayBuilder, Int64ArrayBuilder, PrimitiveArrayBuilder,
-        UInt8ArrayBuilder, binary_to_utf8_array, boolean::AdaptiveBooleanArrayBuilder,
-        dictionary::DictionaryOptions,
+        ArrayAppend, ArrayAppendNulls, ArrayOptions, BinaryArrayBuilder, Float64ArrayBuilder,
+        Int64ArrayBuilder, PrimitiveArrayBuilder, UInt8ArrayBuilder, binary_to_utf8_array,
+        boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryOptions,
     },
     otlp::attributes::parent_id::ParentId,
     schema::{FieldExt, consts},
