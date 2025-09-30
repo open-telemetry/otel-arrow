@@ -4,10 +4,10 @@
 use std::io::Write;
 
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use serde::ser::{SerializeMap, SerializeSeq, Serializer};
+use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
-use crate::encoder::error::Result;
+use crate::encoder::error::{Error, Result};
 
 /// Adapter for serializing AnyValueView using Serde
 struct AnyValueSerializerWrapper<T>(pub T);
@@ -50,8 +50,8 @@ where
     match source.value_type() {
         ValueType::String => {
             let s_bytes = source.as_string().expect("expected string");
-            // TODO
-            let s_str = str::from_utf8(s_bytes).expect("TODO");
+            let s_str = str::from_utf8(s_bytes)
+                .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
             serializer.serialize_str(s_str)
         }
         ValueType::Bool => {
@@ -80,12 +80,12 @@ where
             seq.end()
         }
         ValueType::KeyValueList => {
-            // TODO should this just use serialize_kv_list function below?
             let kvlist = source.as_kvlist().expect("expected kvlist");
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
                 let key = kv.key();
-                let key_str = str::from_utf8(key).expect("TODO");
+                let key_str = str::from_utf8(key)
+                    .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
                 match kv.value() {
                     Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
                     None => map.serialize_entry(&key_str, &Option::<()>::None)?,
@@ -107,7 +107,9 @@ where
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
         let key = kv.key();
-        let key_str = str::from_utf8(key).expect("TODO");
+        let key_str = str::from_utf8(key).map_err(|e| Error::CborError {
+            error: format!("Invalid UTF-8: {e}"),
+        })?;
         match kv.value() {
             Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
             None => map.serialize_entry(&key_str, &Option::<()>::None)?,
