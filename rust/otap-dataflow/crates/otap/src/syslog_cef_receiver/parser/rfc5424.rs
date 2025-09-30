@@ -217,12 +217,13 @@ mod tests {
     fn test_rfc5424_with_actual_utf8_bom() {
         // Test with actual UTF-8 BOM (0xEF 0xBB 0xBF) at start of message
         // This represents Example 1 from RFC 5424 Section 6.5
-        let mut input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - ".to_vec();
+        let mut input =
+            b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - ".to_vec();
         input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
         input.extend_from_slice(b"'su root' failed for lonvick on /dev/pts/8");
-        
+
         let result = parse_rfc5424(&input).unwrap();
-        
+
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
         assert_eq!(result.version, 1);
@@ -267,7 +268,7 @@ mod tests {
         let mut input = b"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] ".to_vec();
         input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
         input.extend_from_slice(b"An application event log entry");
-        
+
         let result = parse_rfc5424(&input).unwrap();
 
         assert_eq!(
