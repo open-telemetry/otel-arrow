@@ -12,7 +12,6 @@ use std::borrow::Cow;
 const SYSLOG_FACILITY: &str = "syslog.facility";
 const SYSLOG_SEVERITY: &str = "syslog.severity";
 const SYSLOG_HOST_NAME: &str = "syslog.host_name";
-const SYSLOG_MESSAGE: &str = "syslog.message";
 
 // Attribute key constants for RFC5424 messages
 const SYSLOG_VERSION: &str = "syslog.version";
@@ -20,6 +19,7 @@ const SYSLOG_APP_NAME: &str = "syslog.app_name";
 const SYSLOG_PROCESS_ID: &str = "syslog.process_id";
 const SYSLOG_MSG_ID: &str = "syslog.msg_id";
 const SYSLOG_STRUCTURED_DATA: &str = "syslog.structured_data";
+const SYSLOG_MESSAGE: &str = "syslog.message";
 
 // Attribute key constants for RFC3164 messages
 const SYSLOG_TAG: &str = "syslog.tag";
@@ -106,7 +106,9 @@ impl ParsedSyslogMessage<'_> {
                 Some(Self::to_otel_severity(msg.priority.severity))
             }
             ParsedSyslogMessage::Rfc3164(msg) => {
-                Some(Self::to_otel_severity(msg.priority.severity))
+                // Only return severity if it was actually present in the message
+                msg.priority.as_ref()
+                    .map(|p| Self::to_otel_severity(p.severity))
             }
             ParsedSyslogMessage::Cef(_) => {
                 // CEF does not have a severity field, return None
@@ -185,13 +187,16 @@ impl ParsedSyslogMessage<'_> {
                 attributes_count
             }
             ParsedSyslogMessage::Rfc3164(msg) => {
-                attributes_count += 2; // facility and severity are always present
+                // Only add facility and severity if they were present in the original message
+                if let Some(priority) = msg.priority.as_ref() {
+                    log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+                    log_attributes_arrow_records.append_int(priority.facility.into());
+                    attributes_count += 1;
 
-                log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                log_attributes_arrow_records.append_int(msg.priority.facility.into());
-
-                log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                log_attributes_arrow_records.append_int(msg.priority.severity.into());
+                    log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+                    log_attributes_arrow_records.append_int(priority.severity.into());
+                    attributes_count += 1;
+                }
 
                 if let Some(hostname) = msg.hostname {
                     log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
@@ -211,13 +216,6 @@ impl ParsedSyslogMessage<'_> {
                     log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
                     log_attributes_arrow_records
                         .append_str(std::str::from_utf8(content).unwrap_or_default());
-                    attributes_count += 1;
-                }
-
-                if let Some(message) = msg.message {
-                    log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
-                    log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(message).unwrap_or_default());
                     attributes_count += 1;
                 }
 
