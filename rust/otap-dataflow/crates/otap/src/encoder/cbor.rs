@@ -80,13 +80,15 @@ where
             seq.end()
         }
         ValueType::KeyValueList => {
+            // TODO should this just use serialize_kv_list function below?
             let kvlist = source.as_kvlist().expect("expected kvlist");
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
                 let key = kv.key();
+                let key_str = str::from_utf8(key).expect("TODO");
                 match kv.value() {
-                    Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-                    None => map.serialize_entry(&key, &Option::<()>::None)?,
+                    Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+                    None => map.serialize_entry(&key_str, &Option::<()>::None)?,
                 }
             }
             map.end()
@@ -105,9 +107,10 @@ where
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
         let key = kv.key();
+        let key_str = str::from_utf8(key).expect("TODO");
         match kv.value() {
-            Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-            None => map.serialize_entry(&key, &Option::<()>::None)?,
+            Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+            None => map.serialize_entry(&key_str, &Option::<()>::None)?,
         }
     }
     SerializeMap::end(map)?;

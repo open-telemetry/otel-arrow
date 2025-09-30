@@ -21,7 +21,7 @@ use crate::{
             BinaryArrayBuilder, CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder,
             Float64ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder, StringArrayBuilder,
             TimestampNanosecondArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
-            UInt64ArrayBuilder, dictionary::DictionaryOptions,
+            UInt64ArrayBuilder, binary_to_utf8_array, dictionary::DictionaryOptions,
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
@@ -179,6 +179,7 @@ impl MetricsRecordBatchBuilder {
         }
 
         if let Some(array) = self.scope_schema_url.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::SCHEMA_URL,
                 array.data_type().clone(),
@@ -203,10 +204,12 @@ impl MetricsRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.name.finish().expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
         columns.push(array);
 
         if let Some(array) = self.description.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::DESCRIPTION,
                 array.data_type().clone(),
@@ -216,6 +219,7 @@ impl MetricsRecordBatchBuilder {
         }
 
         if let Some(array) = self.unit.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(consts::UNIT, array.data_type().clone(), false));
             columns.push(array);
         }

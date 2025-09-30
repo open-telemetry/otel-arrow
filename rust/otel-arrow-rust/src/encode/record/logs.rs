@@ -17,6 +17,7 @@ use crate::{
         BinaryArrayBuilder, CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder,
         Float64ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder, StringArrayBuilder,
         TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
+        binary_to_utf8_array,
         boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
         dictionary::DictionaryOptions,
     },
@@ -246,6 +247,7 @@ impl LogsRecordBatchBuilder {
         columns.push(Arc::new(scopes));
 
         if let Some(array) = self.schema_url.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::SCHEMA_URL,
                 array.data_type().clone(),
@@ -296,6 +298,7 @@ impl LogsRecordBatchBuilder {
         }
 
         if let Some(array) = self.severity_text.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::SEVERITY_TEXT,
                 array.data_type().clone(),
@@ -324,6 +327,7 @@ impl LogsRecordBatchBuilder {
         }
 
         if let Some(array) = self.event_name.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::EVENT_NAME,
                 array.data_type().clone(),
@@ -620,6 +624,10 @@ impl LogsBodyBuilder {
         }
 
         if let Some(array) = self.string_value.finish() {
+            let array = match binary_to_utf8_array(&array) {
+                Ok(arr) => arr,
+                Err(e) => return Some(Err(e)),
+            };
             fields.push(Field::new(
                 consts::ATTRIBUTE_STR,
                 array.data_type().clone(),
@@ -762,6 +770,7 @@ impl ResourceBuilder {
         }
 
         if let Some(array) = self.schema_url.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::SCHEMA_URL,
                 array.data_type().clone(),
@@ -892,13 +901,13 @@ impl ScopeBuilder {
         }
 
         if let Some(array) = self.name.finish() {
-            // TODO convert binary to string array
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(consts::NAME, array.data_type().clone(), true));
             columns.push(array);
         }
 
         if let Some(array) = self.version.finish() {
-            // TODO convert binary to string array
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(consts::VERSION, array.data_type().clone(), true));
             columns.push(array);
         }

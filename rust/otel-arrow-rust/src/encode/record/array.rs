@@ -15,14 +15,18 @@
 //! native types. It will handle converting between different builders dynamically  based on the
 //! data which is appended.
 
+use std::sync::Arc;
+
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryBuilder,
-    FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringBuilder,
-    StringDictionaryBuilder,
+    AnyDictionaryArray, ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder,
+    BinaryDictionaryBuilder, DictionaryArray, FixedSizeBinaryBuilder,
+    FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringArray,
+    StringBuilder, StringDictionaryBuilder,
 };
 use arrow::datatypes::{
-    DurationNanosecondType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
-    TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
+    UInt64Type,
 };
 use arrow::error::ArrowError;
 use paste::paste;
@@ -681,6 +685,70 @@ pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanose
 #[allow(dead_code)]
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
+/// TODO comments
+pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+    let src_data_type = src.data_type();
+
+    if *src_data_type == DataType::Binary {
+        // safety: we've just checked the data type, so expecting on this cast is safe
+        let binary_arr = src
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .expect("is binary array");
+        return StringArray::try_from_binary(binary_arr.clone())
+            .map(|arr| Arc::new(arr) as ArrayRef);
+    }
+
+    if let DataType::Dictionary(k, v) = src_data_type {
+        match (k.as_ref(), v.as_ref()) {
+            (DataType::UInt8, DataType::Binary) => {
+                return binary_dict_to_utf8_dict_array::<UInt8Type>(src);
+            }
+            (DataType::UInt16, DataType::Binary) => {
+                return binary_dict_to_utf8_dict_array::<UInt16Type>(src);
+            }
+            _ => {
+                // fall through to error case
+            }
+        }
+    }
+
+    return Err(ArrowError::InvalidArgumentError(format!(
+        "expected array of type Binary, or dictionary with binary keys. Found {:?}",
+        src.data_type()
+    )));
+}
+
+fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
+    src: &ArrayRef,
+) -> Result<ArrayRef, ArrowError> {
+    let dict_arr = src
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "expected dict array found {:?}",
+                src.data_type()
+            ))
+        })?;
+    let values = dict_arr
+        .values()
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "expected dict with binary values, found {:?}",
+                dict_arr.value_type()
+            ))
+        })?;
+    let new_values = StringArray::try_from_binary(values.clone())?;
+
+    Ok(Arc::new(DictionaryArray::new(
+        dict_arr.keys().clone(),
+        Arc::new(new_values),
+    )))
+}
+
 #[cfg(test)]
 pub mod test {
     use super::*;
@@ -1037,7 +1105,7 @@ pub mod test {
         let dict_values = dict_array
             .values()
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(dict_values.value(0), "foo");
         assert_eq!(dict_values.value(1), "bar");
@@ -1062,10 +1130,7 @@ pub mod test {
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 6);
 
-        let array = result
-            .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
-            .unwrap();
+        let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array.value(0), "");
         assert_eq!(array.value(1), "a");
         assert!(!array.is_valid(2));
@@ -1134,7 +1199,7 @@ pub mod test {
         let dict_values = dict_array
             .values()
             .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
+            .downcast_ref::<BinaryArray>()
             .unwrap();
         assert_eq!(dict_values.value(0), b"foo");
         assert_eq!(dict_values.value(1), b"bar");
@@ -1159,10 +1224,7 @@ pub mod test {
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 6);
 
-        let array = result
-            .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
-            .unwrap();
+        let array = result.as_any().downcast_ref::<BinaryArray>().unwrap();
         assert_eq!(array.value(0), b"");
         assert_eq!(array.value(1), b"a");
         assert!(!array.is_valid(2));

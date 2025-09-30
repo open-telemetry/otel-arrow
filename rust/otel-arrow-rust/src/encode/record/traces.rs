@@ -18,7 +18,7 @@ use crate::{
             BinaryArrayBuilder, CheckedArrayAppendSlice, DurationNanosecondArrayBuilder,
             FixedSizeBinaryArrayBuilder, Int32ArrayBuilder, StringArrayBuilder,
             TimestampNanosecondArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
-            dictionary::DictionaryOptions,
+            binary_to_utf8_array, dictionary::DictionaryOptions,
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
@@ -285,6 +285,7 @@ impl TracesRecordBatchBuilder {
             .schema_url
             .finish()
             .expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(
             consts::SCHEMA_URL,
             array.data_type().clone(),
@@ -347,6 +348,7 @@ impl TracesRecordBatchBuilder {
             .trace_state
             .finish()
             .expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(
             consts::TRACE_STATE,
             array.data_type().clone(),
@@ -375,6 +377,7 @@ impl TracesRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.name.finish().expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
         columns.push(array);
 
@@ -545,6 +548,7 @@ impl EventsRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.name.finish().expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
         columns.push(array);
 
@@ -732,6 +736,7 @@ impl LinksRecordBatchBuilder {
             .trace_state
             .finish()
             .expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(
             consts::TRACE_STATE,
             array.data_type().clone(),
@@ -823,6 +828,7 @@ impl StatusRecordBatchBuilder {
             .status_message
             .finish()
             .expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(
             consts::STATUS_MESSAGE,
             array.data_type().clone(),

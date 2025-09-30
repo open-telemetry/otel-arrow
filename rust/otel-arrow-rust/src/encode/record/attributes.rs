@@ -15,7 +15,8 @@ use crate::{
     encode::record::array::{
         ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, BinaryArrayBuilder,
         Float64ArrayBuilder, Int64ArrayBuilder, PrimitiveArrayBuilder, StringArrayBuilder,
-        UInt8ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryOptions,
+        UInt8ArrayBuilder, binary_to_utf8_array, boolean::AdaptiveBooleanArrayBuilder,
+        dictionary::DictionaryOptions,
     },
     otlp::attributes::parent_id::ParentId,
     schema::{FieldExt, consts},
@@ -287,6 +288,7 @@ where
         }
 
         if let Some(array) = self.keys.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::ATTRIBUTE_KEY,
                 array.data_type().clone(),
@@ -305,6 +307,7 @@ where
         }
 
         if let Some(array) = self.string_value.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::ATTRIBUTE_STR,
                 array.data_type().clone(),
