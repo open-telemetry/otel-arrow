@@ -570,7 +570,7 @@ mod test {
 
     use arrow::array::{
         BinaryArray, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryDictionaryBuilder,
-        PrimitiveDictionaryBuilder, StringBuilder, UInt8Array, UInt16Array, UInt16DictionaryArray,
+        PrimitiveDictionaryBuilder, UInt8Array, UInt16Array, UInt16DictionaryArray,
     };
     use arrow::datatypes::{DataType, Int64Type, UInt8Type, UInt16Type};
     use prost::Message;
@@ -864,12 +864,12 @@ mod test {
 
         assert_eq!(
             result.data_type(),
-            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
         );
 
-        let mut expected_dict_values = StringBuilder::new();
-        expected_dict_values.append_value("a");
-        expected_dict_values.append_value("b");
+        let mut expected_dict_values = BinaryBuilder::new();
+        expected_dict_values.append_value(b"a");
+        expected_dict_values.append_value(b"b");
         let expected_dict_keys = UInt16Array::from_iter_values(vec![0, 0, 1]);
         let expected =
             UInt16DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));
