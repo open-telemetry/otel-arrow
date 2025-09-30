@@ -50,7 +50,7 @@ where
     match source.value_type() {
         ValueType::String => {
             let s_bytes = source.as_string().expect("expected string");
-            let s_str = str::from_utf8(s_bytes)
+            let s_str = simdutf8::basic::from_utf8(s_bytes)
                 .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
             serializer.serialize_str(s_str)
         }
@@ -84,7 +84,7 @@ where
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
                 let key = kv.key();
-                let key_str = str::from_utf8(key)
+                let key_str = simdutf8::basic::from_utf8(key)
                     .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
                 match kv.value() {
                     Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
@@ -107,7 +107,7 @@ where
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
         let key = kv.key();
-        let key_str = str::from_utf8(key).map_err(|e| Error::CborError {
+        let key_str = simdutf8::basic::from_utf8(key).map_err(|e| Error::CborError {
             error: format!("Invalid UTF-8: {e}"),
         })?;
         match kv.value() {
