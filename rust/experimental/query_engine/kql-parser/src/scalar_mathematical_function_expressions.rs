@@ -7,16 +7,16 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::*};
 
-pub(crate) fn parse_math_expressions(
-    math_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_math_unary_expressions(
+    math_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = math_expressions_rule.into_inner().next().unwrap();
+    let rule = math_unary_expressions_rule.into_inner().next().unwrap();
 
     match rule.as_rule() {
         Rule::negate_expression => parse_negate_expression(rule, scope),
         Rule::bin_expression => parse_bin_expression(rule, scope),
-        _ => panic!("Unexpected rule in math_expressions: {rule}"),
+        _ => panic!("Unexpected rule in math_unary_expressions: {rule}"),
     }
 }
 
