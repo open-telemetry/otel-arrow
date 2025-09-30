@@ -10,6 +10,7 @@ pub(crate) mod scalar_array_function_expressions;
 pub(crate) mod scalar_conditional_function_expressions;
 pub(crate) mod scalar_conversion_function_expressions;
 pub(crate) mod scalar_expression;
+pub(crate) mod scalar_logical_function_expressions;
 pub(crate) mod scalar_mathematical_function_expressions;
 pub(crate) mod scalar_parse_function_expressions;
 pub(crate) mod scalar_primitive_expressions;
