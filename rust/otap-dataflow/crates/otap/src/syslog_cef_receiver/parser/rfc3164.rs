@@ -154,6 +154,26 @@ mod tests {
     }
 
     #[test]
+    fn test_rfc3164_valid_priority_zero() {
+        // <0> is a valid priority (facility=0, severity=0)
+        let input = b"<0>Test message with priority zero";
+        let result = parse_rfc3164(input).unwrap();
+
+        // Priority should be parsed successfully
+        assert!(result.priority.is_some());
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 0);
+        assert_eq!(priority.severity, 0);
+        assert_eq!(result.timestamp, None);
+        assert_eq!(result.hostname, None);
+        assert_eq!(result.tag, None);
+        assert_eq!(
+            result.content,
+            Some(b"Test message with priority zero".as_slice())
+        );
+    }
+
+    #[test]
     fn test_rfc3164_no_pri() {
         // RFC 3164 Section 4.3.3: Example 2 "Use the BFG!"
         let input = b"Use the BFG!";
