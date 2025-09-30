@@ -92,23 +92,6 @@ impl<PData> TestContext<PData> {
             })
     }
 
-    /// Requests the node under test to collect and report its telemetry metrics.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
-    pub async fn send_collect_telemetry(
-        &self,
-        metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
-    ) -> Result<(), Error> {
-        self.control_sender
-            .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
-            .await
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
-    }
-
     /// Sleeps for the specified duration.
     pub async fn sleep(&self, duration: Duration) {
         sleep(duration).await;
