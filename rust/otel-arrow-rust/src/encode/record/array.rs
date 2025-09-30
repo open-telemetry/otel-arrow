@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    AnyDictionaryArray, ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder,
+    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder,
     BinaryDictionaryBuilder, DictionaryArray, FixedSizeBinaryBuilder,
     FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringArray,
     StringBuilder, StringDictionaryBuilder,
@@ -685,7 +685,11 @@ pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanose
 #[allow(dead_code)]
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
-/// TODO comments
+/// Convert an array containing binary data to one which contains UTF-8 Data. This will handle
+/// converting either a native array (e.g. [`BinaryArray`] to [`StringArray`]) or 
+/// [`DictionaryArray`]s where the values are [`DataType::Binary`].
+/// 
+/// Returns an error if the passed source array does not contain binary data.
 pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     let src_data_type = src.data_type();
 
@@ -753,7 +757,7 @@ fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
 pub mod test {
     use super::*;
 
-    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array};
+    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt16Array, UInt8Array};
     use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -1505,5 +1509,45 @@ pub mod test {
             DataType::FixedSizeBinary(1),
             vec![0],
         );
+    }
+
+    #[test]
+    fn test_binary_to_utf8_array() {
+        // check native array
+        let input = BinaryArray::from_iter_values([b"a", b"b", b"c"]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(result, &StringArray::from_iter_values(["a", "b", "c"]));
+
+        // check u8 dict
+        let input = DictionaryArray::new(
+            UInt8Array::from_iter_values([0, 1, 2]),
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"]))
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+        assert_eq!(
+            result,
+            &DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c"]))
+            )
+        );
+
+        // check u16 dict
+        let input = DictionaryArray::new(
+            UInt16Array::from_iter_values([0, 1, 2]),
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"]))
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+        assert_eq!(
+            result,
+            &DictionaryArray::new(
+                UInt16Array::from_iter_values([0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c"]))
+            )
+        );
+        
     }
 }
