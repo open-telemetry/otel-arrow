@@ -4,10 +4,11 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
 use otel_arrow_rust::proto::opentelemetry::{
-    common::v1::{AnyValue, InstrumentationScope, KeyValue},
+    common::v1::{AnyValue, InstrumentationScope},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
     resource::v1::Resource,
 };
+use prost::Message as _;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -40,13 +41,13 @@ pub struct DebugOutput {
 }
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
-struct OutputWriter {
+pub struct OutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
     processor_id: NodeId,
 }
 
 impl OutputWriter {
-    async fn new(output_file: Option<String>, processor_id: NodeId) -> Result<Self, Error> {
+    pub async fn new(output_file: Option<String>, processor_id: NodeId) -> Result<Self, Error> {
         let writer: Box<dyn AsyncWrite + Unpin> = match output_file {
             Some(file_name) => {
                 let file = File::options()
@@ -66,7 +67,7 @@ impl OutputWriter {
         })
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error> {
+    pub async fn write(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -78,18 +79,6 @@ impl OutputWriter {
 }
 
 impl DebugOutput {
-    pub fn new(
-        writer: Option<OutputWriter>,
-        ports: Option<Vec<PortName>>,
-        effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Self {
-        Self {
-            writer,
-            ports,
-            effect_handler,
-        }
-    }
-
     pub async fn new_from_output_mode(
         output_mode: OutputMode,
         effect_handler: local::EffectHandler<OtapPdata>,
@@ -104,17 +93,23 @@ impl DebugOutput {
                 })
             }
             OutputMode::Outport(out_port) => {
-                // get all the portnames and
-
+                // if default is set then we use it, if not then we use the out_port field
                 let ports: Vec<PortName> = if let Some(out_port) = out_port.default_out_port {
                     vec![out_port.clone()]
                 } else {
                     out_port.out_ports.keys().cloned().collect()
                 };
-                // create ports vec and compare toe connecred_ports
-                //raise error if port is not in connected ports
+                // check that the ports are actually connected
+                let connected_ports = effect_handler.connected_ports();
+                let valid_ports = ports.iter().all(|port| connected_ports.contains(port));
+                // raise error if ports are not connected
+                if !valid_ports {
+                    return Err(Error::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        error: "ports are not connected".to_owned(),
+                    });
+                }
 
-                // connected ports
                 Ok(Self {
                     writer: None,
                     ports: Some(ports),
@@ -136,10 +131,19 @@ impl DebugOutput {
     /// send a message
     pub async fn output_message(&mut self, message: &str) -> Result<(), Error> {
         if let Some(ports) = &self.ports {
-            for port in ports {
-                let log_message = self.generate_log_message(message.to_string());
-                // TODO NEED TO CONVERT LOG_MESSAGE TO OTAPPDATA ENUM
-                // self.effect_handler.send_message_to(port, log_message).await?;
+            // store message as a log -> create OtapPdata msg to send
+            let log_message = self.generate_log_message(message.to_string());
+            let mut bytes = vec![];
+            log_message
+                .encode(&mut bytes)
+                .expect("failed to encode log data into bytes");
+            let otlp_logs_bytes =
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+            // send msg to connected ports
+            for port in ports.iter().cloned() {
+                self.effect_handler
+                    .send_message_to(port, otlp_logs_bytes.clone())
+                    .await?;
             }
         }
         if let Some(ref mut writer) = self.writer {

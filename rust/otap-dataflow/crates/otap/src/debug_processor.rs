@@ -14,7 +14,7 @@ use self::filter::FilterRules;
 use self::marshaler::ViewMarshaler;
 use self::metrics::DebugPdataMetrics;
 use self::normal_marshaler::NormalViewMarshaler;
-use self::output::{DebugOutput, OutputMode};
+use self::output::DebugOutput;
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
     pdata::{OtapPdata, OtlpProtoBytes},
@@ -40,8 +40,6 @@ use otel_arrow_rust::proto::opentelemetry::{
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::fs::File;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod config;
 mod detailed_marshaler;
@@ -468,6 +466,7 @@ mod tests {
 
     use crate::debug_processor::config::{Config, DisplayMode, SignalActive, Verbosity};
     use crate::debug_processor::filter::{FilterMode, FilterRules};
+    use crate::debug_processor::output::OutputMode;
     use crate::debug_processor::predicate::{
         KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
     };
@@ -741,7 +740,13 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_normal.txt".to_string();
-        let config = Config::new(Verbosity::Normal, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -750,7 +755,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -773,14 +778,20 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_basic.txt".to_string();
-        let config = Config::new(Verbosity::Basic, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Basic,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -803,14 +814,20 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_detailed.txt".to_string();
-        let config = Config::new(Verbosity::Detailed, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Detailed,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -855,14 +872,20 @@ mod tests {
         let output_file = "debug_logs.txt".to_string();
         let signals = HashSet::from([SignalActive::Logs]);
 
-        let config = Config::new(Verbosity::Detailed, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Detailed,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -906,14 +929,20 @@ mod tests {
 
         let output_file = "debug_metrics.txt".to_string();
         let signals = HashSet::from([SignalActive::Metrics]);
-        let config = Config::new(Verbosity::Detailed, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Detailed,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1016,14 +1045,20 @@ mod tests {
         let output_file = "debug_spans.txt".to_string();
         let signals = HashSet::from([SignalActive::Spans]);
 
-        let config = Config::new(Verbosity::Detailed, DisplayMode::Batch, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Detailed,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1047,14 +1082,20 @@ mod tests {
         ]);
         let output_file = "debug_signal_mode.txt".to_string();
 
-        let config = Config::new(Verbosity::Normal, DisplayMode::Signal, signals, Vec::new());
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Signal,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1088,14 +1129,20 @@ mod tests {
             ),
             FilterMode::Include,
         )];
-        let config = Config::new(Verbosity::Normal, DisplayMode::Batch, signals, filterrule);
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            filterrule,
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1129,14 +1176,20 @@ mod tests {
             ),
             FilterMode::Exclude,
         )];
-        let config = Config::new(Verbosity::Normal, DisplayMode::Batch, signals, filterrule);
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            filterrule,
+        );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let processor = ProcessorWrapper::local(
-            DebugProcessor::new(config, Some(output_file.clone()), pipeline_ctx),
+            DebugProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
