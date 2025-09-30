@@ -230,7 +230,7 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records.append_str(msg.device_version);
 
                 log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
-                log_attributes_arrow_records.append_str(msg.signature_id);
+                log_attributes_arrow_records.append_str(msg.device_event_class_id);
 
                 log_attributes_arrow_records.append_key(CEF_NAME);
                 log_attributes_arrow_records.append_str(msg.name);
@@ -238,7 +238,8 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records.append_key(CEF_SEVERITY);
                 log_attributes_arrow_records.append_str(msg.severity);
 
-                for (key, value) in msg.parse_extensions() {
+                let mut extensions_iter = msg.parse_extensions();
+                while let Some((key, value)) = extensions_iter.next_extension() {
                     log_attributes_arrow_records.append_key(key);
                     log_attributes_arrow_records.append_str(value);
                     attributes_count += 1;

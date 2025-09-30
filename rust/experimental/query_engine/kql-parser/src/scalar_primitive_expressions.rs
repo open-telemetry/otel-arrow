@@ -10,10 +10,10 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_type_expressions(
-    type_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_type_unary_expressions(
+    type_unary_expressions_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
-    let rule = type_expressions_rule.into_inner().next().unwrap();
+    let rule = type_unary_expressions_rule.into_inner().next().unwrap();
 
     Ok(match rule.as_rule() {
         Rule::null_literal => parse_standard_null_literal(rule),
@@ -26,7 +26,7 @@ pub(crate) fn parse_type_expressions(
         Rule::double_literal => parse_standard_double_literal(rule, None)?,
         Rule::integer_literal => parse_standard_integer_literal(rule)?,
         Rule::string_literal => parse_string_literal(rule),
-        _ => panic!("Unexpected rule in type_expressions: {rule}"),
+        _ => panic!("Unexpected rule in type_unary_expressions: {rule}"),
     })
 }
 
@@ -264,7 +264,9 @@ fn parse_dynamic_expression(
         let query_location = to_query_location(&dynamic_inner_expression_rule);
 
         match dynamic_inner_expression_rule.as_rule() {
-            Rule::type_expressions => Ok(parse_type_expressions(dynamic_inner_expression_rule)?),
+            Rule::type_unary_expressions => {
+                Ok(parse_type_unary_expressions(dynamic_inner_expression_rule)?)
+            }
             Rule::dynamic_array_expression => {
                 let mut values = Vec::new();
 
@@ -1429,7 +1431,7 @@ mod tests {
                 (Rule::minus_token, "-"),
                 (Rule::scalar_expression, "'name'"),
                 (Rule::scalar_unary_expression, "'name'"),
-                (Rule::type_expressions, "'name'"),
+                (Rule::type_unary_expressions, "'name'"),
                 (Rule::string_literal, "'name'"),
             ],
         );

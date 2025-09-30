@@ -8,7 +8,7 @@ pub struct CefMessage<'a> {
     pub(super) device_vendor: &'a [u8],
     pub(super) device_product: &'a [u8],
     pub(super) device_version: &'a [u8],
-    pub(super) signature_id: &'a [u8],
+    pub(super) device_event_class_id: &'a [u8],
     pub(super) name: &'a [u8],
     pub(super) severity: &'a [u8],
     pub(super) extensions: &'a [u8],
@@ -17,9 +17,71 @@ pub struct CefMessage<'a> {
 
 impl CefMessage<'_> {
     /// Parse and iterate over the extensions as key-value pairs
-    pub(crate) fn parse_extensions(&self) -> CefExtensionsIter<'_> {
+    pub(super) fn parse_extensions(&self) -> CefExtensionsIter<'_> {
         CefExtensionsIter::new(self.extensions)
     }
+}
+
+/// Zero-allocation helper to check if a slice needs unescaping
+#[inline]
+fn needs_unescaping(data: &[u8]) -> bool {
+    let len = data.len();
+    if len < 2 {
+        return false;
+    }
+
+    // Use unchecked indexing since we know i+1 is valid
+    for i in 0..len - 1 {
+        if data[i] == b'\\' {
+            match data[i + 1] {
+                b'\\' | b'=' | b'n' | b'r' => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Zero-allocation in-place unescaping for CEF extension values
+/// Returns the new length after unescaping
+#[inline]
+const fn unescape_inplace(data: &mut [u8]) -> usize {
+    let mut write_pos = 0;
+    let mut read_pos = 0;
+
+    while read_pos < data.len() {
+        if read_pos + 1 < data.len() && data[read_pos] == b'\\' {
+            match data[read_pos + 1] {
+                b'\\' => {
+                    data[write_pos] = b'\\';
+                    read_pos += 2;
+                }
+                b'=' => {
+                    data[write_pos] = b'=';
+                    read_pos += 2;
+                }
+                b'n' => {
+                    data[write_pos] = b'\n';
+                    read_pos += 2;
+                }
+                b'r' => {
+                    data[write_pos] = b'\r';
+                    read_pos += 2;
+                }
+                _ => {
+                    // Not a recognized escape sequence, keep both characters
+                    data[write_pos] = data[read_pos];
+                    read_pos += 1;
+                }
+            }
+        } else {
+            data[write_pos] = data[read_pos];
+            read_pos += 1;
+        }
+        write_pos += 1;
+    }
+
+    write_pos
 }
 
 /// Parse a CEF message
@@ -31,26 +93,44 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
     let content = &input[4..];
 
     // Find up to 8 pipe-separated parts (7 required + 1 optional extensions)
+    // Handle escaped pipes in header fields
     let mut parts: [Option<&[u8]>; 8] = [None; 8];
     let mut parts_count = 0;
     let mut start = 0;
     let mut pipe_count = 0;
+    let mut i = 0;
 
-    for (i, &byte) in content.iter().enumerate() {
-        if byte == b'|' {
-            parts[parts_count] = Some(&content[start..i]);
-            parts_count += 1;
-            start = i + 1;
-            pipe_count += 1;
-            if pipe_count == 7 {
-                // After 7 pipes, the rest is extensions
-                if start < content.len() {
-                    parts[parts_count] = Some(&content[start..]);
-                    parts_count += 1;
+    while i < content.len() {
+        if content[i] == b'|' {
+            // Check if this pipe is escaped (preceded by unescaped backslash)
+            let mut escaped = false;
+            if i > 0 {
+                let mut backslash_count = 0;
+                let mut j = i;
+                while j > 0 && content[j - 1] == b'\\' {
+                    backslash_count += 1;
+                    j -= 1;
                 }
-                break;
+                // If odd number of backslashes, the pipe is escaped
+                escaped = backslash_count % 2 == 1;
+            }
+
+            if !escaped {
+                parts[parts_count] = Some(&content[start..i]);
+                parts_count += 1;
+                start = i + 1;
+                pipe_count += 1;
+                if pipe_count == 7 {
+                    // After 7 pipes, the rest is extensions
+                    if start < content.len() {
+                        parts[parts_count] = Some(&content[start..]);
+                        parts_count += 1;
+                    }
+                    break;
+                }
             }
         }
+        i += 1;
     }
 
     // Add the last part if we didn't reach 7 pipes
@@ -69,7 +149,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         Some(device_vendor),
         Some(device_product),
         Some(device_version),
-        Some(signature_id),
+        Some(device_event_class_id),
         Some(name),
         Some(severity),
     ) = (
@@ -79,9 +159,11 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         return Err(super::ParseError::InvalidCef);
     };
 
-    let version: u8 = match version_bytes {
-        b"0" => 0,
-        b"1" => 1,
+    // Parse version according to CEF spec: supports "0", "1", "0.x", "1.x" etc.
+    // Only the major version number (before the dot) is significant
+    let version: u8 = match version_bytes.first() {
+        Some(b'0') => 0,
+        Some(b'1') => 1,
         _ => return Err(super::ParseError::InvalidCef),
     };
 
@@ -97,7 +179,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
         device_vendor,
         device_product,
         device_version,
-        signature_id,
+        device_event_class_id,
         name,
         severity,
         extensions,
@@ -106,21 +188,23 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
 }
 
 /// Iterator for CEF extensions that parses on-demand
-pub(crate) struct CefExtensionsIter<'a> {
+pub(super) struct CefExtensionsIter<'a> {
     data: &'a [u8],
     pos: usize,
+    // Scratch buffer for unescaping - reused across iterations
+    scratch_buffer: Vec<u8>,
 }
 
 impl<'a> CefExtensionsIter<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            data,
+            pos: 0,
+            scratch_buffer: Vec::new(), // TODO: This would allocate if the extensions provided in the input have to be unescaped. Could we avoid this allocation?
+        }
     }
-}
 
-impl<'a> Iterator for CefExtensionsIter<'a> {
-    type Item = (&'a [u8], &'a [u8]);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    pub(super) fn next_extension(&mut self) -> Option<(&[u8], &[u8])> {
         if self.pos >= self.data.len() {
             return None;
         }
@@ -212,14 +296,36 @@ impl<'a> Iterator for CefExtensionsIter<'a> {
         }
 
         let key = &self.data[key_start..key_end];
-        let value = &self.data[value_start..self.pos];
+        let raw_value = &self.data[value_start..self.pos];
 
         // Move position to start of next key
         while self.pos < self.data.len() && self.data[self.pos] == b' ' {
             self.pos += 1;
         }
 
+        // Handle unescaping efficiently
+        let value = if needs_unescaping(raw_value) {
+            // Reuse scratch buffer to avoid allocations
+            self.scratch_buffer.clear();
+            self.scratch_buffer.extend_from_slice(raw_value);
+            let new_len = unescape_inplace(&mut self.scratch_buffer);
+            self.scratch_buffer.truncate(new_len);
+            &self.scratch_buffer[..]
+        } else {
+            raw_value
+        };
+
         Some((key, value))
+    }
+
+    /// Collect all extensions into a Vec, allocating only when necessary
+    #[cfg(test)]
+    fn collect_all(mut self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut result = Vec::new();
+        while let Some((key, value)) = self.next_extension() {
+            result.push((key.to_vec(), value.to_vec()));
+        }
+        result
     }
 }
 
@@ -236,15 +342,47 @@ mod tests {
         assert_eq!(result.device_vendor, b"Security".as_slice());
         assert_eq!(result.device_product, b"threatmanager".as_slice());
         assert_eq!(result.device_version, b"1.0".as_slice());
-        assert_eq!(result.signature_id, b"100".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 3);
-        assert_eq!(extensions[0], (b"src".as_slice(), b"10.0.0.1".as_slice()));
-        assert_eq!(extensions[1], (b"dst".as_slice(), b"2.1.2.2".as_slice()));
-        assert_eq!(extensions[2], (b"spt".as_slice(), b"1232".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"dst".as_slice(), b"2.1.2.2".as_slice())
+        );
+        assert_eq!(
+            (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
+            (b"spt".as_slice(), b"1232".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_cef_version_with_minor() {
+        // Test version 0.5
+        let input = b"CEF:0.5|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+
+        // Test version 1.2
+        let input = b"CEF:1.2|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 1);
+
+        // Test version 0.0
+        let input = b"CEF:0.0|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+
+        // Test invalid major version
+        let input = b"CEF:2.0|Security|threatmanager|1.0|100|worm successfully stopped|10|";
+        let result = parse_cef(input);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -256,11 +394,11 @@ mod tests {
         assert_eq!(result.device_vendor, b"Security".as_slice());
         assert_eq!(result.device_product, b"threatmanager".as_slice());
         assert_eq!(result.device_version, b"1.0".as_slice());
-        assert_eq!(result.signature_id, b"100".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 0);
     }
 
@@ -269,16 +407,19 @@ mod tests {
         let input = b"CEF:0|V|P|1.0|100|name|10|msg=This is a message with spaces src=10.0.0.1";
         let result = parse_cef(input).unwrap();
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
         assert_eq!(
-            extensions[0],
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
             (
                 b"msg".as_slice(),
                 b"This is a message with spaces".as_slice()
             )
         );
-        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -286,10 +427,16 @@ mod tests {
         let input = b"CEF:0|V|P|1.0|100|name|10|equation=a=b+c src=10.0.0.1";
         let result = parse_cef(input).unwrap();
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        assert_eq!(extensions[0], (b"equation".as_slice(), b"a=b+c".as_slice()));
-        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"equation".as_slice(), b"a=b+c".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -297,10 +444,16 @@ mod tests {
         let input = b"CEF:0|V|P|1.0|100|name|10|empty= src=10.0.0.1";
         let result = parse_cef(input).unwrap();
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        assert_eq!(extensions[0], (b"empty".as_slice(), b"".as_slice()));
-        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"empty".as_slice(), b"".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
     }
 
     #[test]
@@ -308,13 +461,16 @@ mod tests {
         let input = b"CEF:0|V|P|1.0|100|name|10|value=has trailing spaces   next=value";
         let result = parse_cef(input).unwrap();
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
         assert_eq!(
-            extensions[0],
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
             (b"value".as_slice(), b"has trailing spaces".as_slice())
         );
-        assert_eq!(extensions[1], (b"next".as_slice(), b"value".as_slice()));
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"next".as_slice(), b"value".as_slice())
+        );
     }
 
     #[test]
@@ -322,13 +478,51 @@ mod tests {
         let input = b"CEF:0|V|P|1.0|100|name|10|msg=escaped\\=equals src=10.0.0.1";
         let result = parse_cef(input).unwrap();
 
-        let extensions: Vec<_> = result.parse_extensions().collect();
+        let extensions = result.parse_extensions().collect_all();
         assert_eq!(extensions.len(), 2);
-        // Note: The escaped sequence is preserved in the raw bytes
+        // Now properly unescaped
         assert_eq!(
-            extensions[0],
-            (b"msg".as_slice(), b"escaped\\=equals".as_slice())
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"msg".as_slice(), b"escaped=equals".as_slice())
         );
-        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"src".as_slice(), b"10.0.0.1".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_header_pipe_escaping() {
+        let input =
+            b"CEF:0|Security|threatmanager|1.0|100|detected a \\| in message|10|src=10.0.0.1";
+        let result = parse_cef(input).unwrap();
+
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"Security".as_slice());
+        assert_eq!(result.device_product, b"threatmanager".as_slice());
+        assert_eq!(result.name, b"detected a \\| in message".as_slice()); // Raw bytes preserved
+        assert_eq!(result.severity, b"10".as_slice());
+    }
+
+    #[test]
+    fn test_extension_unescaping_comprehensive() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|msg=Line1\\nLine2 path=C:\\\\temp equals=a\\=b";
+        let result = parse_cef(input).unwrap();
+
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 3);
+
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"msg".as_slice(), b"Line1\nLine2".as_slice())
+        );
+        assert_eq!(
+            (extensions[1].0.as_slice(), extensions[1].1.as_slice()),
+            (b"path".as_slice(), b"C:\\temp".as_slice())
+        );
+        assert_eq!(
+            (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
+            (b"equals".as_slice(), b"a=b".as_slice())
+        );
     }
 }

@@ -9,17 +9,20 @@ use crate::{
     Rule, logical_expressions::parse_logical_expression, scalar_expression::parse_scalar_expression,
 };
 
-pub(crate) fn parse_conditional_expressions(
-    conditional_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_conditional_unary_expressions(
+    conditional_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = conditional_expressions_rule.into_inner().next().unwrap();
+    let rule = conditional_unary_expressions_rule
+        .into_inner()
+        .next()
+        .unwrap();
 
     match rule.as_rule() {
         Rule::conditional_expression => parse_conditional_expression(rule, scope),
         Rule::case_expression => parse_case_expression(rule, scope),
         Rule::coalesce_expression => parse_coalesce_expression(rule, scope),
-        _ => panic!("Unexpected rule in conditional_expressions: {rule}"),
+        _ => panic!("Unexpected rule in conditional_unary_expressions: {rule}"),
     }
 }
 

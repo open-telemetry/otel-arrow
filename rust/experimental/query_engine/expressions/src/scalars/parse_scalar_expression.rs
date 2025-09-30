@@ -50,6 +50,13 @@ impl Expression for ParseScalarExpression {
             ParseScalarExpression::Regex(_) => "ParseScalar(Regex)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            ParseScalarExpression::Json(p) => p.fmt_with_indent(f, indent),
+            ParseScalarExpression::Regex(p) => p.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +117,13 @@ impl Expression for ParseJsonScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ParseJsonScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        let header = "ParseJson(Scalar): ";
+        write!(f, "{header}")?;
+        self.inner_expression
+            .fmt_with_indent(f, format!("{indent}{}", " ".repeat(header.len())).as_str())
     }
 }
 
@@ -193,6 +207,20 @@ impl Expression for ParseRegexScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ParseRegexScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "ParseRegex")?;
+        write!(f, "{indent}├── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        if let Some(o) = &self.options {
+            write!(f, "{indent}└── Options(Scalar): ")?;
+            o.fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+        } else {
+            writeln!(f, "{indent}└── Options: None")?;
+        }
+        Ok(())
     }
 }
 
