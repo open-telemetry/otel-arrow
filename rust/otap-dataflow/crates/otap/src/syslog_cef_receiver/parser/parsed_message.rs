@@ -107,7 +107,8 @@ impl ParsedSyslogMessage<'_> {
             }
             ParsedSyslogMessage::Rfc3164(msg) => {
                 // Only return severity if it was actually present in the message
-                msg.priority.as_ref()
+                msg.priority
+                    .as_ref()
                     .map(|p| Self::to_otel_severity(p.severity))
             }
             ParsedSyslogMessage::Cef(_) => {

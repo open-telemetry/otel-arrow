@@ -55,6 +55,7 @@ pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
 }
 
 /// Parse priority from the beginning of a syslog message
+#[allow(clippy::manual_range_contains)]
 pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseError> {
     if input.is_empty() || input[0] != b'<' {
         return Err(ParseError::InvalidPriority);
@@ -68,7 +69,7 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
     if end < 2 || end > 4 {
         return Err(ParseError::InvalidPriority);
     }
-    
+
     let priority_bytes = &input[1..end];
 
     // RFC 3164 Section 4.3.3: Check for leading zeros which make PRI "unidentifiable"

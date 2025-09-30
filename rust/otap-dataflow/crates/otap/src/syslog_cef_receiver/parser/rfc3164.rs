@@ -15,19 +15,17 @@ pub struct Rfc3164Message<'a> {
 }
 
 /// Parse an RFC 3164 syslog message from bytes, automatically detecting the format
-/// 
+///
 /// This parser identifies and extracts fields from syslog messages but does not
 /// act as a relay. Messages without valid PRI headers are accepted and parsed
 /// for their content, but no default values are assigned. The calling code must
 /// decide how to handle missing fields.
-/// 
+///
 /// # Behavior for RFC 3164 messages without PRI:
 /// - The message is parsed for any identifiable fields (timestamp, hostname, etc.)
 /// - No default priority is assigned
 /// - The entire message may be treated as content if no structure is found
-pub fn parse_rfc3164(
-    input: &[u8],
-) -> Result<Rfc3164Message<'_>, parser::ParseError> {
+pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseError> {
     // RFC 3164 Section 4.3: Check if we have a valid PRI
     let (priority, mut remaining) = if input.starts_with(b"<") {
         // Try to parse the PRI
