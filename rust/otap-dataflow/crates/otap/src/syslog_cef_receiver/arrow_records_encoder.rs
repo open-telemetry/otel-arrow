@@ -1021,7 +1021,7 @@ mod tests {
                     Some(&AttributeValue::String("su".to_string()))
                 );
                 assert_eq!(
-                    log1_attrs.get("syslog.message"),
+                    log1_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
@@ -1058,7 +1058,7 @@ mod tests {
                     Some(&AttributeValue::String("app[1234]".to_string()))
                 );
                 assert_eq!(
-                    log2_attrs.get("syslog.message"),
+                    log2_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "Application started successfully".to_string()
                     ))
@@ -1095,7 +1095,7 @@ mod tests {
                     Some(&AttributeValue::String("kernel".to_string()))
                 );
                 assert_eq!(
-                    log3_attrs.get("syslog.message"),
+                    log3_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "Kernel panic - not syncing: VFS".to_string()
                     ))
@@ -1978,7 +1978,7 @@ mod tests {
                     Some(&AttributeValue::String("su".to_string()))
                 );
                 assert_eq!(
-                    log2_attrs.get("syslog.message"),
+                    log2_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
@@ -2450,7 +2450,7 @@ mod tests {
         );
         assert_eq!(log1_attrs.get("syslog.tag"), Some(&"su".to_string()));
         assert_eq!(
-            log1_attrs.get("syslog.message"),
+            log1_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
 
@@ -2482,7 +2482,7 @@ mod tests {
         );
         assert_eq!(log2_attrs.get("syslog.tag"), Some(&"app[1234]".to_string()));
         assert_eq!(
-            log2_attrs.get("syslog.message"),
+            log2_attrs.get("syslog.content"),
             Some(&"Application started successfully".to_string())
         );
 
@@ -2550,7 +2550,7 @@ mod tests {
         );
         assert_eq!(log3_attrs.get("syslog.tag"), Some(&"kernel".to_string()));
         assert_eq!(
-            log3_attrs.get("syslog.message"),
+            log3_attrs.get("syslog.content"),
             Some(&"Kernel panic - not syncing: VFS".to_string())
         );
 
@@ -3007,7 +3007,7 @@ mod tests {
         );
         assert_eq!(log2_attrs.get("syslog.tag"), Some(&"su".to_string()));
         assert_eq!(
-            log2_attrs.get("syslog.message"),
+            log2_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
 
