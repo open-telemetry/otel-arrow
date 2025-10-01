@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759278485881,
+  "lastUpdate": 1759331338795,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "d36e3843a8abf5eeaea1b2fd29c31069857cdd97",
-          "message": "Add periodic flush to parquet exporter using timer tick (#1004)\n\nFixes: #499 \n\nUp until this point, the only way that parquet exporter would flush &\nclose the writers (e.g. write the completed file), would be if the file\nreaches some configured max threshold or if the pipeline shut down. This\nis not great for users who may wish to have their data visible sooner,\nespecially if it takes some time to accumulate enough rows.\n\nThis PR uses the newly implemented TimerTick mechanism to periodically\nflush any files that are older than some configured threshold.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>",
-          "timestamp": "2025-08-26T18:10:32Z",
-          "tree_id": "d36cf7542441f72821e0e83d8969440b0e437a64",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/d36e3843a8abf5eeaea1b2fd29c31069857cdd97"
-        },
-        "date": 1756232387955,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 738666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22160000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22160000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.66,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.59,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 157.09,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 184.2,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 739500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22185000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22185000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.69,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 125.13,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 152.2,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 188.26,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5b4386d171d4558c09e3305f1c958df79faaa38",
+          "message": "[query-engine] Implement fmt_with_indent for text scalar expressions (#1205)\n\nRelates to #1178\n\n## Details\n\nExamples:\n\n```\nPipeline\n├── Query: \"\\nsource\\n | extend\\n    c1 = extract(regex, capture, value),\\n    c2 = strcat_delim(a, b),\\n    c3 = replace_string(field, needle, replacement)\\n \"\n├── Constants: []\n├── Initializations: []\n└── Expressions:\n    ├── Set\n    │   ├── Source(Scalar): Capture\n    │   │                   ├── Haystack(Scalar): Source\n    │   │                   │                     └── Accessor:\n    │   │                   │                         ├── String: \"Attributes\"\n    │   │                   │                         └── String: \"value\"\n    │   │                   ├── Pattern(Scalar): Source\n    │   │                   │                    └── Accessor:\n    │   │                   │                        ├── String: \"Attributes\"\n    │   │                   │                        └── String: \"regex\"\n    │   │                   └── CaptureGroup(Scalar): Source\n    │   │                                             └── Accessor:\n    │   │                                                 ├── String: \"Attributes\"\n    │   │                                                 └── String: \"capture\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"c1\"\n    ├── Set\n    │   ├── Source(Scalar): Join\n    │   │                   ├── Separator(Scalar): Source\n    │   │                   │                      └── Accessor:\n    │   │                   │                          ├── String: \"Attributes\"\n    │   │                   │                          └── String: \"a\"\n    │   │                   └── Values(Scalar): List\n    │   │                                       └── Values[0](Scalar): Source\n    │   │                                                              └── Accessor:\n    │   │                                                                  ├── String: \"Attributes\"\n    │   │                                                                  └── String: \"b\"\n    │   └── Destination(Mutable): Source\n    │                             └── Accessor:\n    │                                 ├── String: \"Attributes\"\n    │                                 └── String: \"c2\"\n    └── Set\n        ├── Source(Scalar): Replace\n        │                   ├── Haystack(Scalar): Source\n        │                   │                     └── Accessor:\n        │                   │                         ├── String: \"Attributes\"\n        │                   │                         └── String: \"field\"\n        │                   ├── Needle(Scalar): Source\n        │                   │                   └── Accessor:\n        │                   │                       ├── String: \"Attributes\"\n        │                   │                       └── String: \"needle\"\n        │                   ├── Replacement(Scalar): Source\n        │                   │                        └── Accessor:\n        │                   │                            ├── String: \"Attributes\"\n        │                   │                            └── String: \"replacement\"\n        │                   └── CaseInsensitive: false\n        └── Destination(Mutable): Source\n                                  └── Accessor:\n                                      ├── String: \"Attributes\"\n                                      └── String: \"c3\"\n```",
+          "timestamp": "2025-10-01T15:00:34Z",
+          "tree_id": "1f358048f77c655fee49b08dfb9468e579121b98",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c5b4386d171d4558c09e3305f1c958df79faaa38"
+        },
+        "date": 1759331335921,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 731000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21930000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21930000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.58,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.54,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 125.21,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 143.06,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 730000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21900000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21900000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.72,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.68,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 168.44,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 198.07,
             "unit": "MiB"
           }
         ]
