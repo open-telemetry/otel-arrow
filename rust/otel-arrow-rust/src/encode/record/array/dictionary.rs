@@ -941,7 +941,7 @@ mod test {
 
         assert_eq!(
             result.data_type(),
-            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
         );
 
         let mut expected_dict_values = StringBuilder::new();

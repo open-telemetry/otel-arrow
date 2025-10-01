@@ -12,15 +12,15 @@ use arrow::{
 };
 
 use crate::{
-    encode::record::array::{
-        ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
-        CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder, Float64ArrayBuilder,
-        Int32ArrayBuilder, Int64ArrayBuilder, TimestampNanosecondArrayBuilder, UInt8ArrayBuilder,
-        UInt16ArrayBuilder, UInt32ArrayBuilder, binary_to_utf8_array,
-        boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
-        dictionary::DictionaryOptions,
+    encode::record::{
+        array::{
+            ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+            CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder, Int32ArrayBuilder,
+            TimestampNanosecondArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
+            binary_to_utf8_array, dictionary::DictionaryOptions,
+        },
+        attributes::AnyValuesRecordsBuilder,
     },
-    otlp::attributes::AttributeValueType,
     schema::{FieldExt, SpanId, TraceId, consts},
 };
 
@@ -341,21 +341,8 @@ impl LogsRecordBatchBuilder {
 
 /// Builder for the body of a log record.
 pub struct LogsBodyBuilder {
-    value_type: UInt8ArrayBuilder,
-    string_value: BinaryArrayBuilder,
-    int_value: Int64ArrayBuilder,
-    double_value: Float64ArrayBuilder,
-    bool_value: AdaptiveBooleanArrayBuilder,
-    bytes_value: BinaryArrayBuilder,
-    ser_value: BinaryArrayBuilder,
+    any_values_builder: AnyValuesRecordsBuilder,
     nulls: NullBufferBuilder,
-    // Track pending null counts for each type for efficient batching
-    pending_string_nulls: usize,
-    pending_int_nulls: usize,
-    pending_double_nulls: usize,
-    pending_bool_nulls: usize,
-    pending_bytes_nulls: usize,
-    pending_ser_nulls: usize,
 }
 
 impl LogsBodyBuilder {
@@ -363,242 +350,61 @@ impl LogsBodyBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            value_type: UInt8ArrayBuilder::new(ArrayOptions {
-                optional: false,
-                dictionary_options: None,
-                ..Default::default()
-            }),
-            string_value: BinaryArrayBuilder::new(ArrayOptions {
-                optional: false,
-                dictionary_options: Some(DictionaryOptions::dict16()),
-                ..Default::default()
-            }),
-            int_value: Int64ArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: Some(DictionaryOptions::dict16()),
-                ..Default::default()
-            }),
-            double_value: Float64ArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: None,
-                ..Default::default()
-            }),
-            bool_value: AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true }),
-            bytes_value: BinaryArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: Some(DictionaryOptions::dict16()),
-                ..Default::default()
-            }),
-            ser_value: BinaryArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: Some(DictionaryOptions::dict16()),
-                ..Default::default()
-            }),
+            any_values_builder: AnyValuesRecordsBuilder::new(),
             nulls: NullBufferBuilder::new(0),
-            pending_string_nulls: 0,
-            pending_int_nulls: 0,
-            pending_double_nulls: 0,
-            pending_bool_nulls: 0,
-            pending_bytes_nulls: 0,
-            pending_ser_nulls: 0,
         }
     }
 
     /// Append a string value to the body.
     pub fn append_str(&mut self, val: &[u8]) {
-        self.value_type
-            .append_value(&(AttributeValueType::Str as u8));
-
-        // Flush pending nulls for string array and append the actual value
-        if self.pending_string_nulls > 0 {
-            self.string_value.append_nulls(self.pending_string_nulls);
-            self.pending_string_nulls = 0;
-        }
-        self.string_value.append_slice(val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_str(val);
         self.nulls.append(true);
     }
 
     /// Append a boolean value to the body..
     pub fn append_bool(&mut self, val: bool) {
-        self.value_type
-            .append_value(&(AttributeValueType::Bool as u8));
-
-        // Flush pending nulls for bool array and append the actual value
-        if self.pending_bool_nulls > 0 {
-            self.bool_value.append_nulls(self.pending_bool_nulls);
-            self.pending_bool_nulls = 0;
-        }
-        self.bool_value.append_value(val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bytes_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_bool(val);
         self.nulls.append(true);
     }
 
     /// Append an integer value to the body.
     pub fn append_int(&mut self, val: i64) {
-        self.value_type
-            .append_value(&(AttributeValueType::Int as u8));
-
-        // Flush pending nulls for int array and append the actual value
-        if self.pending_int_nulls > 0 {
-            self.int_value.append_nulls(self.pending_int_nulls);
-            self.pending_int_nulls = 0;
-        }
-        self.int_value.append_value(&val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_int(val);
         self.nulls.append(true);
     }
 
     /// Append a double value to the body.
     pub fn append_double(&mut self, val: f64) {
-        self.value_type
-            .append_value(&(AttributeValueType::Double as u8));
-
-        // Flush pending nulls for double array and append the actual value
-        if self.pending_double_nulls > 0 {
-            self.double_value.append_nulls(self.pending_double_nulls);
-            self.pending_double_nulls = 0;
-        }
-        self.double_value.append_value(&val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_double(val);
         self.nulls.append(true);
     }
 
     /// Append a bytes value to the body.
     pub fn append_bytes(&mut self, val: &[u8]) {
-        self.value_type
-            .append_value(&(AttributeValueType::Bytes as u8));
-
-        // Flush pending nulls for bytes array and append the actual value
-        if self.pending_bytes_nulls > 0 {
-            self.bytes_value.append_nulls(self.pending_bytes_nulls);
-            self.pending_bytes_nulls = 0;
-        }
-        self.bytes_value.append_slice(val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_bytes(val);
         self.nulls.append(true);
     }
 
     /// Append a slice value to the body. The bytes should be the value serialized as CBOR
     pub fn append_slice(&mut self, val: &[u8]) {
-        self.value_type
-            .append_value(&(AttributeValueType::Slice as u8));
-
-        // Flush pending nulls for ser array and append the actual value
-        if self.pending_ser_nulls > 0 {
-            self.ser_value.append_nulls(self.pending_ser_nulls);
-            self.pending_ser_nulls = 0;
-        }
-        self.ser_value.append_slice(val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
+        self.any_values_builder.append_slice(val);
         self.nulls.append(true);
     }
 
     /// Append a map value to the body. The bytes should be the value serialized as CBOR
     pub fn append_map(&mut self, val: &[u8]) {
-        self.value_type
-            .append_value(&(AttributeValueType::Map as u8));
-
-        // Flush pending nulls for ser array and append the actual value
-        if self.pending_ser_nulls > 0 {
-            self.ser_value.append_nulls(self.pending_ser_nulls);
-            self.pending_ser_nulls = 0;
-        }
-        self.ser_value.append_slice(val);
-
-        // Increment pending nulls for all other arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
+        self.any_values_builder.append_map(val);
         self.nulls.append(true);
     }
 
     /// Append a null value to the body
     pub fn append_null(&mut self) {
-        self.value_type.append_null();
-
-        // For null values, just increment pending nulls for all arrays
-        self.pending_string_nulls += 1;
-        self.pending_int_nulls += 1;
-        self.pending_double_nulls += 1;
-        self.pending_bool_nulls += 1;
-        self.pending_bytes_nulls += 1;
-        self.pending_ser_nulls += 1;
+        self.any_values_builder.append_empty();
         self.nulls.append_null();
-    }
-
-    /// Fill arrays with nulls to ensure they all have the same length and maintain correct ordering
-    fn fill_missing_nulls(&mut self) {
-        // Simply append any remaining pending nulls to each array
-        if self.pending_string_nulls > 0 {
-            self.string_value.append_nulls(self.pending_string_nulls);
-            self.pending_string_nulls = 0;
-        }
-        if self.pending_int_nulls > 0 {
-            self.int_value.append_nulls(self.pending_int_nulls);
-            self.pending_int_nulls = 0;
-        }
-        if self.pending_double_nulls > 0 {
-            self.double_value.append_nulls(self.pending_double_nulls);
-            self.pending_double_nulls = 0;
-        }
-        if self.pending_bool_nulls > 0 {
-            self.bool_value.append_nulls(self.pending_bool_nulls);
-            self.pending_bool_nulls = 0;
-        }
-        if self.pending_bytes_nulls > 0 {
-            self.bytes_value.append_nulls(self.pending_bytes_nulls);
-            self.pending_bytes_nulls = 0;
-        }
-        if self.pending_ser_nulls > 0 {
-            self.ser_value.append_nulls(self.pending_ser_nulls);
-            self.pending_ser_nulls = 0;
-        }
     }
 
     /// Finish this builder try to build the resulting `StructArray` for the log body
     fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
-        // Ensure all arrays have the same length by bulk appending nulls where needed
-        self.fill_missing_nulls();
-
         let len = self.nulls.len();
         let nulls = self.nulls.finish();
 
@@ -611,73 +417,8 @@ impl LogsBodyBuilder {
 
         let mut fields = vec![];
         let mut columns = vec![];
-
-        if let Some(array) = self.value_type.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_TYPE,
-                array.data_type().clone(),
-                // TODO shouldn't be nullable?
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.string_value.finish() {
-            let array = match binary_to_utf8_array(&array) {
-                Ok(arr) => arr,
-                Err(e) => return Some(Err(e)),
-            };
-            fields.push(Field::new(
-                consts::ATTRIBUTE_STR,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.int_value.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_INT,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.double_value.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_DOUBLE,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.bool_value.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_BOOL,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.bytes_value.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_BYTES,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
-        }
-
-        if let Some(array) = self.ser_value.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_SER,
-                array.data_type().clone(),
-                true,
-            ));
-            columns.push(array);
+        if let Err(e) = self.any_values_builder.finish(&mut columns, &mut fields) {
+            return Some(Err(e));
         }
 
         Some(StructArray::try_new(Fields::from(fields), columns, nulls))

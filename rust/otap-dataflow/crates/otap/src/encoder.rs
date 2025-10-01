@@ -994,6 +994,7 @@ mod test {
         status::StatusCode,
     };
     use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
@@ -2507,7 +2508,7 @@ mod test {
                     "body",
                     DataType::Struct(
                         vec![
-                            Field::new("type", DataType::UInt8, true),
+                            Field::new("type", DataType::UInt8, false),
                             Field::new(
                                 "str",
                                 DataType::Dictionary(
@@ -2657,7 +2658,7 @@ mod test {
                 // body
                 Arc::new(StructArray::new(
                     vec![
-                        Field::new("type", DataType::UInt8, true),
+                        Field::new("type", DataType::UInt8, false),
                         Field::new(
                             "str",
                             DataType::Dictionary(
@@ -3399,7 +3400,7 @@ mod test {
 
         let expected_body = StructArray::try_new(
             vec![
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(
                     consts::ATTRIBUTE_STR,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
@@ -3524,6 +3525,7 @@ mod test {
         )
         .unwrap();
 
+        assert_eq!(body_column.fields(), expected_body.fields());
         assert_eq!(body_column, &expected_body);
 
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());

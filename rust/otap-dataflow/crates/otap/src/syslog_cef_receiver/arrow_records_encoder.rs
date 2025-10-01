@@ -4,8 +4,7 @@
 use chrono::Utc;
 use otel_arrow_rust::{
     encode::record::{
-        attributes::StrKeysAttributesRecordBatchBuilder,
-        logs::LogsRecordBatchBuilder,
+        attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
     },
     otap::{Logs, OtapArrowRecords},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
