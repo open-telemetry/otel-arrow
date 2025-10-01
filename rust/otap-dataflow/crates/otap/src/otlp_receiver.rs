@@ -13,7 +13,7 @@ use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -157,9 +157,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             // Run server
             result = server.serve_with_incoming(listener_stream) => {
                 if let Err(error) = result {
+                    let source_detail = format_error_sources(&error);
                     return Err(Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
-                        error: error.to_string()
+                        kind: ReceiverErrorKind::Transport,
+                        error: error.to_string(),
+                        source_detail,
                     });
                 }
             }

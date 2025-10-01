@@ -40,6 +40,34 @@ impl fmt::Display for ExporterErrorKind {
     }
 }
 
+/// High-level classification for receiver failures to aid troubleshooting.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ReceiverErrorKind {
+    /// Errors encountered while binding or establishing inbound connections.
+    Connect,
+    /// Errors caused by invalid or missing configuration.
+    Configuration,
+    /// Errors transporting or decoding telemetry payloads after the receiver has started.
+    Transport,
+    /// Errors raised while shutting down a receiver.
+    Shutdown,
+    /// Catch-all for receiver failures that do not fit other categories.
+    Other,
+}
+
+impl fmt::Display for ReceiverErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ReceiverErrorKind::Connect => "connect",
+            ReceiverErrorKind::Configuration => "configuration",
+            ReceiverErrorKind::Transport => "transport",
+            ReceiverErrorKind::Shutdown => "shutdown",
+            ReceiverErrorKind::Other => "other",
+        };
+        write!(f, "{label}")
+    }
+}
+
 /// Formats the source chain of an error into a single display string.
 #[must_use]
 pub fn format_error_sources(error: &(dyn std::error::Error + 'static)) -> String {
@@ -175,14 +203,20 @@ pub enum Error {
     },
 
     /// A wrapper for the receiver errors.
-    #[error("A receiver error occurred in node {receiver}: {error}")]
+    #[error("A receiver error occurred in node {receiver} ({kind}): {error}{source_detail}")]
     ReceiverError {
         /// The name of the receiver that encountered the error.
         receiver: NodeId,
 
+        /// High-level classification for the receiver failure.
+        kind: ReceiverErrorKind,
+
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
         error: String,
+
+        /// Pre-formatted representation of the source chain used when rendering the error.
+        source_detail: String,
     },
 
     /// Unknown receiver plugin.

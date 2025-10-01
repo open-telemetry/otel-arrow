@@ -13,7 +13,10 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::{error::Error, local::receiver as local};
+use otap_df_engine::{
+    error::{format_error_sources, Error, ReceiverErrorKind},
+    local::receiver as local,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -260,7 +263,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     });
                                 },
                                 Err(e) => {
-                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
+                                    let source_detail = format_error_sources(&e);
+                                    return Err(Error::ReceiverError {
+                                        receiver: effect_handler.receiver_id(),
+                                        kind: ReceiverErrorKind::Transport,
+                                        error: e.to_string(),
+                                        source_detail,
+                                    });
                                 }
                             }
                         }
@@ -324,7 +333,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     }
                                 },
                                 Err(e) => {
-                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
+                                    let source_detail = format_error_sources(&e);
+                                    return Err(Error::ReceiverError {
+                                        receiver: effect_handler.receiver_id(),
+                                        kind: ReceiverErrorKind::Transport,
+                                        error: e.to_string(),
+                                        source_detail,
+                                    });
                                 }
                             }
                         },
