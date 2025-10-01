@@ -96,7 +96,6 @@ In this config we create a processor with multiple out_ports.
 In the config setting we tell the debug-processor to use `out_port2`
 which will send data to another node named `some_node`
 
-
 ## Example Output => Basic Verbosity
 
 ```plaintext

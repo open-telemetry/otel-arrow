@@ -1,3 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Handles the output flow of the debug processor
+
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use otap_df_config::PortName;
 use otap_df_engine::error::Error;
