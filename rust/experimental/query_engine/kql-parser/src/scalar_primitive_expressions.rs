@@ -504,7 +504,18 @@ pub(crate) fn parse_accessor_expression(
     }
 
     if root_accessor_identity.get_value() == "source" {
-        let value_type = get_value_type(scope, &value_accessor);
+        let mut resolved_value_type = None;
+
+        let selectors = value_accessor.get_selectors_mut();
+
+        if !selectors.is_empty()
+            && let Some(schema) = scope.get_source_schema()
+        {
+            resolved_value_type = schema
+                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())?;
+        }
+
+        let value_type = resolved_value_type.or(get_value_type(scope, &value_accessor));
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
@@ -2276,6 +2287,12 @@ mod tests {
             "map.double_value[0]",
             None,
             "Cannot access into key 'double_value' which is defined as a 'Double' type",
+        );
+
+        run_test_failure(
+            "source.field",
+            None,
+            "The name 'field' does not refer to any known key on the target map",
         );
     }
 }

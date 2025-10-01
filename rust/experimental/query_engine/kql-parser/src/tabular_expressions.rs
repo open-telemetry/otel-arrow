@@ -1778,7 +1778,7 @@ mod tests {
 
         run_test_failure(
             "project source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
@@ -2127,7 +2127,7 @@ mod tests {
 
         run_test_failure(
             "project-keep source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-keep expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
@@ -2534,7 +2534,7 @@ mod tests {
 
         run_test_failure(
             "project-away source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-away expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
