@@ -10,6 +10,55 @@ use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
 use otap_df_config::{PortName, Urn};
 use std::borrow::Cow;
+use std::fmt;
+
+/// High-level classification for exporter failures to aid troubleshooting.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExporterErrorKind {
+    /// Errors encountered while establishing a connection to a remote endpoint.
+    Connect,
+    /// Errors caused by invalid or incomplete configuration detected at runtime.
+    Configuration,
+    /// Errors transporting telemetry payloads after an exporter has started.
+    Transport,
+    /// Errors raised while shutting down an exporter.
+    Shutdown,
+    /// Catch-all for exporter failures that do not fit other categories.
+    Other,
+}
+
+impl fmt::Display for ExporterErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ExporterErrorKind::Connect => "connect",
+            ExporterErrorKind::Configuration => "configuration",
+            ExporterErrorKind::Transport => "transport",
+            ExporterErrorKind::Shutdown => "shutdown",
+            ExporterErrorKind::Other => "other",
+        };
+        write!(f, "{label}")
+    }
+}
+
+/// Formats the source chain of an error into a single display string.
+#[must_use]
+pub fn format_error_sources(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut segments = Vec::new();
+    let mut current = error.source();
+    while let Some(err) = current {
+        let msg = err.to_string();
+        if !msg.is_empty() {
+            segments.push(msg);
+        }
+        current = err.source();
+    }
+
+    if segments.is_empty() {
+        String::new()
+    } else {
+        format!("; source: {}", segments.join(" -> "))
+    }
+}
 
 /// All errors that can occur in the pipeline engine infrastructure
 /// that contain a variant type <T>. Generally these errors are
@@ -176,14 +225,19 @@ pub enum Error {
     },
 
     /// A wrapper for the exporter errors.
-    #[error("An exporter error occurred in node {exporter}: {error}")]
+    #[error("An exporter error occurred in node {exporter} ({kind}): {error}{source_detail}")]
     ExporterError {
         /// The name of the exporter that encountered the error.
         exporter: NodeId,
 
+        /// High-level classification for the exporter failure.
+        kind: ExporterErrorKind,
+
         /// The error that occurred.
-        /// ToDo We probably need to use a more specific error type here (JSON Node?).
         error: String,
+
+        /// Pre-formatted representation of the source chain used when rendering the error.
+        source_detail: String,
     },
 
     /// A Wrapper for the pdata conversion errors

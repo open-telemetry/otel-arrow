@@ -31,7 +31,7 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_state::{DeployedPipelineKey, PipelineKey};
+use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::{ConditionStatus, ConditionType, ObservedEvent, ObservedStateStore};
 use otap_df_telemetry::MetricsSystem;
@@ -191,7 +191,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
                 Ok(Err(e)) => {
                     obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
-                    let error_msg = format!("The pipeline encountered an error: {e}");
+                    let error_msg = e.to_string();
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key.clone(),
                         ConditionType::StartError,
@@ -222,9 +222,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionType::Panic,
                         ConditionStatus::True,
                         format!("{e:?}"),
-                        "The pipeline panicked during execution.".to_owned()
-                    )
-                    );
+                        "The pipeline panicked during execution.".to_owned(),
+                    ));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key.clone(),
                         ConditionType::Ready,

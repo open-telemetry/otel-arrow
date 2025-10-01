@@ -19,7 +19,7 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
@@ -123,26 +123,39 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ArrowMetricsServiceClient::connect(self.config.grpc_endpoint.clone())
                 .await
                 .map_err(|error| {
+                    let source_detail = format_error_sources(&error);
                     Error::ExporterError {
                         exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Connect,
                         error: error.to_string(),
+                        source_detail,
                     }
                 })?;
 
         let mut arrow_logs_client =
             ArrowLogsServiceClient::connect(self.config.grpc_endpoint.clone())
                 .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
+                .map_err(|error| {
+                    let source_detail = format_error_sources(&error);
+                    Error::ExporterError {
+                        exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Connect,
+                        error: error.to_string(),
+                        source_detail,
+                    }
                 })?;
 
         let mut arrow_traces_client =
             ArrowTracesServiceClient::connect(self.config.grpc_endpoint.clone())
                 .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
+                .map_err(|error| {
+                    let source_detail = format_error_sources(&error);
+                    Error::ExporterError {
+                        exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Connect,
+                        error: error.to_string(),
+                        source_detail,
+                    }
                 })?;
 
         if let Some(ref compression) = self.config.compression_method {
@@ -241,7 +254,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     _ => {
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_id(),
+                            kind: ExporterErrorKind::Other,
                             error: "Unknown control message".to_owned(),
+                            source_detail: String::new(),
                         });
                     }
                 },

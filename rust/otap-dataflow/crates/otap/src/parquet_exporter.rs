@@ -38,7 +38,7 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
@@ -111,11 +111,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let object_store =
-            object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
+        let exporter_id = effect_handler.exporter_id();
+        let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Configuration,
                 error: format!("error initializing object store {e}"),
-            })?;
+                source_detail,
+            }
+        })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
@@ -149,9 +154,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         // should have the concept of retryable & non-retryable errors and use Nack
                         //  message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
+                        let source_detail = format_error_sources(&e);
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Transport,
                             error: format!("Parquet write failed: {e}"),
+                            source_detail,
                         });
                     }
                 }
@@ -169,7 +177,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     pin_mut!(flush_all);
                     return futures::select! {
                         _timeout = timeout => Err(Error::IoError {
-                                node: effect_handler.exporter_id(),
+                                node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             }),
                         _ = flush_all => Ok(()),
@@ -188,18 +196,24 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         // eventually we should have the concept of retryable & non-retryable errors and
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
+                        let source_detail = format_error_sources(&e);
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
                             error: format!("ID Generation failed: {e}"),
+                            source_detail,
                         });
                     }
 
                     // ensure the batches has the schema the parquet writer expects
                     transform_to_known_schema(&mut otap_batch).map_err(|e| {
                         // TODO - Ack/Nack instead of returning error
+                        let source_detail = format_error_sources(&e);
                         Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
                             error: format!("Schema transformation failed: {e}"),
+                            source_detail,
                         }
                     })?;
 
@@ -230,9 +244,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         // eventually we should have the concept of retryable & non-retryable errors and
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
+                        let source_detail = format_error_sources(&e);
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Transport,
                             error: format!("Parquet write failed: {e}"),
+                            source_detail,
                         });
                     };
                 }

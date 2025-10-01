@@ -472,7 +472,7 @@ impl ObservedStateStore {
             ObservedEvent::Condition {
                 key,
                 core_id,
-                condition
+                condition,
             } => {
                 let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
                     // Rational: We prefer to prioritize availability of the data plane over the
