@@ -129,10 +129,15 @@ pub enum ConditionType {
     ConfigRejected,
 
     /// The pipeline encountered a panic during startup or runtime execution.
+    /// Panic marks code-level bugs or safety violations.
+    /// (fix config vs. **rollback code**)
     Panic,
 
     /// The pipeline failed to start properly due to an error
     /// encountered during its startup sequence (not a panic).
+    /// StartError captures deterministic startup/config issues (bad credentials, exporter failures,
+    /// quota exhaustion).
+    /// (**fix config** vs. rollback code)
     StartError,
 
     /// Catch-all for plugin/vendor-specific facets; preserves original identifier.
@@ -275,6 +280,8 @@ impl FromStr for ConditionType {
             "HeartbeatMissing" => ConditionType::HeartbeatMissing,
             "RolloutInProgress" => ConditionType::RolloutInProgress,
             "ConfigRejected" => ConditionType::ConfigRejected,
+            "Panic" => ConditionType::Panic,
+            "StartError" => ConditionType::StartError,
             other => ConditionType::Custom(other.to_string()),
         })
     }
@@ -489,7 +496,6 @@ impl ObservedStateStore {
                 });
                 cs.last_beat = condition.last_transition_time;
                 let ctype = condition.r#type.clone();
-                let message = condition.message.clone();
                 let ts = condition.last_transition_time;
                 _ = cs.conditions.insert(ctype.clone(), condition);
 
@@ -503,27 +509,65 @@ impl ObservedStateStore {
 
                 // Compose a concise summary and upsert the pipeline-level condition
                 let (mut t, mut f, mut u) = (0, 0, 0);
-                for s in ps
+                let mut sample_condition: Option<Condition> = None;
+                for cond in ps
                     .per_core
                     .values()
                     .filter_map(|c| c.conditions.get(&ctype))
-                    .map(|c| &c.status)
                 {
-                    match s {
+                    match cond.status {
                         True => t += 1,
                         False => f += 1,
                         Unknown => u += 1,
                     }
+
+                    let needs_update = sample_condition
+                        .as_ref()
+                        .is_none_or(|s| cond.last_transition_time >= s.last_transition_time);
+                    if needs_update {
+                        sample_condition = Some(cond.clone());
+                    }
                 }
+                let total = t + f + u;
                 let agg_reason = match agg {
                     True => format!("AllCores{}True", ctype.as_str()),
+                    False if f == total && total > 0 => {
+                        format!("AllCores{}False", ctype.as_str())
+                    }
                     False => format!("SomeCores{}False", ctype.as_str()),
+                    Unknown if u == total && total > 0 => {
+                        format!("AllCores{}Unknown", ctype.as_str())
+                    }
                     Unknown => format!("SomeCores{}Unknown", ctype.as_str()),
                 };
-                let agg_message = format!(
-                    "{} (cores: true={}, false={}, unknown={})",
-                    message, t, f, u
-                );
+                let agg_status = match agg {
+                    True => "True",
+                    False => "False",
+                    Unknown => "Unknown",
+                };
+                let agg_message = if let Some(sample) = sample_condition {
+                    format!(
+                        "{} status {} across {} cores (true={}, false={}, unknown={}). Last reason: {}. Last message: {}",
+                        ctype.as_str(),
+                        agg_status,
+                        total,
+                        t,
+                        f,
+                        u,
+                        sample.reason,
+                        sample.message
+                    )
+                } else {
+                    format!(
+                        "{} status {} across {} cores (true={}, false={}, unknown={})",
+                        ctype.as_str(),
+                        agg_status,
+                        total,
+                        t,
+                        f,
+                        u
+                    )
+                };
 
                 ps.upsert_condition(ctype, agg, agg_reason, agg_message, ts);
             }
@@ -812,7 +856,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::store::PipelinePhase::*;
-    use crate::store::{PipelinePhase, aggregate_pipeline_phase};
+    use crate::store::{ConditionType, PipelinePhase, aggregate_pipeline_phase};
+    use std::str::FromStr;
 
     #[test]
     fn aggregate_pipeline_phase_basics() {
@@ -851,5 +896,29 @@ mod tests {
             aggregate_pipeline_phase([Unknown, Pending, Stopped]),
             Pending
         );
+    }
+
+    #[test]
+    fn condition_type_from_str_covers_builtins() {
+        let cases = [
+            ("Healthy", ConditionType::Healthy),
+            ("Ready", ConditionType::Ready),
+            ("BackpressureHigh", ConditionType::BackpressureHigh),
+            ("HeartbeatMissing", ConditionType::HeartbeatMissing),
+            ("RolloutInProgress", ConditionType::RolloutInProgress),
+            ("ConfigRejected", ConditionType::ConfigRejected),
+            ("Panic", ConditionType::Panic),
+            ("StartError", ConditionType::StartError),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(ConditionType::from_str(input).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn condition_type_from_str_custom_falls_back() {
+        let parsed = ConditionType::from_str("VendorSpecific").unwrap();
+        assert_eq!(parsed, ConditionType::Custom("VendorSpecific".to_owned()));
     }
 }

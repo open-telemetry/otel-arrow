@@ -191,26 +191,54 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
                 Ok(Err(e)) => {
                     obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
+                    let error_msg = format!("The pipeline encountered an error: {e}");
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key,
+                        pipeline_key.clone(),
                         ConditionType::StartError,
                         ConditionStatus::True,
-                        e.to_string(),
-                        "The pipeline failed to start.".to_owned()
-                        )
-                    );
+                        "RuntimeError".to_owned(),
+                        error_msg.clone(),
+                    ));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key.clone(),
+                        ConditionType::Ready,
+                        ConditionStatus::False,
+                        "PipelineUnavailable".to_owned(),
+                        "Pipeline is unavailable due to failure.".to_owned(),
+                    ));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key,
+                        ConditionType::Healthy,
+                        ConditionStatus::False,
+                        "PipelineUnhealthy".to_owned(),
+                        error_msg,
+                    ));
                     results.push(Err(e));
                 }
                 Err(e) => {
                     obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key,
+                        pipeline_key.clone(),
                         ConditionType::Panic,
                         ConditionStatus::True,
                         format!("{e:?}"),
                         "The pipeline panicked during execution.".to_owned()
                     )
                     );
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key.clone(),
+                        ConditionType::Ready,
+                        ConditionStatus::False,
+                        "PipelineUnavailable".to_owned(),
+                        "Pipeline is unavailable due to panic.".to_owned(),
+                    ));
+                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                        pipeline_key,
+                        ConditionType::Healthy,
+                        ConditionStatus::False,
+                        "PipelineUnhealthy".to_owned(),
+                        "Pipeline panicked and is unhealthy.".to_owned(),
+                    ));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
                         thread_name,
@@ -308,12 +336,60 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // ToDo Add a warning here once logging is implemented.
         }
 
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::StartError,
+            ConditionStatus::Unknown,
+            "StartupPending".to_owned(),
+            "Pipeline startup in progress.".to_owned(),
+        ));
+
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::Panic,
+            ConditionStatus::Unknown,
+            "StartupPending".to_owned(),
+            "Panic status pending.".to_owned(),
+        ));
+
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
             .build(pipeline_handle, pipeline_config.clone())
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
+
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::StartError,
+            ConditionStatus::False,
+            "StartupSucceeded".to_owned(),
+            "Pipeline started successfully.".to_owned(),
+        ));
+
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::Panic,
+            ConditionStatus::False,
+            "Running".to_owned(),
+            "Pipeline running without panic.".to_owned(),
+        ));
+
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::Ready,
+            ConditionStatus::True,
+            "ReadyToServe".to_owned(),
+            "Pipeline ready to serve traffic.".to_owned(),
+        ));
+
+        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+            pipeline_key.clone(),
+            ConditionType::Healthy,
+            ConditionStatus::True,
+            "HealthySteadyState".to_owned(),
+            "Pipeline healthy and operating normally.".to_owned(),
+        ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
