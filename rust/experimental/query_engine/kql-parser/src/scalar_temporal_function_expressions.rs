@@ -7,15 +7,15 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_temporal_expressions(
-    temporal_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_temporal_unary_expressions(
+    temporal_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = temporal_expressions_rule.into_inner().next().unwrap();
+    let rule = temporal_unary_expressions_rule.into_inner().next().unwrap();
 
     match rule.as_rule() {
         Rule::now_expression => parse_now_expression(rule, scope),
-        _ => panic!("Unexpected rule in temporal_expressions: {rule}"),
+        _ => panic!("Unexpected rule in temporal_unary_expressions: {rule}"),
     }
 }
 

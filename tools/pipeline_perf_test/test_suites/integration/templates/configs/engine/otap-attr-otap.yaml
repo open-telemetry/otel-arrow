@@ -38,3 +38,5 @@ nodes:
     config:
       grpc_endpoint: "http://{{backend_hostname}}:1235"
       compression_method: zstd
+      arrow:
+        payload_compression: none

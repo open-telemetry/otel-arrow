@@ -127,9 +127,9 @@ regex_expression = { "regex(" ~ string_literal ~ ("," ~ string_literal)? ~ ")" }
 dynamic_array_expression = { "[" ~ (dynamic_inner_expression ~ ("," ~ dynamic_inner_expression)*)? ~ "]" }
 dynamic_map_item_expression = { string_literal ~ ":" ~ dynamic_inner_expression }
 dynamic_map_expression = { "{" ~ (dynamic_map_item_expression ~ ("," ~ dynamic_map_item_expression)*)? ~ "}" }
-dynamic_inner_expression = _{ dynamic_array_expression|dynamic_map_expression|type_expressions }
+dynamic_inner_expression = _{ dynamic_array_expression|dynamic_map_expression|type_unary_expressions }
 dynamic_expression = { "dynamic" ~ "(" ~ dynamic_inner_expression ~ ")" }
-type_expressions = {
+type_unary_expressions = {
     null_literal
     | real_expression
     | datetime_expression
@@ -146,7 +146,7 @@ type_expressions = {
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 coalesce_expression = { "coalesce" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
-conditional_expressions = {
+conditional_unary_expressions = {
     conditional_expression
     | case_expression
     | coalesce_expression
@@ -161,7 +161,7 @@ toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
 todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
 todatetime_expression = { "todatetime" ~ "(" ~ scalar_expression ~ ")" }
 totimespan_expression = { "totimespan" ~ "(" ~ scalar_expression ~ ")" }
-conversion_expressions = {
+conversion_unary_expressions = {
     tostring_expression
     | toint_expression
     | tobool_expression
@@ -179,7 +179,7 @@ substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_ex
 strcat_expression = { "strcat" ~ scalar_list_expression }
 strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 extract_expression = { "extract" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
-string_expressions = {
+string_unary_expressions = {
     strlen_expression
     | replace_string_expression
     | substring_expression
@@ -190,26 +190,31 @@ string_expressions = {
 
 parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
 parse_regex_expression = { "parse_regex" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
-parse_expressions = {
+parse_unary_expressions = {
     parse_json_expression
     | parse_regex_expression
 }
 
 array_concat_expression = { "array_concat" ~ scalar_list_expression }
-array_expressions = {
+array_unary_expressions = {
     array_concat_expression
 }
 
 negate_expression = { "-" ~ scalar_unary_expression }
 bin_expression = { "bin" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
-math_expressions = {
+math_unary_expressions = {
     negate_expression
     | bin_expression
 }
 
 now_expression = { "now" ~ "(" ~ scalar_expression? ~ ")" }
-temporal_expressions = {
+temporal_unary_expressions = {
     now_expression
+}
+
+not_expression = { "not" ~ "(" ~ logical_expression ~ ")" }
+logical_unary_expressions = {
+    not_expression
 }
 
 /* Note: Order is imporant here. Once Pest has matched something it won't go
@@ -217,14 +222,15 @@ backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
 scalar_unary_expression = {
-    type_expressions
-    | conditional_expressions
-    | conversion_expressions
-    | string_expressions
-    | array_expressions
-    | math_expressions
-    | temporal_expressions
-    | parse_expressions
+    type_unary_expressions
+    | conditional_unary_expressions
+    | conversion_unary_expressions
+    | string_unary_expressions
+    | array_unary_expressions
+    | math_unary_expressions
+    | temporal_unary_expressions
+    | logical_unary_expressions
+    | parse_unary_expressions
     | accessor_expression
     | "(" ~ scalar_expression ~ ")"
 }

@@ -10,9 +10,9 @@ use pest::{iterators::Pair, pratt_parser::*};
 use crate::{
     Rule, logical_expressions::to_logical_expression, scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_mathematical_function_expressions::*, scalar_parse_function_expressions::*,
-    scalar_primitive_expressions::*, scalar_string_function_expressions::*,
-    scalar_temporal_function_expressions::*,
+    scalar_logical_function_expressions::*, scalar_mathematical_function_expressions::*,
+    scalar_parse_function_expressions::*, scalar_primitive_expressions::*,
+    scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
 };
 
 static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
@@ -285,14 +285,17 @@ pub(crate) fn parse_scalar_unary_expression(
     let rule = scalar_unary_expression_rule.into_inner().next().unwrap();
 
     Ok(match rule.as_rule() {
-        Rule::type_expressions => ScalarExpression::Static(parse_type_expressions(rule)?),
-        Rule::conditional_expressions => parse_conditional_expressions(rule, scope)?,
-        Rule::conversion_expressions => parse_conversion_expressions(rule, scope)?,
-        Rule::string_expressions => parse_string_expressions(rule, scope)?,
-        Rule::parse_expressions => parse_parse_expressions(rule, scope)?,
-        Rule::array_expressions => parse_array_expressions(rule, scope)?,
-        Rule::math_expressions => parse_math_expressions(rule, scope)?,
-        Rule::temporal_expressions => parse_temporal_expressions(rule, scope)?,
+        Rule::type_unary_expressions => {
+            ScalarExpression::Static(parse_type_unary_expressions(rule)?)
+        }
+        Rule::conditional_unary_expressions => parse_conditional_unary_expressions(rule, scope)?,
+        Rule::conversion_unary_expressions => parse_conversion_unary_expressions(rule, scope)?,
+        Rule::string_unary_expressions => parse_string_unary_expressions(rule, scope)?,
+        Rule::parse_unary_expressions => parse_parse_unary_expressions(rule, scope)?,
+        Rule::array_unary_expressions => parse_array_unary_expressions(rule, scope)?,
+        Rule::math_unary_expressions => parse_math_unary_expressions(rule, scope)?,
+        Rule::temporal_unary_expressions => parse_temporal_unary_expressions(rule, scope)?,
+        Rule::logical_unary_expressions => parse_logical_unary_expressions(rule, scope)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
