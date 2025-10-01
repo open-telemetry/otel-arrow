@@ -1280,7 +1280,8 @@ mod telemetry_tests {
                 )
                 .await
                 .unwrap();
-            let _ = sock.send_to(b"INVALID", addr).await.unwrap();
+            // Send a malformed CEF message to ensure parsing failure is recorded
+            let _ = sock.send_to(b"CEF:1|", addr).await.unwrap();
 
             // Wait for flush interval
             sleep(Duration::from_millis(150)).await;
