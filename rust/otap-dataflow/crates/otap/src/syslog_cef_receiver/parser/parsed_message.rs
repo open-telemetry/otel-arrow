@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc5424() {
-        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - BOM'su root' failed for lonvick on /dev/pts/8";
+        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
         let result = parse(input).unwrap();
 
         // Test the ParsedSyslogMessage::timestamp method
