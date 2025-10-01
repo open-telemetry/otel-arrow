@@ -20,7 +20,7 @@ use std::sync::Arc;
 use arrow::array::{
     ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
     DictionaryArray, FixedSizeBinaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder,
-    PrimitiveDictionaryBuilder, StringArray,
+    PrimitiveDictionaryBuilder, StringArray, StringBuilder, StringDictionaryBuilder,
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
@@ -32,7 +32,8 @@ use paste::paste;
 
 use crate::arrays::NullableArrayAccessor;
 use crate::encode::record::array::dictionary::{
-    CheckedDictionaryAppendSlice, DictionaryArrayAppendSlice, DictionaryBuilder,
+    CheckedDictionaryAppendSlice, DictionaryArrayAppendSlice, DictionaryArrayAppendStr,
+    DictionaryBuilder,
 };
 use crate::encode::record::array::prefix::ArrayPrefixBuilder;
 
@@ -48,6 +49,7 @@ pub mod dictionary;
 pub mod fixed_size_binary;
 pub mod prefix;
 pub mod primitive;
+pub mod string;
 
 /// This is the base trait that array builders should implement to build the array.
 ///
@@ -103,6 +105,18 @@ pub trait ArrayAppendNulls {
 
     /// Append `n` nulls to the builder
     fn append_nulls(&mut self, n: usize);
+}
+
+/// this trait can be implemented by types that can receive a value to append as a type of str.
+///
+/// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
+/// Native type of String, if the caller already has a str.
+pub trait ArrayAppendStr {
+    /// Append a value of type str to the builder
+    fn append_str(&mut self, value: &str);
+
+    /// Append a value of type str to the builder `n` times
+    fn append_str_n(&mut self, value: &str, n: usize);
 }
 
 /// this trait can be implemented by types that can receive a value to append as a type of &[T].
@@ -440,6 +454,48 @@ where
     }
 }
 
+impl<TArgs, TN, TD8, TD16> ArrayAppendStr for AdaptiveArrayBuilder<String, TArgs, TN, TD8, TD16>
+where
+    TArgs: Clone,
+    TN: ArrayAppendStr
+        + ArrayAppend<Native = String>
+        + ArrayAppendNulls
+        + ArrayBuilderConstructor<Args = TArgs>,
+    TD8: DictionaryArrayAppendStr
+        + DictionaryArrayAppend<Native = String>
+        + DictionaryBuilder<UInt8Type>
+        + ArrayAppendNulls
+        + ArrayBuilderConstructor<Args = TArgs>
+        + ConvertToNativeHelper
+        + UpdateDictionaryIndexInto<TD16>,
+    <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = String> + 'static,
+    TD16: DictionaryArrayAppendStr
+        + DictionaryArrayAppend<Native = String>
+        + ArrayAppendNulls
+        + DictionaryBuilder<UInt16Type>
+        + ArrayBuilderConstructor<Args = TArgs>
+        + ConvertToNativeHelper,
+    <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = String> + 'static,
+{
+    fn append_str(&mut self, value: &str) {
+        handle_append!(
+            self,
+            append_str(value),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_str(value) }
+        );
+    }
+
+    fn append_str_n(&mut self, value: &str, n: usize) {
+        handle_append!(
+            self,
+            append_str_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_str_n(value, n) }
+        );
+    }
+}
+
 impl<T, TArgs, TN, TD8, TD16> ArrayAppendSlice
     for AdaptiveArrayBuilder<Vec<T>, TArgs, TN, TD8, TD16>
 where
@@ -577,6 +633,14 @@ where
 // Arg type for an array constructor that takes no arguments.
 pub(crate) type NoArgs = ();
 
+pub type StringArrayBuilder = AdaptiveArrayBuilder<
+    String,
+    NoArgs,
+    StringBuilder,
+    StringDictionaryBuilder<UInt8Type>,
+    StringDictionaryBuilder<UInt16Type>,
+>;
+
 pub type BinaryArrayBuilder = AdaptiveArrayBuilder<
     Vec<u8>,
     NoArgs,
@@ -652,10 +716,10 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         }
     }
 
-    Err(ArrowError::InvalidArgumentError(format!(
+    return Err(ArrowError::InvalidArgumentError(format!(
         "expected array of type Binary, or dictionary with binary keys. Found {:?}",
         src.data_type()
-    )))
+    )));
 }
 
 fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
@@ -953,6 +1017,11 @@ pub mod test {
         test_array_append_generic(Float32ArrayBuilder::new, vec![2.0, 1.0], DataType::Float32);
         test_array_append_generic(Float64ArrayBuilder::new, vec![2.0, 1.1], DataType::Float64);
         test_array_append_generic(
+            StringArrayBuilder::new,
+            vec!["a".to_string(), "b".to_string()],
+            DataType::Utf8,
+        );
+        test_array_append_generic(
             BinaryArrayBuilder::new,
             vec![b"a".to_vec(), b"b".to_vec()],
             DataType::Binary,
@@ -988,6 +1057,100 @@ pub mod test {
         });
         builder.append_value(&0);
         assert!(builder.finish().is_some());
+    }
+
+    #[test]
+    fn test_string_array_builder_append_str() {
+        let mut builder = StringArrayBuilder::new(ArrayOptions {
+            optional: true,
+            dictionary_options: Some(DictionaryOptions {
+                max_cardinality: 4,
+                min_cardinality: 4,
+            }),
+            ..Default::default()
+        });
+
+        // Append using append_str
+        builder.append_str("foo");
+        builder.append_str("bar");
+        builder.append_null();
+        builder.append_str("foo");
+        builder.append_str("baz");
+        builder.append_str_n("bar", 2);
+        builder.append_nulls(2);
+
+        let result = builder.finish().unwrap();
+        assert_eq!(
+            result.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        );
+        assert_eq!(result.len(), 9);
+
+        let dict_array = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let dict_keys = dict_array.keys();
+        assert_eq!(
+            dict_keys,
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(2),
+                Some(1),
+                Some(1),
+                None,
+                None
+            ])
+        );
+        let dict_values = dict_array
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(dict_values.value(0), "foo");
+        assert_eq!(dict_values.value(1), "bar");
+        assert_eq!(dict_values.value(2), "baz");
+
+        // This test checks that when dictionary overflows, we fallback to native builder
+        let mut builder = StringArrayBuilder::new(ArrayOptions {
+            optional: false,
+            dictionary_options: Some(DictionaryOptions {
+                max_cardinality: 1,
+                min_cardinality: 1,
+            }),
+            ..Default::default()
+        });
+
+        builder.append_str("");
+        builder.append_str("a");
+        builder.append_null();
+        builder.append_nulls(2);
+        builder.append_str("b"); // triggers overflow
+
+        let result = builder.finish().unwrap();
+        assert_eq!(result.len(), 6);
+
+        let array = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(array.value(0), "");
+        assert_eq!(array.value(1), "a");
+        assert!(!array.is_valid(2));
+        assert!(!array.is_valid(3));
+        assert!(!array.is_valid(4));
+        assert_eq!(array.value(5), "b");
+
+        // ensure that we don't produce an optional array that is full of default values
+        let mut builder = StringArrayBuilder::new(ArrayOptions {
+            optional: true,
+            dictionary_options: None,
+            ..Default::default()
+        });
+        builder.append_str("");
+        builder.append_str("");
+        builder.append_str("");
+        assert!(builder.finish().is_none());
     }
 
     #[test]

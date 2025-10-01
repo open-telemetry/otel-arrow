@@ -62,6 +62,18 @@ pub trait CheckedDictionaryArrayAppend: ArrayAppendNulls {
     fn append_value(&mut self, value: &Self::Native) -> checked::Result<usize>;
 }
 
+/// this trait can be implemented by types that can receive a value to append as a type of str.
+///
+/// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
+/// Native type of String, if the caller already has a str.
+pub trait DictionaryArrayAppendStr {
+    /// Append a value of type str to the builder
+    fn append_str(&mut self, value: &str) -> Result<usize>;
+
+    /// Append the value to the builder `n` times
+    fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize>;
+}
+
 /// this trait can be implemented by types that can receive a value to append as a type of &[T].
 ///
 /// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
@@ -403,6 +415,58 @@ where
     }
 }
 
+impl<T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
+where
+    T8: DictionaryArrayAppendStr + UpdateDictionaryIndexInto<TD16>,
+    TD16: DictionaryArrayAppendStr + ArrayBuilderConstructor,
+{
+    pub fn append_str(&mut self, value: &str) -> Result<usize> {
+        loop {
+            let result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str(value),
+            };
+
+            match result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
+        loop {
+            let result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str_n(value, n),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str_n(value, n),
+            };
+
+            match result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    continue;
+                }
+            }
+        }
+    }
+}
+
 impl<T, T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
 where
     T8: DictionaryArrayAppendSlice<Native = T> + UpdateDictionaryIndexInto<TD16>,
@@ -569,15 +633,16 @@ mod test {
     use std::sync::Arc;
 
     use arrow::array::{
-        BinaryArray, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryDictionaryBuilder,
-        PrimitiveDictionaryBuilder, UInt8Array, UInt16Array, UInt16DictionaryArray,
+        BinaryDictionaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveDictionaryBuilder,
+        StringArray, StringBuilder, StringDictionaryBuilder, UInt8Array, UInt16Array,
+        UInt16DictionaryArray,
     };
     use arrow::datatypes::{DataType, Int64Type, UInt8Type, UInt16Type};
     use prost::Message;
 
     type TestDictBuilder = AdaptiveDictionaryBuilder<
-        BinaryDictionaryBuilder<UInt8Type>,
-        BinaryDictionaryBuilder<UInt16Type>,
+        StringDictionaryBuilder<UInt8Type>,
+        StringDictionaryBuilder<UInt16Type>,
     >;
 
     fn test_dict_builder_generic<T, TArgs, TD8, TD16>(
@@ -659,6 +724,18 @@ mod test {
 
     #[test]
     fn test_dict_builder() {
+        // test string
+        test_dict_builder_generic(
+            |opts| {
+                AdaptiveDictionaryBuilder::<
+                    StringDictionaryBuilder<UInt8Type>,
+                    StringDictionaryBuilder<UInt16Type>,
+                >::new(opts, ())
+            },
+            |i| i.to_string(),
+            DataType::Utf8,
+        );
+
         // test primitive:
         test_dict_builder_generic(
             |opts| {
@@ -824,16 +901,14 @@ mod test {
         );
 
         for i in 0..u8::MAX {
-            let _ = dict_builder
-                .append_value(&i.to_string().as_bytes().to_vec())
-                .unwrap();
+            let _ = dict_builder.append_value(&i.to_string()).unwrap();
         }
 
         // this should be fine
-        let _ = dict_builder.append_value(&b"a".to_vec()).unwrap();
+        let _ = dict_builder.append_value(&"a".to_string()).unwrap();
 
         // should overflow the max cardinality
-        let result = dict_builder.append_value(&b"b".to_vec());
+        let result = dict_builder.append_value(&"b".to_string());
         assert!(
             result.is_err(),
             "Expected an error due to exceeding max cardinality"
@@ -856,9 +931,9 @@ mod test {
             (),
         );
 
-        let _ = dict_builder.append_value(&b"a".to_vec()).unwrap();
-        let _ = dict_builder.append_value(&b"a".to_vec()).unwrap();
-        let _ = dict_builder.append_value(&b"b".to_vec()).unwrap();
+        let _ = dict_builder.append_value(&"a".to_string()).unwrap();
+        let _ = dict_builder.append_value(&"a".to_string()).unwrap();
+        let _ = dict_builder.append_value(&"b".to_string()).unwrap();
 
         let result = dict_builder.finish();
 
@@ -895,17 +970,17 @@ mod test {
             (),
         );
 
-        let _ = dict_builder.append_value(&b"a".to_vec()).unwrap();
-        let _ = dict_builder.append_value(&b"b".to_vec()).unwrap();
-        let _ = dict_builder.append_value(&b"c".to_vec()).unwrap();
-        let _ = dict_builder.append_value(&b"d".to_vec()).unwrap();
+        let _ = dict_builder.append_value(&"a".to_string()).unwrap();
+        let _ = dict_builder.append_value(&"b".to_string()).unwrap();
+        let _ = dict_builder.append_value(&"c".to_string()).unwrap();
+        let _ = dict_builder.append_value(&"d".to_string()).unwrap();
 
         // this should be OK, we are re-adding an existing value so it should not
         // affect the size of the dictionary
-        let _ = dict_builder.append_value(&b"d".to_vec()).unwrap();
+        let _ = dict_builder.append_value(&"d".to_string()).unwrap();
 
         // this should exceed the max cardinality:
-        let result = dict_builder.append_value(&b"e".to_vec());
+        let result = dict_builder.append_value(&"e".to_string());
 
         assert!(
             matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow {}),
@@ -964,17 +1039,14 @@ mod test {
             (),
         );
         assert!(matches!(dict_builder.variant, DictIndexVariant::UInt16(_)));
-        assert!(dict_builder.append_value(&b"a".to_vec()).is_ok());
-        assert!(dict_builder.append_value(&b"a".to_vec()).is_ok());
-        assert!(dict_builder.append_value(&b"b".to_vec()).is_ok());
+        assert!(dict_builder.append_value(&"a".to_string()).is_ok());
+        assert!(dict_builder.append_value(&"a".to_string()).is_ok());
+        assert!(dict_builder.append_value(&"b".to_string()).is_ok());
 
-        let mut native_builder = BinaryBuilder::new();
+        let mut native_builder = StringBuilder::new();
         dict_builder.to_native(&mut native_builder);
 
         let result = native_builder.finish();
-        assert_eq!(
-            result,
-            BinaryArray::from_iter_values(vec![b"a", b"a", b"b"])
-        );
+        assert_eq!(result, StringArray::from_iter_values(vec!["a", "a", "b"]));
     }
 }
