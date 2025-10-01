@@ -1576,5 +1576,14 @@ pub mod test {
             err,
             "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found Dictionary(UInt16, Utf8)"
         );
+
+        // check it returns an error for invalid UTF-8
+        let input = BinaryArray::from_iter_values([b"ab", &[0xc3u8, 0x28u8]]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: Encountered non UTF-8 data: invalid utf-8 sequence of 1 bytes from index 2",
+        );
     }
 }
