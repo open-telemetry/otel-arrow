@@ -202,11 +202,15 @@ impl ParsedSyslogMessage<'_> {
                 // Only add facility and severity if they were present in the original message
                 if let Some(priority) = msg.priority.as_ref() {
                     log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                    log_attributes_arrow_records.append_int(priority.facility.into());
+                    log_attributes_arrow_records
+                        .any_values_builder
+                        .append_int(priority.facility.into());
                     attributes_count += 1;
 
                     log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                    log_attributes_arrow_records.append_int(priority.severity.into());
+                    log_attributes_arrow_records
+                        .any_values_builder
+                        .append_int(priority.severity.into());
                     attributes_count += 1;
                 }
 
