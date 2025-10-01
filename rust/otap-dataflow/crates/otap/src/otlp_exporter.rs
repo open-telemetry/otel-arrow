@@ -115,23 +115,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::new(channel.clone());
-        // .await
-        // .map_err(|error| Error::ExporterError {
-        //     exporter: effect_handler.exporter_id(),
-        //     error: error.to_string(),
-        // })?;
         let mut logs_client = LogsServiceClient::new(channel.clone());
-        // .await
-        // .map_err(|error| Error::ExporterError {
-        //     exporter: effect_handler.exporter_id(),
-        //     error: error.to_string(),
-        // })?;
         let mut trace_client = TraceServiceClient::new(channel.clone());
-        // .await
-        // .map_err(|error| Error::ExporterError {
-        //     exporter: effect_handler.exporter_id(),
-        //     error: error.to_string(),
-        // })?;
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
