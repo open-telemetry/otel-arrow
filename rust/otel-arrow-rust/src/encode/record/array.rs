@@ -116,6 +116,8 @@ pub trait ArrayAppendStr {
     fn append_str(&mut self, value: &str);
 
     /// Append a value of type str to the builder `n` times
+    // TODO delete this down the line if it turns out to never be useful
+    #[allow(dead_code)]
     fn append_str_n(&mut self, value: &str, n: usize);
 }
 
@@ -716,10 +718,10 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         }
     }
 
-    return Err(ArrowError::InvalidArgumentError(format!(
+    Err(ArrowError::InvalidArgumentError(format!(
         "expected array of type Binary, or dictionary with binary keys. Found {:?}",
         src.data_type()
-    )));
+    )))
 }
 
 fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(

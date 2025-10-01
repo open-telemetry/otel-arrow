@@ -3,7 +3,10 @@
 
 use chrono::Utc;
 use otel_arrow_rust::{
-    encode::record::{attributes::AttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder},
+    encode::record::{
+        attributes::StrKeysAttributesRecordBatchBuilder,
+        logs::LogsRecordBatchBuilder,
+    },
     otap::{Logs, OtapArrowRecords},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -16,7 +19,7 @@ use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
-    log_attrs: AttributesRecordBatchBuilder<u16>,
+    log_attrs: StrKeysAttributesRecordBatchBuilder<u16>,
 }
 
 impl Default for ArrowRecordsBuilder {
@@ -32,7 +35,7 @@ impl ArrowRecordsBuilder {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
-            log_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            log_attrs: StrKeysAttributesRecordBatchBuilder::<u16>::new(),
         }
     }
 

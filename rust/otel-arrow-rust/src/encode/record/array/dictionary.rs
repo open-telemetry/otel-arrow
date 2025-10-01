@@ -443,6 +443,8 @@ where
         }
     }
 
+    // TODO delete this method in future if it turns out to never be useful
+    #[allow(dead_code)]
     pub fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
         loop {
             let result = match &mut self.variant {
@@ -942,9 +944,9 @@ mod test {
             &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
         );
 
-        let mut expected_dict_values = BinaryBuilder::new();
-        expected_dict_values.append_value(b"a");
-        expected_dict_values.append_value(b"b");
+        let mut expected_dict_values = StringBuilder::new();
+        expected_dict_values.append_value("a");
+        expected_dict_values.append_value("b");
         let expected_dict_keys = UInt16Array::from_iter_values(vec![0, 0, 1]);
         let expected =
             UInt16DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));

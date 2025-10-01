@@ -512,27 +512,35 @@ where
     if let Some(val) = kv.value() {
         match val.value_type() {
             ValueType::String => {
-                attribute_rb_builder.append_str(val.as_string().expect("value to be string"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_str(val.as_string().expect("value to be string"));
             }
-            ValueType::Int64 => {
-                attribute_rb_builder.append_int(val.as_int64().expect("value to be int64"))
-            }
+            ValueType::Int64 => attribute_rb_builder
+                .any_values_builder
+                .append_int(val.as_int64().expect("value to be int64")),
             ValueType::Double => {
-                attribute_rb_builder.append_double(val.as_double().expect("value to be double"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_double(val.as_double().expect("value to be double"));
             }
             ValueType::Bool => {
-                attribute_rb_builder.append_bool(val.as_bool().expect("value to be bool"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_bool(val.as_bool().expect("value to be bool"));
             }
-            ValueType::Bytes => {
-                attribute_rb_builder.append_bytes(val.as_bytes().expect("value to be bytes"))
-            }
+            ValueType::Bytes => attribute_rb_builder
+                .any_values_builder
+                .append_bytes(val.as_bytes().expect("value to be bytes")),
             ValueType::Array => {
                 let mut serialized_values = vec![];
                 cbor::serialize_any_values(
                     val.as_array().expect("value to be array"),
                     &mut serialized_values,
                 )?;
-                attribute_rb_builder.append_slice(&serialized_values)
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_slice(&serialized_values)
             }
             ValueType::KeyValueList => {
                 let mut serialized_value = vec![];
@@ -540,14 +548,16 @@ where
                     val.as_kvlist().expect("value is kvlist"),
                     &mut serialized_value,
                 )?;
-                attribute_rb_builder.append_map(&serialized_value);
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_map(&serialized_value);
             }
             ValueType::Empty => {
-                attribute_rb_builder.append_empty();
+                attribute_rb_builder.any_values_builder.append_empty();
             }
         }
     } else {
-        attribute_rb_builder.append_empty();
+        attribute_rb_builder.any_values_builder.append_empty();
     }
 
     Ok(())
