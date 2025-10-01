@@ -504,18 +504,16 @@ pub(crate) fn parse_accessor_expression(
     }
 
     if root_accessor_identity.get_value() == "source" {
-        let mut resolved_value_type = None;
-
         let selectors = value_accessor.get_selectors_mut();
 
-        if !selectors.is_empty()
-            && let Some(schema) = scope.get_source_schema()
-        {
-            resolved_value_type = schema
-                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())?;
-        }
-
-        let value_type = resolved_value_type.or(get_value_type(scope, &value_accessor));
+        let value_type = if selectors.is_empty() {
+            Some(ValueType::Map)
+        } else if let Some(schema) = scope.get_source_schema() {
+            schema
+                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())?
+        } else {
+            None
+        };
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
@@ -590,6 +588,8 @@ pub(crate) fn parse_accessor_expression(
                                 ));
                             }
                         }
+                    } else {
+                        resolved_value_type = key.get_value_type();
                     }
 
                     value_accessor.insert_selector(
@@ -675,29 +675,18 @@ pub(crate) fn parse_accessor_expression(
             );
         }
 
-        let value_type = resolved_value_type.or(get_value_type(scope, &value_accessor));
+        if resolved_value_type.is_none() && !value_accessor.has_selectors() {
+            resolved_value_type = Some(ValueType::Map);
+        }
 
         Ok(ScalarExpression::Source(
-            SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
+            SourceScalarExpression::new_with_value_type(
+                query_location,
+                value_accessor,
+                resolved_value_type,
+            ),
         ))
     }
-}
-
-fn get_value_type(scope: &dyn ParserScope, value_accessor: &ValueAccessor) -> Option<ValueType> {
-    let selectors = value_accessor.get_selectors();
-    let mut value_type = None;
-    if selectors.is_empty() {
-        value_type = Some(ValueType::Map);
-    } else if selectors.len() == 1
-        && let Some(schema) = scope.get_source_schema()
-        && let ScalarExpression::Static(StaticScalarExpression::String(key)) =
-            selectors.first().unwrap()
-        && let Some(key_schema) = schema.get_schema_for_key(key.get_value())
-    {
-        value_type = key_schema.get_value_type();
-    }
-
-    value_type
 }
 
 #[cfg(test)]
