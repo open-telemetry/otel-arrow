@@ -122,9 +122,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let mut arrow_metrics_client =
             ArrowMetricsServiceClient::connect(self.config.grpc_endpoint.clone())
                 .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
+                .map_err(|error| {
+                    Error::ExporterError {
+                        exporter: effect_handler.exporter_id(),
+                        error: error.to_string(),
+                    }
                 })?;
 
         let mut arrow_logs_client =
