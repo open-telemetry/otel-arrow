@@ -44,3 +44,7 @@ nodes:
       {% else %}
       error: "Unknown loadgen_exporter_type: {{ exporter_type }}"
       {% endif %}
+      {% if loadgen_exporter_type == "otap" %}
+      arrow:
+        payload_compression: none
+      {% endif %}
