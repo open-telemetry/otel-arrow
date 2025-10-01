@@ -249,6 +249,7 @@ where
 impl ConditionType {
     /// Returns the string representation of the condition type.
     #[inline]
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             ConditionType::Healthy => "Healthy",
@@ -347,6 +348,7 @@ impl PipelineStatus {
     }
 
     /// Returns a reference to a condition by its type, if it exists.
+    #[must_use]
     pub fn get_condition(&self, t: &ConditionType) -> Option<&Condition> {
         self.conditions.iter().find(|c| &c.r#type == t)
     }
@@ -504,7 +506,7 @@ impl ObservedStateStore {
                     ps.per_core
                         .values()
                         .filter_map(|c| c.conditions.get(&ctype))
-                        .map(|c| c.status.clone()),
+                        .map(|c| c.status),
                 );
 
                 // Compose a concise summary and upsert the pipeline-level condition
