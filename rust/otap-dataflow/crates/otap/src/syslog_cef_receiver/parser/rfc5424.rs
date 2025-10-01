@@ -94,7 +94,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
     remaining = rest;
 
     // Parse structured data and message
-    let (structured_data, message) = if remaining.starts_with(b"-") {
+    let (structured_data, mut message) = if remaining.starts_with(b"-") {
         let msg_start = remaining
             .iter()
             .position(|&b| b == b' ')
@@ -162,6 +162,16 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         (None, Some(remaining))
     };
 
+    // Strip UTF-8 BOM if present at the beginning of the message
+    // UTF-8 BOM is the byte sequence 0xEF 0xBB 0xBF
+    message = message.map(|msg| {
+        if msg.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            &msg[3..]
+        } else {
+            msg
+        }
+    });
+
     Ok(Rfc5424Message {
         priority,
         version,
@@ -182,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_rfc5424_parsing() {
-        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - BOM'su root' failed for lonvick on /dev/pts/8";
+        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
         let result = parse_rfc5424(input).unwrap();
 
         assert_eq!(result.priority.facility, 4);
@@ -199,13 +209,43 @@ mod tests {
         assert_eq!(result.structured_data, None);
         assert_eq!(
             result.message,
-            Some(b"BOM'su root' failed for lonvick on /dev/pts/8".as_slice())
+            Some(b"'su root' failed for lonvick on /dev/pts/8".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_rfc5424_with_actual_utf8_bom() {
+        // Test with actual UTF-8 BOM (0xEF 0xBB 0xBF) at start of message
+        // This represents Example 1 from RFC 5424 Section 6.5
+        let mut input =
+            b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - ".to_vec();
+        input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
+        input.extend_from_slice(b"'su root' failed for lonvick on /dev/pts/8");
+
+        let result = parse_rfc5424(&input).unwrap();
+
+        assert_eq!(result.priority.facility, 4);
+        assert_eq!(result.priority.severity, 2);
+        assert_eq!(result.version, 1);
+        assert_eq!(
+            result.timestamp,
+            Some(b"2003-10-11T22:14:15.003Z".as_slice())
+        );
+        assert_eq!(result.hostname, Some(b"mymachine.example.com".as_slice()));
+        assert_eq!(result.app_name, Some(b"su".as_slice()));
+        assert_eq!(result.proc_id, None);
+        assert_eq!(result.msg_id, Some(b"ID47".as_slice()));
+        assert_eq!(result.structured_data, None);
+        // Message should have BOM stripped
+        assert_eq!(
+            result.message,
+            Some(b"'su root' failed for lonvick on /dev/pts/8".as_slice())
         );
     }
 
     #[test]
     fn test_structured_data_rfc5424() {
-        let input = b"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] BOMAn application event log entry";
+        let input = b"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] An application event log entry";
         let result = parse_rfc5424(input).unwrap();
 
         assert_eq!(
@@ -217,7 +257,31 @@ mod tests {
         );
         assert_eq!(
             result.message,
-            Some(b"BOMAn application event log entry".as_slice())
+            Some(b"An application event log entry".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_structured_data_with_actual_utf8_bom() {
+        // Test with actual UTF-8 BOM after structured data
+        // This represents Example 4 from RFC 5424 Section 6.5
+        let mut input = b"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] ".to_vec();
+        input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
+        input.extend_from_slice(b"An application event log entry");
+
+        let result = parse_rfc5424(&input).unwrap();
+
+        assert_eq!(
+            result.structured_data,
+            Some(
+                b"[exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"]"
+                    .as_slice()
+            )
+        );
+        // Message should have BOM stripped
+        assert_eq!(
+            result.message,
+            Some(b"An application event log entry".as_slice())
         );
     }
 
@@ -400,7 +464,7 @@ mod tests {
     #[test]
     fn test_byte_slice_to_string_conversion() {
         // Test showing how consumers can convert byte slices to strings when needed
-        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - BOM'su root' failed for lonvick on /dev/pts/8";
+        let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
         let result = parse_rfc5424(input).unwrap();
 
         // Test direct access to byte slices
@@ -423,7 +487,7 @@ mod tests {
         assert_eq!(std::str::from_utf8(result.msg_id.unwrap()).unwrap(), "ID47");
         assert_eq!(
             std::str::from_utf8(result.message.unwrap()).unwrap(),
-            "BOM'su root' failed for lonvick on /dev/pts/8"
+            "'su root' failed for lonvick on /dev/pts/8"
         );
     }
 }
