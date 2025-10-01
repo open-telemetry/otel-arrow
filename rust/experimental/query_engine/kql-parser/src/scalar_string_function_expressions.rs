@@ -7,11 +7,11 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_string_expressions(
-    string_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_string_unary_expressions(
+    string_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = string_expressions_rule.into_inner().next().unwrap();
+    let rule = string_unary_expressions_rule.into_inner().next().unwrap();
 
     match rule.as_rule() {
         Rule::strlen_expression => parse_strlen_expression(rule, scope),
@@ -20,7 +20,7 @@ pub(crate) fn parse_string_expressions(
         Rule::strcat_expression => parse_strcat_expression(rule, scope),
         Rule::strcat_delim_expression => parse_strcat_delim_expression(rule, scope),
         Rule::extract_expression => parse_extract_expression(rule, scope),
-        _ => panic!("Unexpected rule in string_expressions_rule: {rule}"),
+        _ => panic!("Unexpected rule in string_unary_expressions_rule: {rule}"),
     }
 }
 
@@ -148,7 +148,11 @@ fn parse_strcat_expression(
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strcat_expression_rule);
 
-    let strcat_rules = strcat_expression_rule.into_inner();
+    let strcat_rules = strcat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 

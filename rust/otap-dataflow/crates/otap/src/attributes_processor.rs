@@ -47,7 +47,9 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes_with_stats},
+    transform::{
+        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+    },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
@@ -112,8 +114,10 @@ pub struct Config {
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
-    // Selected attribute domains to transform
-    domains: HashSet<ApplyDomain>,
+    // Pre-computed flags for domain lookup
+    has_resource_domain: bool,
+    has_scope_domain: bool,
+    has_signal_domain: bool,
     // Metrics handle (set at runtime in factory; None when parsed-only)
     metrics: Option<MetricSet<AttributesProcessorMetrics>>,
 }
@@ -124,17 +128,16 @@ impl AttributesProcessor {
     /// Transforms the Go collector-style configuration into the operations
     /// supported by the underlying Arrow attribute transform API.
     #[must_use = "AttributesProcessor creation may fail and return a ConfigError"]
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse AttributesProcessor configuration: {e}"),
             })?;
-        Ok(Self::new(cfg))
+        Self::new(cfg)
     }
 
     /// Creates a new AttributesProcessor with the given parsed configuration.
-    #[must_use]
-    fn new(config: Config) -> Self {
+    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
 
@@ -156,6 +159,11 @@ impl AttributesProcessor {
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
+        // Pre-compute domain checks
+        let has_resource_domain = domains.contains(&ApplyDomain::Resource);
+        let has_scope_domain = domains.contains(&ApplyDomain::Scope);
+        let has_signal_domain = domains.contains(&ApplyDomain::Signal);
+
         // TODO: Optimize action composition into a valid AttributesTransform that
         // still reflects the user's intended semantics. Consider:
         // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
@@ -163,22 +171,107 @@ impl AttributesProcessor {
         //   application of transforms when a composed map would be invalid.
         // For now, we compose a single transform and let transform_attributes
         // enforce validity (which may error for conflicting maps).
-        Self {
-            transform: AttributesTransform {
-                rename: if renames.is_empty() {
-                    None
-                } else {
-                    Some(renames)
-                },
-                delete: if deletes.is_empty() {
-                    None
-                } else {
-                    Some(deletes)
-                },
+        let transform = AttributesTransform {
+            rename: if renames.is_empty() {
+                None
+            } else {
+                Some(RenameTransform::new(renames))
             },
-            domains,
+            delete: if deletes.is_empty() {
+                None
+            } else {
+                Some(DeleteTransform::new(deletes))
+            },
+        };
+
+        transform
+            .validate()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Invalid attribute transform configuration: {e}"),
+            })?;
+
+        Ok(Self {
+            transform,
+            has_resource_domain,
+            has_scope_domain,
+            has_signal_domain,
             metrics: None,
+        })
+    }
+
+    #[inline]
+    const fn is_noop(&self) -> bool {
+        self.transform.rename.is_none() && self.transform.delete.is_none()
+    }
+
+    #[inline]
+    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+        use payload_sets::*;
+
+        match (
+            self.has_resource_domain,
+            self.has_scope_domain,
+            self.has_signal_domain,
+            signal,
+        ) {
+            // Empty cases
+            (false, false, false, _) => EMPTY,
+
+            // Signal only
+            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
+            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
+            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
+
+            // Resource only
+            (true, false, false, _) => RESOURCE_ONLY,
+
+            // Scope only
+            (false, true, false, _) => SCOPE_ONLY,
+
+            // Resource + Signal
+            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
+
+            // Scope + Signal
+            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
+
+            // Resource + Scope (no signal)
+            (true, true, false, _) => RESOURCE_SCOPE,
+
+            // All three
+            (true, true, true, SignalType::Logs) => LOGS_ALL,
+            (true, true, true, SignalType::Metrics) => METRICS_ALL,
+            (true, true, true, SignalType::Traces) => TRACES_ALL,
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn apply_transform_with_stats(
+        &self,
+        records: &mut OtapArrowRecords,
+        signal: SignalType,
+    ) -> Result<(u64, u64), EngineError> {
+        let mut deleted_total: u64 = 0;
+        let mut renamed_total: u64 = 0;
+
+        // Only apply if we have transforms to apply
+        if !self.is_noop() {
+            let payloads = self.attrs_payloads(signal);
+            for &payload_ty in payloads {
+                if let Some(rb) = records.get(payload_ty) {
+                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
+                    deleted_total += stats.deleted_entries;
+                    renamed_total += stats.renamed_entries;
+                    records.set(payload_ty, rb);
+                }
+            }
+        }
+
+        Ok((deleted_total, renamed_total))
     }
 }
 
@@ -207,7 +300,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
 
                 // Fast path: no actions to apply
-                if self.transform.rename.is_none() && self.transform.delete.is_none() {
+                if self.is_noop() {
                     let res = effect_handler
                         .send_message(pdata)
                         .await
@@ -227,23 +320,18 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 // Update domain counters (count once per message when domains are enabled)
                 if let Some(m) = self.metrics.as_mut() {
-                    if self.domains.contains(&ApplyDomain::Signal) {
-                        m.domains_signal.inc();
-                    }
-                    if self.domains.contains(&ApplyDomain::Resource) {
+                    if self.has_resource_domain {
                         m.domains_resource.inc();
                     }
-                    if self.domains.contains(&ApplyDomain::Scope) {
+                    if self.has_scope_domain {
                         m.domains_scope.inc();
+                    }
+                    if self.has_signal_domain {
+                        m.domains_signal.inc();
                     }
                 }
                 // Apply transform across selected domains and collect exact stats
-                match apply_transform_with_stats(
-                    &mut records,
-                    signal,
-                    &self.transform,
-                    &self.domains,
-                ) {
+                match self.apply_transform_with_stats(&mut records, signal) {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
@@ -275,33 +363,6 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
             }
         }
     }
-}
-
-#[allow(clippy::result_large_err)]
-fn apply_transform_with_stats(
-    records: &mut OtapArrowRecords,
-    signal: SignalType,
-    transform: &AttributesTransform,
-    domains: &HashSet<ApplyDomain>,
-) -> Result<(u64, u64), EngineError> {
-    let mut deleted_total: u64 = 0;
-    let mut renamed_total: u64 = 0;
-
-    // Only apply if we have transforms to apply
-    if transform.rename.is_some() || transform.delete.is_some() {
-        let payloads = attrs_payloads(signal, domains);
-        for &payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty) {
-                let (rb, stats) = transform_attributes_with_stats(rb, transform)
-                    .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                deleted_total += stats.deleted_entries;
-                renamed_total += stats.renamed_entries;
-                records.set(payload_ty, rb);
-            }
-        }
-    }
-
-    Ok((deleted_total, renamed_total))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -340,51 +401,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
         }
     }
     set
-}
-
-fn attrs_payloads(
-    signal: SignalType,
-    domains: &HashSet<ApplyDomain>,
-) -> &'static [ArrowPayloadType] {
-    use payload_sets::*;
-
-    let has_resource = domains.contains(&ApplyDomain::Resource);
-    let has_scope = domains.contains(&ApplyDomain::Scope);
-    let has_signal = domains.contains(&ApplyDomain::Signal);
-
-    match (has_resource, has_scope, has_signal, signal) {
-        // Empty cases
-        (false, false, false, _) => EMPTY,
-
-        // Signal only
-        (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
-        (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
-        (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-
-        // Resource only
-        (true, false, false, _) => RESOURCE_ONLY,
-
-        // Scope only
-        (false, true, false, _) => SCOPE_ONLY,
-
-        // Resource + Signal
-        (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
-        (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
-        (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-
-        // Scope + Signal
-        (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
-        (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
-        (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-
-        // Resource + Scope (no signal)
-        (true, true, false, _) => RESOURCE_SCOPE,
-
-        // All three
-        (true, true, true, SignalType::Logs) => LOGS_ALL,
-        (true, true, true, SignalType::Metrics) => METRICS_ALL,
-        (true, true, true, SignalType::Traces) => TRACES_ALL,
-    }
 }
 
 fn engine_err(msg: &str) -> EngineError {
@@ -567,10 +583,10 @@ mod tests {
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
         // default apply_to should include Signal
-        assert!(parsed.domains.contains(&ApplyDomain::Signal));
+        assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
-        assert!(!parsed.domains.contains(&ApplyDomain::Resource));
-        assert!(!parsed.domains.contains(&ApplyDomain::Scope));
+        assert!(!parsed.has_resource_domain);
+        assert!(!parsed.has_scope_domain);
     }
 
     #[test]

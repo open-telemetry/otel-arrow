@@ -7,11 +7,14 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_conversion_expressions(
-    conversion_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_conversion_unary_expressions(
+    conversion_unary_expressions_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let rule = conversion_expressions_rule.into_inner().next().unwrap();
+    let rule = conversion_unary_expressions_rule
+        .into_inner()
+        .next()
+        .unwrap();
 
     match rule.as_rule() {
         Rule::tostring_expression => parse_tostring_expression(rule, scope),
@@ -23,7 +26,7 @@ pub(crate) fn parse_conversion_expressions(
         Rule::todouble_expression => parse_todouble_expression(rule, scope),
         Rule::todatetime_expression => parse_todatetime_expression(rule, scope),
         Rule::totimespan_expression => parse_totimespan_expression(rule, scope),
-        _ => panic!("Unexpected rule in conversion_expressions: {rule}"),
+        _ => panic!("Unexpected rule in conversion_unary_expressions: {rule}"),
     }
 }
 

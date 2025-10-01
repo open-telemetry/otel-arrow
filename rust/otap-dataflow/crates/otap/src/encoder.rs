@@ -849,6 +849,7 @@ where
                             ehdp.append_flags(ehdp_view.flags().into_inner());
                             ehdp.append_min(ehdp_view.min());
                             ehdp.append_max(ehdp_view.max());
+                            ehdp.append_zero_threshold(ehdp_view.zero_threshold());
 
                             for exemplar in ehdp_view.exemplars() {
                                 append_exemplar(
@@ -2073,6 +2074,7 @@ mod test {
                 Field::new("flags", DataType::UInt32, false),
                 Field::new("min", DataType::Float64, true),
                 Field::new("max", DataType::Float64, true),
+                Field::new("zero_threshold", DataType::Float64, true),
             ])),
             vec![
                 // id
@@ -2101,6 +2103,8 @@ mod test {
                 Arc::new(Float64Array::from_iter(vec![Some(4.0)])),
                 // max
                 Arc::new(Float64Array::from_iter(vec![Some(44.0)])),
+                // zero threshold
+                Arc::new(Float64Array::from_iter(vec![Some(-1.1)])),
             ],
         )
         .unwrap();

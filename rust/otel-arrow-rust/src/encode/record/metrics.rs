@@ -1099,6 +1099,7 @@ pub struct ExponentialHistogramDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
     max: Float64ArrayBuilder,
+    zero_threshold: Float64ArrayBuilder,
 }
 
 impl ExponentialHistogramDataPointsRecordBatchBuilder {
@@ -1159,6 +1160,11 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
                 ..Default::default()
             }),
             max: Float64ArrayBuilder::new(ArrayOptions {
+                optional: true,
+                dictionary_options: None,
+                ..Default::default()
+            }),
+            zero_threshold: Float64ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
                 ..Default::default()
@@ -1228,6 +1234,11 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             Some(val) => self.max.append_value(&val),
             None => self.max.append_null(),
         }
+    }
+
+    /// Append a value to the `zero_threshold` array.
+    pub fn append_zero_threshold(&mut self, val: f64) {
+        self.zero_threshold.append_value(&val);
     }
 
     /// Construct an OTAP ExponentialHistogramDataPoints RecordBatch from the builders.
@@ -1342,6 +1353,15 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         if let Some(array) = self.max.finish() {
             fields.push(Field::new(
                 consts::HISTOGRAM_MAX,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if let Some(array) = self.zero_threshold.finish() {
+            fields.push(Field::new(
+                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
                 array.data_type().clone(),
                 true,
             ));

@@ -795,13 +795,13 @@ where
     if cfg!(test) {
         // Note: When building tests we sort the key list so that it is
         // deterministice.
-        let mut source_keys: Vec<&Box<str>> = schema.get_schema_for_keys().keys().collect();
+        let mut source_keys: Vec<&Box<str>> = schema.get_schema().keys().collect();
         source_keys.sort();
         for k in source_keys {
             (action)(k)
         }
     } else {
-        let source_keys = schema.get_schema_for_keys().keys();
+        let source_keys = schema.get_schema().keys();
         for k in source_keys {
             (action)(k)
         }
@@ -1778,7 +1778,7 @@ mod tests {
 
         run_test_failure(
             "project source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
@@ -2127,7 +2127,7 @@ mod tests {
 
         run_test_failure(
             "project-keep source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-keep expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
@@ -2534,7 +2534,7 @@ mod tests {
 
         run_test_failure(
             "project-away source[0]",
-            "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-away expression",
+            "Cannot index into a map using a 'Integer' value",
         );
 
         run_test_failure(
@@ -3400,6 +3400,8 @@ mod tests {
     #[test]
     fn test_parse_tabular_expression() {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
+            println!("Testing: {input}");
+
             let state = ParserState::new(input);
 
             let mut result = KqlPestParser::parse(Rule::tabular_expression, input).unwrap();

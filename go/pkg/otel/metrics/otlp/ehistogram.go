@@ -31,6 +31,7 @@ type (
 		Flags             int
 		Min               int
 		Max               int
+		ZeroThreshold     int
 	}
 
 	EHistogramDataPointsStore struct {
@@ -119,6 +120,11 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 		return nil, werror.Wrap(err)
 	}
 
+	zeroThreshold, err := arrowutils.FieldIDFromSchema(schema, constants.ExpHistogramZeroThreshold)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
 	return &EHistogramDataPointIDs{
 		ID:                ID,
 		ParentID:          parentID,
@@ -133,6 +139,7 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 		Flags:             flags,
 		Min:               min,
 		Max:               max,
+		ZeroThreshold:     zeroThreshold,
 	}, nil
 }
 
@@ -255,6 +262,14 @@ func EHistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *Exemplar
 		}
 		if max != nil {
 			hdp.SetMax(*max)
+		}
+
+		zeroThreshold, err := arrowutils.F64OrNilFromRecord(record, fieldIDs.ZeroThreshold, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+		if zeroThreshold != nil {
+			hdp.SetZeroThreshold(*zeroThreshold)
 		}
 
 		if ID != nil {
