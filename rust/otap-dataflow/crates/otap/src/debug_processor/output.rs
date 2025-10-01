@@ -1,5 +1,5 @@
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
-use otap_df_config::{PortName, node::HyperEdgeConfig};
+use otap_df_config::PortName;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
@@ -10,27 +10,15 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use prost::Message as _;
 use serde::Deserialize;
-use serde::Serialize;
-use std::collections::HashMap;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
 pub enum OutputMode {
     Console,
-    Outport(OutPort),
+    Outport(Vec<PortName>),
     File(String),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OutPort {
-    /// Outgoing hyper-edges, keyed by port name.
-    /// Each port connects this node to one or more downstream nodes, with a specific dispatch strategy.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub out_ports: HashMap<PortName, HyperEdgeConfig>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_out_port: Option<PortName>,
 }
 
 /// struct that handles the logic for sending data to console or out_ports
@@ -92,13 +80,7 @@ impl DebugOutput {
                     effect_handler,
                 })
             }
-            OutputMode::Outport(out_port) => {
-                // if default is set then we use it, if not then we use the out_port field
-                let ports: Vec<PortName> = if let Some(out_port) = out_port.default_out_port {
-                    vec![out_port.clone()]
-                } else {
-                    out_port.out_ports.keys().cloned().collect()
-                };
+            OutputMode::Outport(ports) => {
                 // check that the ports are actually connected
                 let connected_ports = effect_handler.connected_ports();
                 let valid_ports = ports.iter().all(|port| connected_ports.contains(port));

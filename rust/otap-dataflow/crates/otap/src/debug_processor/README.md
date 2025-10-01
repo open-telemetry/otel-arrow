@@ -54,6 +54,49 @@ signals against, currently we support the following fields `attribute`
 Multiple filter rules can be definied and will be applied in order
 (top to bottom).
 
+### Output
+
+By default the debug processor will write the output to the console but
+you can configure it to write to a file or to send the data to another
+pipeline node, you can see how to configure them below.
+
+#### Output to file
+
+```yaml
+config:
+   verbosity: normal
+   output: file_name.txt
+```
+
+In this config the debug-processor will write to a file named `file_name.txt`
+it will append to the file rather than overwriting
+
+#### Output to pipeline node
+
+```yaml
+  debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+      out_port2:
+        destinations:
+          - some_node
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
+      output:
+        - out_port2
+```
+
+In this config we create a processor with multiple out_ports.
+In the config setting we tell the debug-processor to use `out_port2`
+which will send data to another node named `some_node`
+
+
 ## Example Output => Basic Verbosity
 
 ```plaintext

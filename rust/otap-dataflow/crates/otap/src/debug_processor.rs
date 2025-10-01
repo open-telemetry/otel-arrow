@@ -14,13 +14,14 @@ use self::filter::FilterRules;
 use self::marshaler::ViewMarshaler;
 use self::metrics::DebugPdataMetrics;
 use self::normal_marshaler::NormalViewMarshaler;
-use self::output::DebugOutput;
+use self::output::{DebugOutput, OutputMode};
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
     pdata::{OtapPdata, OtlpProtoBytes},
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::PortName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
@@ -128,13 +129,25 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         } else {
             Box::new(DetailedViewMarshaler)
         };
-
-        // // get a writer to write to stdout or to a file
-        // let raw_writer = get_writer(&self.output).await;
-        // let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
+        let output_mode = self.config.output();
+        // if the outputmode is via outports then we can have multiple outports configured
+        // so there is no clear default we need to determine which portnames are for the main port
+        let main_ports: Option<Vec<PortName>> = if let OutputMode::Outport(ref ports) = output_mode
+        {
+            let connected_ports = effect_handler.connected_ports();
+            Some(
+                connected_ports
+                    .iter()
+                    .filter(|port| !ports.contains(port))
+                    .cloned()
+                    .collect(),
+            )
+        } else {
+            None
+        };
 
         let mut debug_output =
-            DebugOutput::new_from_output_mode(self.config.output(), effect_handler.clone()).await?;
+            DebugOutput::new_from_output_mode(output_mode, effect_handler.clone()).await?;
 
         match msg {
             Message::Control(control) => {
@@ -162,12 +175,16 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 Ok(())
             }
             Message::PData(pdata) => {
-                // make a copy of the data and convert it to protobytes that we will later convert to the views
-                let data_copy = pdata.clone();
-                // forward the data to the next node
-                effect_handler.send_message(pdata).await?;
+                // ToDo: handle multiple out_ports differently here?
+                if let Some(ports) = main_ports {
+                    for port in ports {
+                        effect_handler.send_message_to(port, pdata.clone()).await?;
+                    }
+                } else {
+                    effect_handler.send_message(pdata.clone()).await?;
+                }
 
-                let (_context, payload) = data_copy.into_parts();
+                let (_context, payload) = pdata.into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
@@ -289,9 +306,6 @@ async fn push_metric(
         "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
     );
     debug_output.output_message(report_basic.as_str()).await?;
-
-    // if outport then send via outport
-    // need function to generate structured log from the string data
 
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
