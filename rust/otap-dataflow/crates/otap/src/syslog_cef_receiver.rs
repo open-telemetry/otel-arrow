@@ -14,7 +14,7 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{
-    error::{format_error_sources, Error, ReceiverErrorKind},
+    error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
 use serde::Deserialize;

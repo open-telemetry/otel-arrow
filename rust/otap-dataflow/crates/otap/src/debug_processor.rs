@@ -25,7 +25,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -65,13 +65,15 @@ impl OutputWriter {
     }
 
     async fn write(&mut self, data: &str) -> Result<(), Error> {
-        self.writer
-            .write_all(data.as_bytes())
-            .await
-            .map_err(|e| Error::ProcessorError {
+        self.writer.write_all(data.as_bytes()).await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ProcessorError {
                 processor: self.processor_id.clone(),
+                kind: ProcessorErrorKind::Transport,    // ToDo find a better error kind category
                 error: format!("Write error: {e}"),
-            })
+                source_detail,
+            }
+        })
     }
 }
 

@@ -68,6 +68,31 @@ impl fmt::Display for ReceiverErrorKind {
     }
 }
 
+/// High-level classification for processor failures to aid troubleshooting.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProcessorErrorKind {
+    /// Errors encountered while initialising or wiring processor inputs/outputs.
+    Configuration,
+    /// Errors encountered when receiving or emitting pdata.
+    Transport,
+    /// Errors raised while shutting down a processor.
+    Shutdown,
+    /// Catch-all for processor failures that do not fit other categories.
+    Other,
+}
+
+impl fmt::Display for ProcessorErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ProcessorErrorKind::Configuration => "configuration",
+            ProcessorErrorKind::Transport => "transport",
+            ProcessorErrorKind::Shutdown => "shutdown",
+            ProcessorErrorKind::Other => "other",
+        };
+        write!(f, "{label}")
+    }
+}
+
 /// Formats the source chain of an error into a single display string.
 #[must_use]
 pub fn format_error_sources(error: &(dyn std::error::Error + 'static)) -> String {
@@ -234,14 +259,20 @@ pub enum Error {
     },
 
     /// A wrapper for the processor errors.
-    #[error("A processor error occurred in node {processor}: {error}")]
+    #[error("A processor error occurred in node {processor} ({kind}): {error}{source_detail}")]
     ProcessorError {
         /// The name of the processor that encountered the error.
         processor: NodeId,
 
+        /// High-level classification for the processor failure.
+        kind: ProcessorErrorKind,
+
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
         error: String,
+
+        /// Pre-formatted representation of the source chain used when rendering the error.
+        source_detail: String,
     },
 
     /// Unknown processor plugin.
