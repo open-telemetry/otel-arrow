@@ -94,7 +94,9 @@ impl ArrowPayloadType {
     #[inline]
     const fn to_index(self) -> usize {
         // Safety: Generated enum values are always mapped in the `PAYLOAD_TYPE_TO_INDEX` table.
-        PAYLOAD_TYPE_TO_INDEX[self as usize].expect("`PAYLOAD_TYPE_TO_INDEX` should cover all ArrowPayloadType variants") as usize
+        PAYLOAD_TYPE_TO_INDEX[self as usize]
+            .expect("`PAYLOAD_TYPE_TO_INDEX` should cover all ArrowPayloadType variants")
+            as usize
     }
 }
 
@@ -194,7 +196,10 @@ impl Producer {
                         producer: new_producer,
                     });
 
-                    &mut self.stream_producers[idx].as_mut().expect("ProducerEntry should exist").producer
+                    &mut self.stream_producers[idx]
+                        .as_mut()
+                        .expect("ProducerEntry should exist")
+                        .producer
                 }
             };
 
@@ -454,18 +459,19 @@ mod test {
         ] {
             let expected_index = exhaustive_check(variant);
             let actual_index = variant.to_index();
-            
+
             assert_eq!(
                 actual_index, expected_index,
                 "ArrowPayloadType::{:?} index mismatch",
                 variant
             );
-            
+
             // Verify index is within bounds
             assert!(
                 actual_index < PAYLOAD_TYPE_COUNT,
                 "Index {} for ArrowPayloadType::{:?} exceeds PAYLOAD_TYPE_COUNT",
-                actual_index, variant
+                actual_index,
+                variant
             );
         }
     }
