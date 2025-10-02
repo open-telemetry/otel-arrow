@@ -186,6 +186,24 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
+                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                // ToDo error handling
+                                let _ = sender.send(NodeControlMsg::Ack(ack)).await;
+                }
+                        }
+                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                // ToDo error handling
+                                let _ = sender.send(NodeControlMsg::Nack(nack)).await;
+                            }
+                        }
+                        PipelineControlMsg::DelayData { node_id, data, when } => {
+                            // ToDo: passing through immediately instead of delaying
+                            if let Some(sender) = self.control_senders.get(node_id) {
+                                let _ = sender.send(NodeControlMsg::DelayedData { data, when }).await;
+                            }
+                        }
                     }
                 }
                 // Handle timer expiration events.

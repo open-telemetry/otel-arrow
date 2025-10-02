@@ -710,6 +710,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         }
                         Ok(())
                     }
+                    otap_df_engine::control::NodeControlMsg::DelayedData { .. } => {
+                        unreachable!("not used")
+                    }
                     otap_df_engine::control::NodeControlMsg::Ack { .. }
                     | otap_df_engine::control::NodeControlMsg::Nack { .. } => Ok(()),
                 }

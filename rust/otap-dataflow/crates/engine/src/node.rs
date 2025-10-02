@@ -43,7 +43,7 @@ pub trait Node<PData> {
 #[derive(Clone, Debug)]
 pub struct NodeId {
     /// A unique integer.
-    pub(crate) index: usize,
+    pub index: usize,
 
     /// A unique name as defined by otap_df_config.
     pub name: NodeName,

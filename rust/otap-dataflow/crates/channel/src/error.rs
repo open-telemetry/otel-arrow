@@ -18,6 +18,17 @@ pub enum SendError<T> {
     Closed(T),
 }
 
+impl<T> SendError<T> {
+    /// Retrieves inner, in cases where the specific condition is
+    /// not important the failed payload is needed.
+    pub fn inner(self) -> T {
+        match self {
+            Self::Full(t) => t,
+            Self::Closed(t) => t,
+        }
+    }
+}
+
 /// Errors that can occur when consuming messages from a channel.
 #[derive(thiserror::Error, Debug)]
 pub enum RecvError {

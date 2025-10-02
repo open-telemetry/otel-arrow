@@ -3,11 +3,9 @@
 
 //! Expose the OTLP gRPC services.
 //!
-//! Provides a set of structs and enums that interact with the gRPC Server
-//!
-//! Implements the necessary service traits for OTLP data
-//!
-//! ToDo Modify OTLPData -> Optimize message transport
+//! This is not production code, used for validating testing and
+//! benchmarking of the standard gRPC OTLP service with the OTAP-based
+//! service.
 use crate::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
@@ -86,10 +84,13 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        // Note! we have to subscribe_to() with data used for Ack/Nack
+        // handling somewhere else.
         _ = self
             .effect_handler
             .send_message(OTLPData::Logs(request.into_inner()))
             .await;
+        // Note! how do we wait for the Ack/Nack?
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))

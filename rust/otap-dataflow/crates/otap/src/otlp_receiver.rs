@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{
+    LogsServiceServer, MetricsServiceServer, SharedCorrelationState, TraceServiceServer,
+    route_ack_response, route_nack_response,
+};
 use crate::pdata::OtapPdata;
 
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -24,6 +28,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -94,6 +99,20 @@ pub struct OtlpReceiverMetrics {
     pub messages_received: Counter<u64>,
 }
 
+/// Helper function to select the correct correlation state based on signal type
+fn select_correlation_state<'a>(
+    signal_type: SignalType,
+    logs_state: &'a SharedCorrelationState,
+    metrics_state: &'a SharedCorrelationState,
+    traces_state: &'a SharedCorrelationState,
+) -> &'a SharedCorrelationState {
+    match signal_type {
+        SignalType::Logs => logs_state,
+        SignalType::Metrics => metrics_state,
+        SignalType::Traces => traces_state,
+    }
+}
+
 #[async_trait]
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
@@ -105,9 +124,18 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let logs_service_server = LogsServiceServer::new(effect_handler.clone());
+        let metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
+        let trace_service_server = TraceServiceServer::new(effect_handler.clone());
+
+        // Store correlation states for response routing
+        let logs_correlation_state = logs_service_server.state();
+        let metrics_correlation_state = metrics_service_server.state();
+        let trace_correlation_state = trace_service_server.state();
+
+        let mut logs_service_server = logs_service_server;
+        let mut metrics_service_server = metrics_service_server;
+        let mut trace_service_server = trace_service_server;
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
@@ -124,6 +152,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         }
 
         let server = Server::builder()
+            .timeout(Duration::from_secs(30))
             .add_service(logs_service_server)
             .add_service(metrics_service_server)
             .add_service(trace_service_server);
@@ -138,19 +167,34 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             return Ok(());
                         },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
+                        Ok(NodeControlMsg::Ack(ack_msg)) => {
+                            let signal_type = ack_msg.accepted.signal_type();
+                            let correlation_state = select_correlation_state(
+                                signal_type,
+                                &logs_correlation_state,
+                                &metrics_correlation_state,
+                                &trace_correlation_state,
+                            );
+                            route_ack_response(correlation_state, ack_msg);
+                        },
+                        Ok(NodeControlMsg::Nack(nack_msg)) => {
+                            let signal_type = nack_msg.refused.signal_type();
+                            let correlation_state = select_correlation_state(
+                                signal_type,
+                                &logs_correlation_state,
+                                &metrics_correlation_state,
+                                &trace_correlation_state,
+                            );
+                            route_nack_response(correlation_state, nack_msg);
+                        },
+                        Ok(_other_msg) => {
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
                         }
-                        _ => {
-                            // unknown control message do nothing
-                        }
                     }
                 }
-            } => {
+        } => {
                 return ctrl_msg_result;
             },
 
@@ -177,6 +221,29 @@ mod tests {
 
     use std::pin::Pin;
     use std::time::Duration;
+
+    use crate::pdata::Context;
+    use otap_df_engine::control::{AckMsg, NackMsg};
+    use otap_df_engine::testing::receiver::TestCorrelationHandler;
+
+    /// OTLP-specific correlation handler that implements proper Context::next_ack/next_nack
+    struct OtapCorrelationHandler;
+
+    impl TestCorrelationHandler<OtapPdata> for OtapCorrelationHandler {
+        fn prepare_ack(&self, data: OtapPdata) -> Option<(usize, AckMsg<OtapPdata>)> {
+            let ack = AckMsg::new(data);
+            Context::next_ack(ack)
+        }
+
+        fn prepare_nack(
+            &self,
+            data: OtapPdata,
+            reason: String,
+        ) -> Option<(usize, NackMsg<OtapPdata>)> {
+            let nack = NackMsg::new(reason, data);
+            Context::next_nack(nack)
+        }
+    }
 
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
@@ -341,25 +408,38 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                let logs_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                // Set up the OTLP correlation handler for proper Ack handling
+                ctx.set_correlation_handler(Box::new(OtapCorrelationHandler));
+
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                ctx.send_prepared_ack(logs_pdata.clone())
+                    .await
+                    .expect("Failed to send prepared logs Ack");
+
+                let logs_pdata: OtlpProtoBytes = logs_pdata
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
-
                 assert!(matches!(logs_pdata, OtlpProtoBytes::ExportLogsRequest(_)));
-
                 let expected = create_logs_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
                 assert_eq!(&expected_bytes, logs_pdata.as_bytes());
 
-                let metrics_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for metrics message")
+                    .expect("No metrics message received");
+
+                ctx.send_prepared_ack(metrics_pdata.clone())
+                    .await
+                    .expect("Failed to send prepared metrics Ack");
+
+                let metrics_pdata: OtlpProtoBytes = metrics_pdata
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
@@ -367,16 +447,21 @@ mod tests {
                     metrics_pdata,
                     OtlpProtoBytes::ExportMetricsRequest(_)
                 ));
-
                 let expected = create_metrics_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
                 assert_eq!(&expected_bytes, metrics_pdata.as_bytes());
 
-                let trace_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                let trace_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for traces message")
+                    .expect("No traces message received");
+
+                ctx.send_prepared_ack(trace_pdata.clone())
+                    .await
+                    .expect("Failed to send prepared traces Ack");
+
+                let trace_pdata: OtlpProtoBytes = trace_pdata
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
@@ -384,7 +469,6 @@ mod tests {
                     trace_pdata,
                     OtlpProtoBytes::ExportTracesRequest(_)
                 ));
-
                 let expected = create_traces_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
