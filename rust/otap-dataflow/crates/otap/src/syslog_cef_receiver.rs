@@ -174,12 +174,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         m.tcp_connections_active.inc();
                                     }
 
-                                    // Clone the effect handler and metrics so the spawned task can send messages and record telemetry.
+                                    // Clone the effect handler so the spawned task can send messages and record telemetry.
                                     let effect_handler = effect_handler.clone();
-                                    let metrics = self.metrics.clone();
+                                    // Clone the Rc pointer (not the inner MetricSet) so all tasks update the same metrics instance.
+                                    let metrics = Rc::clone(&self.metrics);
 
                                     // Spawn a task to handle the connection.
-                                    drop(tokio::task::spawn_local(async move {
+                                    // TODO: Use the JoinHandle for graceful shutdown when wiring stop signals.
+                                    _ = tokio::task::spawn_local(async move {
                                         let mut reader = BufReader::new(socket);
                                         let mut line_bytes = Vec::new();
 
@@ -387,7 +389,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                             }
                                         }
-                                    }));
+                                    });
                                 }
 
                                 Err(e) => {
