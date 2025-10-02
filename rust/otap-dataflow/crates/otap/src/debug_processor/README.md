@@ -56,9 +56,10 @@ Multiple filter rules can be definied and will be applied in order
 
 ### Output
 
-By default the debug processor will write the output to the console but
-you can configure it to write to a file or to send the data to another
-pipeline node, you can see how to configure them below.
+The DebugProcessor is a pass-through processor which allows the the normal
+flow of signals, this processor outputs various debug information on the
+signals/batches passing through. You can configure how the debug information
+is received.
 
 #### Output to file
 
@@ -78,23 +79,24 @@ it will append to the file rather than overwriting
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
     out_ports:
-      out_port:
+      passthrough_port:
         destinations:
           - noop
         dispatch_strategy: round_robin
-      out_port2:
+      logging_port:
         destinations:
           - some_node
         dispatch_strategy: round_robin
     config:
       verbosity: basic
       output:
-        - out_port2
+        - logging_port
 ```
 
 In this config we create a processor with multiple out_ports.
-In the config setting we tell the debug-processor to use `out_port2`
-which will send data to another node named `some_node`
+In the config setting we tell the debug-processor to use `logging_port`
+which will send data to another node that has been defined outside of
+this configuration named `some_node`
 
 ## Example Output => Basic Verbosity
 

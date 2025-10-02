@@ -14,7 +14,7 @@ use self::filter::FilterRules;
 use self::marshaler::ViewMarshaler;
 use self::metrics::DebugPdataMetrics;
 use self::normal_marshaler::NormalViewMarshaler;
-use self::output::{DebugOutput, OutputMode};
+use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
     pdata::{OtapPdata, OtlpProtoBytes},
@@ -123,16 +123,18 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let verbosity = self.config.verbosity();
         let mode = self.config.mode();
         let filters = self.config.filters();
+        let output_mode = self.config.output();
 
+        // determine which marshler to use
         let marshaler: Box<dyn ViewMarshaler> = if verbosity == Verbosity::Normal {
             Box::new(NormalViewMarshaler)
         } else {
             Box::new(DetailedViewMarshaler)
         };
-        let output_mode = self.config.output();
+
         // if the outputmode is via outports then we can have multiple outports configured
         // so there is no clear default we need to determine which portnames are for the main port
-        let main_ports: Option<Vec<PortName>> = if let OutputMode::Outport(ref ports) = output_mode
+        let main_ports: Option<Vec<PortName>> = if let OutputMode::Outports(ref ports) = output_mode
         {
             let connected_ports = effect_handler.connected_ports();
             Some(
@@ -146,8 +148,19 @@ impl local::Processor<OtapPdata> for DebugProcessor {
             None
         };
 
-        let mut debug_output =
-            DebugOutput::new_from_output_mode(output_mode, effect_handler.clone()).await?;
+        // determine which output method to use to use
+        let mut debug_output: Box<dyn DebugOutput> = match output_mode {
+            OutputMode::Console => {
+                Box::new(DebugOutputWriter::new(None, effect_handler.processor_id()).await?)
+            }
+            OutputMode::File(file_name) => Box::new(
+                DebugOutputWriter::new(Some(file_name), effect_handler.processor_id()).await?,
+            ),
+            OutputMode::Outports(ports) => Box::new(DebugOutputPorts::new(
+                ports.clone(),
+                effect_handler.clone(),
+            )?),
+        };
 
         match msg {
             Message::Control(control) => {
@@ -197,10 +210,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             push_log(
                                 &verbosity,
                                 req,
-                                &*marshaler,
+                                marshaler.as_ref(),
                                 &mode,
                                 filters,
-                                &mut debug_output,
+                                debug_output.as_mut(),
                                 &mut self.metrics,
                             )
                             .await?;
@@ -217,10 +230,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             push_metric(
                                 &verbosity,
                                 req,
-                                &*marshaler,
+                                marshaler.as_ref(),
                                 &mode,
                                 filters,
-                                &mut debug_output,
+                                debug_output.as_mut(),
                                 &mut self.metrics,
                             )
                             .await?;
@@ -237,10 +250,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             push_trace(
                                 &verbosity,
                                 req,
-                                &*marshaler,
+                                marshaler.as_ref(),
                                 &mode,
                                 filters,
-                                &mut debug_output,
+                                debug_output.as_mut(),
                                 &mut self.metrics,
                             )
                             .await?;
@@ -261,7 +274,7 @@ async fn push_metric(
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
     filters: &Vec<FilterRules>,
-    debug_output: &mut DebugOutput,
+    debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource metrics
@@ -348,7 +361,7 @@ async fn push_trace(
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
     filters: &Vec<FilterRules>,
-    debug_output: &mut DebugOutput,
+    debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     // collect number of resource spans
@@ -415,7 +428,7 @@ async fn push_log(
     marshaler: &dyn ViewMarshaler,
     mode: &DisplayMode,
     filters: &Vec<FilterRules>,
-    debug_output: &mut DebugOutput,
+    debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
 ) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();

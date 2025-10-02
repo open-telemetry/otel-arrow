@@ -4,6 +4,7 @@
 //! Handles the output flow of the debug processor
 
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
@@ -22,24 +23,22 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 #[serde(untagged)]
 pub enum OutputMode {
     Console,
-    Outport(Vec<PortName>),
+    Outports(Vec<PortName>),
     File(String),
 }
 
-/// struct that handles the logic for sending data to console or out_ports
-pub struct DebugOutput {
-    writer: Option<OutputWriter>,
-    ports: Option<Vec<PortName>>,
-    effect_handler: local::EffectHandler<OtapPdata>,
+#[async_trait(?Send)]
+pub trait DebugOutput {
+    async fn output_message(&mut self, message: &str) -> Result<(), Error>;
 }
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
-pub struct OutputWriter {
+pub struct DebugOutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
     processor_id: NodeId,
 }
 
-impl OutputWriter {
+impl DebugOutputWriter {
     pub async fn new(output_file: Option<String>, processor_id: NodeId) -> Result<Self, Error> {
         let writer: Box<dyn AsyncWrite + Unpin> = match output_file {
             Some(file_name) => {
@@ -49,7 +48,10 @@ impl OutputWriter {
                     .create(true)
                     .open(file_name)
                     .await
-                    .expect("could not open output file");
+                    .map_err(|e| Error::ProcessorError {
+                        processor: processor_id.clone(),
+                        error: format!("File error: {e}"),
+                    })?;
                 Box::new(file)
             }
             None => Box::new(tokio::io::stdout()),
@@ -59,8 +61,11 @@ impl OutputWriter {
             processor_id,
         })
     }
+}
 
-    pub async fn write(&mut self, data: &str) -> Result<(), Error> {
+#[async_trait(?Send)]
+impl DebugOutput for DebugOutputWriter {
+    async fn output_message(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -71,73 +76,46 @@ impl OutputWriter {
     }
 }
 
-impl DebugOutput {
-    pub async fn new_from_output_mode(
-        output_mode: OutputMode,
+pub struct DebugOutputPorts {
+    ports: Vec<PortName>,
+    effect_handler: local::EffectHandler<OtapPdata>,
+}
+
+impl DebugOutputPorts {
+    pub fn new(
+        ports: Vec<PortName>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<Self, Error> {
-        match output_mode {
-            OutputMode::Console => {
-                let output_writer = OutputWriter::new(None, effect_handler.processor_id()).await?;
-                Ok(Self {
-                    writer: Some(output_writer),
-                    ports: None,
-                    effect_handler,
-                })
-            }
-            OutputMode::Outport(ports) => {
-                // check that the ports are actually connected
-                let connected_ports = effect_handler.connected_ports();
-                let valid_ports = ports.iter().all(|port| connected_ports.contains(port));
-                // raise error if ports are not connected
-                if !valid_ports {
-                    return Err(Error::ProcessorError {
-                        processor: effect_handler.processor_id(),
-                        error: "ports are not connected".to_owned(),
-                    });
-                }
-
-                Ok(Self {
-                    writer: None,
-                    ports: Some(ports),
-                    effect_handler,
-                })
-            }
-            OutputMode::File(file_name) => {
-                let output_writer =
-                    OutputWriter::new(Some(file_name), effect_handler.processor_id()).await?;
-                Ok(Self {
-                    writer: Some(output_writer),
-                    ports: None,
-                    effect_handler,
-                })
-            }
-        }
-    }
-
-    /// send a message
-    pub async fn output_message(&mut self, message: &str) -> Result<(), Error> {
-        if let Some(ports) = &self.ports {
-            // store message as a log -> create OtapPdata msg to send
-            let log_message = self.generate_log_message(message.to_string());
-            let mut bytes = vec![];
-            log_message
-                .encode(&mut bytes)
-                .expect("failed to encode log data into bytes");
-            let otlp_logs_bytes =
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-            // send msg to connected ports
-            for port in ports.iter().cloned() {
-                self.effect_handler
-                    .send_message_to(port, otlp_logs_bytes.clone())
-                    .await?;
-            }
-        }
-        if let Some(ref mut writer) = self.writer {
-            writer.write(message).await?;
+        // check that the ports are actually connected
+        let connected_ports = effect_handler.connected_ports();
+        // collect ports that are not connected
+        let mut invalid_ports = ports
+            .iter()
+            .filter(|port| !connected_ports.contains(port))
+            .peekable();
+        // raise error if ports are not connected
+        if invalid_ports.peek().is_some() {
+            let invalid_ports_list = invalid_ports
+                .map(|port_name| port_name.as_ref())
+                .collect::<Vec<&str>>()
+                .join(", ");
+            let connected_ports_list = connected_ports
+                .iter()
+                .map(|port_name| port_name.as_ref())
+                .collect::<Vec<&str>>()
+                .join(", ");
+            return Err(Error::ProcessorError {
+                processor: effect_handler.processor_id(),
+                error: format!(
+                    "The following ports are not connected [{invalid_ports_list}], these are connected ports to this node [{connected_ports_list}]"
+                ),
+            });
         }
 
-        Ok(())
+        Ok(Self {
+            ports,
+            effect_handler,
+        })
     }
 
     /// create a log pdata to wrap the message in (message will be used in the body field)
@@ -161,5 +139,27 @@ impl DebugOutput {
                 ])
                 .finish(),
         ])
+    }
+}
+
+#[async_trait(?Send)]
+impl DebugOutput for DebugOutputPorts {
+    async fn output_message(&mut self, message: &str) -> Result<(), Error> {
+        // store message as a log -> create OtapPdata msg to send
+        let log_message = self.generate_log_message(message.to_string());
+        let mut bytes = vec![];
+        log_message
+            .encode(&mut bytes)
+            .expect("failed to encode log data into bytes");
+        let otlp_logs_bytes =
+            OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+        // send msg to connected ports
+        for port in self.ports.iter().cloned() {
+            self.effect_handler
+                .send_message_to(port, otlp_logs_bytes.clone())
+                .await?;
+        }
+
+        Ok(())
     }
 }
