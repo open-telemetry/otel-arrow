@@ -69,7 +69,7 @@ impl OutputWriter {
             let source_detail = format_error_sources(&e);
             Error::ProcessorError {
                 processor: self.processor_id.clone(),
-                kind: ProcessorErrorKind::Transport,    // ToDo find a better error kind category
+                kind: ProcessorErrorKind::Transport, // ToDo find a better error kind category
                 error: format!("Write error: {e}"),
                 source_detail,
             }

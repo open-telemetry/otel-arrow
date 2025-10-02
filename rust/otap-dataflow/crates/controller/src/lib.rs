@@ -31,9 +31,13 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::error::Error as EngineError;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::{ConditionStatus, ConditionType, ObservedEvent, ObservedStateStore};
+use otap_df_state::store::{
+    ConditionDetails, ConditionStatus, ConditionType, NodeErrorSummary, ObservedEvent,
+    ObservedStateStore,
+};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -192,12 +196,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 Ok(Err(e)) => {
                     obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
                     let error_msg = e.to_string();
+                    let condition_details = condition_details_from_error(&e);
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key.clone(),
                         ConditionType::StartError,
                         ConditionStatus::True,
                         "RuntimeError".to_owned(),
                         error_msg.clone(),
+                        condition_details.clone(),
                     ));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key.clone(),
@@ -205,6 +211,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionStatus::False,
                         "PipelineUnavailable".to_owned(),
                         "Pipeline is unavailable due to failure.".to_owned(),
+                        condition_details.clone(),
                     ));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key,
@@ -212,6 +219,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionStatus::False,
                         "PipelineUnhealthy".to_owned(),
                         error_msg,
+                        condition_details,
                     ));
                     results.push(Err(e));
                 }
@@ -223,6 +231,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionStatus::True,
                         format!("{e:?}"),
                         "The pipeline panicked during execution.".to_owned(),
+                        None,
                     ));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key.clone(),
@@ -230,6 +239,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionStatus::False,
                         "PipelineUnavailable".to_owned(),
                         "Pipeline is unavailable due to panic.".to_owned(),
+                        None,
                     ));
                     obs_evt_reporter.report(ObservedEvent::pipeline_condition(
                         pipeline_key,
@@ -237,6 +247,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         ConditionStatus::False,
                         "PipelineUnhealthy".to_owned(),
                         "Pipeline panicked and is unhealthy.".to_owned(),
+                        None,
                     ));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
@@ -341,6 +352,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::Unknown,
             "StartupPending".to_owned(),
             "Pipeline startup in progress.".to_owned(),
+            None,
         ));
 
         obs_evt_reporter.report(ObservedEvent::pipeline_condition(
@@ -349,6 +361,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::Unknown,
             "StartupPending".to_owned(),
             "Panic status pending.".to_owned(),
+            None,
         ));
 
         // Build the runtime pipeline from the configuration
@@ -364,6 +377,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::False,
             "StartupSucceeded".to_owned(),
             "Pipeline started successfully.".to_owned(),
+            None,
         ));
 
         obs_evt_reporter.report(ObservedEvent::pipeline_condition(
@@ -372,6 +386,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::False,
             "Running".to_owned(),
             "Pipeline running without panic.".to_owned(),
+            None,
         ));
 
         obs_evt_reporter.report(ObservedEvent::pipeline_condition(
@@ -380,6 +395,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::True,
             "ReadyToServe".to_owned(),
             "Pipeline ready to serve traffic.".to_owned(),
+            None,
         ));
 
         obs_evt_reporter.report(ObservedEvent::pipeline_condition(
@@ -388,6 +404,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ConditionStatus::True,
             "HealthySteadyState".to_owned(),
             "Pipeline healthy and operating normally.".to_owned(),
+            None,
         ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
@@ -403,6 +420,120 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 source: Box::new(e),
             })
     }
+}
+
+fn condition_details_from_error(error: &Error) -> Option<ConditionDetails> {
+    let mut details = ConditionDetails::default();
+
+    match error {
+        Error::PipelineRuntimeError { source } => {
+            if let Some(engine_error) = source.downcast_ref::<EngineError>() {
+                push_engine_error(&mut details, engine_error);
+            } else {
+                details.node_errors.push(NodeErrorSummary {
+                    node: "pipeline".into(),
+                    node_kind: "pipeline".into(),
+                    error_kind: "runtime".into(),
+                    message: source.to_string(),
+                    source: None,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    if details.node_errors.is_empty() {
+        None
+    } else {
+        Some(details)
+    }
+}
+
+fn push_engine_error(details: &mut ConditionDetails, err: &EngineError) {
+    match err {
+        EngineError::ExporterError {
+            exporter,
+            kind,
+            error,
+            source_detail,
+        } => {
+            details.node_errors.push(NodeErrorSummary {
+                node: exporter.to_string(),
+                node_kind: "exporter".into(),
+                error_kind: kind.to_string(),
+                message: error.clone(),
+                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+            });
+        }
+        EngineError::ReceiverError {
+            receiver,
+            kind,
+            error,
+            source_detail,
+        } => {
+            details.node_errors.push(NodeErrorSummary {
+                node: receiver.to_string(),
+                node_kind: "receiver".into(),
+                error_kind: kind.to_string(),
+                message: error.clone(),
+                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+            });
+        }
+        EngineError::ProcessorError {
+            processor,
+            kind,
+            error,
+            source_detail,
+        } => {
+            details.node_errors.push(NodeErrorSummary {
+                node: processor.to_string(),
+                node_kind: "processor".into(),
+                error_kind: kind.to_string(),
+                message: error.clone(),
+                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+            });
+        }
+        _ => {
+            details.node_errors.push(NodeErrorSummary {
+                node: "pipeline".into(),
+                node_kind: "engine".into(),
+                error_kind: err_variant_name(err),
+                message: err.to_string(),
+                source: None,
+            });
+        }
+    }
+}
+
+fn err_variant_name(err: &EngineError) -> String {
+    match err {
+        EngineError::ConfigError(_) => "ConfigError",
+        EngineError::ChannelRecvError(_) => "ChannelRecvError",
+        EngineError::ChannelSendError { .. } => "ChannelSendError",
+        EngineError::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+        EngineError::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
+        EngineError::InvalidHyperEdge { .. } => "InvalidHyperEdge",
+        EngineError::IoError { .. } => "IoError",
+        EngineError::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
+        EngineError::ReceiverError { .. } => "ReceiverError",
+        EngineError::UnknownReceiver { .. } => "UnknownReceiver",
+        EngineError::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
+        EngineError::ProcessorError { .. } => "ProcessorError",
+        EngineError::UnknownProcessor { .. } => "UnknownProcessor",
+        EngineError::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
+        EngineError::ExporterError { .. } => "ExporterError",
+        EngineError::PdataConversionError { .. } => "PdataConversionError",
+        EngineError::UnknownExporter { .. } => "UnknownExporter",
+        EngineError::UnknownNode { .. } => "UnknownNode",
+        EngineError::PdataReceiverNotSupported => "PdataReceiverNotSupported",
+        EngineError::PdataSenderNotSupported => "PdataSenderNotSupported",
+        EngineError::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
+        EngineError::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
+        EngineError::JoinTaskError { .. } => "JoinTaskError",
+        EngineError::InternalError { .. } => "InternalError",
+        EngineError::TooManyNodes {} => "TooManyNodes",
+    }
+    .to_owned()
 }
 
 #[cfg(test)]

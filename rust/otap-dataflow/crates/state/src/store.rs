@@ -10,7 +10,7 @@ use crate::store::ConditionStatus::{False, True, Unknown};
 use crate::{CoreId, DeployedPipelineKey, PipelineKey};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -37,6 +37,20 @@ pub enum PipelinePhase {
     /// The controller cannot currently determine the state (e.g. missing
     /// heartbeats past the freshness window).
     Unknown,
+}
+
+impl Display for PipelinePhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            PipelinePhase::Pending => "Pending",
+            PipelinePhase::Running => "Running",
+            PipelinePhase::Draining => "Draining",
+            PipelinePhase::Stopped => "Stopped",
+            PipelinePhase::Failed => "Failed",
+            PipelinePhase::Unknown => "Unknown",
+        };
+        write!(f, "{label}")
+    }
 }
 
 /// Types of events that can be observed from a pipeline engine instance.
@@ -167,6 +181,9 @@ pub enum ConditionType {
 ///   https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#conditions
 /// - Pod conditions example:
 ///   https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions
+const RECENT_EVENTS_CAPACITY: usize = 20;
+
+/// Aggregated condition state used for pipeline-level status surfaces.
 #[derive(Debug, Clone, Serialize)]
 pub struct Condition {
     /// Condition category (extensible identifier).
@@ -181,6 +198,47 @@ pub struct Condition {
     /// `reason`/`message` are updated (keeps transition history meaningful).
     #[serde(serialize_with = "ts_to_rfc3339")]
     pub last_transition_time: SystemTime,
+    /// Aggregate counts of per-core condition values, if computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts: Option<ConditionCounts>,
+    /// Additional structured context such as node-level errors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<ConditionDetails>,
+}
+
+/// Aggregated counts of condition statuses across cores.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ConditionCounts {
+    /// Number of cores reporting the condition as `True`.
+    pub true_count: u32,
+    /// Number of cores reporting the condition as `False`.
+    pub false_count: u32,
+    /// Number of cores reporting the condition as `Unknown`.
+    pub unknown_count: u32,
+}
+
+/// Structured diagnostics associated with a condition.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ConditionDetails {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    /// Node-level errors contributing to this condition.
+    pub node_errors: Vec<NodeErrorSummary>,
+}
+
+/// Summary of a node-level error contributing to a pipeline condition.
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeErrorSummary {
+    /// Identifier of the node emitting the error.
+    pub node: String,
+    /// Node classification (e.g. `exporter`, `processor`).
+    pub node_kind: String,
+    /// High-level error category (connect/configuration/transport/etc.).
+    pub error_kind: String,
+    /// User-facing error message.
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Flattened source chain for deeper debugging, if available.
+    pub source: Option<String>,
 }
 
 /// The per-core view of a pipeline instance, as reported by an engine.
@@ -206,11 +264,103 @@ pub struct CoreStatus {
 pub struct PipelineStatus {
     /// Coarse phase synthesized from all per-core phases.
     phase: PipelinePhase,
+    /// Timestamp of the last phase transition.
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    phase_since: SystemTime,
     /// Typed facets (health, rollout, backpressure, ...).
     /// Treat logically as a map keyed by `type`.
     conditions: Vec<Condition>,
     /// Per-core details to aid debugging and aggregation.
     per_core: HashMap<CoreId, CoreStatus>,
+    /// Recently observed events to aid troubleshooting and timelines.
+    #[serde(skip_serializing_if = "VecDeque::is_empty", default)]
+    recent_events: VecDeque<PipelineEvent>,
+}
+
+/// Recorded event for pipeline timeline debugging.
+#[derive(Debug, Serialize, Clone)]
+pub struct PipelineEvent {
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    /// Timestamp when the event was observed.
+    timestamp: SystemTime,
+    /// Core that reported the event.
+    core_id: CoreId,
+    /// Event payload describing the observation.
+    kind: PipelineEventKind,
+}
+
+/// Event kind and payload for pipeline diagnostics.
+#[derive(Debug, Serialize, Clone)]
+#[serde(tag = "event", content = "data")]
+pub enum PipelineEventKind {
+    /// Phase transition observed for the pipeline.
+    Phase {
+        /// Phase the pipeline transitioned into.
+        phase: PipelinePhase,
+    },
+    /// Condition update aggregated across cores.
+    Condition {
+        /// Condition type being reported.
+        r#type: ConditionType,
+        /// Aggregated condition status.
+        status: ConditionStatus,
+        /// Machine-readable explanation for the update.
+        reason: String,
+        /// Human-readable context for operators.
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Counts of per-core statuses contributing to the aggregate.
+        counts: Option<ConditionCounts>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Structured diagnostic details, if any.
+        details: Option<ConditionDetails>,
+    },
+    /// Heartbeat emitted by the pipeline runtime.
+    Heartbeat,
+}
+
+impl PipelineEvent {
+    fn phase(timestamp: SystemTime, core_id: CoreId, phase: PipelinePhase) -> Self {
+        Self {
+            timestamp,
+            core_id,
+            kind: PipelineEventKind::Phase { phase },
+        }
+    }
+
+    fn condition(
+        timestamp: SystemTime,
+        core_id: CoreId,
+        r#type: ConditionType,
+        status: ConditionStatus,
+        reason: String,
+        message: String,
+        counts: Option<ConditionCounts>,
+        details: Option<ConditionDetails>,
+    ) -> Self {
+        Self {
+            timestamp,
+            core_id,
+            kind: PipelineEventKind::Condition {
+                r#type,
+                status,
+                reason,
+                message,
+                counts,
+                details,
+            },
+        }
+    }
+
+    /// Returns the timestamp of the recorded event.
+    pub fn timestamp(&self) -> SystemTime {
+        self.timestamp
+    }
+
+    /// Returns the event payload for inspection.
+    pub fn kind(&self) -> &PipelineEventKind {
+        &self.kind
+    }
 }
 
 /// Event-driven observed state store representing what we know about the state of the
@@ -236,6 +386,21 @@ pub struct ObservedStateStore {
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateHandle {
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
+}
+
+impl ObservedStateHandle {
+    /// Returns a cloned snapshot of the current pipeline statuses.
+    pub fn snapshot(&self) -> HashMap<PipelineKey, PipelineStatus> {
+        match self.pipelines.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => {
+                log::warn!(
+                    "ObservedStateHandle mutex was poisoned; returning possibly stale snapshot"
+                );
+                poisoned.into_inner().clone()
+            }
+        }
+    }
 }
 
 fn ts_to_rfc3339<S>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error>
@@ -295,6 +460,23 @@ impl Serialize for ConditionType {
 }
 
 impl PipelineStatus {
+    fn new(now: SystemTime) -> Self {
+        Self {
+            phase: PipelinePhase::Pending,
+            phase_since: now,
+            conditions: Vec::new(),
+            per_core: HashMap::new(),
+            recent_events: VecDeque::new(),
+        }
+    }
+
+    fn push_event(&mut self, event: PipelineEvent) {
+        if self.recent_events.len() >= RECENT_EVENTS_CAPACITY {
+            let _ = self.recent_events.pop_front();
+        }
+        self.recent_events.push_back(event);
+    }
+
     /// Upsert a condition with correct transition semantics.
     ///
     /// # Rationale
@@ -322,6 +504,8 @@ impl PipelineStatus {
         reason: impl Into<String>,
         message: impl Into<String>,
         now: SystemTime,
+        counts: Option<ConditionCounts>,
+        details: Option<ConditionDetails>,
     ) {
         // Try to find an existing condition with the same type.
         if let Some(c) = self.conditions.iter_mut().find(|c| c.r#type == r#type) {
@@ -334,6 +518,15 @@ impl PipelineStatus {
             // without polluting the transition history.
             c.reason = reason.into();
             c.message = message.into();
+            match counts {
+                Some(counts) => c.counts = Some(counts),
+                None => c.counts = None,
+            }
+            match details {
+                Some(details) if !details.node_errors.is_empty() => c.details = Some(details),
+                Some(_) => c.details = None,
+                None => {}
+            }
             return;
         }
 
@@ -344,6 +537,14 @@ impl PipelineStatus {
             reason: reason.into(),
             message: message.into(),
             last_transition_time: now,
+            counts,
+            details: details.and_then(|d| {
+                if d.node_errors.is_empty() {
+                    None
+                } else {
+                    Some(d)
+                }
+            }),
         });
     }
 
@@ -356,6 +557,26 @@ impl PipelineStatus {
     /// Returns an iterator of all conditions.
     pub fn conditions(&self) -> impl Iterator<Item = &Condition> {
         self.conditions.iter()
+    }
+
+    /// Returns the current aggregated phase of the pipeline.
+    pub fn phase(&self) -> PipelinePhase {
+        self.phase
+    }
+
+    /// Returns the timestamp corresponding to the last phase transition.
+    pub fn phase_since(&self) -> SystemTime {
+        self.phase_since
+    }
+
+    /// Returns the current per-core status map.
+    pub fn per_core(&self) -> &HashMap<CoreId, CoreStatus> {
+        &self.per_core
+    }
+
+    /// Returns the recent event ring buffer for timeline visualisations.
+    pub fn recent_events(&self) -> &VecDeque<PipelineEvent> {
+        &self.recent_events
     }
 }
 
@@ -419,11 +640,9 @@ impl ObservedStateStore {
                     poisoned.into_inner()
                 });
 
-                let pipeline_status = pipelines.entry(key).or_insert_with(|| PipelineStatus {
-                    phase: PipelinePhase::Pending,
-                    conditions: Default::default(),
-                    per_core: HashMap::new(),
-                });
+                let pipeline_status = pipelines
+                    .entry(key)
+                    .or_insert_with(|| PipelineStatus::new(now));
 
                 // Check if phase actually changed before expensive aggregation
                 let phase_changed = pipeline_status
@@ -439,7 +658,10 @@ impl ObservedStateStore {
                     pipeline_status.phase = aggregate_pipeline_phase(
                         pipeline_status.per_core.values().map(|c| c.phase),
                     );
+                    pipeline_status.phase_since = now;
                 }
+
+                pipeline_status.push_event(PipelineEvent::phase(now, core_id, phase));
             }
             ObservedEvent::Heartbeat { key, core_id } => {
                 // Gracefully handle poisoned mutex and proceed
@@ -451,11 +673,9 @@ impl ObservedStateStore {
                     poisoned.into_inner()
                 });
 
-                let pipeline_status = pipelines.entry(key).or_insert_with(|| PipelineStatus {
-                    phase: PipelinePhase::Pending,
-                    conditions: Default::default(),
-                    per_core: HashMap::new(),
-                });
+                let pipeline_status = pipelines
+                    .entry(key)
+                    .or_insert_with(|| PipelineStatus::new(now));
 
                 // For heartbeats, we only update the timestamp, not the phase
                 if let Some(core_status) = pipeline_status.per_core.get_mut(&core_id) {
@@ -484,11 +704,9 @@ impl ObservedStateStore {
                     poisoned.into_inner()
                 });
 
-                let ps = pipelines.entry(key).or_insert_with(|| PipelineStatus {
-                    phase: PipelinePhase::Pending,
-                    conditions: Default::default(),
-                    per_core: HashMap::new(),
-                });
+                let ps = pipelines
+                    .entry(key)
+                    .or_insert_with(|| PipelineStatus::new(now));
 
                 // Upsert the core record and its condition snapshot
                 let cs = ps.per_core.entry(core_id).or_insert(CoreStatus {
@@ -547,7 +765,7 @@ impl ObservedStateStore {
                     False => "False",
                     Unknown => "Unknown",
                 };
-                let agg_message = if let Some(sample) = sample_condition {
+                let agg_message = if let Some(ref sample) = sample_condition {
                     format!(
                         "{} status {} across {} cores (true={}, false={}, unknown={}). Last reason: {}. Last message: {}",
                         ctype.as_str(),
@@ -556,8 +774,8 @@ impl ObservedStateStore {
                         t,
                         f,
                         u,
-                        sample.reason,
-                        sample.message
+                        sample.reason.clone(),
+                        sample.message.clone()
                     )
                 } else {
                     format!(
@@ -571,7 +789,34 @@ impl ObservedStateStore {
                     )
                 };
 
-                ps.upsert_condition(ctype, agg, agg_reason, agg_message, ts);
+                let counts = ConditionCounts {
+                    true_count: t as u32,
+                    false_count: f as u32,
+                    unknown_count: u as u32,
+                };
+
+                let details = sample_condition.as_ref().and_then(|c| c.details.clone());
+
+                ps.upsert_condition(
+                    ctype.clone(),
+                    agg,
+                    agg_reason.clone(),
+                    agg_message.clone(),
+                    ts,
+                    Some(counts.clone()),
+                    details.clone(),
+                );
+
+                ps.push_event(PipelineEvent::condition(
+                    ts,
+                    core_id,
+                    ctype,
+                    agg,
+                    agg_reason,
+                    agg_message,
+                    Some(counts),
+                    details,
+                ));
             }
         }
     }
@@ -675,6 +920,7 @@ impl ObservedEvent {
         status: ConditionStatus,
         reason: String,
         message: String,
+        details: Option<ConditionDetails>,
     ) -> Self {
         ObservedEvent::Condition {
             key: PipelineKey {
@@ -688,6 +934,14 @@ impl ObservedEvent {
                 reason,
                 message,
                 last_transition_time: SystemTime::now(),
+                counts: None,
+                details: details.and_then(|d| {
+                    if d.node_errors.is_empty() {
+                        None
+                    } else {
+                        Some(d)
+                    }
+                }),
             },
         }
     }
