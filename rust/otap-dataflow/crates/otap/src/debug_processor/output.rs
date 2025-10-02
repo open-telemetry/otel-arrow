@@ -29,17 +29,26 @@ pub enum OutputMode {
 
 #[async_trait(?Send)]
 pub trait DebugOutput {
-    async fn output_message(&mut self, message: &str) -> Result<(), Error>;
+    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error>;
+    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error>;
+    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error>;
 }
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 pub struct DebugOutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
     processor_id: NodeId,
+    marshaler: Option<Box<dyn ViewMarshaler>>,
+    display_mode: DisplayMode,
 }
 
 impl DebugOutputWriter {
-    pub async fn new(output_file: Option<String>, processor_id: NodeId) -> Result<Self, Error> {
+    pub async fn new(
+        output_file: Option<String>,
+        processor_id: NodeId,
+        verbosity: Verbosity,
+        display_mode: DisplayMode,
+    ) -> Result<Self, Error> {
         let writer: Box<dyn AsyncWrite + Unpin> = match output_file {
             Some(file_name) => {
                 let file = File::options()
@@ -56,15 +65,21 @@ impl DebugOutputWriter {
             }
             None => Box::new(tokio::io::stdout()),
         };
+        // determine which marshler to use
+        let marshaler: Box<dyn ViewMarshaler> = match verbosity {
+            Verbosity::Detailed => Some(Box::new(DetailedViewMarshaler)),
+            Verbosity::Normal => Some(Box::new(NormalViewMarshaler)),
+            Verbosity::Basic => None,
+        };
+
         Ok(Self {
             writer,
             processor_id,
+            marshaler,
+            display_mode,
         })
     }
-}
 
-#[async_trait(?Send)]
-impl DebugOutput for DebugOutputWriter {
     async fn output_message(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
@@ -76,14 +91,80 @@ impl DebugOutput for DebugOutputWriter {
     }
 }
 
+#[async_trait(?Send)]
+impl DebugOutput for DebugOutputWriter {
+    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                let report = self.marshaler.marshal_metrics(metric_request);
+                self.output_message(format!("{report}\n").as_str()).await?;
+            }
+            DisplayMode::Signal => {
+                let metric_signals = metric_request
+                    .resource_metrics
+                    .into_iter()
+                    .flat_map(|resource| resource.scope_metrics)
+                    .flat_map(|scope| scope.metrics);
+                for (index, metric) in metric_signals.enumerate() {
+                    let report = self.marshaler.marshal_metric_signal(&metric, index);
+                    self.output_message(format!("{report}\n").as_str()).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                let report = self.marshaler.marshal_traces(trace_request);
+                self.output_message(format!("{report}\n").as_str()).await?;
+            }
+            DisplayMode::Signal => {
+                let span_signals = trace_request
+                    .resource_spans
+                    .into_iter()
+                    .flat_map(|resource| resource.scope_spans)
+                    .flat_map(|scope| scope.spans);
+                for (index, span) in span_signals.enumerate() {
+                    let report = self.marshaler.marshal_span_signal(&span, index);
+                    self.output_message(format!("{report}\n").as_str()).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                let report = self.marshaler.marshal_logs(log_request);
+                self.output_message(format!("{report}\n").as_str()).await?;
+            }
+            DisplayMode::Signal => {
+                let log_signals = log_request
+                    .resource_logs
+                    .into_iter()
+                    .flat_map(|resource| resource.scope_logs)
+                    .flat_map(|scope| scope.log_records);
+                for (index, log_record) in log_signals.enumerate() {
+                    let report = self.marshaler.marshal_log_signal(&log_record, index);
+                    self.output_message(format!("{report}\n").as_str()).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct DebugOutputPorts {
     ports: Vec<PortName>,
+    display_mode: DisplayMode,
     effect_handler: local::EffectHandler<OtapPdata>,
 }
 
 impl DebugOutputPorts {
     pub fn new(
         ports: Vec<PortName>,
+        display_mode: DisplayMode,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<Self, Error> {
         // check that the ports are actually connected
@@ -114,46 +195,112 @@ impl DebugOutputPorts {
 
         Ok(Self {
             ports,
+            display_mode,
             effect_handler,
         })
     }
 
-    /// create a log pdata to wrap the message in (message will be used in the body field)
-    fn generate_log_message(&self, body: String) -> LogsData {
-        let time_unix = 0u64;
-        LogsData::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![
-                            LogRecord::build(
-                                time_unix,
-                                SeverityNumber::Debug,
-                                "debug_processor_log",
-                            )
-                            .observed_time_unix_nano(time_unix)
-                            .body(AnyValue::new_string(body))
-                            .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+    fn split_metrics(&self, metric_request: MetricsData) -> Vec<MetricsData> {
+        metric_request
+            .resource_metrics
+            .into_iter()
+            .flat_map(|resource_metric| {
+                // Clone metadata that must be replicated for each metric
+                let resource = resource_metric.resource.clone();
+                let resource_schema_url = resource_metric.schema_url.clone();
+                resource_metric
+                    .scope_metrics
+                    .into_iter()
+                    .flat_map(move |scope_metrics| {
+                        let scope = scope_metrics.scope.clone();
+                        let scope_schema_url = scope_metric.schema_url.clone();
+                        scope_metric
+                            .metrics
+                            .into_iter()
+                            .map(move |metric| MetricsData {
+                                resource_metrics: vec![ResourceMetrics {
+                                    resource: resource.clone(),
+                                    scope_metrics: vec![ScopeMetrics {
+                                        scope: scope.clone(),
+                                        metrics: vec![metric],
+                                        schema_url: scope_schema_url.clone(),
+                                    }],
+                                    schema_url: resource_schema_url.clone(),
+                                }],
+                            })
+                    })
+            })
+            .collect()
+    }
+
+    fn split_traces(&self, trace_request: TracesData) -> Vec<TracesData> {
+        trace_request
+            .resource_spans
+            .into_iter()
+            .flat_map(|resource_span| {
+                // Clone metadata that must be replicated for each span
+                let resource = resource_span.resource.clone();
+                let resource_schema_url = resource_span.schema_url.clone();
+                resource_span
+                    .scope_spans
+                    .into_iter()
+                    .flat_map(move |scope_spans| {
+                        let scope = scope_spans.scope.clone();
+                        let scope_schema_url = scope_span.schema_url.clone();
+                        scope_span.spans.into_iter().map(move |span| TracesData {
+                            resource_traces: vec![ResourceSpans {
+                                resource: resource.clone(),
+                                scope_traces: vec![ScopeSpans {
+                                    scope: scope.clone(),
+                                    spans: vec![span],
+                                    schema_url: scope_schema_url.clone(),
+                                }],
+                                schema_url: resource_schema_url.clone(),
+                            }],
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    fn split_logs(&self, log_request: LogsData) -> Vec<LogsData> {
+        log_request
+            .resource_logs
+            .into_iter()
+            .flat_map(|resource_log| {
+                // Clone metadata that must be replicated for each log
+                let resource = resource_log.resource.clone();
+                let resource_schema_url = resource_log.schema_url.clone();
+                resource_log
+                    .scope_logs
+                    .into_iter()
+                    .flat_map(move |scope_logs| {
+                        let scope = scope_logs.scope.clone();
+                        let scope_schema_url = scope_log.schema_url.clone();
+                        scope_log
+                            .log_records
+                            .into_iter()
+                            .map(move |log_record| LogsData {
+                                resource_logs: vec![ResourceLogs {
+                                    resource: resource.clone(),
+                                    scope_logs: vec![ScopeLogs {
+                                        scope: scope.clone(),
+                                        log_records: vec![log_record],
+                                        schema_url: scope_schema_url.clone(),
+                                    }],
+                                    schema_url: resource_schema_url.clone(),
+                                }],
+                            })
+                    })
+            })
+            .collect()
     }
 }
 
+
 #[async_trait(?Send)]
 impl DebugOutput for DebugOutputPorts {
-    async fn output_message(&mut self, message: &str) -> Result<(), Error> {
-        // store message as a log -> create OtapPdata msg to send
-        let log_message = self.generate_log_message(message.to_string());
-        let mut bytes = vec![];
-        log_message
-            .encode(&mut bytes)
-            .expect("failed to encode log data into bytes");
-        let otlp_logs_bytes =
-            OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-        // send msg to connected ports
+    async fn output_message(&mut self, message: OtapPdata) -> Result<(), Error> {
         for port in self.ports.iter().cloned() {
             self.effect_handler
                 .send_message_to(port, otlp_logs_bytes.clone())
@@ -161,5 +308,48 @@ impl DebugOutput for DebugOutputPorts {
         }
 
         Ok(())
+    }
+
+    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                self.output_message(OTLPSignal::Metrics(metric_request).try_into()?)
+                    .await?;
+            }
+            DisplayMode::Signal => {
+                let metric_signals = self.split_metrics(metric_request);
+                for metric in metric_signals.into_iter() {
+                    self.output_message(OTLPSignal::Metrics(metric).try_into()?).await?;
+                }
+            }
+        }
+    }
+    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                self.output_message(OTLPSignal::Traces(trace_request).try_into()?)
+                    .await?;
+            }
+            DisplayMode::Signal => {
+                let trace_signals = self.split_traces(trace_request);
+                for trace in trace_signals.into_iter() {
+                    self.output_message(OTLPSignal::Traces(trace_request).try_into()?)
+                        .await?;
+                }
+            }
+        }
+    }
+    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error> {
+        match self.display_mode {
+            DisplayMode::Batch => {
+                self.output_message(OTLPSignal::Logs(log_request).try_into()?).await?;
+            }
+            DisplayMode::Signal => {
+                let log_signals = self.split_logs(log_request);
+                for log in log_signals.into_iter() {
+                    self.output_message(OTLPSignal::Logs(log_request).try_into()?).await?;
+                }
+            }
+        }
     }
 }

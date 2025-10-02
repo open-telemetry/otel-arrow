@@ -120,17 +120,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
     ) -> Result<(), Error> {
         // create a marshaler to take the otlp objects and extract various data to report
         let active_signals = self.config.signals();
-        let verbosity = self.config.verbosity();
-        let mode = self.config.mode();
         let filters = self.config.filters();
         let output_mode = self.config.output();
-
-        // determine which marshler to use
-        let marshaler: Box<dyn ViewMarshaler> = if verbosity == Verbosity::Normal {
-            Box::new(NormalViewMarshaler)
-        } else {
-            Box::new(DetailedViewMarshaler)
-        };
 
         // if the outputmode is via outports then we can have multiple outports configured
         // so there is no clear default we need to determine which portnames are for the main port
@@ -150,14 +141,27 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 
         // determine which output method to use to use
         let mut debug_output: Box<dyn DebugOutput> = match output_mode {
-            OutputMode::Console => {
-                Box::new(DebugOutputWriter::new(None, effect_handler.processor_id()).await?)
-            }
+            OutputMode::Console => Box::new(
+                DebugOutputWriter::new(
+                    None,
+                    effect_handler.processor_id(),
+                    self.config.verbosity(),
+                    self.config.mode(),
+                )
+                .await?,
+            ),
             OutputMode::File(file_name) => Box::new(
-                DebugOutputWriter::new(Some(file_name), effect_handler.processor_id()).await?,
+                DebugOutputWriter::new(
+                    Some(file_name),
+                    effect_handler.processor_id(),
+                    self.config.verbosity(),
+                    self.config.mode(),
+                )
+                .await?,
             ),
             OutputMode::Outports(ports) => Box::new(DebugOutputPorts::new(
                 ports.clone(),
+                self.config.mode(),
                 effect_handler.clone(),
             )?),
         };
@@ -166,17 +170,20 @@ impl local::Processor<OtapPdata> for DebugProcessor {
             Message::Control(control) => {
                 match control {
                     NodeControlMsg::TimerTick {} => {
-                        debug_output.output_message("Timer tick received\n").await?;
+                        // TODO FIX THIS
+                        // debug_output.output_message("Timer tick received\n").await?;
                     }
                     NodeControlMsg::Config { .. } => {
-                        debug_output
-                            .output_message("Config message received\n")
-                            .await?;
+                        // TODO FIX THIS
+                        // debug_output
+                        //     .output_message("Config message received\n")
+                        //     .await?;
                     }
                     NodeControlMsg::Shutdown { .. } => {
-                        debug_output
-                            .output_message("Shutdown message received\n")
-                            .await?;
+                        // TODO FIX THIS
+                        // debug_output
+                        //     .output_message("Shutdown message received\n")
+                        //     .await?;
                     }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
@@ -207,16 +214,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_log(
-                                &verbosity,
-                                req,
-                                marshaler.as_ref(),
-                                &mode,
-                                filters,
-                                debug_output.as_mut(),
-                                &mut self.metrics,
-                            )
-                            .await?;
+                            process_log(req, filters, debug_output.as_mut(), &mut self.metrics)
+                                .await?;
                         }
                         self.metrics.logs_consumed.add(1);
                     }
@@ -227,16 +226,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytesf: {e}"),
                                 }
                             })?;
-                            push_metric(
-                                &verbosity,
-                                req,
-                                marshaler.as_ref(),
-                                &mode,
-                                filters,
-                                debug_output.as_mut(),
-                                &mut self.metrics,
-                            )
-                            .await?;
+                            process_metric(req, filters, debug_output.as_mut(), &mut self.metrics)
+                                .await?;
                         }
                         self.metrics.metrics_consumed.add(1);
                     }
@@ -247,16 +238,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            push_trace(
-                                &verbosity,
-                                req,
-                                marshaler.as_ref(),
-                                &mode,
-                                filters,
-                                debug_output.as_mut(),
-                                &mut self.metrics,
-                            )
-                            .await?;
+                            process_trace(req, filters, debug_output.as_mut(), &mut self.metrics)
+                                .await?;
                         }
                         self.metrics.traces_consumed.add(1);
                     }
@@ -268,11 +251,9 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 }
 
 /// Function to collect and report the data contained in a Metrics object received by the Debug processor
-async fn push_metric(
+async fn process_metric(
     verbosity: &Verbosity,
     mut metric_request: MetricsData,
-    marshaler: &dyn ViewMarshaler,
-    mode: &DisplayMode,
     filters: &Vec<FilterRules>,
     debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
@@ -318,12 +299,14 @@ async fn push_metric(
     let report_basic = format!(
         "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
     );
-    debug_output.output_message(report_basic.as_str()).await?;
+
+    // TODO FIX THIS
+    // debug_output.output_message(report_basic.as_str()).await?;
 
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
-    if *verbosity == Verbosity::Basic {
-        return Ok(());
-    }
+    // if *verbosity == Verbosity::Basic {
+    //     return Ok(());
+    // }
 
     // if there are filters to apply then apply them
     if !filters.is_empty() {
@@ -331,35 +314,15 @@ async fn push_metric(
             filter.filter_metrics(&mut metric_request)
         }
     }
-    match mode {
-        DisplayMode::Batch => {
-            let report = marshaler.marshal_metrics(metric_request);
-            debug_output
-                .output_message(format!("{report}\n").as_str())
-                .await?;
-        }
-        DisplayMode::Signal => {
-            let metric_signals = metric_request
-                .resource_metrics
-                .into_iter()
-                .flat_map(|resource| resource.scope_metrics)
-                .flat_map(|scope| scope.metrics);
-            for (index, metric) in metric_signals.enumerate() {
-                let report = marshaler.marshal_metric_signal(&metric, index);
-                debug_output
-                    .output_message(format!("{report}\n").as_str())
-                    .await?;
-            }
-        }
-    }
+
+    debug_output.output_metrics(metric_request).await?;
+
     Ok(())
 }
 
-async fn push_trace(
+async fn process_trace(
     verbosity: &Verbosity,
     mut trace_request: TracesData,
-    marshaler: &dyn ViewMarshaler,
-    mode: &DisplayMode,
     filters: &Vec<FilterRules>,
     debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
@@ -386,11 +349,13 @@ async fn push_trace(
     let report_basic = format!(
         "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
     );
-    debug_output.output_message(report_basic.as_str()).await?;
+
+    // TODO FIX THIS
+    // debug_output.output_message(report_basic.as_str()).await?;
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
-    if *verbosity == Verbosity::Basic {
-        return Ok(());
-    }
+    // if *verbosity == Verbosity::Basic {
+    //     return Ok(());
+    // }
 
     // if there are filters to apply then apply them
     if !filters.is_empty() {
@@ -398,35 +363,13 @@ async fn push_trace(
             filter.filter_traces(&mut trace_request)
         }
     }
-    match mode {
-        DisplayMode::Batch => {
-            let report = marshaler.marshal_traces(trace_request);
-            debug_output
-                .output_message(format!("{report}\n").as_str())
-                .await?;
-        }
-        DisplayMode::Signal => {
-            let span_signals = trace_request
-                .resource_spans
-                .into_iter()
-                .flat_map(|resource| resource.scope_spans)
-                .flat_map(|scope| scope.spans);
-            for (index, span) in span_signals.enumerate() {
-                let report = marshaler.marshal_span_signal(&span, index);
-                debug_output
-                    .output_message(format!("{report}\n").as_str())
-                    .await?;
-            }
-        }
-    }
+
+    debug_output.output_traces(trace_request).await?;
     Ok(())
 }
 
-async fn push_log(
-    verbosity: &Verbosity,
+async fn process_log(
     mut log_request: LogsData,
-    marshaler: &dyn ViewMarshaler,
-    mode: &DisplayMode,
     filters: &Vec<FilterRules>,
     debug_output: &mut dyn DebugOutput,
     internal_metrics: &mut MetricSet<DebugPdataMetrics>,
@@ -452,40 +395,21 @@ async fn push_log(
     let report_basic = format!(
         "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
     );
-    debug_output.output_message(report_basic.as_str()).await?;
+    // TODO FIX THIS
+    // debug_output.output_message(report_basic.as_str()).await?;
 
-    if *verbosity == Verbosity::Basic {
-        return Ok(());
-    }
+    // if *verbosity == Verbosity::Basic {
+    //     return Ok(());
+    // }
 
-    // if there are filters to apply then apply them
     if !filters.is_empty() {
         for filter in filters {
             filter.filter_logs(&mut log_request)
         }
     }
-    match mode {
-        DisplayMode::Batch => {
-            let report = marshaler.marshal_logs(log_request);
-            debug_output
-                .output_message(format!("{report}\n").as_str())
-                .await?;
-        }
-        DisplayMode::Signal => {
-            let log_signals = log_request
-                .resource_logs
-                .into_iter()
-                .flat_map(|resource| resource.scope_logs)
-                .flat_map(|scope| scope.log_records);
-            for (index, log_record) in log_signals.enumerate() {
-                let report = marshaler.marshal_log_signal(&log_record, index);
-                debug_output
-                    .output_message(format!("{report}\n").as_str())
-                    .await?;
-            }
-        }
-    }
-    Ok(())
+    debug_output.output_logs(log_request).await?;
+
+    return Ok(());
 }
 
 #[cfg(test)]
