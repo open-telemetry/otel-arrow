@@ -116,14 +116,9 @@ impl SchemaIdBuilder {
 
             Map(field, _) => {
                 self.out.push_str("Map<");
-                // The field should be a List containing a Struct with key/value
-                if let Struct(fields) = field.data_type() {
-                    if fields.len() >= 2 {
-                        self.write_data_type(fields[0].data_type()); // key
-                        self.out.push(',');
-                        self.write_data_type(fields[1].data_type()); // value
-                    }
-                }
+                self.write_data_type(field.data_type());
+                self.out.push(',');
+                self.write_data_type(field.data_type());
                 self.out.push('>');
             }
 
@@ -262,7 +257,7 @@ mod test {
             "int8:I8",
             "list:[U8]",
             "map:Map<Str,Str>",
-            "sparse_union:DU{su.a:I8,su.b:I8,su.b:I8}",
+            "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
             "string:Str",
             "struct:{s.a:U8,s.b:U16,s.c:U32}",
             "ts:Tns",
