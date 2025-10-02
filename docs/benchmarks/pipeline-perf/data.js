@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759423393816,
+  "lastUpdate": 1759448390188,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "l.querel@f5.com",
-            "name": "Laurent Quérel",
-            "username": "lquerel"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "9859c859192f45e865c38fde9e616407e76c198b",
-          "message": "Generic, high-performance, type-safe metric instrumentation framework (#946)\n\nThis instrumentation framework is declarative (macro-style annotations),\nsupports multivariate metrics, is compatible with our thread-per-core\ndesign, offers low overhead, and is NUMA-compatible (not yet fully\nimplemented).\n\nThis framework will be integrated with the OTEL Rust Client SDK in an\nupcoming PR. Currently, 3 HTTP endpoints are exposed to facilitate\nintegration with our benchmark infrastructure:\n\n- `/telemetry/live-schema`: current semantic conventions registry\n- `/telemetry/metrics`: current aggregated metrics in JSON, line\nprotocol, or\nPrometheus text format. Supported parameters: reset=true,false,\nformat=json (default), json_compact, line_protocol, prometheus.\n- `/telemetry/metrics/aggregate`: aggregated metrics grouped by metric\nset name\nand optional attributes. Supported parameters: reset, format,\nattrs=comma separated list of attribute names to group by.\n\n<img width=\"1537\" height=\"830\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/ec4647ad-ca58-4314-a954-9424733cfe3f\"\n/>\n\n## How to define a metric set\n\n- Import instrument types from otap-df-telemetry and the macro from this\ncrate.\n- Annotate your struct with `#[metric_set(name =\n\"<metrics.group.name>\")]`.\n- For each metric field, choose one of the supported instruments and add\n  `#[metric(unit = \"{unit}\")]`.\n- Supported instruments: `Counter<u64>` (`UpDownCounter<u64>`,\n`Gauge<u64>`\n    soon).\n  - Units follow a simple string convention (e.g., `{msg}`, `{record}`,\n    `{span}`).\n- Optional: Document each field with a Rust doc comment; it becomes the\nmetric\n  \"brief\" in the descriptor.\n- Optional: Override a field metric name with\n  `#[metric(name = \"custom.name\", unit = \"{unit}\")]`.\n- If `name` is omitted, the field identifier is converted by replacing\n`_`\n    with `.`.\n\nExample (from the OTAP Perf Exporter):\n\n```rust\nuse otap_df_telemetry::instrument::{Counter, UpDownCounter, Gauge};\nuse otap_df_telemetry_macros::metric_set;\n\n/// Pdata-oriented metrics for the OTAP PerfExporter.\n#[metric_set(name = \"perf.exporter.pdata.metrics\")]\n#[derive(Debug, Default, Clone)]\npub struct PerfExporterPdataMetrics {\n    /// Number of pdata batches received.\n    #[metric(unit = \"{msg}\")]\n    pub batches: Counter<u64>,\n\n    /// Number of invalid pdata batches received.\n    #[metric(unit = \"{msg}\")]\n    pub invalid_batches: Counter<u64>,\n\n    /// Number of Arrow records received.\n    #[metric(unit = \"{record}\")]\n    pub arrow_records: Counter<u64>,\n\n    /// Number of logs received.\n    #[metric(unit = \"{log}\")]\n    pub logs: Counter<u64>,\n\n    /// Number of spans received.\n    #[metric(unit = \"{span}\")]\n    pub spans: Counter<u64>,\n\n    /// Number of metrics received.\n    #[metric(unit = \"{metric}\")]\n    pub metrics: Counter<u64>,\n}\n```\n\n## Predefined Attributes\n\nThe pipeline engine defines a set of predefined attributes that can be\nused for\nlabeling metrics and traces. These attributes provide context about the\npipeline\nand its components, facilitating better observability and analysis.\n\n| Scope | Attribute | Type | Description |\n\n|----------|---------------------|---------|--------------------------------------------------------------|\n| Resource | process_instance_id | string | Unique process instance\nidentifier (base32-encoded UUID v7). |\n| Resource | host_id | string | Host identifier (e.g. hostname). |\n| Resource | container_id | string | Container identifier (e.g.\nDocker/containerd container ID). |\n| Engine | core_id | integer | Core identifier. |\n| Engine | numa_node_id | integer | NUMA node identifier. |\n| Pipeline | pipeline_id | string | Pipeline identifier. |\n| Node | node_id | string | Node unique identifier (in scope of the\npipeline). |\n| Node | node_type | string | Node type (e.g. \"receiver\", \"processor\",\n\"exporter\"). |\n\n\nCloses https://github.com/open-telemetry/otel-arrow/issues/833\nCloses https://github.com/open-telemetry/otel-arrow/issues/986\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
-          "timestamp": "2025-08-27T07:10:17Z",
-          "tree_id": "33545484b093eeacb94bb8344d9a504cbc0e9c25",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/9859c859192f45e865c38fde9e616407e76c198b"
-        },
-        "date": 1756279148592,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 741000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22230000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22230000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.7,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 166.04,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 193.46,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 725666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 21770000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 21770000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.58,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.54,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 122.7,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 140.29,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 187.78,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "129437996+c1ly@users.noreply.github.com",
+            "name": "c1ly",
+            "username": "c1ly"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55aaa48e214407da73f940f6ca29357a3bd876fa",
+          "message": "[otap-dataflow] Allow debug processor to output via a secondary outport (#1171)\n\nAdded a output field to the DebugProcessor allowing the user to select\nwhether to output to `console`, `outport` or `file`\n\nAdded a OutputMode enum for the output setting in the Config and a\nDebugOutput struct to handle the output flow\n\n``` rust\n#[derive(Debug, Clone, Deserialize)]\n#[serde(untagged)]\npub enum OutputMode {\n    Console,\n    Outport(Vec<PortName>),\n    File(String),\n}\n\n/// struct that handles the logic for sending data to console or out_ports\npub struct DebugOutput {\n    writer: Option<OutputWriter>,\n    ports: Option<Vec<PortName>>,\n    effect_handler: local::EffectHandler<OtapPdata>,\n}\n```\n### Output\n\nBy default the debug processor will write the output to the console but\nyou can configure it to write to a file or to send the data to another\npipeline node, you can see how to configure them below.\n\n#### Output to file\n\n```yaml\nconfig:\n   verbosity: normal\n   output: file_name.txt\n```\n\nIn this config the debug-processor will write to a file named\n`file_name.txt`\nit will append to the file rather than overwriting\n\n#### Output to pipeline node\n\n```yaml\n  debug:\n    kind: processor\n    plugin_urn: \"urn:otel:debug:processor\"\n    out_ports:\n      out_port:\n        destinations:\n          - noop\n        dispatch_strategy: round_robin\n      out_port2:\n        destinations:\n          - some_node\n        dispatch_strategy: round_robin\n    config:\n      verbosity: basic\n      output:\n        - out_port2\n```\n\nIn this config we create a processor with multiple out_ports.\nIn the config setting we tell the debug-processor to use `out_port2`\nwhich will send data to another node named `some_node`",
+          "timestamp": "2025-10-02T23:31:37Z",
+          "tree_id": "f129d1c721179044e007e0087557052a012d2ccf",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/55aaa48e214407da73f940f6ca29357a3bd876fa"
+        },
+        "date": 1759448388146,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 730333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21910000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21910000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.58,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.63,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 133.07,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 156.19,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 736333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22090000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22090000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.76,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.94,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 167.82,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 198.02,
             "unit": "MiB"
           }
         ]
