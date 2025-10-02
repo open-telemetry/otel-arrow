@@ -350,7 +350,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         shutdown = handle_res_stream(
                             res.into_inner(),
                             pdata_metrics_tx.clone(),
-                            SignalType::Logs,
+                            signal_type,
                             shutdown_rx.clone()
                         ).await;
                     }
