@@ -128,10 +128,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Start periodic telemetry collection (1s), similar to other nodes
-        let handle = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
             .await?;
-        let mut telemetry_timer = Some(handle);
 
         match self.config.protocol {
             Protocol::Tcp => {
@@ -145,9 +144,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
                                 Ok(NodeControlMsg::Shutdown { .. }) => {
-                                    if let Some(h) = telemetry_timer.take() {
-                                        let _ = h.cancel().await;
-                                    }
+                                    _ = timer_cancel_handle.cancel().await;
                                     break;
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -420,9 +417,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
                                 Ok(NodeControlMsg::Shutdown { .. }) => {
-                                    if let Some(h) = telemetry_timer.take() {
-                                        let _ = h.cancel().await;
-                                    }
+                                    _ = timer_cancel_handle.cancel().await;
                                     // ToDo: Add proper deadline function
                                     break;
                                 }
