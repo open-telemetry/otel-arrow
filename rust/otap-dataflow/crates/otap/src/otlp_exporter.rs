@@ -14,7 +14,7 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
@@ -108,21 +108,36 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::connect(self.config.grpc_endpoint.clone())
             .await
-            .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                error: error.to_string(),
+            .map_err(|error| {
+                let source_detail = format_error_sources(&error);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: error.to_string(),
+                    source_detail,
+                }
             })?;
         let mut logs_client = LogsServiceClient::connect(self.config.grpc_endpoint.clone())
             .await
-            .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                error: error.to_string(),
+            .map_err(|error| {
+                let source_detail = format_error_sources(&error);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: error.to_string(),
+                    source_detail,
+                }
             })?;
         let mut trace_client = TraceServiceClient::connect(self.config.grpc_endpoint.clone())
             .await
-            .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                error: error.to_string(),
+            .map_err(|error| {
+                let source_detail = format_error_sources(&error);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: error.to_string(),
+                    source_detail,
+                }
             })?;
 
         if let Some(ref compression) = self.config.compression_method {
@@ -172,9 +187,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 .encode(&mut otap_batch, &mut proto_buffer)
                                 .map_err(|e| {
                                     self.pdata_metrics.logs_failed.inc();
+                                    let source_detail = format_error_sources(&e);
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
+                                        kind: ExporterErrorKind::Other,
                                         error: e.to_string(),
+                                        source_detail,
                                     }
                                 })?;
                             // TODO we should try to change the client interfaces to accept a slice
@@ -182,9 +200,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let bytes = proto_buffer.as_ref().to_vec();
                             _ = logs_client.export(bytes).await.map_err(|e| {
                                 self.pdata_metrics.logs_failed.inc();
+                                let source_detail = format_error_sources(&e);
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
+                                    kind: ExporterErrorKind::Transport,
                                     error: e.to_string(),
+                                    source_detail,
                                 }
                             })?;
                             self.pdata_metrics.logs_exported.inc();
@@ -195,18 +216,24 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 .encode(&mut otap_batch, &mut proto_buffer)
                                 .map_err(|e| {
                                     self.pdata_metrics.metrics_failed.inc();
+                                    let source_detail = format_error_sources(&e);
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
+                                        kind: ExporterErrorKind::Other,
                                         error: e.to_string(),
+                                        source_detail,
                                     }
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
                             _ = metrics_client.export(bytes).await.map_err(|e| {
                                 self.pdata_metrics.metrics_failed.inc();
+                                let source_detail = format_error_sources(&e);
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
+                                    kind: ExporterErrorKind::Transport,
                                     error: e.to_string(),
+                                    source_detail,
                                 }
                             })?;
                             self.pdata_metrics.metrics_exported.inc()
@@ -217,18 +244,24 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 .encode(&mut otap_batch, &mut proto_buffer)
                                 .map_err(|e| {
                                     self.pdata_metrics.traces_failed.inc();
+                                    let source_detail = format_error_sources(&e);
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
+                                        kind: ExporterErrorKind::Other,
                                         error: e.to_string(),
+                                        source_detail,
                                     }
                                 })?;
 
                             let bytes = proto_buffer.as_ref().to_vec();
                             _ = trace_client.export(bytes).await.map_err(|e| {
                                 self.pdata_metrics.traces_failed.inc();
+                                let source_detail = format_error_sources(&e);
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
+                                    kind: ExporterErrorKind::Transport,
                                     error: e.to_string(),
+                                    source_detail,
                                 }
                             })?;
                             self.pdata_metrics.traces_exported.inc();
@@ -238,9 +271,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     _ = logs_client.export(bytes).await.map_err(|e| {
                                         self.pdata_metrics.logs_failed.inc();
+                                        let source_detail = format_error_sources(&e);
                                         Error::ExporterError {
                                             exporter: exporter_id.clone(),
+                                            kind: ExporterErrorKind::Transport,
                                             error: e.to_string(),
+                                            source_detail,
                                         }
                                     })?;
                                     self.pdata_metrics.logs_exported.inc();
@@ -248,9 +284,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                                     _ = metrics_client.export(bytes).await.map_err(|e| {
                                         self.pdata_metrics.metrics_failed.inc();
+                                        let source_detail = format_error_sources(&e);
                                         Error::ExporterError {
                                             exporter: exporter_id.clone(),
+                                            kind: ExporterErrorKind::Transport,
                                             error: e.to_string(),
+                                            source_detail,
                                         }
                                     })?;
                                     self.pdata_metrics.metrics_exported.inc();
@@ -258,9 +297,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
                                     _ = trace_client.export(bytes).await.map_err(|e| {
                                         self.pdata_metrics.traces_failed.inc();
+                                        let source_detail = format_error_sources(&e);
                                         Error::ExporterError {
                                             exporter: exporter_id.clone(),
+                                            kind: ExporterErrorKind::Transport,
                                             error: e.to_string(),
+                                            source_detail,
                                         }
                                     })?;
                                     self.pdata_metrics.traces_exported.inc();

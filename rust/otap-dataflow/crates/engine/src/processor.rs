@@ -9,7 +9,7 @@
 
 use crate::config::ProcessorConfig;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{MessageChannel, Receiver, Sender};
@@ -165,7 +165,9 @@ impl<PData> ProcessorWrapper<PData> {
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
+                        kind: ProcessorErrorKind::Configuration,
                         error: "The pdata receiver must be defined at this stage".to_owned(),
+                        source_detail: String::new(),
                     })?,
                 );
                 let default_port = user_config.default_out_port.clone();
@@ -190,7 +192,9 @@ impl<PData> ProcessorWrapper<PData> {
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
+                        kind: ProcessorErrorKind::Configuration,
                         error: "The pdata receiver must be defined at this stage".to_owned(),
+                        source_detail: String::new(),
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
@@ -326,11 +330,15 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a local sender for PData".to_owned(),
+                source_detail: String::new(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a shared sender for PData".to_owned(),
+                source_detail: String::new(),
             }),
         }
     }
@@ -353,7 +361,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
             }
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a shared receiver for PData".to_owned(),
+                source_detail: String::new(),
             }),
         }
     }

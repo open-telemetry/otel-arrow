@@ -17,7 +17,7 @@ use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -110,7 +110,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             .get_registry()
             .map_err(|err| Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error: err,
+                source_detail: String::new(),
             })?;
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -166,9 +168,12 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             }
                         }
                         Err(e) => {
+                            let source_detail = format_error_sources(&e);
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
-                                error: e.to_string()
+                                kind: ReceiverErrorKind::Other,
+                                error: e.to_string(),
+                                source_detail,
                             });
                         }
                     }
@@ -229,7 +234,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
@@ -270,7 +277,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
@@ -308,7 +317,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(

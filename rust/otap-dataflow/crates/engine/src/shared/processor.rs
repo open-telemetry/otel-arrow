@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, TypedError};
+use crate::error::{Error, ProcessorErrorKind, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedSender;
@@ -147,9 +147,11 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
+                source_detail: String::new(),
             })),
         }
     }
@@ -168,10 +170,12 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.processor_id()
                 ),
+                source_detail: String::new(),
             })),
         }
     }

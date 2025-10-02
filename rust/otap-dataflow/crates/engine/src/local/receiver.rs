@@ -34,7 +34,7 @@
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
-use crate::error::{Error, TypedError};
+use crate::error::{Error, ReceiverErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -187,9 +187,11 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
+                source_detail: String::new(),
             })),
         }
     }
@@ -213,10 +215,12 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.receiver_id()
                 ),
+                source_detail: String::new(),
             })),
         }
     }

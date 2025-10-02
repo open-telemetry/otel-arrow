@@ -29,6 +29,24 @@ impl PipelineKey {
             pipeline_id,
         }
     }
+
+    /// Returns the pipeline group identifier.
+    #[must_use]
+    pub fn pipeline_group_id(&self) -> &PipelineGroupId {
+        &self.pipeline_group_id
+    }
+
+    /// Returns the pipeline identifier.
+    #[must_use]
+    pub fn pipeline_id(&self) -> &PipelineId {
+        &self.pipeline_id
+    }
+
+    /// Returns a `group_id:pipeline_id` string representation.
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        format!("{}:{}", self.pipeline_group_id, self.pipeline_id)
+    }
 }
 
 impl Serialize for PipelineKey {
