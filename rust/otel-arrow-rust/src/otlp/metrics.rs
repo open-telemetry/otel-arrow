@@ -7,7 +7,6 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
@@ -24,6 +23,7 @@ use crate::otlp::metrics::data_points::summary::{
     SummaryDpArrays, proto_encode_summary_data_point,
 };
 use crate::otlp::metrics::exemplar::ExemplarArrays;
+use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
     HISTOGRAM_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
@@ -266,62 +266,8 @@ impl Default for MetricsProtoBytesEncoder {
     }
 }
 
-impl MetricsProtoBytesEncoder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            batch_sorter: BatchSorter::new(),
-            root_cursor: SortedBatchCursor::new(),
-            resource_attrs_cursor: SortedBatchCursor::new(),
-            scope_attrs_cursor: SortedBatchCursor::new(),
-            metrics_attrs_cursor: SortedBatchCursor::new(),
-
-            summary_dp_cursor: SortedBatchCursor::new(),
-            summary_dp_attrs_cursor: SortedBatchCursor::new(),
-
-            number_dp_cursor: SortedBatchCursor::new(),
-            number_dp_attrs_cursor: SortedBatchCursor::new(),
-            number_dp_exemplars_cursor: SortedBatchCursor::new(),
-            number_dp_exemplars_attrs_cursor: SortedBatchCursor::new(),
-
-            hist_dp_cursor: SortedBatchCursor::new(),
-            hist_dp_attrs_cursor: SortedBatchCursor::new(),
-            hist_dp_exemplars_cursor: SortedBatchCursor::new(),
-            hist_dp_exemplars_attrs_cursor: SortedBatchCursor::new(),
-
-            exp_hist_dp_cursor: SortedBatchCursor::new(),
-            exp_hist_dp_attrs_cursor: SortedBatchCursor::new(),
-            exp_hist_exemplars_cursor: SortedBatchCursor::new(),
-            exp_hist_exemplars_attrs_cursor: SortedBatchCursor::new(),
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.root_cursor.reset();
-        self.resource_attrs_cursor.reset();
-        self.scope_attrs_cursor.reset();
-        self.metrics_attrs_cursor.reset();
-
-        self.summary_dp_cursor.reset();
-        self.summary_dp_attrs_cursor.reset();
-
-        self.number_dp_cursor.reset();
-        self.number_dp_attrs_cursor.reset();
-        self.number_dp_exemplars_cursor.reset();
-        self.number_dp_exemplars_attrs_cursor.reset();
-
-        self.hist_dp_cursor.reset();
-        self.hist_dp_attrs_cursor.reset();
-        self.hist_dp_exemplars_cursor.reset();
-        self.hist_dp_exemplars_attrs_cursor.reset();
-
-        self.exp_hist_dp_cursor.reset();
-        self.exp_hist_dp_attrs_cursor.reset();
-        self.exp_hist_exemplars_cursor.reset();
-        self.exp_hist_exemplars_attrs_cursor.reset();
-    }
-
-    pub fn encode(
+impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
+    fn encode(
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
@@ -480,6 +426,62 @@ impl MetricsProtoBytesEncoder {
         }
 
         Ok(())
+    }
+}
+
+impl MetricsProtoBytesEncoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            metrics_attrs_cursor: SortedBatchCursor::new(),
+
+            summary_dp_cursor: SortedBatchCursor::new(),
+            summary_dp_attrs_cursor: SortedBatchCursor::new(),
+
+            number_dp_cursor: SortedBatchCursor::new(),
+            number_dp_attrs_cursor: SortedBatchCursor::new(),
+            number_dp_exemplars_cursor: SortedBatchCursor::new(),
+            number_dp_exemplars_attrs_cursor: SortedBatchCursor::new(),
+
+            hist_dp_cursor: SortedBatchCursor::new(),
+            hist_dp_attrs_cursor: SortedBatchCursor::new(),
+            hist_dp_exemplars_cursor: SortedBatchCursor::new(),
+            hist_dp_exemplars_attrs_cursor: SortedBatchCursor::new(),
+
+            exp_hist_dp_cursor: SortedBatchCursor::new(),
+            exp_hist_dp_attrs_cursor: SortedBatchCursor::new(),
+            exp_hist_exemplars_cursor: SortedBatchCursor::new(),
+            exp_hist_exemplars_attrs_cursor: SortedBatchCursor::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.metrics_attrs_cursor.reset();
+
+        self.summary_dp_cursor.reset();
+        self.summary_dp_attrs_cursor.reset();
+
+        self.number_dp_cursor.reset();
+        self.number_dp_attrs_cursor.reset();
+        self.number_dp_exemplars_cursor.reset();
+        self.number_dp_exemplars_attrs_cursor.reset();
+
+        self.hist_dp_cursor.reset();
+        self.hist_dp_attrs_cursor.reset();
+        self.hist_dp_exemplars_cursor.reset();
+        self.hist_dp_exemplars_attrs_cursor.reset();
+
+        self.exp_hist_dp_cursor.reset();
+        self.exp_hist_dp_attrs_cursor.reset();
+        self.exp_hist_exemplars_cursor.reset();
+        self.exp_hist_exemplars_attrs_cursor.reset();
     }
 
     fn encode_resource_metrics(

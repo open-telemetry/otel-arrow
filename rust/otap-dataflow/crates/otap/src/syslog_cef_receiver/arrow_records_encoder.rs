@@ -133,7 +133,7 @@ mod tests {
     use super::*;
     use crate::syslog_cef_receiver::parser::parse;
     use otel_arrow_rust::{
-        otlp::{ProtoBuffer, logs::LogsProtoBytesEncoder},
+        otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
         },
