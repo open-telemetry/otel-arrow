@@ -278,7 +278,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {
-                node: node_id.clone(),
+                node_id: node_id.index.clone(),
                 error: e,
             }),
             None => Err(TypedError::Error(Error::InternalError {

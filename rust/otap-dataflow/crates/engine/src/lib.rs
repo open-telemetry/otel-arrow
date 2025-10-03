@@ -182,11 +182,11 @@ pub trait ProducerEffectHandlerExtension<PData> {
 /// Effect handler extensions for consumers specific to data type.
 #[async_trait(?Send)]
 pub trait ConsumerEffectHandlerExtension<PData> {
-    /// Triggers the next step of work (if any) in Nack processing.
-    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
-
     /// Triggers the next step of work (if any) in Ack processing.
-    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<AckMsg<PData>>>;
+
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<NackMsg<PData>>>;
 }
 
 /// Builds a pipeline factory for initialization.

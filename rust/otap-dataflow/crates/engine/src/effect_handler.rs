@@ -3,8 +3,9 @@
 
 //! Common foundation of all effect handlers.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
@@ -199,6 +200,48 @@ impl<PData> EffectHandlerCore<PData> {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
+    }
+
+    /// Send a Ack to a node of known-interest.
+    pub async fn route_ack<F>(
+        &self,
+        ack_in: AckMsg<PData>,
+        cxf: F,
+    ) -> Result<(), TypedError<AckMsg<PData>>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        // TODO: Placeholder: This returns a SendError::Closed as there
+        // is no appropriate message to send yet.
+        cxf(ack_in)
+            .map(|(node_id, ack_out)| {
+                Err(TypedError::NodeControlMsgSendError {
+                    node_id,
+                    error: SendError::Closed(ack_out),
+                })
+            })
+            .unwrap_or(Ok(()))
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(
+        &self,
+        nack_in: NackMsg<PData>,
+        cxf: F,
+    ) -> Result<(), TypedError<NackMsg<PData>>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        // TODO: Placeholder: This returns a SendError::Closed as there
+        // is no appropriate message to send yet.
+        cxf(nack_in)
+            .map(|(node_id, nack_out)| {
+                Err(TypedError::NodeControlMsgSendError {
+                    node_id,
+                    error: SendError::Closed(nack_out),
+                })
+            })
+            .unwrap_or(Ok(()))
     }
 }
 

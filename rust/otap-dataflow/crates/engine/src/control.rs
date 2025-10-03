@@ -397,7 +397,7 @@ impl<PData> ControlSenders<PData> {
 
             if let Err(error) = typed_sender.sender.send(shutdown_msg).await {
                 errors.push(TypedError::NodeControlMsgSendError {
-                    node: typed_sender.node_id.clone(),
+                    node_id: typed_sender.node_id.index,
                     error,
                 });
             }

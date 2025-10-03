@@ -80,6 +80,7 @@
 
 use async_trait::async_trait;
 use otap_df_config::experimental::SignalType;
+use otap_df_engine::error::TypedError;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
@@ -610,16 +611,16 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 {
     async fn notify_ack(
         &self,
-        _ack: AckMsg<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        Ok(())
+        ack: AckMsg<OtapPdata>,
+    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+        self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(
         &self,
-        _nack: NackMsg<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        Ok(())
+        nack: NackMsg<OtapPdata>,
+    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+        self.route_nack(nack, Context::next_nack).await
     }
 }
 
@@ -629,16 +630,16 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 {
     async fn notify_ack(
         &self,
-        _ack: AckMsg<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        Ok(())
+        ack: AckMsg<OtapPdata>,
+    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+        self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(
         &self,
-        _nack: NackMsg<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::TypedError<OtapPdata>> {
-        Ok(())
+        nack: NackMsg<OtapPdata>,
+    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+        self.route_nack(nack, Context::next_nack).await
     }
 }
 

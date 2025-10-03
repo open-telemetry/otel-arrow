@@ -6,15 +6,15 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use std::sync::Arc;
 
 /// The URN for the noop exporter
@@ -53,11 +53,14 @@ impl Exporter<OtapPdata> for NoopExporter {
     async fn start(
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        _effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::PData(data) => {
+                    effect_handler.notify_ack(AckMsg::new(data)).await?;
+                }
                 _ => {
                     // do nothing
                 }
@@ -65,5 +68,84 @@ impl Exporter<OtapPdata> for NoopExporter {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pdata::{OtapPayload, OtlpProtoBytes};
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
+    use otap_df_engine::{Interests, control::CallData};
+    use std::sync::Arc;
+
+    /// Create minimal test data for the exporter
+    fn create_test_pdata() -> OtapPdata {
+        OtapPdata::new_todo_context(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+            vec![],
+        )))
+    }
+
+    #[tokio::test]
+    async fn test_noop_exporter_no_subscription_succeeds() {
+        let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
+        let exporter = ExporterWrapper::local(
+            NoopExporter::from_config().unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        // Test with no subscription - should succeed
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|_ctx| async move {})
+            .run_validation(|ctx, result| async move {
+                let test_data = create_test_pdata();
+                ctx.send_pdata(test_data)
+                    .await
+                    .expect("Failed to send pdata");
+
+                ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
+                    .await
+                    .expect("Failed to send shutdown");
+                result.expect("Exporter should succeed with no subscription");
+            });
+    }
+
+    #[tokio::test]
+    async fn test_noop_exporter_with_subscription_fails() {
+        let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
+        let exporter = ExporterWrapper::local(
+            NoopExporter::from_config().unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        // This exercises a code path that is not currently implemented, instead
+        // it returns an expected error for now.
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|_ctx| async move {})
+            .run_validation(|ctx, result| async move {
+                let mut test_data = create_test_pdata();
+
+                test_data.test_subscribe_to(Interests::ACKS, CallData::new(), 1);
+                ctx.send_pdata(test_data)
+                    .await
+                    .expect("Failed to send pdata");
+
+                ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
+                    .await
+                    .expect("Failed to send shutdown");
+                assert!(
+                    result.is_err(),
+                    "Exporter should fail when subscription exists but notify_ack not implemented"
+                );
+            });
     }
 }
