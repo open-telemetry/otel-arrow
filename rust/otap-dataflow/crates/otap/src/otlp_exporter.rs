@@ -496,7 +496,7 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -578,7 +578,7 @@ mod tests {
                 )))
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
             control_sender
                 .send(NodeControlMsg::CollectTelemetry {
