@@ -506,6 +506,8 @@ mod tests {
         let (server_start_ack_sender, server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
         let (shutdown_sender1, shutdown_signal1) = tokio::sync::oneshot::channel();
         let (shutdown_sender2, shutdown_signal2) = tokio::sync::oneshot::channel();
+        let (server_shutdown_ack_sender, server_shutdown_ack_receiver) =
+            tokio::sync::mpsc::channel(1);
         let (req_sender, req_receiver) = tokio::sync::mpsc::channel(32);
 
         async fn start_exporter(
@@ -518,6 +520,7 @@ mod tests {
         async fn drive_test(
             server_startup_sender: tokio::sync::mpsc::Sender<bool>,
             mut server_startup_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
+            mut server_shutdown_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
             server_shutdown_signal1: tokio::sync::oneshot::Sender<bool>,
             server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
             pdata_tx: Sender<OtapPdata>,
@@ -569,7 +572,7 @@ mod tests {
 
             // stop the server
             server_shutdown_signal1.send(true).unwrap();
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            _ = server_shutdown_ack_receiver.recv().await.unwrap();
 
             // send a request while the server isn't running and check that we still handle it correctly
             pdata_tx
@@ -650,6 +653,9 @@ mod tests {
             )
             .await;
 
+            // ack server shutdown for first time
+            server_shutdown_ack_sender.send(true).await.unwrap();
+
             // when the server shuts down, wait until it should restart & restart it
             _ = server_startup_receiver.recv().await.unwrap();
             run_server(
@@ -667,6 +673,7 @@ mod tests {
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
+                    server_shutdown_ack_receiver,
                     shutdown_sender1,
                     shutdown_sender2,
                     pdata_tx,
