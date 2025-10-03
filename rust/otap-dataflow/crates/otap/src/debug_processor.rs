@@ -9,11 +9,8 @@
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};
-use self::detailed_marshaler::DetailedViewMarshaler;
 use self::filter::FilterRules;
-use self::marshaler::ViewMarshaler;
 use self::metrics::DebugPdataMetrics;
-use self::normal_marshaler::NormalViewMarshaler;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
@@ -170,20 +167,17 @@ impl local::Processor<OtapPdata> for DebugProcessor {
             Message::Control(control) => {
                 match control {
                     NodeControlMsg::TimerTick {} => {
-                        // TODO FIX THIS
-                        // debug_output.output_message("Timer tick received\n").await?;
+                        debug_output.output_message("Timer tick received\n").await?;
                     }
                     NodeControlMsg::Config { .. } => {
-                        // TODO FIX THIS
-                        // debug_output
-                        //     .output_message("Config message received\n")
-                        //     .await?;
+                        debug_output
+                            .output_message("Config message received\n")
+                            .await?;
                     }
                     NodeControlMsg::Shutdown { .. } => {
-                        // TODO FIX THIS
-                        // debug_output
-                        //     .output_message("Shutdown message received\n")
-                        //     .await?;
+                        debug_output
+                            .output_message("Shutdown message received\n")
+                            .await?;
                     }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
@@ -252,7 +246,6 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 
 /// Function to collect and report the data contained in a Metrics object received by the Debug processor
 async fn process_metric(
-    verbosity: &Verbosity,
     mut metric_request: MetricsData,
     filters: &Vec<FilterRules>,
     debug_output: &mut dyn DebugOutput,
@@ -300,13 +293,12 @@ async fn process_metric(
         "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
     );
 
-    // TODO FIX THIS
-    // debug_output.output_message(report_basic.as_str()).await?;
+    debug_output.output_message(report_basic.as_str()).await?;
 
-    // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
-    // if *verbosity == Verbosity::Basic {
-    //     return Ok(());
-    // }
+    // return early if don't need to output anymore information
+    if debug_output.is_basic() {
+        return Ok(());
+    }
 
     // if there are filters to apply then apply them
     if !filters.is_empty() {
@@ -321,7 +313,6 @@ async fn process_metric(
 }
 
 async fn process_trace(
-    verbosity: &Verbosity,
     mut trace_request: TracesData,
     filters: &Vec<FilterRules>,
     debug_output: &mut dyn DebugOutput,
@@ -350,12 +341,11 @@ async fn process_trace(
         "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
     );
 
-    // TODO FIX THIS
-    // debug_output.output_message(report_basic.as_str()).await?;
-    // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
-    // if *verbosity == Verbosity::Basic {
-    //     return Ok(());
-    // }
+    debug_output.output_message(report_basic.as_str()).await?;
+    // return early if don't need to output anymore information
+    if debug_output.is_basic() {
+        return Ok(());
+    }
 
     // if there are filters to apply then apply them
     if !filters.is_empty() {
@@ -395,12 +385,13 @@ async fn process_log(
     let report_basic = format!(
         "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
     );
-    // TODO FIX THIS
-    // debug_output.output_message(report_basic.as_str()).await?;
 
-    // if *verbosity == Verbosity::Basic {
-    //     return Ok(());
-    // }
+    debug_output.output_message(report_basic.as_str()).await?;
+
+    // return early if don't need to output anymore information
+    if debug_output.is_basic() {
+        return Ok(());
+    }
 
     if !filters.is_empty() {
         for filter in filters {
@@ -409,7 +400,7 @@ async fn process_log(
     }
     debug_output.output_logs(log_request).await?;
 
-    return Ok(());
+    Ok(())
 }
 
 #[cfg(test)]
