@@ -638,7 +638,6 @@ mod tests {
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_channel::mpsc;
-    use otap_df_engine::Interests;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
@@ -747,20 +746,28 @@ mod tests {
         )))
     }
 
-    fn test_ack_with_id(id: u64, node_id: usize) -> AckMsg<OtapPdata> {
-        let mut msg = empty_pdata();
-        msg.test_subscribe_to(Interests::ACKS, RetryState::new(id).into(), node_id);
-        AckMsg::new(msg)
+    fn test_ack_with_id(id: u64) -> AckMsg<OtapPdata> {
+        let msg = empty_pdata();
+        // Note: we can insert the caller's interests e.g.,
+        // mut
+        // msg.test_subscribe_to(Interests::ACKS, other_data.into(), node_id);
+        let mut ack = AckMsg::new(msg);
+
+        // This is the retry_processor's own interest set by the
+        // engine/pdata before delivering the ack, here simulated for
+        // immediate delivery.
+        ack.calldata = Some(RetryState::new(id).into());
+        ack
     }
 
-    fn test_nack_with_id<S: Into<String>>(
-        id: u64,
-        reason: S,
-        node_id: usize,
-    ) -> NackMsg<OtapPdata> {
-        let mut msg = empty_pdata();
-        msg.test_subscribe_to(Interests::NACKS, RetryState::new(id).into(), node_id);
-        NackMsg::new(reason, msg)
+    fn test_nack_with_id<S: Into<String>>(id: u64, reason: S) -> NackMsg<OtapPdata> {
+        let msg = empty_pdata();
+        // Note: we can insert the caller's interests e.g.,
+        // mut
+        // msg.test_subscribe_to(Interests::NACKS, other_data.into(), node_id);
+        let mut nack = NackMsg::new(reason, msg);
+        nack.calldata = Some(RetryState::new(id).into());
+        nack
     }
 
     #[tokio::test]
@@ -785,7 +792,7 @@ mod tests {
         // ACK the message
         processor
             .process(
-                Message::Control(NodeControlMsg::Ack(test_ack_with_id(1, 100))),
+                Message::Control(NodeControlMsg::Ack(test_ack_with_id(1))),
                 &mut effect_handler,
             )
             .await
@@ -812,20 +819,9 @@ mod tests {
         let _ = receiver.recv().await.unwrap();
 
         // NACK the message
-
-        // {
-        //     id: 1,
-        //     reason: ,
-        //     pdata: None,
-        // }),
-
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack(test_nack_with_id(
-                    1,
-                    "Test failure",
-                    100,
-                ))),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                 &mut effect_handler,
             )
             .await
@@ -861,7 +857,6 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack(test_nack_with_id(
                         1,
                         format!("Test failure {i}"),
-                        100,
                     ))),
                     &mut effect_handler,
                 )
@@ -891,11 +886,7 @@ mod tests {
 
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack(test_nack_with_id(
-                    1,
-                    "Test failure",
-                    100,
-                ))),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                 &mut effect_handler,
             )
             .await
@@ -973,11 +964,7 @@ mod tests {
         // NACK it to get first retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack(test_nack_with_id(
-                    1,
-                    "First failure",
-                    100,
-                ))),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "First failure"))),
                 &mut effect_handler,
             )
             .await
@@ -989,11 +976,7 @@ mod tests {
         // NACK it again to get second retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack(test_nack_with_id(
-                    1,
-                    "Second failure",
-                    100,
-                ))),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Second failure"))),
                 &mut effect_handler,
             )
             .await
@@ -1026,11 +1009,7 @@ mod tests {
 
             processor
                 .process(
-                    Message::Control(NodeControlMsg::Nack(test_nack_with_id(
-                        1,
-                        "Test failure",
-                        100,
-                    ))),
+                    Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                     &mut effect_handler,
                 )
                 .await
@@ -1177,7 +1156,7 @@ mod tests {
 
         // NACK it (id=1) to schedule a retry (inc nacks.received, retry.attempts)
         proc.process(
-            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail", 100))),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail"))),
             &mut eh,
         )
         .await
@@ -1192,7 +1171,7 @@ mod tests {
 
         // ACK it (inc msgs.acked)
         proc.process(
-            Message::Control(NodeControlMsg::Ack(test_ack_with_id(1, 100))),
+            Message::Control(NodeControlMsg::Ack(test_ack_with_id(1))),
             &mut eh,
         )
         .await
@@ -1331,7 +1310,7 @@ mod tests {
 
         // First NACK -> schedule retry (not dropped)
         proc.process(
-            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail1", 100))),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail1"))),
             &mut eh,
         )
         .await
@@ -1339,7 +1318,7 @@ mod tests {
 
         // Second NACK -> exceed max and drop
         proc.process(
-            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail2", 100))),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail2"))),
             &mut eh,
         )
         .await
