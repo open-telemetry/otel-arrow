@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
@@ -40,7 +41,7 @@ use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -203,6 +204,31 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Delay a message until a future time.
+    pub async fn delay_message(
+        &self,
+        data: Box<PData>,
+        resume: Instant,
+    ) -> Result<(), TypedError<PData>> {
+        self.core.delay_message(data, resume).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), TypedError<PData>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
     }
 
     // More methods will be added in the future as needed.

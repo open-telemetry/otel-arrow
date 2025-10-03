@@ -254,4 +254,11 @@ pub enum Error {
     /// Too many nodes are configured.
     #[error("Too many nodes defined")]
     TooManyNodes {},
+
+    /// Telemetry-related errors
+    #[error("Telemetry error: {error}")]
+    Telemetry {
+        /// Telemetry error.
+        error: otap_df_telemetry::error::Error,
+    },
 }
