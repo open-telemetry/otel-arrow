@@ -4,10 +4,10 @@
 use std::io::Write;
 
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use serde::ser::{SerializeMap, SerializeSeq, Serializer};
+use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
-use crate::encoder::error::Result;
+use crate::encoder::error::{Error, Result};
 
 /// Adapter for serializing AnyValueView using Serde
 struct AnyValueSerializerWrapper<T>(pub T);
@@ -49,8 +49,10 @@ where
 {
     match source.value_type() {
         ValueType::String => {
-            let s = source.as_string().expect("expected string");
-            serializer.serialize_str(s)
+            let s_bytes = source.as_string().expect("expected string");
+            let s_str = simdutf8::basic::from_utf8(s_bytes)
+                .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
+            serializer.serialize_str(s_str)
         }
         ValueType::Bool => {
             let b = source.as_bool().expect("expected bool");
@@ -82,9 +84,11 @@ where
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
                 let key = kv.key();
+                let key_str = simdutf8::basic::from_utf8(key)
+                    .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
                 match kv.value() {
-                    Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-                    None => map.serialize_entry(&key, &Option::<()>::None)?,
+                    Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+                    None => map.serialize_entry(&key_str, &Option::<()>::None)?,
                 }
             }
             map.end()
@@ -103,9 +107,12 @@ where
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
         let key = kv.key();
+        let key_str = simdutf8::basic::from_utf8(key).map_err(|e| Error::CborError {
+            error: format!("Invalid UTF-8: {e}"),
+        })?;
         match kv.value() {
-            Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-            None => map.serialize_entry(&key, &Option::<()>::None)?,
+            Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+            None => map.serialize_entry(&key_str, &Option::<()>::None)?,
         }
     }
     SerializeMap::end(map)?;

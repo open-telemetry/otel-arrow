@@ -99,7 +99,7 @@ impl ResourceSpansView for ObjResourceSpans<'_> {
     }
 
     fn schema_url(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.schema_url)
+        read_str(self.inner.schema_url.as_bytes())
     }
 }
 
@@ -128,7 +128,7 @@ impl ScopeSpansView for ObjScopeSpans<'_> {
     }
 
     fn schema_url(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.schema_url)
+        read_str(self.inner.schema_url.as_bytes())
     }
 }
 
@@ -177,7 +177,7 @@ impl SpanView for ObjSpan<'_> {
     }
 
     fn trace_state(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.trace_state)
+        read_str(self.inner.trace_state.as_bytes())
     }
 
     fn parent_span_id(&self) -> Option<&SpanId> {
@@ -190,7 +190,7 @@ impl SpanView for ObjSpan<'_> {
     }
 
     fn name(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.name)
+        read_str(self.inner.name.as_bytes())
     }
 
     fn kind(&self) -> i32 {
@@ -241,7 +241,7 @@ impl SpanView for ObjSpan<'_> {
 
 impl StatusView for ObjStatus<'_> {
     fn message(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.message)
+        read_str(self.inner.message.as_bytes())
     }
 
     fn status_code(&self) -> i32 {
@@ -266,7 +266,7 @@ impl EventView for ObjEvent<'_> {
     }
 
     fn name(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.name)
+        read_str(self.inner.name.as_bytes())
     }
 
     fn attributes(&self) -> Self::AttributeIter<'_> {
@@ -298,7 +298,7 @@ impl LinkView for ObjLink<'_> {
     }
 
     fn trace_state(&self) -> Option<Str<'_>> {
-        read_str(&self.inner.trace_state)
+        read_str(self.inner.trace_state.as_bytes())
     }
 
     fn attributes(&self) -> Self::AttributeIter<'_> {
