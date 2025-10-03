@@ -599,11 +599,8 @@ impl ResourceSpansView for RawResourceSpans<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(RESOURCE_SPANS_SCHEMA_URL)?;
-
-        std::str::from_utf8(slice).ok()
+        self.byte_parser
+            .advance_to_find_field(RESOURCE_SPANS_SCHEMA_URL)
     }
 
     #[inline]
@@ -636,10 +633,8 @@ impl ScopeSpansView for RawScopeSpans<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(SCOPE_SPANS_SCHEMA_URL)?;
-        std::str::from_utf8(slice).ok()
+        self.byte_parser
+            .advance_to_find_field(SCOPE_SPANS_SCHEMA_URL)
     }
 
     #[inline]
@@ -778,8 +773,7 @@ impl SpanView for RawSpan<'_> {
 
     #[inline]
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self.bytes_parser.advance_to_find_field(SPAN_NAME)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser.advance_to_find_field(SPAN_NAME)
     }
 
     #[inline]
@@ -822,8 +816,7 @@ impl SpanView for RawSpan<'_> {
 
     #[inline]
     fn trace_state(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self.bytes_parser.advance_to_find_field(SPAN_TRACE_STATE)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser.advance_to_find_field(SPAN_TRACE_STATE)
     }
 }
 
@@ -857,8 +850,7 @@ impl EventView for RawSpanEvent<'_> {
 
     #[inline]
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self.bytes_parser.advance_to_find_field(SPAN_EVENT_NAME)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser.advance_to_find_field(SPAN_EVENT_NAME)
     }
 
     #[inline]
@@ -915,10 +907,8 @@ impl LinkView for RawSpanLink<'_> {
 
     #[inline]
     fn trace_state(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(SPAN_LINK_TRACE_STATE)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser
+            .advance_to_find_field(SPAN_LINK_TRACE_STATE)
     }
 
     #[inline]
@@ -941,9 +931,6 @@ impl StatusView for RawSpanStatus<'_> {
 
     #[inline]
     fn message(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(SPAN_STATUS_MESSAGE)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser.advance_to_find_field(SPAN_STATUS_MESSAGE)
     }
 }

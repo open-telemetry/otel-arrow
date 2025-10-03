@@ -3,7 +3,9 @@
 
 use chrono::Utc;
 use otel_arrow_rust::{
-    encode::record::{attributes::AttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder},
+    encode::record::{
+        attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
+    },
     otap::{Logs, OtapArrowRecords},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -16,7 +18,7 @@ use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
-    log_attrs: AttributesRecordBatchBuilder<u16>,
+    log_attrs: StrKeysAttributesRecordBatchBuilder<u16>,
 }
 
 impl Default for ArrowRecordsBuilder {
@@ -32,7 +34,7 @@ impl ArrowRecordsBuilder {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
-            log_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            log_attrs: StrKeysAttributesRecordBatchBuilder::<u16>::new(),
         }
     }
 
@@ -50,11 +52,12 @@ impl ArrowRecordsBuilder {
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
         self.logs.append_severity_number(Some(severity_number));
-        self.logs.append_severity_text(Some(severity_text));
+        self.logs
+            .append_severity_text(Some(severity_text.as_bytes()));
 
-        self.logs.body.append_str(syslog_message.input().as_ref());
+        self.logs.body.append_str(syslog_message.input().as_bytes());
 
-        let attributes_added = syslog_message.add_attribues_to_arrow(&mut self.log_attrs);
+        let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
         for _ in 0..attributes_added {
             self.log_attrs.append_parent_id(&self.curr_log_id);
