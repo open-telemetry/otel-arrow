@@ -92,7 +92,21 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
 
     let content = &input[4..];
 
+    // Early return if content is empty
+    if content.is_empty() {
+        return Err(super::ParseError::EmptyCEFContent);
+    }
+
+    // Format: CEF:Version|Vendor|Product|Version|EventClassID|Name|Severity|[Extensions]
     // Find up to 8 pipe-separated parts (7 required + 1 optional extensions)
+    // 1. Version (required) - CEF version, e.g., "0" or "1"
+    // 2. Device Vendor (required) - String identifying the vendor
+    // 3. Device Product (required) - String identifying the product
+    // 4. Device Version (required) - String identifying the product version
+    // 5. Device Event Class ID (required) - Unique identifier for the event type
+    // 6. Name (required) - Human-readable description of the event
+    // 7. Severity (required) - Severity level of the event
+    // 8. Extensions (optional) - Key-value pairs with additional event details
     // Handle escaped pipes in header fields
     let mut parts: [Option<&[u8]>; 8] = [None; 8];
     let mut parts_count = 0;
@@ -125,6 +139,10 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
                     if start < content.len() {
                         parts[parts_count] = Some(&content[start..]);
                         parts_count += 1;
+                    } else {
+                        // Empty extensions
+                        parts[parts_count] = Some(&[]);
+                        parts_count += 1;
                     }
                     break;
                 }
@@ -134,7 +152,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
     }
 
     // Add the last part if we didn't reach 7 pipes
-    if pipe_count < 7 && start < content.len() {
+    if pipe_count < 7 && start <= content.len() {
         parts[parts_count] = Some(&content[start..]);
         parts_count += 1;
     }
@@ -226,10 +244,22 @@ impl<'a> CefExtensionsIter<'a> {
         }
 
         if self.pos >= self.data.len() {
+            // No '=' found, invalid extension
             return None;
         }
 
         let key_end = self.pos;
+
+        // Skip empty keys
+        if key_start == key_end {
+            self.pos += 1; // Skip the '='
+            // Try to find the next extension
+            while self.pos < self.data.len() && self.data[self.pos] != b' ' {
+                self.pos += 1;
+            }
+            return self.next_extension();
+        }
+
         self.pos += 1; // Skip '='
 
         if self.pos >= self.data.len() {
@@ -249,8 +279,8 @@ impl<'a> CefExtensionsIter<'a> {
                 continue;
             }
 
-            if self.data[self.pos] == b'\\' {
-                // Next character is escaped
+            if self.data[self.pos] == b'\\' && self.pos + 1 < self.data.len() {
+                // Next character is escaped (only if there is a next character)
                 escaped = true;
                 self.pos += 1;
                 continue;
@@ -332,6 +362,7 @@ impl<'a> CefExtensionsIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syslog_cef_receiver::parser;
 
     #[test]
     fn test_cef_parsing() {
@@ -524,5 +555,192 @@ mod tests {
             (extensions[2].0.as_slice(), extensions[2].1.as_slice()),
             (b"equals".as_slice(), b"a=b".as_slice())
         );
+    }
+
+    // Edge case tests to ensure no panic occurs
+    #[test]
+    fn test_malformed_cef_header() {
+        // Test with just "CEF:" and nothing else
+        let input = b"CEF:";
+        let result = parse_cef(input);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(parser::ParseError::EmptyCEFContent)));
+
+        // Test with incomplete header
+        let input = b"CEF:0";
+        let result = parse_cef(input);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+    }
+
+    #[test]
+    fn test_cef_with_empty_fields() {
+        // Test with empty fields between pipes
+        let input = b"CEF:0|||||||";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"");
+        assert_eq!(result.device_product, b"");
+        assert_eq!(result.device_version, b"");
+        assert_eq!(result.device_event_class_id, b"");
+        assert_eq!(result.name, b"");
+        assert_eq!(result.severity, b"");
+        assert_eq!(result.extensions, b"");
+
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 0);
+    }
+
+    #[test]
+    fn test_cef_with_insufficient_fields() {
+        // Test with only 4 pipes (5 parts) - missing name and severity
+        let input = b"CEF:0|vendor|product|version|id";
+        let result = parse_cef(input);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+
+        // Test with only 5 pipes (6 parts) - missing severity
+        let input = b"CEF:0|vendor|product|version|id|name";
+        let result = parse_cef(input);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+
+        // Test with exactly 6 pipes (7 parts) - valid without extensions
+        let input = b"CEF:0|vendor|product|version|id|name|10";
+        let result = parse_cef(input);
+        assert!(result.is_ok());
+
+        // Verify all fields are correctly parsed
+        let msg = result.unwrap();
+        assert_eq!(msg.version, 0);
+        assert_eq!(msg.device_vendor, b"vendor");
+        assert_eq!(msg.device_product, b"product");
+        assert_eq!(msg.device_version, b"version");
+        assert_eq!(msg.device_event_class_id, b"id");
+        assert_eq!(msg.name, b"name");
+        assert_eq!(msg.severity, b"10");
+        assert_eq!(msg.extensions, b""); // No extensions
+        assert_eq!(msg.input, input); // Original input preserved
+
+        // Test with 7 pipes (8 parts) - valid with extensions
+        let input = b"CEF:0|vendor|product|1.0|eventId|Event Name|5|src=127.0.0.1 dst=192.168.1.1";
+        let result = parse_cef(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.version, 0);
+        assert_eq!(msg.device_vendor, b"vendor");
+        assert_eq!(msg.device_product, b"product");
+        assert_eq!(msg.device_version, b"1.0");
+        assert_eq!(msg.device_event_class_id, b"eventId");
+        assert_eq!(msg.name, b"Event Name");
+        assert_eq!(msg.severity, b"5");
+        assert_eq!(msg.extensions, b"src=127.0.0.1 dst=192.168.1.1");
+        assert_eq!(msg.input, input);
+
+        // Verify extensions parse correctly
+        let extensions = msg.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(extensions[0].0.as_slice(), b"src");
+        assert_eq!(extensions[0].1.as_slice(), b"127.0.0.1");
+        assert_eq!(extensions[1].0.as_slice(), b"dst");
+        assert_eq!(extensions[1].1.as_slice(), b"192.168.1.1");
+    }
+
+    #[test]
+    fn test_extension_parsing_edge_cases() {
+        // Test extension with only equals sign
+        let input = b"CEF:0|V|P|1.0|100|name|10|=";
+        let result = parse_cef(input).unwrap();
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 0); // Should handle gracefully
+
+        // Test extension with multiple equals in a row
+        let input = b"CEF:0|V|P|1.0|100|name|10|===value";
+        let result = parse_cef(input).unwrap();
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 0); // Empty key should be skipped
+
+        // Test extension ending with backslash
+        let input = b"CEF:0|V|P|1.0|100|name|10|key=value\\";
+        let result = parse_cef(input).unwrap();
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"key".as_slice(), b"value\\".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_escaped_backslash_at_end() {
+        // Test with escaped pipe - single backslash escapes the pipe
+        let input = b"CEF:0|V|P|1.0|100|name\\|10|";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"V".as_slice());
+        assert_eq!(result.device_product, b"P".as_slice());
+        assert_eq!(result.device_version, b"1.0".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
+        assert_eq!(result.name, b"name\\|10".as_slice()); // The escaped pipe is part of the name field
+        assert_eq!(result.severity, b"".as_slice()); // Empty severity field
+        assert_eq!(result.extensions, b"".as_slice()); // Empty extensions
+
+        // Test extension value ending with backslash
+        let input = b"CEF:0|V|P|1.0|100|name|10|key=val\\";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"V".as_slice());
+        assert_eq!(result.device_product, b"P".as_slice());
+        assert_eq!(result.device_version, b"1.0".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
+        assert_eq!(result.name, b"name".as_slice());
+        assert_eq!(result.severity, b"10".as_slice());
+
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"key".as_slice(), b"val\\".as_slice()) // Trailing backslash preserved
+        );
+    }
+
+    #[test]
+    fn test_very_long_escape_sequences() {
+        // Test with many consecutive backslashes
+        let input = b"CEF:0|V|P|1.0|100|name|10|key=\\\\\\\\\\\\";
+        let result = parse_cef(input).unwrap();
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"V".as_slice());
+        assert_eq!(result.device_product, b"P".as_slice());
+
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(
+            (extensions[0].0.as_slice(), extensions[0].1.as_slice()),
+            (b"key".as_slice(), b"\\\\\\".as_slice()) // 6 backslashes become 3
+        );
+    }
+
+    #[test]
+    fn test_invalid_utf8_sequences() {
+        // Test with invalid UTF-8 bytes
+        let mut input = b"CEF:0|V|P|1.0|100|name|10|key=".to_vec();
+        input.push(0xFF);
+        input.push(0xFE);
+        let result = parse_cef(&input).unwrap();
+
+        assert_eq!(result.version, 0);
+        assert_eq!(result.device_vendor, b"V".as_slice());
+        assert_eq!(result.device_product, b"P".as_slice());
+        assert_eq!(result.device_version, b"1.0".as_slice());
+        assert_eq!(result.device_event_class_id, b"100".as_slice());
+        assert_eq!(result.name, b"name".as_slice());
+        assert_eq!(result.severity, b"10".as_slice());
+
+        let extensions = result.parse_extensions().collect_all();
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(extensions[0].0.as_slice(), b"key".as_slice());
+        assert_eq!(extensions[0].1.as_slice(), &[0xFF, 0xFE]); // Raw bytes preserved
     }
 }
