@@ -5,7 +5,8 @@
 
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    error::Error,
+    control::{AckMsg, CallData, NackMsg},
+    error::{Error, TypedError},
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
@@ -15,6 +16,7 @@ use crate::{
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
 };
+use async_trait::async_trait;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
@@ -155,6 +157,35 @@ where
             .map(|f| (f.name(), f.clone()))
             .collect::<HashMap<&'static str, T>>()
     })
+}
+
+// Interests is an 8-bit flags struct
+bitflags::bitflags! {
+/// Types of subscription that a PData can have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interests: u8 {
+    /// Acks interest
+    const ACKS   = 1 << 0;
+    /// Nacks interest
+    const NACKS  = 1 << 1;
+}
+}
+
+/// Effect handler extensions for producers specific to data type.
+#[async_trait(?Send)]
+pub trait ProducerEffectHandlerExtension<PData> {
+    /// Subscribe to a set of interests.
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+}
+
+/// Effect handler extensions for consumers specific to data type.
+#[async_trait(?Send)]
+pub trait ConsumerEffectHandlerExtension<PData> {
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<PData>>;
+
+    /// Triggers the next step of work (if any) in Ack processing.
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<PData>>;
 }
 
 /// Builds a pipeline factory for initialization.

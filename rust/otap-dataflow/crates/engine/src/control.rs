@@ -9,11 +9,90 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::Duration;
+
+/// A context value. Supports conversion to and from plain 8-byte data
+/// types.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct CtxVal([u8; 8]);
+
+impl<T: Pod> From<T> for CtxVal {
+    /// From T to CtxVal
+    fn from(v: T) -> Self {
+        Self(bytemuck::cast(v))
+    }
+}
+
+impl From<CtxVal> for usize {
+    fn from(v: CtxVal) -> usize {
+        bytemuck::cast(v.0)
+    }
+}
+
+impl From<CtxVal> for u64 {
+    fn from(v: CtxVal) -> u64 {
+        bytemuck::cast(v.0)
+    }
+}
+
+/// Standard context values hold two caller-specified fields.
+pub type CallData = SmallVec<[CtxVal; 2]>;
+
+/// The ACK message.
+#[derive(Debug, Clone)]
+pub struct AckMsg<PData> {
+    /// Accepted pdata, presumed context-only.
+    pub accepted: Box<PData>,
+
+    /// Subscriber information returned.
+    pub calldata: Option<CallData>,
+}
+
+impl<PData> AckMsg<PData> {
+    /// Creates a new ACK.
+    pub fn new(accepted: PData) -> Self {
+        Self {
+            accepted: Box::new(accepted),
+            calldata: None,
+        }
+    }
+}
+
+/// The NACK message.
+#[derive(Debug, Clone)]
+pub struct NackMsg<PData> {
+    /// Human-readable reason for the NACK.
+    pub reason: String,
+
+    /// Protocol-independent permanent status
+    /// TODO not currently written; only read by retry_processor.
+    pub permanent: bool,
+
+    /// Subscriber information returned.
+    pub calldata: Option<CallData>,
+
+    /// Refused pdata, presumed to have payload.
+    pub refused: Box<PData>,
+}
+
+impl<PData> NackMsg<PData> {
+    /// Create a new transient NACK (permanent: false)
+    pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self {
+            reason: reason.into(),
+            permanent: false,
+            calldata: None,
+            refused: Box::new(refused),
+        }
+    }
+}
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -23,25 +102,13 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack {
-        /// Unique identifier of the message being acknowledged.
-        id: u64,
-    },
+    Ack(AckMsg<PData>),
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
-    Nack {
-        /// Unique identifier of the message not being acknowledged.
-        id: u64,
-        /// Human-readable reason for the NACK.
-        reason: String,
-
-        /// Placeholder for optional return value, making it possible for the
-        /// retry sender to be stateless.
-        pdata: Option<Box<PData>>,
-    },
+    Nack(NackMsg<PData>),
 
     /// Notifies the node of a configuration change.
     ///
