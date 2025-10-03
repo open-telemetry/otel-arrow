@@ -34,7 +34,7 @@ pub enum OutputMode {
 
 #[async_trait(?Send)]
 pub trait DebugOutput {
-    async fn output_message(&mut self, data: &str) -> Result<(), Error>;
+    async fn output_message(&mut self, message: &str) -> Result<(), Error>;
     async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error>;
     async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error>;
     async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error>;
@@ -90,9 +90,9 @@ impl DebugOutputWriter {
 
 #[async_trait(?Send)]
 impl DebugOutput for DebugOutputWriter {
-    async fn output_message(&mut self, data: &str) -> Result<(), Error> {
+    async fn output_message(&mut self, message: &str) -> Result<(), Error> {
         self.writer
-            .write_all(data.as_bytes())
+            .write_all(message.as_bytes())
             .await
             .map_err(|e| Error::ProcessorError {
                 processor: self.processor_id.clone(),
@@ -334,7 +334,7 @@ impl DebugOutputPorts {
 
 #[async_trait(?Send)]
 impl DebugOutput for DebugOutputPorts {
-    async fn output_message(&mut self, _data: &str) -> Result<(), Error> {
+    async fn output_message(&mut self, _message: &str) -> Result<(), Error> {
         // since we are sending to ports we don't do anything with the &str data
         Ok(())
     }

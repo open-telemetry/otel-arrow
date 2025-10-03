@@ -13,6 +13,7 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
+use crate::otlp::ProtoBytesEncoder;
 use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
@@ -199,27 +200,9 @@ impl Default for LogsProtoBytesEncoder {
     }
 }
 
-impl LogsProtoBytesEncoder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            batch_sorter: BatchSorter::new(),
-            root_cursor: SortedBatchCursor::new(),
-            resource_attrs_cursor: SortedBatchCursor::new(),
-            scope_attrs_cursor: SortedBatchCursor::new(),
-            log_attrs_cursor: SortedBatchCursor::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.root_cursor.reset();
-        self.resource_attrs_cursor.reset();
-        self.scope_attrs_cursor.reset();
-        self.log_attrs_cursor.reset();
-    }
-
+impl ProtoBytesEncoder for LogsProtoBytesEncoder {
     /// encode the OTAP batch into a proto serialized `LogData`/`ExportLogsServiceRequest` message
-    pub fn encode(
+    fn encode(
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
@@ -268,6 +251,26 @@ impl LogsProtoBytesEncoder {
         }
 
         Ok(())
+    }
+}
+
+impl LogsProtoBytesEncoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            log_attrs_cursor: SortedBatchCursor::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.log_attrs_cursor.reset();
     }
 
     fn encode_resource_log(

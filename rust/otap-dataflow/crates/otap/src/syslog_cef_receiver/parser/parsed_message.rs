@@ -5,7 +5,7 @@ use crate::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
-use otel_arrow_rust::encode::record::attributes::AttributesRecordBatchBuilder;
+use otel_arrow_rust::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use std::borrow::Cow;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
@@ -121,9 +121,9 @@ impl ParsedSyslogMessage<'_> {
     /// Adds attributes to the log record attributes Arrow record batch.
     /// Returns the number of attributes added.
     #[must_use]
-    pub(crate) fn add_attribues_to_arrow(
+    pub(crate) fn add_attributes_to_arrow(
         &self,
-        log_attributes_arrow_records: &mut AttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
     ) -> u16 {
         let mut attributes_count = 0;
         match self {
@@ -131,31 +131,39 @@ impl ParsedSyslogMessage<'_> {
                 attributes_count += 3; // version, facility, and severity are always present
 
                 log_attributes_arrow_records.append_key(SYSLOG_VERSION);
-                log_attributes_arrow_records.append_int(msg.version.into());
+                log_attributes_arrow_records
+                    .any_values_builder
+                    .append_int(msg.version.into());
 
                 log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                log_attributes_arrow_records.append_int(msg.priority.facility.into());
+                log_attributes_arrow_records
+                    .any_values_builder
+                    .append_int(msg.priority.facility.into());
 
                 log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                log_attributes_arrow_records.append_int(msg.priority.severity.into());
+                log_attributes_arrow_records
+                    .any_values_builder
+                    .append_int(msg.priority.severity.into());
 
                 if let Some(hostname) = msg.hostname {
                     log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(hostname).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(hostname);
                     attributes_count += 1;
                 }
 
                 if let Some(appname) = msg.app_name {
                     log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(appname).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(appname);
                     attributes_count += 1;
                 }
 
                 if let Some(proc_id) = msg.proc_id {
                     log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
-                    log_attributes_arrow_records.append_int(
+                    log_attributes_arrow_records.any_values_builder.append_int(
                         std::str::from_utf8(proc_id)
                             .unwrap_or_default()
                             .parse::<i64>()
@@ -167,21 +175,24 @@ impl ParsedSyslogMessage<'_> {
                 if let Some(msg_id) = msg.msg_id {
                     log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(msg_id).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(msg_id);
                     attributes_count += 1;
                 }
 
                 if let Some(structured_data) = &msg.structured_data {
                     log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(structured_data).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(structured_data);
                     attributes_count += 1;
                 }
 
                 if let Some(message) = msg.message {
                     log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(message).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(message);
                     attributes_count += 1;
                 }
 
@@ -191,32 +202,39 @@ impl ParsedSyslogMessage<'_> {
                 // Only add facility and severity if they were present in the original message
                 if let Some(priority) = msg.priority.as_ref() {
                     log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                    log_attributes_arrow_records.append_int(priority.facility.into());
+                    log_attributes_arrow_records
+                        .any_values_builder
+                        .append_int(priority.facility.into());
                     attributes_count += 1;
 
                     log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                    log_attributes_arrow_records.append_int(priority.severity.into());
+                    log_attributes_arrow_records
+                        .any_values_builder
+                        .append_int(priority.severity.into());
                     attributes_count += 1;
                 }
 
                 if let Some(hostname) = msg.hostname {
                     log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(hostname).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(hostname);
                     attributes_count += 1;
                 }
 
                 if let Some(tag) = msg.tag {
                     log_attributes_arrow_records.append_key(SYSLOG_TAG);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(tag).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(tag);
                     attributes_count += 1;
                 }
 
                 if let Some(content) = msg.content {
                     log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(content).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(content);
                     attributes_count += 1;
                 }
 
@@ -226,38 +244,47 @@ impl ParsedSyslogMessage<'_> {
                 attributes_count += 7; // version, device_vendor, device_product, device_version, signature_id, name, and severity are always present
 
                 log_attributes_arrow_records.append_key(CEF_VERSION);
-                log_attributes_arrow_records.append_int(msg.version.into());
+                log_attributes_arrow_records
+                    .any_values_builder
+                    .append_int(msg.version.into());
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_vendor).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.device_vendor);
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_product).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.device_product);
 
                 log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_version).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.device_version);
 
                 log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.device_event_class_id).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.device_event_class_id);
 
                 log_attributes_arrow_records.append_key(CEF_NAME);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.name).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.name);
 
                 log_attributes_arrow_records.append_key(CEF_SEVERITY);
                 log_attributes_arrow_records
-                    .append_str(std::str::from_utf8(msg.severity).unwrap_or_default());
+                    .any_values_builder
+                    .append_str(msg.severity);
 
                 let mut extensions_iter = msg.parse_extensions();
                 while let Some((key, value)) = extensions_iter.next_extension() {
                     log_attributes_arrow_records
                         .append_key(std::str::from_utf8(key).unwrap_or_default());
                     log_attributes_arrow_records
-                        .append_str(std::str::from_utf8(value).unwrap_or_default());
+                        .any_values_builder
+                        .append_str(value);
                     attributes_count += 1;
                 }
 
