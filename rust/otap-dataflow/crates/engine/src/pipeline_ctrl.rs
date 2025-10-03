@@ -626,6 +626,57 @@ mod tests {
             .await;
     }
 
+    /// Validates that a StartTelemetryTimer results in a CollectTelemetry control message delivered to the node.
+    #[tokio::test]
+    async fn test_run_start_telemetry_timer_integration() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                    setup_test_manager::<()>();
+
+                let node = nodes.first().expect("ok");
+                let duration = Duration::from_millis(60);
+
+                // Start the manager in the background using spawn_local (not Send)
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send StartTelemetryTimer message to schedule a recurring telemetry timer
+                let start_msg = PipelineControlMsg::StartTelemetryTimer {
+                    node_id: node.index,
+                    duration,
+                };
+                pipeline_tx.send(start_msg).await.unwrap();
+
+                // Wait for the telemetry timer to expire and verify CollectTelemetry delivery
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                let telemetry_result =
+                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
+
+                assert!(
+                    telemetry_result.is_ok(),
+                    "Should receive CollectTelemetry within timeout"
+                );
+                match telemetry_result.unwrap() {
+                    Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                        // Success - received expected CollectTelemetry
+                    }
+                    Ok(other) => panic!("Expected CollectTelemetry, got {other:?}"),
+                    Err(e) => panic!("Failed to receive message: {e:?}"),
+                }
+
+                // Clean shutdown
+                let _ = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        reason: "".to_owned(),
+                    })
+                    .await;
+                let _ = timeout(Duration::from_millis(100), manager_handle).await;
+            })
+            .await;
+    }
+
     /// Validates error resilience when the manager tries to send TimerTick
     /// to a node that doesn't have a registered control sender:
     /// 1. Timer can be scheduled for non-existent node
