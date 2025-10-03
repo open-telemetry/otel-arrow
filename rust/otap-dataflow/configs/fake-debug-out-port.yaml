@@ -33,7 +33,7 @@ nodes:
     config:
       verbosity: basic
       output:
-        - logging_port2
+        - logging_port
   debug2:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
