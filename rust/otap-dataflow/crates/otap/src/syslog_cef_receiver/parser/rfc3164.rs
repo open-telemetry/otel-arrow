@@ -258,13 +258,11 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let input = b"";
-        let result = parse_rfc3164(input).unwrap();
+        let result = parse_rfc3164(input);
 
-        assert_eq!(result.priority, None);
-        assert_eq!(result.timestamp, None);
-        assert_eq!(result.hostname, None);
-        assert_eq!(result.tag, None);
-        assert_eq!(result.content, Some(b"".as_slice())); // Empty input results in empty content
+        // Empty input should return an error, not Ok
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ParseError::EmptyInput)));
     }
 
     #[test]
