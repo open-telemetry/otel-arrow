@@ -46,8 +46,6 @@ pub struct CtrlMsgCounters {
     message_count: Arc<AtomicUsize>,
     config_count: Arc<AtomicUsize>,
     shutdown_count: Arc<AtomicUsize>,
-    ack_count: Arc<AtomicUsize>,
-    nack_count: Arc<AtomicUsize>,
 }
 
 impl CtrlMsgCounters {
@@ -59,8 +57,6 @@ impl CtrlMsgCounters {
             message_count: Arc::new(AtomicUsize::new(0)),
             config_count: Arc::new(AtomicUsize::new(0)),
             shutdown_count: Arc::new(AtomicUsize::new(0)),
-            ack_count: Arc::new(AtomicUsize::new(0)),
-            nack_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -102,20 +98,6 @@ impl CtrlMsgCounters {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Increments the ack count.
-    pub fn increment_ack(&self) {
-        _ = self
-            .ack_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Increments the nack count.
-    pub fn increment_nack(&self) {
-        _ = self
-            .nack_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// Gets the current timer tick count.
     #[must_use]
     pub fn get_timer_tick_count(&self) -> usize {
@@ -140,20 +122,6 @@ impl CtrlMsgCounters {
     #[must_use]
     pub fn get_shutdown_count(&self) -> usize {
         self.shutdown_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Gets the current ack count.
-    #[must_use]
-    pub fn get_ack_count(&self) -> usize {
-        self.ack_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Gets the current nack count.
-    #[must_use]
-    pub fn get_nack_count(&self) -> usize {
-        self.nack_count
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -184,29 +152,6 @@ impl CtrlMsgCounters {
             self.get_shutdown_count(),
             shutdown_count,
             "Shutdown count mismatch"
-        );
-    }
-
-    /// Asserts that the current counters match the expected values, including ack/nack counts.
-    pub fn assert_with_acks(
-        &self,
-        timer_tick_count: usize,
-        message_count: usize,
-        config_count: usize,
-        shutdown_count: usize,
-        ack_count: usize,
-        nack_count: usize,
-    ) {
-        self.assert(timer_tick_count, message_count, config_count, shutdown_count);
-        assert_eq!(
-            self.get_ack_count(),
-            ack_count,
-            "Ack count mismatch"
-        );
-        assert_eq!(
-            self.get_nack_count(),
-            nack_count,
-            "Nack count mismatch"
         );
     }
 }
