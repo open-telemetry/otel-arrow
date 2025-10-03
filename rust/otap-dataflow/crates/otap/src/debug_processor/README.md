@@ -54,6 +54,50 @@ signals against, currently we support the following fields `attribute`
 Multiple filter rules can be definied and will be applied in order
 (top to bottom).
 
+### Output
+
+The DebugProcessor is a pass-through processor which allows the the normal
+flow of signals, this processor outputs various debug information on the
+signals/batches passing through. You can configure how the debug information
+is received.
+
+#### Output to file
+
+```yaml
+config:
+   verbosity: normal
+   output: file_name.txt
+```
+
+In this config the debug-processor will write to a file named `file_name.txt`
+it will append to the file rather than overwriting
+
+#### Output to pipeline node
+
+```yaml
+  debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      passthrough_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+      logging_port:
+        destinations:
+          - some_node
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
+      output:
+        - logging_port
+```
+
+In this config we create a processor with multiple out_ports.
+In the config setting we tell the debug-processor to use `logging_port`
+which will send data to another node that has been defined outside of
+this configuration named `some_node`
+
 ## Example Output => Basic Verbosity
 
 ```plaintext
