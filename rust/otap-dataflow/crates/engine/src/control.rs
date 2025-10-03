@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-/// A context value. Supports conversion to and from plain 8-byte data
-/// types.
+/// A context value. Supports conversion to and from plain 8-byte data.
+/// This is used with the bytemuck crate which allows easy/correct
+/// conversion to plain data.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CtxVal([u8; 8]);
@@ -29,6 +30,8 @@ impl<T: Pod> From<T> for CtxVal {
         Self(bytemuck::cast(v))
     }
 }
+
+// --- From CtxVal to and from Ts of interest
 
 impl From<CtxVal> for usize {
     fn from(v: CtxVal) -> usize {
@@ -42,13 +45,16 @@ impl From<CtxVal> for u64 {
     }
 }
 
-/// Standard context values hold two caller-specified fields.
+/// Standard context values hold two caller-specified fields.  The
+/// size is arbitrary, but shouldn't be larger than needed by
+/// callers. For example: retry count, sequence and generation
+/// numbers, etc.
 pub type CallData = SmallVec<[CtxVal; 2]>;
 
 /// The ACK message.
 #[derive(Debug, Clone)]
 pub struct AckMsg<PData> {
-    /// Accepted pdata, presumed context-only.
+    /// Accepted pdata being returned.
     pub accepted: Box<PData>,
 
     /// Subscriber information returned.
@@ -71,23 +77,18 @@ pub struct NackMsg<PData> {
     /// Human-readable reason for the NACK.
     pub reason: String,
 
-    /// Protocol-independent permanent status
-    /// TODO not currently written; only read by retry_processor.
-    pub permanent: bool,
-
     /// Subscriber information returned.
     pub calldata: Option<CallData>,
 
-    /// Refused pdata, presumed to have payload.
+    /// Refused pdata being returned.
     pub refused: Box<PData>,
 }
 
 impl<PData> NackMsg<PData> {
-    /// Create a new transient NACK (permanent: false)
+    /// Creates a new NACK.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
         Self {
             reason: reason.into(),
-            permanent: false,
             calldata: None,
             refused: Box::new(refused),
         }
