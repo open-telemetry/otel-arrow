@@ -17,31 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::core_status::{ApplyOutcome, CoreStatus};
 use crate::pipeline_status::PipelineStatus;
 
-/// ToDo Update this code
-/// A fine-grained, typed facet of status used for health/rollout gating.
-///
-/// **Rationale**
-/// - Keep high-level `PipelinePhase` **coarse** (Pending/Running/...).
-/// - Encode orthogonal axes here (health, readiness, backpressure, rollout, config errors).
-/// - Use **two gates**:
-///   - Advance **rollout waves** when `Healthy=True`
-///   - Flip/switch **traffic** when `Ready=True`
-///
-/// **Ready vs Healthy: tiny rule-of-thumb table**
-///
-/// | Scenario                         | Ready | Healthy | Meaning                                                  |
-/// |----------------------------------|:-----:|:-------:|----------------------------------------------------------|
-/// | Serving, backpressure high       |  T   |   F    | Admit traffic but degraded; throttle rollouts/alerts fire|
-/// | Rollout/drain pause              |  F   |   T    | Healthy but intentionally not serving (maintenance)      |
-/// | All good                         |  T   |   T    | Green; safe to serve and to advance rollouts             |
-/// | Sick and not serving             |  F   |   F    | Draining/crashed/overloaded                              |
-///
-/// References:
-/// - API conventions:
-///   https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#conditions
-/// - Pod conditions example:
-///   https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions
-const RECENT_EVENTS_CAPACITY: usize = 20;
+const RECENT_EVENTS_CAPACITY: usize = 10;
 
 /// Event-driven observed state store representing what we know about the state of the
 /// pipelines (DAG executors) controlled by the controller.
