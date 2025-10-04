@@ -31,8 +31,10 @@ linkme = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true }
-
-socket2 = { version = "0.6.0", features = ["all"] }
+bitflags = { workspace = true }
+bytemuck = { workspace = true }
+smallvec = { workspace = true }
+socket2 = { workspace = true }
 
 # Deps for generating a unique per-process identifier
 uuid = { workspace = true, features = ["v7"] }

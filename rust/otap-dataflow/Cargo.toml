@@ -89,6 +89,10 @@ tonic = { version = "0.14", default-features = false, features = [
 tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 prost = "0.14"
+socket2 = { version = "0.6.0", features = ["all"] }
+bitflags = "2.9"
+bytemuck = "1.23"
+smallvec = "1.15"
 
 [features]
 default = []

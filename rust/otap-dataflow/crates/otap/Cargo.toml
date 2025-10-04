@@ -38,6 +38,7 @@ tonic = { workspace = true }
 tonic-middleware = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
+smallvec = { workspace = true }
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
