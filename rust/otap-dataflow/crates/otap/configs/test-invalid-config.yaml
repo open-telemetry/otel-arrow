@@ -1,0 +1,29 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  fake_generator:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - retry_processor
+        dispatch_strategy: round_robin
+
+  retry_processor:
+    kind: processor
+    plugin_urn: "urn:otap:processor:retry_processor"
+    out_ports:
+      out_port:
+        destinations:
+          - noop_exporter
+        dispatch_strategy: round_robin
+    config: {}  # Missing required fields like max_retries
+
+  noop_exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
