@@ -27,11 +27,15 @@ pub(super) struct Priority {
 /// Error types that can occur during parsing
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseError {
+    /// Error indicating that the input is empty
+    EmptyInput,
     /// Error parsing priority value
-    /// RFC5424 and RFC3164 messages are expected to start with "<Priority>"
+    /// RFC5424 messages are expected to start with "<Priority>"
     InvalidPriority,
     /// Error parsing version number for RFC5424 messages
     InvalidVersion,
+    /// Error indicating that CEF content is empty
+    EmptyCEFContent,
     /// Error parsing CEF message
     InvalidCef,
     /// Error parsing UTF-8 strings
