@@ -21,7 +21,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use otap_df_state::PipelineKey;
-use otap_df_state::store::PipelineStatus;
+use otap_df_state::pipeline_status::PipelineStatus;
 
 /// All the routes for pipelines.
 pub(crate) fn routes() -> Router<AppState> {

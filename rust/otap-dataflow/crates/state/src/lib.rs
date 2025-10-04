@@ -10,6 +10,10 @@ mod config;
 pub mod error;
 pub mod reporter;
 pub mod store;
+pub mod event;
+pub mod phase;
+mod core_status;
+pub mod pipeline_status;
 
 type CoreId = usize;
 
@@ -60,7 +64,7 @@ impl Serialize for PipelineKey {
 }
 
 /// Unique key for identifying a pipeline running on a specific core.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeployedPipelineKey {
     /// The unique ID of the pipeline group the pipeline belongs to.
     pub pipeline_group_id: PipelineGroupId,

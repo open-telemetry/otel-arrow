@@ -3,7 +3,8 @@
 
 //! Errors for the state crate.
 
-use crate::store::ObservedEvent;
+use crate::event::{EventType, ObservedEvent};
+use crate::phase::PipelinePhase;
 
 /// All errors that can occur in the state crate.
 #[derive(thiserror::Error, Debug)]
@@ -23,4 +24,15 @@ pub enum Error {
         /// The event that failed to be sent.
         event: ObservedEvent,
     },
+
+    /// Error returned for truly invalid (phase, event) pairs.
+    #[error("Invalid transition: phase={phase:?}, event={event:?}, msg={message}")]
+    InvalidTransition {
+        /// The current phase when the event was applied.
+        phase: PipelinePhase,
+        /// The event that was applied.
+        event: EventType,
+        /// Error message.
+        message: &'static str,
+    }
 }

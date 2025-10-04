@@ -34,13 +34,12 @@ use otap_df_engine::control::{
 use otap_df_engine::error::Error as EngineError;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::{
-    ConditionDetails, ConditionStatus, ConditionType, NodeErrorSummary, ObservedEvent,
-    ObservedStateStore,
-};
+use otap_df_state::store::ObservedStateStore;
+use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
+use otap_df_config::node::NodeKind;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -112,7 +111,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 pipeline_id: pipeline_id.clone(),
                 core_id: core_id.id,
             };
-            obs_evt_reporter.report(ObservedEvent::pipeline_pending(pipeline_key.clone()));
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
                 pipeline
                     .pipeline_settings()
@@ -191,63 +189,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_stopped(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
-                    let error_msg = e.to_string();
-                    let condition_details = condition_details_from_error(&e);
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
-                        ConditionType::StartError,
-                        ConditionStatus::True,
-                        "RuntimeError".to_owned(),
-                        error_msg.clone(),
-                        condition_details.clone(),
-                    ));
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key.clone(),
-                        ConditionType::Ready,
-                        ConditionStatus::False,
-                        "PipelineUnavailable".to_owned(),
-                        "Pipeline is unavailable due to failure.".to_owned(),
-                        condition_details.clone(),
-                    ));
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key,
-                        ConditionType::Healthy,
-                        ConditionStatus::False,
-                        "PipelineUnhealthy".to_owned(),
-                        error_msg,
-                        condition_details,
+                        "Pipeline encountered a runtime error.",
+                        err_summary,
                     ));
                     results.push(Err(e));
                 }
                 Err(e) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key.clone()));
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+                    let err_summary = ErrorSummary::Pipeline {
+                        error_kind: "panic".into(),
+                        message: "The pipeline panicked during execution.".into(),
+                        source: Some(format!("{e:?}")),
+                    };
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
-                        ConditionType::Panic,
-                        ConditionStatus::True,
-                        format!("{e:?}"),
-                        "The pipeline panicked during execution.".to_owned(),
-                        None,
-                    ));
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key.clone(),
-                        ConditionType::Ready,
-                        ConditionStatus::False,
-                        "PipelineUnavailable".to_owned(),
-                        "Pipeline is unavailable due to panic.".to_owned(),
-                        None,
-                    ));
-                    obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-                        pipeline_key,
-                        ConditionType::Healthy,
-                        ConditionStatus::False,
-                        "PipelineUnhealthy".to_owned(),
-                        "Pipeline panicked and is unhealthy.".to_owned(),
-                        None,
+                        "The pipeline panicked during execution.",
+                        err_summary,
                     ));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
@@ -346,22 +308,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // ToDo Add a warning here once logging is implemented.
         }
 
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+        obs_evt_reporter.report(ObservedEvent::admitted(
             pipeline_key.clone(),
-            ConditionType::StartError,
-            ConditionStatus::Unknown,
-            "StartupPending".to_owned(),
-            "Pipeline startup in progress.".to_owned(),
-            None,
-        ));
-
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-            pipeline_key.clone(),
-            ConditionType::Panic,
-            ConditionStatus::Unknown,
-            "StartupPending".to_owned(),
-            "Panic status pending.".to_owned(),
-            None,
+            Some("Pipeline initialization in progress.".to_owned())
         ));
 
         // Build the runtime pipeline from the configuration
@@ -371,40 +320,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 source: Box::new(e),
             })?;
 
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
+        obs_evt_reporter.report(ObservedEvent::ready(
             pipeline_key.clone(),
-            ConditionType::StartError,
-            ConditionStatus::False,
-            "StartupSucceeded".to_owned(),
-            "Pipeline started successfully.".to_owned(),
-            None,
-        ));
-
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-            pipeline_key.clone(),
-            ConditionType::Panic,
-            ConditionStatus::False,
-            "Running".to_owned(),
-            "Pipeline running without panic.".to_owned(),
-            None,
-        ));
-
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-            pipeline_key.clone(),
-            ConditionType::Ready,
-            ConditionStatus::True,
-            "ReadyToServe".to_owned(),
-            "Pipeline ready to serve traffic.".to_owned(),
-            None,
-        ));
-
-        obs_evt_reporter.report(ObservedEvent::pipeline_condition(
-            pipeline_key.clone(),
-            ConditionType::Healthy,
-            ConditionStatus::True,
-            "HealthySteadyState".to_owned(),
-            "Pipeline healthy and operating normally.".to_owned(),
-            None,
+            Some("Pipeline initialized successfully.".to_owned()),
         ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
@@ -422,62 +340,42 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 }
 
-fn condition_details_from_error(error: &Error) -> Option<ConditionDetails> {
-    let mut details = ConditionDetails::default();
-
+fn error_summary_from_gen(error: &Error) -> ErrorSummary {
     match error {
         Error::PipelineRuntimeError { source } => {
             if let Some(engine_error) = source.downcast_ref::<EngineError>() {
-                push_engine_error(&mut details, engine_error);
+                error_summary_from(engine_error)
             } else {
-                details.node_errors.push(NodeErrorSummary {
-                    node: "pipeline".into(),
-                    node_kind: "pipeline".into(),
+                ErrorSummary::Pipeline {
                     error_kind: "runtime".into(),
                     message: source.to_string(),
                     source: None,
-                });
+                }
             }
         }
-        _ => {}
-    }
-
-    if details.node_errors.is_empty() {
-        None
-    } else {
-        Some(details)
+        _ => ErrorSummary::Pipeline {
+            error_kind: "runtime".into(),
+            message: error.to_string(),
+            source: None,
+        }
     }
 }
 
-fn push_engine_error(details: &mut ConditionDetails, err: &EngineError) {
+fn error_summary_from(err: &EngineError) -> ErrorSummary {
     match err {
-        EngineError::ExporterError {
-            exporter,
-            kind,
-            error,
-            source_detail,
-        } => {
-            details.node_errors.push(NodeErrorSummary {
-                node: exporter.to_string(),
-                node_kind: "exporter".into(),
-                error_kind: kind.to_string(),
-                message: error.clone(),
-                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            });
-        }
         EngineError::ReceiverError {
             receiver,
             kind,
             error,
             source_detail,
         } => {
-            details.node_errors.push(NodeErrorSummary {
-                node: receiver.to_string(),
-                node_kind: "receiver".into(),
+            ErrorSummary::Node {
+                node: receiver.name.to_string(),
+                node_kind: NodeKind::Receiver,
                 error_kind: kind.to_string(),
                 message: error.clone(),
                 source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            });
+            }
         }
         EngineError::ProcessorError {
             processor,
@@ -485,22 +383,34 @@ fn push_engine_error(details: &mut ConditionDetails, err: &EngineError) {
             error,
             source_detail,
         } => {
-            details.node_errors.push(NodeErrorSummary {
-                node: processor.to_string(),
-                node_kind: "processor".into(),
+            ErrorSummary::Node {
+                node: processor.name.to_string(),
+                node_kind: NodeKind::Processor,
                 error_kind: kind.to_string(),
                 message: error.clone(),
                 source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            });
+            }
+        }
+        EngineError::ExporterError {
+            exporter,
+            kind,
+            error,
+            source_detail,
+        } => {
+            ErrorSummary::Node {
+                node: exporter.name.to_string(),
+                node_kind: NodeKind::Exporter,
+                error_kind: kind.to_string(),
+                message: error.clone(),
+                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+            }
         }
         _ => {
-            details.node_errors.push(NodeErrorSummary {
-                node: "pipeline".into(),
-                node_kind: "engine".into(),
+            ErrorSummary::Pipeline {
                 error_kind: err_variant_name(err),
                 message: err.to_string(),
                 source: None,
-            });
+            }
         }
     }
 }

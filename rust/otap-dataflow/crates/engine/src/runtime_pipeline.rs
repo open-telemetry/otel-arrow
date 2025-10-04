@@ -15,7 +15,6 @@ use otap_df_telemetry::reporter::MetricsReporter;
 
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::ObservedEvent;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -156,7 +155,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .run_until(async {
                     let mut task_results = Vec::new();
 
-                    obs_evt_reporter.report(ObservedEvent::pipeline_running(pipeline_key));
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
