@@ -50,6 +50,14 @@ impl CheckedArrayAppendSlice for FixedSizeBinaryBuilder {
     fn append_slice(&mut self, val: &[Self::Native]) -> Result<(), ArrowError> {
         self.append_value(val)
     }
+
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> Result<(), ArrowError> {
+        for _ in 0..n {
+            self.append_value(val)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl ArrayAppendNulls for FixedSizeBinaryBuilder {
@@ -114,6 +122,21 @@ where
             ),
         }
     }
+
+    fn append_slice_n(
+        &mut self,
+        val: &[Self::Native],
+        n: usize,
+    ) -> super::dictionary::checked::Result<usize> {
+        // TODO use optimized method once we upgrade to latest arrow:
+        // https://github.com/apache/arrow-rs/pull/8498
+        let mut index = 0;
+        for _ in 0..n {
+            index = self.append_slice(val)?;
+        }
+
+        Ok(index)
+    }
 }
 
 impl<K> ArrayAppendNulls for FixedSizeBinaryDictionaryBuilder<K>
@@ -172,11 +195,22 @@ mod test {
         CheckedArrayAppend::append_value(&mut fsb_builder, &b"1234".to_vec()).unwrap();
         CheckedArrayAppend::append_value(&mut fsb_builder, &b"5678".to_vec()).unwrap();
         CheckedArrayAppend::append_value(&mut fsb_builder, &b"9012".to_vec()).unwrap();
+        CheckedArrayAppendSlice::append_slice(&mut fsb_builder, b"4180").unwrap();
+        CheckedArrayAppendSlice::append_slice_n(&mut fsb_builder, b"5140", 2).unwrap();
+
         let result = ArrayBuilder::finish(&mut fsb_builder);
         assert_eq!(result.data_type(), &DataType::FixedSizeBinary(4));
 
         let expected = FixedSizeBinaryArray::try_from_iter(
-            [b"1234".to_vec(), b"5678".to_vec(), b"9012".to_vec()].iter(),
+            [
+                b"1234".to_vec(),
+                b"5678".to_vec(),
+                b"9012".to_vec(),
+                b"4180".to_vec(),
+                b"5140".to_vec(),
+                b"5140".to_vec(),
+            ]
+            .iter(),
         )
         .unwrap();
 
@@ -201,6 +235,11 @@ mod test {
         let index =
             CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &b"b".to_vec()).unwrap();
         assert_eq!(index, 1);
+        let index = CheckedDictionaryAppendSlice::append_slice(&mut dict_builder, b"c").unwrap();
+        assert_eq!(index, 2);
+        let index =
+            CheckedDictionaryAppendSlice::append_slice_n(&mut dict_builder, b"d", 2).unwrap();
+        assert_eq!(index, 3);
 
         let result = DictionaryBuilder::finish(&mut dict_builder);
 
@@ -215,7 +254,10 @@ mod test {
         let mut expected_dict_values = FixedSizeBinaryBuilder::new(1);
         assert!(expected_dict_values.append_value(b"a").is_ok());
         assert!(expected_dict_values.append_value(b"b").is_ok());
-        let expected_dict_keys = UInt8Array::from_iter_values(vec![0, 0, 1]);
+        assert!(expected_dict_values.append_value(b"c").is_ok());
+        assert!(expected_dict_values.append_value(b"d").is_ok());
+        assert!(expected_dict_values.append_value(b"d").is_ok());
+        let expected_dict_keys = UInt8Array::from_iter_values(vec![0, 0, 1, 2, 3, 3]);
         let expected =
             UInt8DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));
 

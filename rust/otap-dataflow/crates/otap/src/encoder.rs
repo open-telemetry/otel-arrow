@@ -304,7 +304,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 for log_record in log_records_slice {
@@ -313,7 +314,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .observed_time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 logs.append_schema_url_n(scope_schema_url, logs_count);
