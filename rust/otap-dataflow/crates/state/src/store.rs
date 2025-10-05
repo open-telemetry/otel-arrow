@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
-use crate::core_status::{ApplyOutcome, CoreStatus};
+use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
@@ -122,7 +122,7 @@ impl ObservedStateStore {
             .or_insert_with(|| PipelineStatus::new(now));
 
         // Upsert the core record and its condition snapshot
-        let cs = ps.per_core.entry(observed_event.key.core_id).or_insert(CoreStatus {
+        let cs = ps.per_core.entry(observed_event.key.core_id).or_insert(PipelineRuntimeStatus {
             phase: PipelinePhase::Pending,
             last_beat: observed_event.time,
             recent_events: ObservedEventRingBuffer::new(RECENT_EVENTS_CAPACITY),

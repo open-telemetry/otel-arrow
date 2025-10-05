@@ -86,8 +86,12 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
 }
 
 fn build_status_response(
-    pipelines: HashMap<PipelineKey, PipelineStatus>,
+    mut pipelines: HashMap<PipelineKey, PipelineStatus>,
 ) -> PipelineGroupsStatusResponse {
+    for pipeline_status in pipelines.values_mut() {
+        pipeline_status.infer_aggregated_phase();
+    }
+    
     PipelineGroupsStatusResponse {
         generated_at: Utc::now().to_rfc3339(),
         pipelines,

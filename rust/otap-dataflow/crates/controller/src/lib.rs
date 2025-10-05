@@ -310,7 +310,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         obs_evt_reporter.report(ObservedEvent::admitted(
             pipeline_key.clone(),
-            Some("Pipeline initialization in progress.".to_owned())
+            Some("Pipeline admission successful.".to_owned()),
         ));
 
         // Build the runtime pipeline from the configuration
@@ -322,7 +322,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         obs_evt_reporter.report(ObservedEvent::ready(
             pipeline_key.clone(),
-            Some("Pipeline initialized successfully.".to_owned()),
+            Some("Pipeline initialization successful.".to_owned()),
         ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)

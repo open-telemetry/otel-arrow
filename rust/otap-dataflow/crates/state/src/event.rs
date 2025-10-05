@@ -49,10 +49,6 @@ impl ObservedEventRingBuffer {
     pub(crate) fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &ObservedEvent> {
-        self.buf.iter()
-    }
 }
 
 /// An observed event emitted by the engine.
@@ -80,10 +76,20 @@ pub struct ObservedEvent {
     message: Option<String>,
 }
 
-/// Event types that can be reported by the controller runtime, the pipelines, and the nodes.
+/// Grouping of event types by category.
 #[derive(Debug, Clone, Serialize)]
 pub enum EventType {
-    // ---- Request events ----
+    /// Request-level events.
+    Request(RequestEvent),
+    /// Success/normal-progress events.
+    Success(SuccessEvent),
+    /// Error/failure events.
+    Error(ErrorEvent),
+}
+
+/// Request-level events
+#[derive(Debug, Clone, Serialize)]
+pub enum RequestEvent {
     /// A request to (re)start the pipeline lifecycle from a stopped state.
     StartRequested,
     /// Begin graceful shutdown and quiesce existing work.
@@ -92,8 +98,11 @@ pub enum EventType {
     DeleteRequested,
     /// Request immediate deletion (skip draining; preempt everything).
     ForceDeleteRequested,
+}
 
-    // ---- Success events ----
+/// Success/normal events
+#[derive(Debug, Clone, Serialize)]
+pub enum SuccessEvent {
     /// Controller accepted the pipeline and allows startup to proceed.
     Admitted,
     /// All the nodes are initialized and the pipeline tasks are ready to start.
@@ -108,8 +117,11 @@ pub enum EventType {
     Drained,
     /// Resource teardown has finished; nothing remains.
     Deleted,
+}
 
-    // ---- Error events ----
+/// Error/failure events
+#[derive(Debug, Clone, Serialize)]
+pub enum ErrorEvent {
     /// Admission refused the pipeline.
     /// Reasons might include invalid config, resource limits, ...
     AdmissionError(ErrorSummary),
@@ -165,7 +177,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::Admitted,
+            r#type: EventType::Success(SuccessEvent::Admitted),
             message,
         }
     }
@@ -177,7 +189,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::Ready,
+            r#type: EventType::Success(SuccessEvent::Ready),
             message,
         }
     }
@@ -189,7 +201,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::UpdateAdmitted,
+            r#type: EventType::Success(SuccessEvent::UpdateAdmitted),
             message,
         }
     }
@@ -201,7 +213,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::UpdateApplied,
+            r#type: EventType::Success(SuccessEvent::UpdateApplied),
             message,
         }
     }
@@ -213,7 +225,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::RollbackComplete,
+            r#type: EventType::Success(SuccessEvent::RollbackComplete),
             message,
         }
     }
@@ -225,7 +237,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::Drained,
+            r#type: EventType::Success(SuccessEvent::Drained),
             message,
         }
     }
@@ -237,7 +249,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::Deleted,
+            r#type: EventType::Success(SuccessEvent::Deleted),
             message,
         }
     }
@@ -249,7 +261,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::AdmissionError(error),
+            r#type: EventType::Error(ErrorEvent::AdmissionError(error)),
             message,
         }
     }
@@ -261,7 +273,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::ConfigRejected(error),
+            r#type: EventType::Error(ErrorEvent::ConfigRejected(error)),
             message,
         }
     }
@@ -273,7 +285,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::UpdateFailed(error),
+            r#type: EventType::Error(ErrorEvent::UpdateFailed(error)),
             message,
         }
     }
@@ -285,7 +297,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::RollbackFailed(error),
+            r#type: EventType::Error(ErrorEvent::RollbackFailed(error)),
             message,
         }
     }
@@ -297,7 +309,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::DrainError(error),
+            r#type: EventType::Error(ErrorEvent::DrainError(error)),
             message,
         }
     }
@@ -309,7 +321,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::DeleteError(error),
+            r#type: EventType::Error(ErrorEvent::DeleteError(error)),
             message,
         }
     }
@@ -321,7 +333,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::RuntimeError(error),
+            r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
             message: Some(message.into()),
         }
     }
@@ -339,7 +351,7 @@ impl ObservedEvent {
             node_id: Some(node_id),
             node_kind: Some(node_kind),
             time: SystemTime::now(),
-            r#type: EventType::RuntimeError(error),
+            r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
             message,
         }
     }
@@ -351,7 +363,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::StartRequested,
+            r#type: EventType::Request(RequestEvent::StartRequested),
             message,
         }
     }
@@ -363,7 +375,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::ShutdownRequested,
+            r#type: EventType::Request(RequestEvent::ShutdownRequested),
             message,
         }
     }
@@ -375,7 +387,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::DeleteRequested,
+            r#type: EventType::Request(RequestEvent::DeleteRequested),
             message,
         }
     }
@@ -387,7 +399,7 @@ impl ObservedEvent {
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
-            r#type: EventType::ForceDeleteRequested,
+            r#type: EventType::Request(RequestEvent::ForceDeleteRequested),
             message,
         }
     }

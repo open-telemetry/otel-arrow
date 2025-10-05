@@ -12,7 +12,7 @@ pub mod reporter;
 pub mod store;
 pub mod event;
 pub mod phase;
-mod core_status;
+mod pipeline_rt_status;
 pub mod pipeline_status;
 
 type CoreId = usize;

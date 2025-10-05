@@ -3,12 +3,14 @@
 
 //! Definition of all states/phases that a pipeline can be in.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Display;
 use serde::Serialize;
 
-/// High-level lifecycle of a pipeline as seen by the controller.
+/// States/Phases that a pipeline instance (bound to a CPU core) can be in.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PipelinePhase {
     /// The pipeline exists but has not been admitted to start yet, awaiting a decision (e.g.
     /// admission controller, quota checks, start_request, ...).
@@ -27,9 +29,11 @@ pub enum PipelinePhase {
     /// controller may attempt retries based on policy, but phase reflects the
     /// current failure.
     Failed(FailReason),
-    /// The pipeline spec was invalid or could not be applied (e.g. validation
-    /// error, quota exceeded, resource limits, ...).
-    Rejected,
+    /// Admission or configuration was rejected before (or during) startup.
+    /// Examples include:
+    /// - for admission: quota exceeded, resource limits, ...
+    /// - for configuration: invalid or incompatible config, ...
+    Rejected(RejectReason),
     /// A new spec/version is being applied (rolling or otherwise) while the pipeline
     /// remains under control.
     Updating,
@@ -45,6 +49,90 @@ pub enum PipelinePhase {
     Unknown,
 }
 
+/// Monitoring-friendly aggregate phase for a logical pipeline spanning many cores.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PipelineAggPhase {
+    /// All cores are deleted; the pipeline has been fully removed.
+    Deleted,
+    /// Teardown is in progress.
+    Deleting {
+        /// `forced=true` if any core uses forced deletion
+        forced: bool,
+        /// How many pipeline core instances are still being deleted
+        remaining: usize
+    },
+    /// One or more cores are in a failed state
+    Failed {
+        /// How many pipeline instance cores are in `Failed` state
+        failed: usize,
+        /// How many pipeline instance cores are currently serving
+        running: usize,
+        /// The most common reason for failure among the failed cores
+        top_reason: Option<FailReason>
+    },
+    /// One or more cores are rejected.
+    /// Counts plus most common rejection reason.
+    Rejected {
+        /// How many cores are currently rejected
+        rejected: usize,
+        /// How many cores are currently serving
+        running: usize,
+        /// The most common reason for rejection among the rejected cores
+        top_reason: Option<RejectReason>
+    },
+    /// A rollback is underway on at least one core
+    RollingBack {
+        /// How many cores are currently rolling back
+        rolling_back: usize,
+        /// How many cores are currently serving
+        running: usize
+    },
+    /// An update is applying on at least one core
+    Updating {
+        /// How many cores are currently updating
+        updating: usize,
+        /// How many cores are currently serving
+        running: usize
+    },
+    /// Graceful shutdown in progress on some cores
+    Draining {
+        /// How many cores are currently in `Draining` state
+        draining: usize,
+        /// How many cores are currently serving
+        running: usize
+    },
+    /// All non-deleted cores are running (full capacity).
+    RunningAll,
+    /// Some cores are running while others are not (partial capacity).
+    RunningDegraded {
+        /// How many cores are currently running
+        running: usize,
+        /// How many non-deleted cores are there in total
+        total_active: usize
+    },
+    /// All non-deleted cores are stopped (safe but not serving)
+    StoppedAll {
+        /// How many cores are currently stopped
+        stopped: usize
+    },
+    /// A mix where some non-deleted cores are stopped (includes how many are active overall)
+    StoppedPartial {
+        /// How many cores are currently stopped
+        stopped: usize,
+        /// How many non-deleted cores are there in total
+        total_active: usize
+    },
+    /// Early lifecycle: at least one core is pending/starting
+    Starting {
+        /// How many cores are currently in `Pending` state
+        pending: usize,
+        /// How many cores are currently in `Starting` state
+        starting: usize
+    },
+    /// The state has not been determined yet or is inconsistent.
+    Unknown
+}
+
 impl Display for PipelinePhase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -53,7 +141,7 @@ impl Display for PipelinePhase {
             PipelinePhase::Draining => "Draining",
             PipelinePhase::Stopped => "Stopped",
             PipelinePhase::Failed(_) => "Failed",
-            PipelinePhase::Rejected => "Rejected",
+            PipelinePhase::Rejected(_) => "Rejected",
             PipelinePhase::Starting => "Starting",
             PipelinePhase::Updating => "Updating",
             PipelinePhase::RollingBack => "RollingBack",
@@ -65,8 +153,18 @@ impl Display for PipelinePhase {
     }
 }
 
+/// Why admission/config were rejected (distinct from runtime failures).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum RejectReason {
+    /// Admission refused the pipeline (policy/quotas/validation).
+    AdmissionError,
+    /// Startup aborted due to invalid or incompatible configuration.
+    ConfigRejected,
+}
+
 /// How a deletion was initiated and executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeletionMode {
     /// Deletion preceded by a graceful drain of work/traffic.
     Graceful,
@@ -75,7 +173,8 @@ pub enum DeletionMode {
 }
 
 /// Categorized reasons for entering `PipelinePhase::Failed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
 pub enum FailReason {
     /// Admission rejected the pipeline before startup.
     AdmissionError,
