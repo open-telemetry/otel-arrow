@@ -144,6 +144,9 @@ pub trait CheckedArrayAppendSlice {
     /// append a slice of T to the builder. Note that this does not append an individual
     /// element for each value in the slice, it appends the slice as a single row
     fn append_slice(&mut self, val: &[Self::Native]) -> Result<(), ArrowError>;
+
+    /// append the slice to the builder `n` times
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> Result<(), ArrowError>;
 }
 
 /// Used by the builder to identify the default value of the array that is being built. By default
@@ -612,6 +615,15 @@ where
             append_slice(value),
             default_check = Self::is_default_value(&self.default_value, &value),
             retry = { self.append_slice(value) }
+        )
+    }
+
+    fn append_slice_n(&mut self, value: &[Self::Native], n: usize) -> Result<(), ArrowError> {
+        handle_append_checked!(
+            self,
+            append_slice_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_slice_n(value, n) }
         )
     }
 }
@@ -1278,6 +1290,7 @@ pub mod test {
         assert!(builder.append_slice(&valid_values[0]).is_ok());
         assert!(builder.append_slice(&valid_values[1]).is_ok());
         builder.append_nulls(2);
+        assert!(builder.append_slice_n(&valid_values[1], 2).is_ok());
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -1287,7 +1300,7 @@ pub mod test {
                 Box::new(DataType::FixedSizeBinary(1))
             )
         );
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -1296,7 +1309,17 @@ pub mod test {
         let dict_keys = dict_array.keys();
         assert_eq!(
             dict_keys,
-            &UInt8Array::from_iter(vec![Some(0), Some(1), None, Some(0), Some(1), None, None])
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(1),
+                None,
+                None,
+                Some(1),
+                Some(1)
+            ])
         );
         let dict_values = dict_array
             .values()
