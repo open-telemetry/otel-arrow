@@ -176,20 +176,18 @@ impl ObservedStateHandle {
     /// Checks if a pipeline is considered live based on its observed status.
     #[must_use]
     pub fn liveness(&self, pipeline_key: &PipelineKey) -> bool {
-        self.pipelines.lock().ok().is_some_and(|pipelines| {
-            pipelines
-                .get(pipeline_key)
-                .is_some_and(|ps| ps.liveness())
-        })
+        self.pipelines
+            .lock()
+            .ok()
+            .is_some_and(|pipelines| pipelines.get(pipeline_key).is_some_and(|ps| ps.liveness()))
     }
 
     /// Checks if a pipeline is considered ready based on its observed status.
     #[must_use]
     pub fn readiness(&self, pipeline_key: &PipelineKey) -> bool {
-        self.pipelines.lock().ok().is_some_and(|pipelines| {
-            pipelines
-                .get(pipeline_key)
-                .is_some_and(|ps| ps.readiness())
-        })
+        self.pipelines
+            .lock()
+            .ok()
+            .is_some_and(|pipelines| pipelines.get(pipeline_key).is_some_and(|ps| ps.readiness()))
     }
 }

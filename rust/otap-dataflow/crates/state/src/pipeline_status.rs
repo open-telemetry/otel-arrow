@@ -276,3 +276,104 @@ impl AggregateCounts {
         self.total() - self.deleted
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn runtime(phase: PipelinePhase) -> PipelineRuntimeStatus {
+        PipelineRuntimeStatus {
+            phase,
+            ..PipelineRuntimeStatus::default()
+        }
+    }
+
+    fn new_status(policy: HealthPolicy) -> PipelineStatus {
+        PipelineStatus {
+            phase: PipelineAggPhase::Unknown,
+            cores: HashMap::new(),
+            health_policy: policy,
+        }
+    }
+
+    fn policy(
+        live_if: Vec<PhaseKind>,
+        ready_if: Vec<PhaseKind>,
+        live_quorum: Quorum,
+        ready_quorum: Quorum,
+    ) -> HealthPolicy {
+        HealthPolicy {
+            live_if,
+            ready_if,
+            live_quorum,
+            ready_quorum,
+        }
+    }
+
+    #[test]
+    fn infer_agg_phase_prioritizes_deleting_with_forced_flag() {
+        let policy = HealthPolicy::default();
+        let mut status = new_status(policy);
+        _ = status
+            .cores
+            .insert(0, runtime(PipelinePhase::Deleting(DeletionMode::Forced)));
+        _ = status
+            .cores
+            .insert(1, runtime(PipelinePhase::Failed(FailReason::DrainError)));
+
+        status.infer_agg_phase();
+
+        assert_eq!(
+            status.phase(),
+            &PipelineAggPhase::Deleting {
+                forced: true,
+                remaining: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn liveness_respects_percent_quorum_and_excludes_deleted() {
+        let policy = HealthPolicy {
+            live_if: vec![PhaseKind::Running],
+            ready_if: vec![PhaseKind::Running],
+            live_quorum: Quorum::Percent(60),
+            ready_quorum: Quorum::All,
+        };
+        let mut status = new_status(policy);
+        _ = status.cores.insert(0, runtime(PipelinePhase::Running));
+        _ = status.cores.insert(1, runtime(PipelinePhase::Running));
+        _ = status
+            .cores
+            .insert(2, runtime(PipelinePhase::Failed(FailReason::RuntimeError)));
+        _ = status.cores.insert(3, runtime(PipelinePhase::Deleted));
+
+        assert!(status.liveness());
+
+        _ = status
+            .cores
+            .insert(1, runtime(PipelinePhase::Failed(FailReason::RuntimeError)));
+
+        assert!(!status.liveness());
+    }
+
+    #[test]
+    fn readiness_requires_all_non_deleted_cores_to_be_ready() {
+        let policy = HealthPolicy {
+            live_if: vec![PhaseKind::Running],
+            ready_if: vec![PhaseKind::Running],
+            live_quorum: Quorum::AtLeast(1),
+            ready_quorum: Quorum::All,
+        };
+        let mut status = new_status(policy);
+        _ = status.cores.insert(0, runtime(PipelinePhase::Running));
+        _ = status.cores.insert(1, runtime(PipelinePhase::Running));
+
+        assert!(status.readiness());
+
+        _ = status.cores.insert(1, runtime(PipelinePhase::Updating));
+
+        assert!(!status.readiness());
+    }
+}
