@@ -87,8 +87,8 @@ mod tests {
         )))
     }
 
-    #[tokio::test]
-    async fn test_noop_exporter_no_subscription_succeeds() {
+    #[test]
+    fn test_noop_exporter_no_subscription_succeeds() {
         let test_runtime = TestRuntime::new();
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
         let exporter = ExporterWrapper::local(
@@ -101,22 +101,24 @@ mod tests {
         // Test with no subscription - should succeed
         test_runtime
             .set_exporter(exporter)
-            .run_test(|_ctx| async move {})
-            .run_validation(|ctx, result| async move {
+            .run_test(|ctx| async move {
+                // Send a PData message with no subscription
                 let test_data = create_test_pdata();
-                ctx.send_pdata(test_data)
-                    .await
-                    .expect("Failed to send pdata");
+                ctx.send_pdata(test_data).await.expect("Failed to send pdata");
 
+                // Send shutdown to terminate cleanly
                 ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                     .await
                     .expect("Failed to send shutdown");
+            })
+            .run_validation(|_ctx, result| async move {
+                // Should succeed because no subscription means notify_ack should work
                 result.expect("Exporter should succeed with no subscription");
             });
     }
 
-    #[tokio::test]
-    async fn test_noop_exporter_with_subscription_fails() {
+    #[test]
+    fn test_noop_exporter_with_subscription_fails() {
         let test_runtime = TestRuntime::new();
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
         let exporter = ExporterWrapper::local(
@@ -130,18 +132,20 @@ mod tests {
         // it returns an expected error for now.
         test_runtime
             .set_exporter(exporter)
-            .run_test(|_ctx| async move {})
-            .run_validation(|ctx, result| async move {
+            .run_test(|ctx| async move {
+                // Send a PData message with subscription
                 let mut test_data = create_test_pdata();
-
+                // Subscribe to ACKs to trigger the error path
                 test_data.test_subscribe_to(Interests::ACKS, CallData::new(), 1);
-                ctx.send_pdata(test_data)
-                    .await
-                    .expect("Failed to send pdata");
+                ctx.send_pdata(test_data).await.expect("Failed to send pdata");
 
+                // Send shutdown
                 ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                     .await
                     .expect("Failed to send shutdown");
+            })
+            .run_validation(|_ctx, result| async move {
+                // Should fail because subscription exists but notify_ack not properly implemented
                 assert!(
                     result.is_err(),
                     "Exporter should fail when subscription exists but notify_ack not implemented"
