@@ -461,16 +461,6 @@ mod tests {
 
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
-                for i in 0..50 {
-            println!("ATTEMPT {i}");
-            do_flakey_test_internal();
-            println!("ATTEMPT {i} finished");
-        }
-        // fail the job so we can rerun it.
-        assert_eq!(1, 2);
-    }
-
-    fn do_flakey_test_internal() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
         // server that may start and stop asynchronously of the exporter. it ensures the exporter
         // doesn't exit early if it can't make the initial connection, and also that the grpc
@@ -689,6 +679,8 @@ mod tests {
                 )
             )
         });
+
+        // assert no error
         exporter_result.unwrap();
         test_drive_result.unwrap();
 
