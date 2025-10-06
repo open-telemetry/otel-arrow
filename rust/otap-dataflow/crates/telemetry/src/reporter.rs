@@ -25,6 +25,16 @@ impl MetricsReporter {
         Self { metrics_sender }
     }
 
+    /// Create a test instance of this metrics reporter. It returns the reporter and the receiver
+    /// that the reporter will send the metrics to when report is called
+    #[must_use]
+    pub fn create_new_and_receiver(
+        channel_size: usize,
+    ) -> (flume::Receiver<MetricSetSnapshot>, Self) {
+        let (tx, rx) = flume::bounded(channel_size);
+        (rx, Self::new(tx))
+    }
+
     /// Report multivariate metrics and reset the metrics if successful.
     pub fn report<M: MetricSetHandler + 'static>(
         &mut self,

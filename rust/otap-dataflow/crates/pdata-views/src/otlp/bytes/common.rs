@@ -261,12 +261,7 @@ impl AttributeView for RawKeyValue<'_> {
         loop {
             if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
             {
-                let slice = &self.buf[start..end];
-                match std::str::from_utf8(slice).ok() {
-                    Some(str) => return str,
-                    // break for invalid strings
-                    None => break,
-                }
+                return &self.buf[start..end];
             } else if self.pos.get() >= self.buf.len() {
                 break;
             } else {
@@ -275,7 +270,7 @@ impl AttributeView for RawKeyValue<'_> {
         }
 
         // return empty string when cannot read key
-        ""
+        &[]
     }
 
     #[inline]
@@ -355,8 +350,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
                 .value_offset
                 .get()
                 .expect("expect to have been initialized");
-            let (slice, _) = read_len_delim(self.buf, value_offset)?;
-            std::str::from_utf8(slice).ok()
+            read_len_delim(self.buf, value_offset).map(|(slice, _)| slice)
         } else {
             None
         }
@@ -508,18 +502,14 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
 
     #[inline]
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)
     }
 
     #[inline]
     fn version(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)
     }
 
     #[inline]
