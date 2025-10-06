@@ -88,10 +88,10 @@ use otap_df_engine::{
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
-use otel_arrow_rust::otlp::ProtoBuffer;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
+use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 
 use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
 

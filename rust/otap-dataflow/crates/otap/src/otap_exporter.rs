@@ -158,7 +158,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
         // TODO comment on the purpose of these
         // TODO import so can use as just "channel" here
-        // TODO check if we can use our local channel in conjonction with a spawn_local.
+        // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
         let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel(64);
         let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel(64);
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
@@ -171,7 +171,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         .then(|| arrow_ipc::CompressionType::ZSTD);
 
         // TODO check if we can expose/use spawn_local method in the effect handler
-        let logs_handle = tokio::spawn(stream_arrow_batches(
+        let logs_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_logs_client,
             SignalType::Logs,
             ipc_compression,
@@ -179,7 +179,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
-        let metrics_handle = tokio::spawn(stream_arrow_batches(
+        let metrics_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_metrics_client,
             SignalType::Metrics,
             ipc_compression,
@@ -187,7 +187,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
-        let traces_handle = tokio::spawn(stream_arrow_batches(
+        let traces_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_traces_client,
             SignalType::Traces,
             ipc_compression,
@@ -313,9 +313,10 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     let mut shutdown = false;
 
     // we'll do an exponential backoff if there was an error creating the streaming request
-    let max_backoff = Duration::from_secs(10);
-    let initial_backoff = Duration::from_millis(10);
-    let mut failed_request_backoff = initial_backoff;
+    const MAX_BACKOFF: Duration = Duration::from_secs(10);
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+    const BACKOFF_MULTIPLIER: u32 = 2;
+    let mut failed_request_backoff = INITIAL_BACKOFF;
 
     // send streams of batches to the server until shutdown
     while !shutdown {
@@ -344,7 +345,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 match client.handle_req_stream(req_stream).await {
                     Ok(res) => {
                         // reset the reconnect timeout backoff
-                        failed_request_backoff = initial_backoff;
+                        failed_request_backoff = INITIAL_BACKOFF;
 
                         // handle server responses until error or shutdown
                         shutdown = handle_res_stream(
@@ -359,7 +360,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
                         log::error!("failed request, waiting {failed_request_backoff:?}");
                         tokio::time::sleep(failed_request_backoff).await;
-                        failed_request_backoff = std::cmp::min(failed_request_backoff * 2, max_backoff);
+                        failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
                 };
             }
