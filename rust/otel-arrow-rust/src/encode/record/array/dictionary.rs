@@ -443,6 +443,8 @@ where
         }
     }
 
+    // TODO delete this method in future if it turns out to never be useful
+    #[allow(dead_code)]
     pub fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
         loop {
             let result = match &mut self.variant {
