@@ -466,6 +466,16 @@ mod tests {
         // doesn't exit early if it can't make the initial connection, and also that the grpc
         // client will reconnect in the event of a server shutdown
 
+        for i in 0..10 {
+            println!("ATTEMPT {i}");
+            do_flakey_test_internal();
+            println!("ATTEMPT {i} finished");
+        }
+        // fail the job so we can rerun it.
+        assert_eq!(1, 2);
+    }
+
+    fn do_flakey_test_internal() {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
@@ -693,8 +703,5 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
-
-        // fail the job so we can rerun it.
-        assert_eq!(1, 2);
     }
 }
