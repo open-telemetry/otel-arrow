@@ -405,43 +405,12 @@ fn error_summary_from(err: &EngineError) -> ErrorSummary {
         }
         _ => {
             ErrorSummary::Pipeline {
-                error_kind: err_variant_name(err),
+                error_kind: err.variant_name(),
                 message: err.to_string(),
                 source: None,
             }
         }
     }
-}
-
-fn err_variant_name(err: &EngineError) -> String {
-    match err {
-        EngineError::ConfigError(_) => "ConfigError",
-        EngineError::ChannelRecvError(_) => "ChannelRecvError",
-        EngineError::ChannelSendError { .. } => "ChannelSendError",
-        EngineError::PipelineControlMsgError { .. } => "PipelineControlMsgError",
-        EngineError::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
-        EngineError::InvalidHyperEdge { .. } => "InvalidHyperEdge",
-        EngineError::IoError { .. } => "IoError",
-        EngineError::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
-        EngineError::ReceiverError { .. } => "ReceiverError",
-        EngineError::UnknownReceiver { .. } => "UnknownReceiver",
-        EngineError::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
-        EngineError::ProcessorError { .. } => "ProcessorError",
-        EngineError::UnknownProcessor { .. } => "UnknownProcessor",
-        EngineError::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
-        EngineError::ExporterError { .. } => "ExporterError",
-        EngineError::PdataConversionError { .. } => "PdataConversionError",
-        EngineError::UnknownExporter { .. } => "UnknownExporter",
-        EngineError::UnknownNode { .. } => "UnknownNode",
-        EngineError::PdataReceiverNotSupported => "PdataReceiverNotSupported",
-        EngineError::PdataSenderNotSupported => "PdataSenderNotSupported",
-        EngineError::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
-        EngineError::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
-        EngineError::JoinTaskError { .. } => "JoinTaskError",
-        EngineError::InternalError { .. } => "InternalError",
-        EngineError::TooManyNodes {} => "TooManyNodes",
-    }
-    .to_owned()
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 
 use crate::PipelineKey;
 use crate::error::Error;
-use crate::event::{ObservedEvent, ObservedEventRingBuffer};
+use crate::event::{EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
@@ -97,6 +97,14 @@ impl ObservedStateStore {
 
     /// Reports a new observed event in the store.
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
+        // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
+        // The code below is temporary and should be replaced with a proper event reporting
+        // mechanism (see previous todo).
+        match &observed_event.r#type {
+            EventType::Request(_) | EventType::Error(_) => eprintln!("Observed event: {observed_event:?}"),
+            EventType::Success(_) => { /* no console output for success events */ }
+        }
+
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             log::warn!(
                 "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"

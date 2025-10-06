@@ -2,6 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Health policy defining liveness and readiness probes.
+//!
+//! ## Liveness Probe
+//!
+//! Used to decide whether to restart the server/container. Typical use cases:
+//! - Detect deadlocks or stuck event loops.
+//! - Force a restart when the app can't recover by itself.
+//! - Should be cheap and internal (not dependent on external systems).
+//!
+//! ## Readiness Probe
+//!
+//! Used to decide whether the Pod should receive traffic. Typical use cases:
+//! - Gate traffic until startup work is done (pipeline deployed and running).
+//! - Temporarily remove the Pod from load balancing when it can't serve correctly.
+//! - Can check key dependencies, but avoid making it too fragile.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

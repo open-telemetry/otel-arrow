@@ -374,3 +374,37 @@ pub enum Error {
     #[error("Too many nodes defined")]
     TooManyNodes {},
 }
+
+impl Error {
+    /// Returns the name of the error variant as a string.
+    pub fn variant_name(self: &Self) -> String {
+        match self {
+            Error::ConfigError(_) => "ConfigError",
+            Error::ChannelRecvError(_) => "ChannelRecvError",
+            Error::ChannelSendError { .. } => "ChannelSendError",
+            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+            Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
+            Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
+            Error::IoError { .. } => "IoError",
+            Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
+            Error::ReceiverError { .. } => "ReceiverError",
+            Error::UnknownReceiver { .. } => "UnknownReceiver",
+            Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
+            Error::ProcessorError { .. } => "ProcessorError",
+            Error::UnknownProcessor { .. } => "UnknownProcessor",
+            Error::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
+            Error::ExporterError { .. } => "ExporterError",
+            Error::PdataConversionError { .. } => "PdataConversionError",
+            Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::UnknownNode { .. } => "UnknownNode",
+            Error::PdataReceiverNotSupported => "PdataReceiverNotSupported",
+            Error::PdataSenderNotSupported => "PdataSenderNotSupported",
+            Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
+            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
+            Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::InternalError { .. } => "InternalError",
+            Error::TooManyNodes {} => "TooManyNodes",
+        }
+            .to_owned()
+    }
+}
