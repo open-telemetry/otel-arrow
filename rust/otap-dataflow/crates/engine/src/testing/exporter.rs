@@ -6,7 +6,9 @@
 //! These utilities are designed to make testing exporters simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::ExporterFactory;
 use crate::config::ExporterConfig;
+use crate::context::{ControllerContext, PipelineContext};
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -18,10 +20,13 @@ use crate::node::NodeWithPDataReceiver;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::registry::MetricsRegistryHandle;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
@@ -311,4 +316,25 @@ impl<PData> ValidationPhase<PData> {
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(self.context, result))
     }
+}
+
+/// Creates a test pipeline context for component testing
+pub fn create_test_pipeline_context() -> PipelineContext {
+    let metrics_registry = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry);
+    controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
+}
+
+/// Creates an exporter using its factory function with minimal test setup
+pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
+    factory: &ExporterFactory<PData>,
+    config: Value,
+) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error> {
+    let pipeline_ctx = create_test_pipeline_context();
+    let node = test_node("test_exporter".to_string());
+    let mut node_config = NodeUserConfig::new_exporter_config(factory.name);
+    node_config.config = config;
+    let exporter_config = ExporterConfig::new("test_exporter");
+
+    (factory.create)(pipeline_ctx, node, Arc::new(node_config), &exporter_config)
 }

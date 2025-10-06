@@ -33,7 +33,7 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            NoopExporter::from_config()?,
+            NoopExporter::from_config(),
             node,
             node_config,
             exporter_config,
@@ -42,9 +42,9 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 };
 
 impl NoopExporter {
-    /// create a new instance of the `[NoopExporter]` from json config value
-    pub fn from_config() -> Result<Self, otap_df_config::error::Error> {
-        Ok(Self {})
+    /// create a new instance of the `[NoopExporter]`
+    pub fn from_config() -> Self {
+        Self {}
     }
 }
 
@@ -74,86 +74,16 @@ impl Exporter<OtapPdata> for NoopExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_engine::testing::exporter::TestRuntime;
-    use otap_df_engine::testing::test_node;
-    use otap_df_engine::{Interests, control::CallData};
-    use std::sync::Arc;
-
-    /// Create minimal test data for the exporter
-    fn create_test_pdata() -> OtapPdata {
-        OtapPdata::new_todo_context(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-            vec![],
-        )))
-    }
+    use crate::testing::*;
+    use serde_json::json;
 
     #[test]
     fn test_noop_exporter_no_subscription_succeeds() {
-        let test_runtime = TestRuntime::new();
-        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
-        let exporter = ExporterWrapper::local(
-            NoopExporter::from_config().unwrap(),
-            test_node(test_runtime.config().name.clone()),
-            user_config,
-            test_runtime.config(),
-        );
-
-        // Test with no subscription - should succeed
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| async move {
-                // Send a PData message with no subscription
-                let test_data = create_test_pdata();
-                ctx.send_pdata(test_data)
-                    .await
-                    .expect("Failed to send pdata");
-
-                // Send shutdown to terminate cleanly
-                ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
-                    .await
-                    .expect("Failed to send shutdown");
-            })
-            .run_validation(|_ctx, result| async move {
-                // Should succeed because no subscription means notify_ack should work
-                result.expect("Exporter should succeed with no subscription");
-            });
+        test_exporter_no_subscription(&NOOP_EXPORTER, json!({}));
     }
 
     #[test]
     fn test_noop_exporter_with_subscription_fails() {
-        let test_runtime = TestRuntime::new();
-        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_noop_exporter"));
-        let exporter = ExporterWrapper::local(
-            NoopExporter::from_config().unwrap(),
-            test_node(test_runtime.config().name.clone()),
-            user_config,
-            test_runtime.config(),
-        );
-
-        // This exercises a code path that is not currently implemented, instead
-        // it returns an expected error for now.
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| async move {
-                // Send a PData message with subscription
-                let mut test_data = create_test_pdata();
-                // Subscribe to ACKs to trigger the error path
-                test_data.test_subscribe_to(Interests::ACKS, CallData::new(), 1);
-                ctx.send_pdata(test_data)
-                    .await
-                    .expect("Failed to send pdata");
-
-                // Send shutdown
-                ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
-                    .await
-                    .expect("Failed to send shutdown");
-            })
-            .run_validation(|_ctx, result| async move {
-                // Should fail because subscription exists but notify_ack not properly implemented
-                assert!(
-                    result.is_err(),
-                    "Exporter should fail when subscription exists but notify_ack not implemented"
-                );
-            });
+        test_exporter_with_subscription(&NOOP_EXPORTER, json!({}));
     }
 }
