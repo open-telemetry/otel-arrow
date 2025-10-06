@@ -20,6 +20,7 @@ pub mod node;
 pub mod pipeline;
 pub mod pipeline_group;
 pub mod urn;
+pub mod health;
 
 /// The id of a pipeline group.
 pub type PipelineGroupId = Cow<'static, str>;

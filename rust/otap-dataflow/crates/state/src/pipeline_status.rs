@@ -6,6 +6,7 @@
 use crate::CoreId;
 use crate::phase::{DeletionMode, FailReason, PipelineAggPhase, PipelinePhase, RejectReason};
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
+use otap_df_config::health::{AggregationPolicy, PhaseKind, Quorum};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::time::SystemTime;
@@ -61,41 +62,174 @@ impl PipelineStatus {
                     }
                 }
                 PipelinePhase::Deleted => agg.deleted += 1,
-                PipelinePhase::Rejected(r) => { agg.rejected += 1; *agg.rejected_reasons.entry(*r).or_insert(0) += 1; },
-                PipelinePhase::Unknown => agg.unknown += 1,
+                PipelinePhase::Rejected(r) => {
+                    agg.rejected += 1;
+                    *agg.rejected_reasons.entry(*r).or_insert(0) += 1;
+                }
+                // PipelinePhase::Unknown => agg.unknown += 1,
             }
         }
         agg
     }
 
     /// Infer the aggregated phase.
+    ///
     /// Choose a single, meaningful headline phase from the per-core counts.
-    /// Precedence (highest first): Deleting, Failed, Rejected, RollingBack, Updating, Draining,
-    /// RunningAll/RunningDegraded, Starting, StoppedAll/StoppedPartial, Deleted.
-    pub fn infer_aggregated_phase(&mut self) {
+    /// Precedence (highest first): Deleted, Deleting, Failed, Rejected, RollingBack, Updating,
+    /// Draining, RunningAll/RunningDegraded, Starting, StoppedAll/StoppedPartial.
+    pub fn infer_agg_phase(&mut self) {
         let count = self.counts();
         let total = count.total();
         let active = count.active();
         let forced = count.forced_deletes > 0;
-        let top_fail = count.failed_reasons.iter().max_by_key(|(_, n)| *n).map(|(r, _)| *r);
-        let top_reject = count.rejected_reasons.iter().max_by_key(|(_, n)| *n).map(|(r, _)| *r);
+        let top_fail = count
+            .failed_reasons
+            .iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(r, _)| *r);
+        let top_reject = count
+            .rejected_reasons
+            .iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(r, _)| *r);
 
-        if count.deleted == total { self.phase = PipelineAggPhase::Deleted; return; }
-        if count.deleting > 0 { self.phase =  PipelineAggPhase::Deleting { forced, remaining: active }; return; }
-        if count.failed   > 0 { self.phase =  PipelineAggPhase::Failed { failed: count.failed, running: count.running, top_reason: top_fail }; return; }
-        if count.rejected > 0 { self.phase =  PipelineAggPhase::Rejected { rejected: count.rejected, running: count.running, top_reason: top_reject }; return; }
-        if count.rolling_back > 0 { self.phase =  PipelineAggPhase::RollingBack { rolling_back: count.rolling_back, running: count.running }; return; }
-        if count.updating > 0 { self.phase =  PipelineAggPhase::Updating { updating: count.updating, running: count.running }; return; }
-        if count.draining > 0 { self.phase =  PipelineAggPhase::Draining { draining: count.draining, running: count.running }; return; }
+        if count.deleted == total {
+            self.phase = PipelineAggPhase::Deleted;
+            return;
+        }
+        if count.deleting > 0 {
+            self.phase = PipelineAggPhase::Deleting {
+                forced,
+                remaining: active,
+            };
+            return;
+        }
+        if count.failed > 0 {
+            self.phase = PipelineAggPhase::Failed {
+                failed: count.failed,
+                running: count.running,
+                top_reason: top_fail,
+            };
+            return;
+        }
+        if count.rejected > 0 {
+            self.phase = PipelineAggPhase::Rejected {
+                rejected: count.rejected,
+                running: count.running,
+                top_reason: top_reject,
+            };
+            return;
+        }
+        if count.rolling_back > 0 {
+            self.phase = PipelineAggPhase::RollingBack {
+                rolling_back: count.rolling_back,
+                running: count.running,
+            };
+            return;
+        }
+        if count.updating > 0 {
+            self.phase = PipelineAggPhase::Updating {
+                updating: count.updating,
+                running: count.running,
+            };
+            return;
+        }
+        if count.draining > 0 {
+            self.phase = PipelineAggPhase::Draining {
+                draining: count.draining,
+                running: count.running,
+            };
+            return;
+        }
 
-        if active > 0 && count.running == active { self.phase =  PipelineAggPhase::RunningAll; return; }
-        if count.running > 0 && count.running < active { self.phase =  PipelineAggPhase::RunningDegraded { running: count.running, total_active: active }; return; }
+        if active > 0 && count.running == active {
+            self.phase = PipelineAggPhase::RunningAll;
+            return;
+        }
+        if count.running > 0 && count.running < active {
+            self.phase = PipelineAggPhase::RunningDegraded {
+                running: count.running,
+                total_active: active,
+            };
+            return;
+        }
 
-        if count.pending > 0 || count.starting > 0 { self.phase =  PipelineAggPhase::Starting { pending: count.pending, starting: count.starting }; return; }
+        if count.pending > 0 || count.starting > 0 {
+            self.phase = PipelineAggPhase::Starting {
+                pending: count.pending,
+                starting: count.starting,
+            };
+            return;
+        }
 
-        if active == 0 { self.phase =  PipelineAggPhase::Deleted; return; }
-        if count.stopped == active { self.phase =  PipelineAggPhase::StoppedAll { stopped: count.stopped }; return; }
-        self.phase = PipelineAggPhase::StoppedPartial { stopped: count.stopped, total_active: active }
+        if active == 0 {
+            self.phase = PipelineAggPhase::Deleted;
+            return;
+        }
+        if count.stopped == active {
+            self.phase = PipelineAggPhase::StoppedAll {
+                stopped: count.stopped,
+            };
+            return;
+        }
+        self.phase = PipelineAggPhase::StoppedPartial {
+            stopped: count.stopped,
+            total_active: active,
+        }
+    }
+
+    /// Returns a boolean representing the liveness across cores, governed by the aggregation
+    /// policy.
+    pub fn liveness(&self, policy: &AggregationPolicy) -> bool {
+        let (numer, denom) = self.count_quorum(|c| policy.core_probe.is_live(c.phase.kind()));
+        quorum_satisfied(numer, denom, policy.live_quorum)
+    }
+
+    /// Returns a boolean representing the readiness across cores, governed by the aggregation
+    /// policy.
+    pub fn readiness(&self, policy: &AggregationPolicy) -> bool {
+        let (numer, denom) = self.count_quorum(|c| {
+            c.phase.kind() != PhaseKind::Deleted && policy.core_probe.is_ready(c.phase.kind())
+        });
+        denom > 0 && quorum_satisfied(numer, denom, policy.ready_quorum)
+    }
+
+    /// Counts how many cores satisfy the given predicate, returning (numerator, denominator).
+    ///
+    /// The denominator excludes cores in `Deleted` phase.
+    /// The numerator excludes cores in `Deleted` phase and counts only cores satisfying the
+    /// predicate. The predicate is usually checking for liveness or readiness.
+    fn count_quorum<F>(&self, pred: F) -> (usize, usize)
+    where
+        F: Fn(&PipelineRuntimeStatus) -> bool,
+    {
+        let denom = self
+            .per_core
+            .values()
+            .filter(|c| c.phase.kind() != PhaseKind::Deleted)
+            .count();
+        let numer = self
+            .per_core
+            .values()
+            .filter(|c| c.phase.kind() != PhaseKind::Deleted)
+            .filter(|c| pred(c))
+            .count();
+        (numer, denom)
+    }
+}
+
+/// Decide if (numerator/denominator) satisfies a quorum.
+fn quorum_satisfied(numer: usize, denom: usize, q: Quorum) -> bool {
+    match q {
+        Quorum::All => numer == denom && denom > 0,
+        Quorum::AtLeast(n) => numer >= n,
+        Quorum::Percent(p) => {
+            if denom == 0 {
+                return false;
+            }
+            let needed = (denom * (p as usize) + 99) / 100; // ceil(denom*p/100)
+            numer >= needed
+        }
     }
 }
 
@@ -134,83 +268,5 @@ impl AggregateCounts {
     }
     fn active(&self) -> usize {
         self.total() - self.deleted
-    }
-}
-
-/// Choose a single, meaningful headline phase from the per-core counts.
-/// Precedence (highest first): Deleting, Failed, RollingBack, Updating, Draining,
-/// RunningAll/RunningDegraded, Starting, StoppedAll/StoppedPartial, Deleted.
-fn derive_headline(c: &AggregateCounts) -> PipelineAggPhase {
-    let total = c.total();
-    let active = c.active();
-    let forced = c.forced_deletes > 0;
-    let top_reason = c
-        .failed_reasons
-        .iter()
-        .max_by_key(|(_, n)| *n)
-        .map(|(r, _)| *r);
-
-    if c.deleted == total {
-        return PipelineAggPhase::Deleted;
-    }
-    if c.deleting > 0 {
-        return PipelineAggPhase::Deleting {
-            forced,
-            remaining: active,
-        };
-    }
-    if c.failed > 0 {
-        return PipelineAggPhase::Failed {
-            failed: c.failed,
-            running: c.running,
-            top_reason,
-        };
-    }
-    if c.rolling_back > 0 {
-        return PipelineAggPhase::RollingBack {
-            rolling_back: c.rolling_back,
-            running: c.running,
-        };
-    }
-    if c.updating > 0 {
-        return PipelineAggPhase::Updating {
-            updating: c.updating,
-            running: c.running,
-        };
-    }
-    if c.draining > 0 {
-        return PipelineAggPhase::Draining {
-            draining: c.draining,
-            running: c.running,
-        };
-    }
-
-    if active > 0 && c.running == active {
-        return PipelineAggPhase::RunningAll;
-    }
-    if c.running > 0 && c.running < active {
-        return PipelineAggPhase::RunningDegraded {
-            running: c.running,
-            total_active: active,
-        };
-    }
-
-    // Early lifecycle gets priority over "stopped" summaries when activity is present.
-    if c.pending > 0 || c.starting > 0 {
-        return PipelineAggPhase::Starting {
-            pending: c.pending,
-            starting: c.starting,
-        };
-    }
-
-    if active == 0 {
-        return PipelineAggPhase::Deleted;
-    } // only deleted cores remain
-    if c.stopped == active {
-        return PipelineAggPhase::StoppedAll { stopped: c.stopped };
-    }
-    PipelineAggPhase::StoppedPartial {
-        stopped: c.stopped,
-        total_active: active,
     }
 }

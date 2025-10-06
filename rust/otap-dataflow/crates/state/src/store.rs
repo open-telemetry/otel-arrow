@@ -3,19 +3,20 @@
 
 //! Set of structs defining an event-driven observed state store.
 
+use crate::PipelineKey;
 use crate::config::Config;
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::PipelinePhase;
+use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
+use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
-use crate::PipelineKey;
+use otap_df_config::health::DEFAULT_AGGREGATION_POLICY;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
-use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
-use crate::pipeline_status::PipelineStatus;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
 
@@ -114,7 +115,7 @@ impl ObservedStateStore {
         });
         let pipeline_key = PipelineKey {
             pipeline_group_id: observed_event.key.pipeline_group_id.clone(),
-            pipeline_id: observed_event.key.pipeline_id.clone()
+            pipeline_id: observed_event.key.pipeline_id.clone(),
         };
 
         let ps = pipelines
@@ -122,12 +123,15 @@ impl ObservedStateStore {
             .or_insert_with(|| PipelineStatus::new(now));
 
         // Upsert the core record and its condition snapshot
-        let cs = ps.per_core.entry(observed_event.key.core_id).or_insert(PipelineRuntimeStatus {
-            phase: PipelinePhase::Pending,
-            last_beat: observed_event.time,
-            recent_events: ObservedEventRingBuffer::new(RECENT_EVENTS_CAPACITY),
-            delete_pending: false,
-        });
+        let cs = ps
+            .per_core
+            .entry(observed_event.key.core_id)
+            .or_insert(PipelineRuntimeStatus {
+                phase: PipelinePhase::Pending,
+                last_beat: observed_event.time,
+                recent_events: ObservedEventRingBuffer::new(RECENT_EVENTS_CAPACITY),
+                delete_pending: false,
+            });
         cs.apply_event(observed_event)
     }
 
@@ -158,5 +162,27 @@ impl ObservedStateHandle {
     pub fn pipeline_status(&self, pipeline_key: &PipelineKey) -> Option<PipelineStatus> {
         let pipelines = self.pipelines.lock().ok()?;
         pipelines.get(pipeline_key).cloned()
+    }
+
+    /// Checks if a pipeline is considered live based on its observed status.
+    #[must_use]
+    pub fn liveness(&self, pipeline_key: &PipelineKey) -> bool {
+        self.pipelines.lock().ok().map_or(false, |pipelines| {
+            pipelines
+                .get(pipeline_key)
+                // ToDo use the policy from the pipeline config instead of the default
+                .map_or(false, |ps| ps.liveness(&DEFAULT_AGGREGATION_POLICY))
+        })
+    }
+
+    /// Checks if a pipeline is considered ready based on its observed status.
+    #[must_use]
+    pub fn readiness(&self, pipeline_key: &PipelineKey) -> bool {
+        self.pipelines.lock().ok().map_or(false, |pipelines| {
+            pipelines
+                .get(pipeline_key)
+                // ToDo use the policy from the pipeline config instead of the default
+                .map_or(false, |ps| ps.readiness(&DEFAULT_AGGREGATION_POLICY))
+        })
     }
 }

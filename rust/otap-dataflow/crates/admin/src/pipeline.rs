@@ -20,15 +20,19 @@ use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
+use axum::response::IntoResponse;
+use axum::routing::get;
 use otap_df_state::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
 
 /// All the routes for pipelines.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
-        axum::routing::get(show_status),
-    )
+    Router::new()
+        // Returns the status of a specific pipeline.
+        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status", get(show_status))
+        // liveness and readiness probes.
+        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez", get(liveness))
+        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz", get(readiness))
 }
 
 pub async fn show_status(
@@ -38,4 +42,45 @@ pub async fn show_status(
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
     let pipeline_status = state.observed_state_store.pipeline_status(&key);
     Ok(Json(pipeline_status))
+}
+
+/// Used by the kubelet livenessProbe to decide whether to restart the container.
+///
+/// Typical use cases:
+/// - Detect deadlocks or stuck event loops.
+/// - Force a restart when the app can't recover by itself.
+/// - Should be cheap and internal (not dependent on external systems).
+///
+/// ToDo Implement heartbeat checks.
+async fn liveness(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    State(state): State<AppState>
+) -> impl IntoResponse {
+    let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
+    let liveness = state.observed_state_store.liveness(&key);
+    if liveness {
+        (StatusCode::OK, "OK")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "NOT OK")
+    }
+}
+
+/// Used by the kubelet readinessProbe (and by Services) to decide whether the Pod should receive
+/// traffic.
+///
+/// Typical use cases:
+/// - Gate traffic until startup work is done (pipeline deployed and running).
+/// - Temporarily remove the Pod from load balancing when it can't serve correctly.
+/// - Can check key dependencies, but avoid making it too fragile.
+async fn readiness(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    State(state): State<AppState>
+) -> impl IntoResponse {
+    let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
+    let readiness = state.observed_state_store.readiness(&key);
+    if readiness {
+        (StatusCode::OK, "OK")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "NOT OK")
+    }
 }

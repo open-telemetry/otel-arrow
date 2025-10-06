@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Display;
 use serde::Serialize;
+use otap_df_config::health::PhaseKind;
 
 /// States/Phases that a pipeline instance (bound to a CPU core) can be in.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
@@ -44,9 +45,9 @@ pub enum PipelinePhase {
     /// All resources for this pipeline have been removed; terminal state.
     Deleted,
 
-    /// The controller cannot currently determine the state (e.g. missing
-    /// heartbeats past the freshness window).
-    Unknown,
+    // The controller cannot currently determine the state (e.g. missing
+    // heartbeats past the freshness window).
+    //Unknown,
 }
 
 /// Monitoring-friendly aggregate phase for a logical pipeline spanning many cores.
@@ -147,9 +148,29 @@ impl Display for PipelinePhase {
             PipelinePhase::RollingBack => "RollingBack",
             PipelinePhase::Deleting(_) => "Deleting",
             PipelinePhase::Deleted => "Deleted",
-            PipelinePhase::Unknown => "Unknown",
+            // PipelinePhase::Unknown => "Unknown",
         };
         write!(f, "{label}")
+    }
+}
+
+impl PipelinePhase {
+    /// Returns the `PhaseKind` corresponding to this `PipelinePhase` (i.e. without details).
+    pub fn kind(&self) -> PhaseKind {
+        match self {
+            PipelinePhase::Pending      => PhaseKind::Pending,
+            PipelinePhase::Starting     => PhaseKind::Starting,
+            PipelinePhase::Running      => PhaseKind::Running,
+            PipelinePhase::Updating     => PhaseKind::Updating,
+            PipelinePhase::RollingBack  => PhaseKind::RollingBack,
+            PipelinePhase::Draining     => PhaseKind::Draining,
+            PipelinePhase::Stopped      => PhaseKind::Stopped,
+            PipelinePhase::Failed(_)    => PhaseKind::Failed,
+            PipelinePhase::Deleting(_)  => PhaseKind::Deleting,
+            PipelinePhase::Deleted      => PhaseKind::Deleted,
+            PipelinePhase::Rejected(_) => PhaseKind::Rejected,
+            // PipelinePhase::Unknown => PhaseKind::Unknown,
+        }
     }
 }
 

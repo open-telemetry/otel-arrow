@@ -28,8 +28,11 @@ use std::collections::HashMap;
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        // Returns a summary of all pipelines and their statuses.
         .route("/pipeline-groups/status", get(show_status))
+        // Shutdown all pipelines in all groups.
         .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+        // ToDo Global liveness and readiness probes.
 }
 
 #[derive(Serialize)]
@@ -89,9 +92,9 @@ fn build_status_response(
     mut pipelines: HashMap<PipelineKey, PipelineStatus>,
 ) -> PipelineGroupsStatusResponse {
     for pipeline_status in pipelines.values_mut() {
-        pipeline_status.infer_aggregated_phase();
+        pipeline_status.infer_agg_phase();
     }
-    
+
     PipelineGroupsStatusResponse {
         generated_at: Utc::now().to_rfc3339(),
         pipelines,
