@@ -116,8 +116,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
         let exporter_id = effect_handler.exporter_id();
         let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| Error::ExporterError { 
-                exporter: exporter_id, 
+            .map_err(|e| Error::ExporterError {
+                exporter: exporter_id,
                 error: format!("grpc channel error {e}"),
             })?
             .connect_lazy();
@@ -125,7 +125,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
-
 
         // start a grpc client and connect to the server
         let mut arrow_metrics_client = ArrowMetricsServiceClient::new(channel.clone());
@@ -432,10 +431,10 @@ async fn handle_res_stream(
 #[cfg(test)]
 mod tests {
     use crate::metrics::ExporterPDataMetrics;
-    use crate::otap_exporter::config::Config;
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
     use crate::otap_exporter::config::ArrowPayloadCompression;
+    use crate::otap_exporter::config::Config;
     use crate::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
@@ -446,10 +445,10 @@ mod tests {
     use object_store::local;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::control::PipelineCtrlMsgSender;
+    use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::LocalReceiver;
@@ -463,6 +462,7 @@ mod tests {
         test_node,
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
@@ -757,13 +757,17 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut exporter = ExporterWrapper::local(
-            OTAPExporter::from_config(pipeline_ctx, &serde_json::json!({
-                "grpc_endpoint": grpc_endpoint,
-                "compression_method": "none"
-            })).unwrap(),
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &serde_json::json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none"
+                }),
+            )
+            .unwrap(),
             node_id.clone(),
             node_config,
-            test_runtime.config()
+            test_runtime.config(),
         );
 
         let control_sender = exporter.control_sender();
@@ -775,17 +779,17 @@ mod tests {
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
 
-        
-        let (req_sender, mut req_receiver) = tokio::sync::mpsc::channel(1);
+        let (req_sender, req_receiver) = tokio::sync::mpsc::channel(1);
         let (server_startup_sender, mut server_startup_receiver) = tokio::sync::mpsc::channel(1);
-        let (server_start_ack_sender, mut server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
-        let (server_shutdown_sender, server_shutdown_signal) = tokio::sync::oneshot::channel();
+        let (server_start_ack_sender, server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
+        let (server_shutdown_sender1, server_shutdown_signal1) = tokio::sync::oneshot::channel();
+        let (server_shutdown_sender2, server_shutdown_signal2) = tokio::sync::oneshot::channel();
+        let (server_shutdown_ack_sender, server_shutdown_ack_receiver) = tokio::sync::mpsc::channel(2);
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            tokio::time::sleep(Duration::from_millis(50)).await;
             _ = exporter.start(pipeline_ctrl_msg_tx).await;
             Ok(())
         }
@@ -793,21 +797,99 @@ mod tests {
         async fn drive_test(
             server_startup_sender: tokio::sync::mpsc::Sender<bool>,
             mut server_startup_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
-            server_shutdown_sender: tokio::sync::oneshot::Sender<bool>,
+            server_shutdown_sender1: tokio::sync::oneshot::Sender<bool>,
+            server_shutdown_sender2: tokio::sync::oneshot::Sender<bool>,
+            mut server_shutdown_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
         ) {
-
-            println!("drivin test");
+            // send a request before while the server isn't running and check how we handle it
+            let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+            pdata_tx
+                .send(OtapPdata::new_default(log_message.into()))
+                .await
+                .expect("Failed to send log message");
+            // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a NACK
+            // from the control channel
+            tokio::time::sleep(Duration::from_millis(5)).await;
 
             // wait a bit before starting the server. This will ensure the exporter no-long exits
             // when start is called if the endpoint can't be reached
+            println!("starting server");
             tokio::time::sleep(Duration::from_millis(100)).await;
             server_startup_sender.send(true).await.unwrap();
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
-            println!("drive here 1");
+            println!("server started");
+
+            // send another pdata now that the server has started
+            let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+            pdata_tx
+                .send(OtapPdata::new_default(log_message.into()))
+                .await
+                .expect("Failed to send log message");
+            // ensure server got request
+            // _ = req_receiver.recv().await.unwrap();
+            // TODO instead of sleeping here, when ACK/NACK is added we should wait on the control
+            // channel to ensure that we receive a ACK
+            // tokio::time::sleep(Duration::from_millis(10)).await;
+
+            println!("stopping server");
+            // stop the server
+            _ = server_shutdown_sender1.send(true).unwrap();
+            _ = server_shutdown_ack_receiver.recv().await.unwrap();
+
+            let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+            pdata_tx
+                .send(OtapPdata::new_default(log_message.into()))
+                .await
+                .expect("Failed to send log message");
+            // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a NACK
+            // from the control channel
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            println!("restating server");           
+ 
+
+            // start the server again
+            server_startup_sender.send(true).await.unwrap();
+            _ = server_startup_ack_receiver.recv().await.unwrap();
+
+            println!("server restarted");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+            pdata_tx
+                .send(OtapPdata::new_default(log_message.into()))
+                .await
+                .expect("Failed to send log message");
+            // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a ACK
+            // from the control channel
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // {
+            //     todo!("panic here");
+            // }
+
+            //  _ = req_receiver.recv().await.unwrap();
+
+            // check the metrics:
+            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: metrics_reporter.clone(),
+                })
+                .await
+                .unwrap();
+            let metrics = metrics_rx.recv_async().await.unwrap();
+            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            assert_eq!(logs_exported_count, 2);
+            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            assert_eq!(logs_failed_count, 2);
+
             control_sender
                 .send(NodeControlMsg::Shutdown {
                     deadline: Duration::from_millis(10),
@@ -816,15 +898,14 @@ mod tests {
                 .await
                 .unwrap();
 
-            println!("drive here 2");
+            _ = server_shutdown_sender2.send(true).unwrap();
 
-            _ = server_shutdown_sender.send(true).unwrap();
         }
 
         async fn run_server(
             listening_addr: String,
-            startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
-            shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
+            // startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
+            // shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
             req_sender: tokio::sync::mpsc::Sender<OtapPdata>,
         ) {
             let listening_addr: SocketAddr = listening_addr.to_string().parse().unwrap();
@@ -832,14 +913,19 @@ mod tests {
             let tcp_stream = TcpListenerStream::new(tcp_listener);
 
             let logs_service = ArrowLogsServiceServer::new(ArrowLogsServiceMock::new(req_sender));
+
             Server::builder()
                 .add_service(logs_service)
-                .serve_with_incoming_shutdown(tcp_stream, async {
-                    startup_ack_sender.send(true).await.unwrap();
-                    let _ = shutdown_signal.await;
-                })
+                .serve_with_incoming(tcp_stream)
+                // .serve_with_incoming_shutdown(tcp_stream, async {
+                //     startup_ack_sender.send(true).await.unwrap();
+                //     let _ = shutdown_signal.await;
+                //     println!("shutdown signal rx'd");
+                // })
                 .await
-                .expect("server failed");
+                .expect("uh oh server failed");
+
+            println!("shutdown happening");
         }
 
         let server_handle = tokio_rt.spawn(async move {
@@ -847,36 +933,89 @@ mod tests {
 
             // wait for signal to start the server
             _ = server_startup_receiver.recv().await.unwrap();
+            let server_fut =   run_server(
+                listening_addr.clone(),
+                // server_start_ack_sender.clone(),
+                req_sender.clone(),
+            );
 
-            run_server(
-                listening_addr.clone(), 
-                server_start_ack_sender.clone(), 
-                server_shutdown_signal, 
-                req_sender.clone()
-            ).await;
+            let server_start_ack_sender_clone = server_start_ack_sender.clone();
+            tokio::select! {
+                _ = server_fut => {},
+                _ = async move {
+                    server_start_ack_sender_clone.send(true).await.unwrap();
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(10)).await
+                    }
+                } => {},
+                _ = server_shutdown_signal1 => {},
+            }
+
+            // run_server(
+            //     listening_addr.clone(),
+            //     server_start_ack_sender.clone(),
+            //     server_shutdown_signal1,
+            //     req_sender.clone(),
+            // )
+            // .await;
+
+            // ack server stopped
+            println!("sending shutdown ack");
+            server_shutdown_ack_sender.send(true).await.unwrap();
+
+
+            println!("waiting to restart");
+            // wait for the restart signal
+            _ = server_startup_receiver.recv().await.unwrap();
+            // run_server(
+            //     listening_addr.clone(),
+            //     server_start_ack_sender.clone(),
+            //     server_shutdown_signal2,
+            //     req_sender.clone()
+            // )
+            // .await
+            let server_fut =   run_server(
+                listening_addr.clone(),
+                // server_start_ack_sender.clone(),
+                req_sender.clone(),
+            );
+
+            tokio::select! {
+                _ = server_fut => {},
+                _ = async move {
+                    server_start_ack_sender.send(true).await.unwrap();
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(10)).await
+                    }
+                } => {},
+                _ = server_shutdown_signal2 => {},
+            }
+
         });
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
-            let _ = local_set.spawn_local(async move {
-                start_exporter(exporter, pipeline_ctrl_msg_tx).await
-            });
+            let _ = local_set
+                .spawn_local(async move { start_exporter(exporter, pipeline_ctrl_msg_tx).await });
             tokio::join!(
                 local_set,
                 drive_test(
-                    server_startup_sender, 
-                    server_start_ack_receiver, 
-                    server_shutdown_sender,
-                    pdata_tx, 
-                    control_sender, 
+                    server_startup_sender,
+                    server_start_ack_receiver,
+                    server_shutdown_sender1,
+                    server_shutdown_sender2,
+                    server_shutdown_ack_receiver,
+                    pdata_tx,
+                    control_sender,
                     req_receiver
                 )
+                // ).await
             )
         });
 
-
+        println!("waiting server shutdown");
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
-    }    
+    }
 }
