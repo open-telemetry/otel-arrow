@@ -208,7 +208,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     match logs_client.export(bytes).await {
                                         Ok(_) => self.pdata_metrics.logs_exported.inc(),
-                                        Err(_) => self.pdata_metrics.logs_failed.inc(),
+                                        Err(_) =>self.pdata_metrics.logs_failed.inc(),
                                     }
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
@@ -466,7 +466,7 @@ mod tests {
         // doesn't exit early if it can't make the initial connection, and also that the grpc
         // client will reconnect in the event of a server shutdown
 
-        for i in 0..10 {
+        for i in 0..20 {
             println!("ATTEMPT {i}");
             do_flakey_test_internal();
             println!("ATTEMPT {i} finished");
@@ -484,8 +484,9 @@ mod tests {
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        
         let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
         let node_id = test_node(test_runtime.config().name.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -520,7 +521,6 @@ mod tests {
             tokio::sync::mpsc::channel(1);
         let (req_sender, req_receiver) = tokio::sync::mpsc::channel(32);
 
-        println!("here we go");
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
@@ -551,23 +551,10 @@ mod tests {
                 )))
                 .await
                 .unwrap();
-            // sleep a bit to trick the control message into getting sent after this pdata message
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            // TODO when ACK/NACK handling is added, we should wait on the control channel here
+            // to ensure that we receive a NACK
 
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
-            // currently, we inc the failed metric, so check for this
-            control_sender
-                .send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: metrics_reporter.clone(),
-                })
-                .await
-                .unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
-            println!("got metrics");
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
-            assert_eq!(logs_failed_count, 1);
-
-            // wait a bit before starting the server. This will ensure the exporter no-long exits
+            // wait a bit before starting the server. This will ensure the exporter no-longer exits
             // when start is called if the endpoint can't be reached
             tokio::time::sleep(Duration::from_millis(100)).await;
             server_startup_sender.send(true).await.unwrap();
@@ -586,25 +573,17 @@ mod tests {
             // stop the server
             server_shutdown_signal1.send(true).unwrap();
             _ = server_shutdown_ack_receiver.recv().await.unwrap();
-
-            // send a request while the server isn't running and check that we still handle it correctly
+            
+            // send another request while the server isn't running 
             pdata_tx
                 .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
                     OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
                 )))
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
-            control_sender
-                .send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: metrics_reporter.clone(),
-                })
-                .await
-                .unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
-            assert_eq!(logs_failed_count, 1);
+            // TODO instead of awaiting here, when ACK/NACK is added we should wait on the control
+            // channel to ensure that we receive a NACK
+            tokio::time::sleep(Duration::from_millis(100)).await;
 
             // restart the server
             server_startup_sender.send(true).await.unwrap();
@@ -618,6 +597,21 @@ mod tests {
                 .await
                 .unwrap();
             _ = req_receiver.recv().await.unwrap();
+
+            // check the metrics:
+            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: metrics_reporter.clone(),
+                })
+                .await
+                .unwrap();
+            // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let metrics = metrics_rx.recv_async().await.unwrap();
+            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            assert_eq!(logs_exported_count, 2);
+            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            assert_eq!(logs_failed_count, 2);
 
             control_sender
                 .send(NodeControlMsg::Shutdown {
