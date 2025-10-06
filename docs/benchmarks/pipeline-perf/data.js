@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759763512244,
+  "lastUpdate": 1759767969477,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "197425009+otelbot[bot]@users.noreply.github.com",
-            "name": "otelbot[bot]",
-            "username": "otelbot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8147563ab7d388eeeacbc21c9063c10145bc99aa",
-          "message": "chore(release) Prepare Release v0.42.0 (#1016)\n\n## Release v0.42.0\n\nThis PR prepares the repository for release v0.42.0.\n\n### Changes included:\n- Updated CHANGELOG.md with release notes\n- Updated collector/otelarrowcol-build.yaml version to v0.42.0\n- Updated collector/cmd/otelarrowcol/main.go version to v0.42.0\n\n### Release Notes:\n- Standardize to shorthand license header.\n[#954](https://github.com/open-telemetry/otel-arrow/pull/954)\n- Fix logs handling of missing optional trace_id and span_id columns.\n[#973](https://github.com/open-telemetry/otel-arrow/pull/973)\n- Upgrade to v0.133.0 / v1.37.0 of collector dependencies.\n[#890](https://github.com/open-telemetry/otel-arrow/pull/890),\n[#1010](https://github.com/open-telemetry/otel-arrow/pull/1010)\n- Notable upgrade, this also bumps minimum Go version from `1.23.0` to\n`1.24`, see [collector\n#13627](https://github.com/open-telemetry/opentelemetry-collector/pull/13627)\nand [collector-contrib\n#41968](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/41968).\n\n### Checklist:\n- [x] Verify CHANGELOG.md formatting and content\n- [x] Verify collector version update in\ncollector/otelarrowcol-build.yaml\n- [x] Verify collector main.go version update in\ncollector/cmd/otelarrowcol/main.go\n- [x] Confirm all tests pass\n- [x] Ready to merge and tag release\n\nAfter merging this PR, run the **Push Release** workflow to create git\ntags and publish the GitHub release.\n\nCo-authored-by: otelbot <197425009+otelbot@users.noreply.github.com>",
-          "timestamp": "2025-08-27T18:56:32Z",
-          "tree_id": "42ca579753b1aafb63d76d2c98eb4e4d02121a7a",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8147563ab7d388eeeacbc21c9063c10145bc99aa"
-        },
-        "date": 1756321515705,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 736333.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22090000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22090000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.77,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.83,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 164.26,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 195.07,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 738500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22155000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22155000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.57,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.51,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 121.97,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 143.57,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 197.92,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9bb833f512d2d20d13e9131dc00415568a4e26f6",
+          "message": "fix otlp exporter test flake (#1230)\n\nCloses: https://github.com/open-telemetry/otel-arrow/issues/1231\n\nTry to fix test failure observed here: \n\nhttps://github.com/open-telemetry/otel-arrow/actions/runs/18234929441/job/51926734884\n\nThe issue here was that, when we were asserting that the \"logs_failed\"\nmetric was incremented after we send a request which could not be\nserviced, we'd send the pdata, then send the `CollectTelemetry` pdata\nmessage, then wait to receive telemetry on the metrics reporter channel.\nThe problem with this is that the channel that gets fed into the\nexporter biases control messages, so in some cases the exporter would\nsee the `CollectTelemetry` message first. When this happens, there could\nbe no telemetry to report, which means nothing would be sent on the\npdata reporter channel and the test would deadlock.\n\nBecause the test driver can't reliably control the order in which the\nexporter sees these messages two messages in the failure case, we change\nthe test to just check at the of the pdata sequence and ensure we saw\nthe correct number of exported & failed messages. This is reliable\nbecause before checking this, we send a pdata message that should\nsucceed and we can wait on the `req_receiver` ensure the client saw and\nsend this message before we send the `CollectTelemetry` message.\n\nI ran the test in a loop 50x on this commit\nhttps://github.com/open-telemetry/otel-arrow/pull/1230/commits/72e30d114daaa71e4918e53a486448cf3e1e426a\nto ensure it passes reliably.",
+          "timestamp": "2025-10-06T16:17:29Z",
+          "tree_id": "edfdb5f763e8aca89e1a7095b4dc717a3dbbb70f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9bb833f512d2d20d13e9131dc00415568a4e26f6"
+        },
+        "date": 1759767966834,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 740000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22200000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22200000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.68,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.61,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 122.14,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 146.32,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 737500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22125000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22125000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.67,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 167.99,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 193.09,
             "unit": "MiB"
           }
         ]
