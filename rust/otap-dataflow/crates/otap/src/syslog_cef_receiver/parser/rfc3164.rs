@@ -26,6 +26,10 @@ pub struct Rfc3164Message<'a> {
 /// - No default priority is assigned
 /// - The entire message may be treated as content if no structure is found
 pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseError> {
+    if input.is_empty() {
+        return Err(parser::ParseError::EmptyInput);
+    }
+
     // RFC 3164 Section 4.3: Check if we have a valid PRI
     let (priority, mut remaining) = if input.starts_with(b"<") {
         // Try to parse the PRI
@@ -45,12 +49,16 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseEr
     let (timestamp, rest) = if remaining.len() >= 15 {
         // Try to parse timestamp (MMM dd HH:MM:SS format)
         let potential_ts = &remaining[..15];
-        if remaining.len() > 3
-            && remaining[3] == b' '
-            && remaining.len() > 6
-            && remaining[6] == b' '
+        // Safe bounds checking
+        if remaining.len() > 6 && remaining.get(3) == Some(&b' ') && remaining.get(6) == Some(&b' ')
         {
-            (Some(potential_ts), &remaining[16..])
+            // Safe slicing - check if we have at least 16 bytes before slicing
+            let rest = if remaining.len() > 15 {
+                &remaining[16..]
+            } else {
+                &remaining[15..]
+            };
+            (Some(potential_ts), rest)
         } else {
             (None, remaining)
         }
@@ -69,7 +77,8 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseEr
             // RFC 3164: Content is everything after "TAG: " (note the space)
             // When there's a TAG, the text after tag: is the CONTENT
             // When there's no TAG, the entire MSG part is the CONTENT
-            let content = if !after_colon.is_empty() && after_colon[0] == b' ' {
+            // Safe bounds checking using get()
+            let content = if after_colon.first() == Some(&b' ') {
                 Some(&after_colon[1..])
             } else {
                 Some(after_colon)
@@ -243,5 +252,72 @@ mod tests {
         assert_eq!(result.hostname, Some(b"mymachine".as_slice()));
         assert_eq!(result.tag, Some(b"su".as_slice()));
         assert_eq!(result.content, Some(b"test message".as_slice()));
+    }
+
+    // Edge case tests to ensure no panics occur
+    #[test]
+    fn test_empty_input() {
+        let input = b"";
+        let result = parse_rfc3164(input);
+
+        // Empty input should return an error, not Ok
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ParseError::EmptyInput)));
+    }
+
+    #[test]
+    fn test_timestamp_parsing_with_short_input() {
+        let input = b"<34>Oct";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None); // Too short to be a valid timestamp
+        assert_eq!(result.hostname, None);
+        assert_eq!(result.tag, None);
+        assert_eq!(result.content, Some(b"Oct".as_slice())); // Treated as content
+    }
+
+    #[test]
+    fn test_timestamp_parsing_with_exact_3_bytes() {
+        let input = b"<34>Oct ";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None); // Too short to be a valid timestamp
+        assert_eq!(result.hostname, None);
+        assert_eq!(result.tag, None);
+        assert_eq!(result.content, Some(b"Oct ".as_slice())); // Treated as content
+    }
+
+    #[test]
+    fn test_after_colon_empty() {
+        let input = b"<34>hostname tag:";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None);
+        assert_eq!(result.hostname, Some(b"hostname".as_slice()));
+        assert_eq!(result.tag, Some(b"tag".as_slice()));
+        assert_eq!(result.content, Some(b"".as_slice())); // Empty content after colon
+    }
+
+    #[test]
+    fn test_timestamp_boundary_at_15() {
+        let input = b"<34>Oct 11 22:14:15";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, Some(b"Oct 11 22:14:15".as_slice()));
+        assert_eq!(result.hostname, None); // No content after timestamp
+        assert_eq!(result.tag, None);
+        assert_eq!(result.content, Some(b"".as_slice())); // Empty content
     }
 }

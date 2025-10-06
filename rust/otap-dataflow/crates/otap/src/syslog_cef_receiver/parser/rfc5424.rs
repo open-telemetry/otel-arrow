@@ -22,26 +22,46 @@ pub struct Rfc5424Message<'a> {
 
 /// Parse an RFC 5424 syslog message
 pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseError> {
+    // Check for empty input
+    if input.is_empty() {
+        return Err(ParseError::EmptyInput);
+    }
+
     let (priority, mut remaining) = crate::syslog_cef_receiver::parser::parse_priority(input)?;
+
+    // Check if we have anything after priority
+    if remaining.is_empty() {
+        return Err(ParseError::InvalidVersion);
+    }
 
     // Parse version
     let version_end = remaining
         .iter()
         .position(|&b| b == b' ')
         .ok_or(ParseError::InvalidVersion)?;
+
+    if version_end == 0 {
+        return Err(ParseError::InvalidVersion);
+    }
+
     let version_bytes = &remaining[..version_end];
     let version_str = str::from_utf8(version_bytes).map_err(|_| ParseError::InvalidUtf8)?;
     let version: u8 = version_str
         .parse()
         .map_err(|_| ParseError::InvalidVersion)?;
 
+    // Safe slice: we know version_end < remaining.len()
     remaining = &remaining[version_end + 1..];
 
     // Helper function to parse next field
     let parse_field = |s: &'a [u8]| -> (&'a [u8], &'a [u8]) {
         if let Some(pos) = s.iter().position(|&b| b == b' ') {
             let field = &s[..pos];
-            let rest = &s[pos + 1..];
+            let rest = if pos + 1 < s.len() {
+                &s[pos + 1..]
+            } else {
+                b""
+            };
             (if field == b"-" { b"" } else { field }, rest)
         } else {
             (if s == b"-" { b"" } else { s }, b"")
@@ -94,7 +114,9 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
     remaining = rest;
 
     // Parse structured data and message
-    let (structured_data, mut message) = if remaining.starts_with(b"-") {
+    let (structured_data, mut message) = if remaining.is_empty() {
+        (None, None)
+    } else if remaining.starts_with(b"-") {
         let msg_start = remaining
             .iter()
             .position(|&b| b == b' ')
@@ -111,44 +133,61 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         let mut bracket_count = 0;
         let mut end_pos = 0;
         let mut i = 0;
+        let mut in_quotes = false;
+        let mut escaped = false;
 
         while i < remaining.len() {
             let byte = remaining[i];
 
-            if byte == b'[' {
-                bracket_count += 1;
-            } else if byte == b']' {
-                bracket_count -= 1;
-                if bracket_count == 0 {
-                    // Found end of current SD-ELEMENT, check if there's another one
-                    let mut j = i + 1;
+            if escaped {
+                escaped = false;
+                // Skip this character - it's escaped
+                i += 1;
+                continue;
+            } else if byte == b'\\' && in_quotes {
+                // Only treat backslash as escape character inside quotes
+                escaped = true;
+            } else if byte == b'"' {
+                in_quotes = !in_quotes;
+            } else if !in_quotes {
+                if byte == b'[' {
+                    bracket_count += 1;
+                } else if byte == b']' {
+                    bracket_count -= 1;
+                    if bracket_count == 0 {
+                        // Found end of current SD-ELEMENT, check if there's another one
+                        let mut j = i + 1;
 
-                    // Skip any whitespace
-                    while j < remaining.len() && remaining[j] == b' ' {
-                        j += 1;
-                    }
+                        // Skip any whitespace
+                        while j < remaining.len() && remaining[j] == b' ' {
+                            j += 1;
+                        }
 
-                    // If next non-space character is '[', continue parsing more SD-ELEMENTs
-                    if j < remaining.len() && remaining[j] == b'[' {
-                        i = j - 1; // Will be incremented at end of loop
-                    } else {
-                        // No more SD-ELEMENTs, this is the end
-                        end_pos = i + 1;
-                        break;
+                        // If next non-space character is '[', continue parsing more SD-ELEMENTs
+                        if j < remaining.len() && remaining[j] == b'[' {
+                            i = j - 1; // Will be incremented at end of loop
+                        } else {
+                            // No more SD-ELEMENTs, this is the end
+                            end_pos = i + 1;
+                            break;
+                        }
                     }
                 }
             }
             i += 1;
         }
 
-        if end_pos > 0 {
+        // If we didn't find a closing bracket, treat the rest as structured data
+        if end_pos == 0 && bracket_count > 0 {
+            // Unclosed structured data - take everything
+            (Some(remaining), None)
+        } else if end_pos > 0 {
             let sd = &remaining[..end_pos];
-            let msg_start = end_pos
-                + if remaining.len() > end_pos && remaining.get(end_pos) == Some(&b' ') {
-                    1
-                } else {
-                    0
-                };
+            let msg_start = if end_pos < remaining.len() && remaining[end_pos] == b' ' {
+                end_pos + 1
+            } else {
+                end_pos
+            };
             let message = if msg_start < remaining.len() {
                 Some(&remaining[msg_start..])
             } else {
@@ -165,7 +204,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
     // Strip UTF-8 BOM if present at the beginning of the message
     // UTF-8 BOM is the byte sequence 0xEF 0xBB 0xBF
     message = message.map(|msg| {
-        if msg.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        if msg.len() >= 3 && msg.starts_with(&[0xEF, 0xBB, 0xBF]) {
             &msg[3..]
         } else {
             msg
@@ -385,13 +424,13 @@ mod tests {
             assert_eq!(msg.app_name, None);
             assert_eq!(msg.proc_id, None);
             assert_eq!(msg.msg_id, None);
-            // NOTE: Current parser doesn't handle escaped characters properly in structured data
-            // It stops at the first unescaped ']' character
+            // Parser correctly handles escaped characters in structured data
+            // The escaped bracket \] doesn't end the structured data element
             assert_eq!(
                 msg.structured_data,
-                Some(b"[id@123 key=\"val\\\"ue with \\]".as_slice())
+                Some(b"[id@123 key=\"val\\\"ue with \\] and \\\\ chars\"]".as_slice())
             );
-            assert_eq!(msg.message, Some(b"and \\\\ chars\"] Message".as_slice()));
+            assert_eq!(msg.message, Some(b"Message".as_slice()));
         }
     }
 
@@ -488,6 +527,205 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(result.message.unwrap()).unwrap(),
             "'su root' failed for lonvick on /dev/pts/8"
+        );
+    }
+
+    // Edge case tests to ensure no panic occurs
+    #[test]
+    fn test_empty_input() {
+        let input = b"";
+        let result = parse_rfc5424(input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ParseError::EmptyInput);
+    }
+
+    #[test]
+    fn test_priority_only() {
+        let input = b"<34>";
+        let result = parse_rfc5424(input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ParseError::InvalidVersion);
+    }
+
+    #[test]
+    fn test_priority_and_version_no_space() {
+        let input = b"<34>1";
+        let result = parse_rfc5424(input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ParseError::InvalidVersion);
+    }
+
+    #[test]
+    fn test_malformed_structured_data_unclosed() {
+        let input = b"<34>1 - - - - - [id@123 key=\"value\" ";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        // Unclosed structured data should be captured as is
+        assert_eq!(
+            msg.structured_data,
+            Some(b"[id@123 key=\"value\" ".as_slice())
+        );
+        assert_eq!(msg.message, None);
+    }
+
+    #[test]
+    fn test_structured_data_with_escaped_bracket() {
+        let input = b"<34>1 - - - - - [id@123 key=\"val\\]ue\"] Message";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        // Parser correctly handles escaped bracket within quotes
+        assert_eq!(
+            msg.structured_data,
+            Some(b"[id@123 key=\"val\\]ue\"]".as_slice())
+        );
+        assert_eq!(msg.message, Some(b"Message".as_slice()));
+    }
+
+    #[test]
+    fn test_single_bracket() {
+        let input = b"<34>1 - - - - - [ Message";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        // Unclosed bracket - everything after '[' is treated as structured data
+        assert_eq!(msg.structured_data, Some(b"[ Message".as_slice()));
+        assert_eq!(msg.message, None);
+    }
+
+    #[test]
+    fn test_version_followed_by_eof() {
+        let input = b"<34>1 ";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        // All fields should be None when missing
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        assert_eq!(msg.structured_data, None);
+        assert_eq!(msg.message, None);
+    }
+
+    #[test]
+    fn test_incomplete_fields() {
+        let input = b"<34>1 2003";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        // "2003" is treated as timestamp (even if incomplete)
+        assert_eq!(msg.timestamp, Some(b"2003".as_slice()));
+        // Rest of fields are missing
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        assert_eq!(msg.structured_data, None);
+        assert_eq!(msg.message, None);
+    }
+
+    #[test]
+    fn test_structured_data_edge_cases() {
+        // Test with empty structured data '[]'
+        let input = b"<34>1 - - - - - [] Message";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        assert_eq!(msg.structured_data, Some(b"[]".as_slice()));
+        assert_eq!(msg.message, Some(b"Message".as_slice()));
+
+        // Test with nested brackets (invalid but shouldn't panic)
+        let input2 = b"<34>1 - - - - - [id@123 [nested] key=\"value\"] Message";
+        let result2 = parse_rfc5424(input2);
+        assert!(result2.is_ok());
+
+        let msg2 = result2.unwrap();
+        assert_eq!(msg2.priority.facility, 4);
+        assert_eq!(msg2.priority.severity, 2);
+        assert_eq!(msg2.version, 1);
+        assert_eq!(msg2.timestamp, None);
+        assert_eq!(msg2.hostname, None);
+        assert_eq!(msg2.app_name, None);
+        assert_eq!(msg2.proc_id, None);
+        assert_eq!(msg2.msg_id, None);
+        // Parser treats nested brackets as part of the structured data
+        assert_eq!(
+            msg2.structured_data,
+            Some(b"[id@123 [nested] key=\"value\"]".as_slice())
+        );
+        assert_eq!(msg2.message, Some(b"Message".as_slice()));
+    }
+
+    #[test]
+    fn test_extreme_whitespace() {
+        let input = b"<34>1                             -     -    -   -   -    Message";
+        let result = parse_rfc5424(input);
+        assert!(result.is_ok());
+
+        let msg = result.unwrap();
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        // When parse_field encounters leading spaces, it finds the first space at position 0
+        // This creates an empty field, which becomes None
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        assert_eq!(msg.structured_data, None);
+        // The parser consumes one space for each field parsed (5 fields before structured data)
+        // So the message starts with fewer spaces than the original
+        assert_eq!(
+            msg.message,
+            Some(b"                       -     -    -   -   -    Message".as_slice())
         );
     }
 }
