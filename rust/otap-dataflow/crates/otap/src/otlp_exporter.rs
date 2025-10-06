@@ -208,7 +208,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                                     match logs_client.export(bytes).await {
                                         Ok(_) => self.pdata_metrics.logs_exported.inc(),
-                                        Err(_) =>self.pdata_metrics.logs_failed.inc(),
+                                        Err(_) => self.pdata_metrics.logs_failed.inc(),
                                     }
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
@@ -461,12 +461,7 @@ mod tests {
 
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
-        // the purpose of this test is to that the exporter behaves as expected in the face of
-        // server that may start and stop asynchronously of the exporter. it ensures the exporter
-        // doesn't exit early if it can't make the initial connection, and also that the grpc
-        // client will reconnect in the event of a server shutdown
-
-        for i in 0..20 {
+                for i in 0..50 {
             println!("ATTEMPT {i}");
             do_flakey_test_internal();
             println!("ATTEMPT {i} finished");
@@ -476,6 +471,11 @@ mod tests {
     }
 
     fn do_flakey_test_internal() {
+        // the purpose of this test is to that the exporter behaves as expected in the face of
+        // server that may start and stop asynchronously of the exporter. it ensures the exporter
+        // doesn't exit early if it can't make the initial connection, and also that the grpc
+        // client will reconnect in the event of a server shutdown
+
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
@@ -484,7 +484,7 @@ mod tests {
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
-        
+
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
         let node_id = test_node(test_runtime.config().name.clone());
@@ -521,7 +521,6 @@ mod tests {
             tokio::sync::mpsc::channel(1);
         let (req_sender, req_receiver) = tokio::sync::mpsc::channel(32);
 
-
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
@@ -553,6 +552,7 @@ mod tests {
                 .unwrap();
             // TODO when ACK/NACK handling is added, we should wait on the control channel here
             // to ensure that we receive a NACK
+            tokio::time::sleep(Duration::from_millis(5)).await;
 
             // wait a bit before starting the server. This will ensure the exporter no-longer exits
             // when start is called if the endpoint can't be reached
@@ -573,8 +573,8 @@ mod tests {
             // stop the server
             server_shutdown_signal1.send(true).unwrap();
             _ = server_shutdown_ack_receiver.recv().await.unwrap();
-            
-            // send another request while the server isn't running 
+
+            // send a request while the server isn't running and check that we still handle it correctly
             pdata_tx
                 .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
                     OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
@@ -674,9 +674,8 @@ mod tests {
             .await;
         });
 
-        let (r1, r2) = tokio_rt.block_on(async move {
+        let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
-            // tokio::try_join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx),
                 drive_test(
                     server_startup_sender,
@@ -690,9 +689,8 @@ mod tests {
                 )
             )
         });
-        //.unwrap();
-        r1.unwrap();
-        r2.unwrap();
+        exporter_result.unwrap();
+        test_drive_result.unwrap();
 
         tokio_rt
             .block_on(server_handle)
