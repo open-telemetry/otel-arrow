@@ -104,7 +104,9 @@ mod tests {
             .run_test(|ctx| async move {
                 // Send a PData message with no subscription
                 let test_data = create_test_pdata();
-                ctx.send_pdata(test_data).await.expect("Failed to send pdata");
+                ctx.send_pdata(test_data)
+                    .await
+                    .expect("Failed to send pdata");
 
                 // Send shutdown to terminate cleanly
                 ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
@@ -137,7 +139,9 @@ mod tests {
                 let mut test_data = create_test_pdata();
                 // Subscribe to ACKs to trigger the error path
                 test_data.test_subscribe_to(Interests::ACKS, CallData::new(), 1);
-                ctx.send_pdata(test_data).await.expect("Failed to send pdata");
+                ctx.send_pdata(test_data)
+                    .await
+                    .expect("Failed to send pdata");
 
                 // Send shutdown
                 ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")

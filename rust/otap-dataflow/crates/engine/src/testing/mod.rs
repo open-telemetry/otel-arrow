@@ -167,7 +167,9 @@ impl Default for CtrlMsgCounters {
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
     // Check if we're already inside a Tokio runtime
     if tokio::runtime::Handle::try_current().is_ok() {
-        panic!("TestRuntime used inside an existing async runtime: change #[tokio::test] to #[test].");
+        panic!(
+            "TestRuntime used inside an existing async runtime: change #[tokio::test] to #[test]."
+        );
     }
 
     let rt = Builder::new_current_thread()
