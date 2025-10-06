@@ -6,7 +6,6 @@
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 
-mod config;
 pub mod error;
 pub mod reporter;
 pub mod store;

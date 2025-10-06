@@ -30,7 +30,7 @@ ToDo: add metrics, event exporters
 - Deleting(Graceful|Forced): Teardown in progress (forced may drop in-flight work).
 - Deleted: All resources removed; terminal.
 
-## Pipeline Aggregated State
+## Pipeline Aggregated Decision Flow
 
 TBD
 

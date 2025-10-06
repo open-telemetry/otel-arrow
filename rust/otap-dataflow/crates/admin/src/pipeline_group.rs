@@ -91,6 +91,7 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
 fn build_status_response(
     mut pipelines: HashMap<PipelineKey, PipelineStatus>,
 ) -> PipelineGroupsStatusResponse {
+    // Aggregated phase are computed on-demand.
     for pipeline_status in pipelines.values_mut() {
         pipeline_status.infer_agg_phase();
     }

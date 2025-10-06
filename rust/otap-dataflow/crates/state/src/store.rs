@@ -4,19 +4,18 @@
 //! Set of structs defining an event-driven observed state store.
 
 use crate::PipelineKey;
-use crate::config::Config;
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
-use otap_df_config::health::DEFAULT_AGGREGATION_POLICY;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
+use otap_df_config::pipeline::PipelineSettings;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
 
@@ -28,7 +27,7 @@ const RECENT_EVENTS_CAPACITY: usize = 10;
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateStore {
     #[serde(skip)]
-    config: Config,
+    config: PipelineSettings,
 
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
@@ -68,20 +67,14 @@ where
     s.serialize_str(&dt.to_rfc3339())
 }
 
-impl Default for ObservedStateStore {
-    fn default() -> Self {
-        Self::new(Config::default())
-    }
-}
-
 impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
-    pub fn new(config: Config) -> Self {
-        let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
+    pub fn new(config: &PipelineSettings) -> Self {
+        let (sender, receiver) = flume::bounded::<ObservedEvent>(config.observed_state.reporting_channel_size);
 
         Self {
-            config,
+            config: config.clone(),
             sender,
             receiver,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
@@ -91,7 +84,7 @@ impl ObservedStateStore {
     /// Returns a reporter that can be used to send observed events to this store.
     #[must_use]
     pub fn reporter(&self) -> ObservedEventReporter {
-        ObservedEventReporter::new(self.config.reporting_timeout, self.sender.clone())
+        ObservedEventReporter::new(self.config.observed_state.reporting_timeout, self.sender.clone())
     }
 
     /// Returns a handle that can be used to read the current observed state.
@@ -104,9 +97,6 @@ impl ObservedStateStore {
 
     /// Reports a new observed event in the store.
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
-        // Minimize lock duration by computing timestamps outside the critical section
-        let now = SystemTime::now();
-
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             log::warn!(
                 "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"
@@ -120,7 +110,7 @@ impl ObservedStateStore {
 
         let ps = pipelines
             .entry(pipeline_key)
-            .or_insert_with(|| PipelineStatus::new(now));
+            .or_insert_with(|| PipelineStatus::new(self.config.health_policy.clone()));
 
         // Upsert the core record and its condition snapshot
         let cs = ps
@@ -171,7 +161,7 @@ impl ObservedStateHandle {
             pipelines
                 .get(pipeline_key)
                 // ToDo use the policy from the pipeline config instead of the default
-                .map_or(false, |ps| ps.liveness(&DEFAULT_AGGREGATION_POLICY))
+                .map_or(false, |ps| ps.liveness())
         })
     }
 
@@ -182,7 +172,7 @@ impl ObservedStateHandle {
             pipelines
                 .get(pipeline_key)
                 // ToDo use the policy from the pipeline config instead of the default
-                .map_or(false, |ps| ps.readiness(&DEFAULT_AGGREGATION_POLICY))
+                .map_or(false, |ps| ps.readiness())
         })
     }
 }

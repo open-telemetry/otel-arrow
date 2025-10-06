@@ -77,7 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let obs_state_store = ObservedStateStore::default();
+        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
@@ -328,8 +328,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
             .run_forever(
-                pipeline_key,
-                obs_evt_reporter,
                 metrics_reporter,
                 pipeline_ctrl_msg_tx,
                 pipeline_ctrl_msg_rx,

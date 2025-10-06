@@ -12,6 +12,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use crate::health::HealthPolicy;
+use crate::observed_state::ObservedStateSettings;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -76,6 +78,14 @@ pub struct PipelineSettings {
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
+
+    /// Observed state settings.
+    #[serde(default)]
+    pub observed_state: ObservedStateSettings,
+
+    /// Health policy.
+    #[serde(default)]
+    pub health_policy: HealthPolicy,
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -94,6 +104,8 @@ impl Default for PipelineSettings {
             default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
             default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
+            observed_state: ObservedStateSettings::default(),
+            health_policy: HealthPolicy::default(),
         }
     }
 }

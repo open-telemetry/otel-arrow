@@ -3,26 +3,42 @@
 
 //! Health policy configuration.
 
-/// Policy controlling aggregate probes and using the per-core `ProbePolicy`.
-#[derive(Debug, Clone)]
-pub struct AggregationPolicy {
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Policy controlling health checks for a pipeline instance.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HealthPolicy {
     /// Mapping of per-core phases to probes.
-    pub core_probe: ProbePolicy,
+    pub core_probe: HealthProbePolicy,
     /// Quorum for livez across cores.
+    #[serde(default = "default_live_quorum")]
     pub live_quorum: Quorum,
     /// Quorum for readyz across cores.
+    #[serde(default = "default_ready_quorum")]
     pub ready_quorum: Quorum,
 }
 
-/// Defaults: live if *any* core is live; ready when *all* non-deleted cores are ready.
-pub const DEFAULT_AGGREGATION_POLICY: AggregationPolicy = AggregationPolicy {
-    core_probe: DEFAULT_PROBE_POLICY,
-    live_quorum: Quorum::AtLeast(1),
-    ready_quorum: Quorum::All,
-};
+impl Default for HealthPolicy {
+    fn default() -> Self {
+        Self {
+            core_probe:   HealthProbePolicy::default(),
+            live_quorum:  default_live_quorum(),
+            ready_quorum: default_ready_quorum(),
+        }
+    }
+}
+
+const fn default_live_quorum() -> Quorum {
+    Quorum::AtLeast(1)
+}
+
+const fn default_ready_quorum() -> Quorum {
+    Quorum::All
+}
 
 /// Quorum expresses how many cores must satisfy a predicate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[allow(variant_size_differences)]
 pub enum Quorum {
     /// All non-deleted cores must satisfy the predicate.
@@ -34,28 +50,28 @@ pub enum Quorum {
 }
 
 /// Coarse discriminant for `Phase`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum PhaseKind {
     /// Initial state, not yet started.
-    Pending, 
+    Pending,
     /// In the process of
-    Starting, 
+    Starting,
     /// Fully started and operational.
-    Running, 
+    Running,
     /// In the process of
-    Updating, 
+    Updating,
     /// In the process of
-    RollingBack, 
+    RollingBack,
     /// In the process of
     Draining,
     /// Fully stopped (not running).
-    Stopped, 
+    Stopped,
     /// Permanently rejected for configuration reasons.
-    Rejected, 
+    Rejected,
     /// Failed due to a runtime error.
-    Failed, 
+    Failed,
     /// In the process of
-    Deleting, 
+    Deleting,
     /// Fully deleted (not running, not recoverable).
     Deleted,
 }
@@ -63,39 +79,45 @@ pub enum PhaseKind {
 /// Declarative mapping of phases to Kubernetes probes.
 /// - `live_if`: pipeline instance is considered alive (the pod/process is functional/manageable).
 /// - `ready_if`: instance is ready to accept traffic/work.
-#[derive(Debug, Clone)]
-pub struct ProbePolicy {
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HealthProbePolicy {
     /// Phases in which the instance is considered alive.
-    pub live_if:   &'static [PhaseKind],
+    #[serde(default = "default_live_if")]
+    pub live_if:   Vec<PhaseKind>,
     /// Phases in which the instance is considered ready.
-    pub ready_if:  &'static [PhaseKind],
+    #[serde(default = "default_ready_if")]
+    pub ready_if:  Vec<PhaseKind>,
+}
+
+impl Default for HealthProbePolicy {
+    fn default() -> Self {
+        Self {
+            live_if:  default_live_if(),
+            ready_if: default_ready_if(),
+        }
+    }
 }
 
 /// Default policy:
 /// - live in all states except `Deleted`
-/// - ready in `Running` (and optionally `Updating`).
-pub const DEFAULT_LIVE_IF: &[PhaseKind] = &[
-    PhaseKind::Pending, PhaseKind::Starting, PhaseKind::Running, PhaseKind::Updating,
-    PhaseKind::RollingBack, PhaseKind::Draining, PhaseKind::Stopped, PhaseKind::Rejected,
-    PhaseKind::Failed, PhaseKind::Deleting,
-];
+/// - ready in `Running` and `Updating` (could be optional).
+fn default_live_if() -> Vec<PhaseKind> {
+    vec![
+        PhaseKind::Pending, PhaseKind::Starting, PhaseKind::Running, PhaseKind::Updating,
+        PhaseKind::RollingBack, PhaseKind::Draining, PhaseKind::Stopped, PhaseKind::Rejected,
+        PhaseKind::Failed, PhaseKind::Deleting,
+    ]
+}
 
-/// Flip `Updating` off here if you do not want readiness during updates.
-pub const DEFAULT_READY_IF: &[PhaseKind] = &[
-    PhaseKind::Running,
-    PhaseKind::Updating,
-];
+fn default_ready_if() -> Vec<PhaseKind> {
+    vec![PhaseKind::Running, PhaseKind::Updating]
+}
 
-const DEFAULT_PROBE_POLICY: ProbePolicy = ProbePolicy {
-    live_if: DEFAULT_LIVE_IF,
-    ready_if: DEFAULT_READY_IF,
-};
-
-impl ProbePolicy {
+impl HealthProbePolicy {
     /// Check if the given phase kind is considered live.
     #[inline]
     pub fn is_live<K: Into<PhaseKind>>(&self, k: K) -> bool { self.live_if.contains(&k.into()) }
-    
+
     /// Check if the given phase kind is considered ready.
     #[inline]
     pub fn is_ready<K: Into<PhaseKind>>(&self, k: K) -> bool { self.ready_if.contains(&k.into()) }

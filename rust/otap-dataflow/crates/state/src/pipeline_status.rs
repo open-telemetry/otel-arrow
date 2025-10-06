@@ -6,10 +6,9 @@
 use crate::CoreId;
 use crate::phase::{DeletionMode, FailReason, PipelineAggPhase, PipelinePhase, RejectReason};
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
-use otap_df_config::health::{AggregationPolicy, PhaseKind, Quorum};
+use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
-use std::time::SystemTime;
 
 /// Aggregated, controller-synthesized view for a pipeline across all targeted
 /// cores. This is what external APIs will return for `status`.
@@ -20,13 +19,17 @@ pub struct PipelineStatus {
 
     /// Per-core details to aid debugging and aggregation.
     pub(crate) per_core: HashMap<CoreId, PipelineRuntimeStatus>,
+    
+    #[serde(skip)]
+    health_policy: HealthPolicy,
 }
 
 impl PipelineStatus {
-    pub(crate) fn new(now: SystemTime) -> Self {
+    pub(crate) fn new(health_policy: HealthPolicy) -> Self {
         Self {
             phase: PipelineAggPhase::Unknown,
             per_core: HashMap::new(),
+            health_policy,
         }
     }
 
@@ -180,18 +183,18 @@ impl PipelineStatus {
 
     /// Returns a boolean representing the liveness across cores, governed by the aggregation
     /// policy.
-    pub fn liveness(&self, policy: &AggregationPolicy) -> bool {
-        let (numer, denom) = self.count_quorum(|c| policy.core_probe.is_live(c.phase.kind()));
-        quorum_satisfied(numer, denom, policy.live_quorum)
+    pub fn liveness(&self) -> bool {
+        let (numer, denom) = self.count_quorum(|c| self.health_policy.core_probe.is_live(c.phase.kind()));
+        quorum_satisfied(numer, denom, self.health_policy.live_quorum)
     }
 
     /// Returns a boolean representing the readiness across cores, governed by the aggregation
     /// policy.
-    pub fn readiness(&self, policy: &AggregationPolicy) -> bool {
+    pub fn readiness(&self) -> bool {
         let (numer, denom) = self.count_quorum(|c| {
-            c.phase.kind() != PhaseKind::Deleted && policy.core_probe.is_ready(c.phase.kind())
+            c.phase.kind() != PhaseKind::Deleted && self.health_policy.core_probe.is_ready(c.phase.kind())
         });
-        denom > 0 && quorum_satisfied(numer, denom, policy.ready_quorum)
+        denom > 0 && quorum_satisfied(numer, denom, self.health_policy.ready_quorum)
     }
 
     /// Counts how many cores satisfy the given predicate, returning (numerator, denominator).

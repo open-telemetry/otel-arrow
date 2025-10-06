@@ -3,7 +3,6 @@
 
 //! Definition of all states/phases that a pipeline can be in.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Display;
 use serde::Serialize;
@@ -44,10 +43,6 @@ pub enum PipelinePhase {
     Deleting(DeletionMode),
     /// All resources for this pipeline have been removed; terminal state.
     Deleted,
-
-    // The controller cannot currently determine the state (e.g. missing
-    // heartbeats past the freshness window).
-    //Unknown,
 }
 
 /// Monitoring-friendly aggregate phase for a logical pipeline spanning many cores.
@@ -148,7 +143,6 @@ impl Display for PipelinePhase {
             PipelinePhase::RollingBack => "RollingBack",
             PipelinePhase::Deleting(_) => "Deleting",
             PipelinePhase::Deleted => "Deleted",
-            // PipelinePhase::Unknown => "Unknown",
         };
         write!(f, "{label}")
     }
@@ -169,7 +163,6 @@ impl PipelinePhase {
             PipelinePhase::Deleting(_)  => PhaseKind::Deleting,
             PipelinePhase::Deleted      => PhaseKind::Deleted,
             PipelinePhase::Rejected(_) => PhaseKind::Rejected,
-            // PipelinePhase::Unknown => PhaseKind::Unknown,
         }
     }
 }
