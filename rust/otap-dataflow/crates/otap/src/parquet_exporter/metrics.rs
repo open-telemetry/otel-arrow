@@ -30,12 +30,4 @@ pub struct ParquetExporterMetrics {
     /// Files scheduled for flush due to exceeding max age threshold.
     #[metric(unit = "{file}")]
     pub flush_scheduled_max_age: Counter<u64>,
-
-    /// Files whose flush was requeued because child payloads still had unflushed rows.
-    #[metric(unit = "{file}")]
-    pub flush_requeued_due_to_children: Counter<u64>,
-
-    /// Number of periodic age checks executed (timer ticks).
-    #[metric(unit = "{check}")]
-    pub flush_age_checks: Counter<u64>,
 }

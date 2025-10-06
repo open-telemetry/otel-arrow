@@ -167,9 +167,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                    if let Some(io) = self.io_metrics.as_mut() {
-                        io.flush_age_checks.inc();
-                    }
                     match writer.flush_aged_beyond_threshold().await {
                         Ok(stats) => {
                             if let Some(io) = self.io_metrics.as_mut() {
@@ -183,10 +180,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 }
                                 if stats.files_closed > 0 {
                                     io.files_closed.add(stats.files_closed);
-                                }
-                                if stats.flush_requeued_due_to_children > 0 {
-                                    io.flush_requeued_due_to_children
-                                        .add(stats.flush_requeued_due_to_children);
                                 }
                             }
                         }
@@ -224,9 +217,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     let mut timeout = Delay::new(deadline).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
-                    // Stop telemetry loop
-                    let _ = telemetry_cancel_handle.cancel().await;
-                    return futures::select! {
+                    // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
+                    let cancel_fut = async {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        futures::future::pending::<()>().await
+                    }
+                    .fuse();
+                    pin_mut!(cancel_fut);
+
+                    return futures::select_biased! {
+                        _ = cancel_fut => unreachable!(),
                         _timeout = timeout => Err(Error::IoError {
                                 node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
@@ -328,10 +328,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 if stats.flush_scheduled_max_age > 0 {
                                     io.flush_scheduled_max_age
                                         .add(stats.flush_scheduled_max_age);
-                                }
-                                if stats.flush_requeued_due_to_children > 0 {
-                                    io.flush_requeued_due_to_children
-                                        .add(stats.flush_requeued_due_to_children);
                                 }
                             }
                         }
