@@ -738,15 +738,6 @@ mod tests {
 
     #[test]
     fn test_receiver_not_ready_on_start() {
-        for i in 0..50 {
-            println!("starting ATTEMPT {i}");
-            do_new_test_internal();
-            println!("finished ATTEMPT {i}");
-        }
-        assert_eq!(1, 2);
-    }
-
-    fn do_new_test_internal() {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
