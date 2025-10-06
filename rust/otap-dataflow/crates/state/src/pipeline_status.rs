@@ -297,20 +297,6 @@ mod tests {
         }
     }
 
-    fn policy(
-        live_if: Vec<PhaseKind>,
-        ready_if: Vec<PhaseKind>,
-        live_quorum: Quorum,
-        ready_quorum: Quorum,
-    ) -> HealthPolicy {
-        HealthPolicy {
-            live_if,
-            ready_if,
-            live_quorum,
-            ready_quorum,
-        }
-    }
-
     #[test]
     fn infer_agg_phase_prioritizes_deleting_with_forced_flag() {
         let policy = HealthPolicy::default();
