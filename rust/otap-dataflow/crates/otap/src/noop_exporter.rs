@@ -33,20 +33,13 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            NoopExporter::from_config(),
+            NoopExporter {},
             node,
             node_config,
             exporter_config,
         ))
     },
 };
-
-impl NoopExporter {
-    /// create a new instance of the `[NoopExporter]`
-    pub fn from_config() -> Self {
-        Self {}
-    }
-}
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for NoopExporter {

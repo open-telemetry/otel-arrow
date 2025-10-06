@@ -319,6 +319,7 @@ impl<PData> ValidationPhase<PData> {
 }
 
 /// Creates a test pipeline context for component testing
+#[must_use]
 pub fn create_test_pipeline_context() -> PipelineContext {
     let metrics_registry = MetricsRegistryHandle::new();
     let controller_ctx = ControllerContext::new(metrics_registry);

@@ -117,6 +117,7 @@ impl Context {
     }
 
     /// Consume frames to locate the most recent subscriber with ACKS.
+    #[must_use]
     pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
         ack.accepted
             .context
@@ -128,6 +129,7 @@ impl Context {
     }
 
     /// Consume frames to locate the most recent subscriber with NACKS.
+    #[must_use]
     pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
         nack.refused
             .context
