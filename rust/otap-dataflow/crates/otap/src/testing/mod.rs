@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Ultra-minimal test utilities for OTAP components
 
 use crate::pdata::{OtapPayload, OtapPdata, OtlpProtoBytes};
@@ -6,6 +9,7 @@ use otap_df_engine::{ExporterFactory, Interests, control::CallData};
 use serde_json::Value;
 
 /// Create minimal empty test data
+#[must_use]
 pub fn empty_logs_pdata() -> OtapPdata {
     OtapPdata::new_todo_context(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
         vec![],

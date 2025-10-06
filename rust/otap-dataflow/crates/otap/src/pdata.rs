@@ -565,7 +565,7 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
     }
 }
 
-/* -------- Effect handler extensions -------- */
+/* -------- Producer effect handler extensions (shared, local) -------- */
 
 #[async_trait(?Send)]
 impl ProducerEffectHandlerExtension<OtapPdata>
@@ -607,6 +607,8 @@ impl ProducerEffectHandlerExtension<OtapPdata>
     }
 }
 
+/* -------- Consumer effect handler extensions (shared, local) -------- */
+
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
@@ -629,6 +631,44 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
+{
+    async fn notify_ack(
+        &self,
+        ack: AckMsg<OtapPdata>,
+    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+        self.route_ack(ack, Context::next_ack).await
+    }
+
+    async fn notify_nack(
+        &self,
+        nack: NackMsg<OtapPdata>,
+    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+        self.route_nack(nack, Context::next_nack).await
+    }
+}
+
+#[async_trait(?Send)]
+impl ConsumerEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
+{
+    async fn notify_ack(
+        &self,
+        ack: AckMsg<OtapPdata>,
+    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+        self.route_ack(ack, Context::next_ack).await
+    }
+
+    async fn notify_nack(
+        &self,
+        nack: NackMsg<OtapPdata>,
+    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+        self.route_nack(nack, Context::next_nack).await
+    }
+}
+
+#[async_trait(?Send)]
+impl ConsumerEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(
         &self,
