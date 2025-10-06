@@ -46,6 +46,7 @@ pub struct ObservedStateHandle {
 
 impl ObservedStateHandle {
     /// Returns a cloned snapshot of the current pipeline statuses.
+    #[must_use]
     pub fn snapshot(&self) -> HashMap<PipelineKey, PipelineStatus> {
         match self.pipelines.lock() {
             Ok(guard) => guard.clone(),
@@ -100,6 +101,10 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
+    #[allow(
+        clippy::print_stderr,
+        reason = "Use `eprintln!` while waiting for https://github.com/open-telemetry/otel-arrow/issues/1237."
+    )]
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
         // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
         // The code below is temporary and should be replaced with a proper event reporting
@@ -171,22 +176,22 @@ impl ObservedStateHandle {
     /// Checks if a pipeline is considered live based on its observed status.
     #[must_use]
     pub fn liveness(&self, pipeline_key: &PipelineKey) -> bool {
-        self.pipelines.lock().ok().map_or(false, |pipelines| {
+        self.pipelines.lock().ok().is_some_and(|pipelines| {
             pipelines
                 .get(pipeline_key)
                 // ToDo use the policy from the pipeline config instead of the default
-                .map_or(false, |ps| ps.liveness())
+                .is_some_and(|ps| ps.liveness())
         })
     }
 
     /// Checks if a pipeline is considered ready based on its observed status.
     #[must_use]
     pub fn readiness(&self, pipeline_key: &PipelineKey) -> bool {
-        self.pipelines.lock().ok().map_or(false, |pipelines| {
+        self.pipelines.lock().ok().is_some_and(|pipelines| {
             pipelines
                 .get(pipeline_key)
                 // ToDo use the policy from the pipeline config instead of the default
-                .map_or(false, |ps| ps.readiness())
+                .is_some_and(|ps| ps.readiness())
         })
     }
 }

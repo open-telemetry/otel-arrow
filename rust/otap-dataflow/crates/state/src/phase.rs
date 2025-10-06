@@ -150,6 +150,7 @@ impl Display for PipelinePhase {
 
 impl PipelinePhase {
     /// Returns the `PhaseKind` corresponding to this `PipelinePhase` (i.e. without details).
+    #[must_use]
     pub fn kind(&self) -> PhaseKind {
         match self {
             PipelinePhase::Pending => PhaseKind::Pending,

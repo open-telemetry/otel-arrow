@@ -34,11 +34,13 @@ impl PipelineStatus {
     }
 
     /// Returns the current aggregated phase of the pipeline.
+    #[must_use]
     pub fn phase(&self) -> &PipelineAggPhase {
         &self.phase
     }
 
     /// Returns the current per-core status map.
+    #[must_use]
     pub fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
         &self.per_core
     }
@@ -182,6 +184,7 @@ impl PipelineStatus {
 
     /// Returns a boolean representing the liveness across cores, governed by the aggregation
     /// policy.
+    #[must_use]
     pub fn liveness(&self) -> bool {
         let (numer, denom) = self.count_quorum(|c| self.health_policy.is_live(c.phase.kind()));
         quorum_satisfied(numer, denom, self.health_policy.live_quorum)
@@ -189,6 +192,7 @@ impl PipelineStatus {
 
     /// Returns a boolean representing the readiness across cores, governed by the aggregation
     /// policy.
+    #[must_use]
     pub fn readiness(&self) -> bool {
         let (numer, denom) = self.count_quorum(|c| {
             c.phase.kind() != PhaseKind::Deleted && self.health_policy.is_ready(c.phase.kind())
@@ -229,7 +233,7 @@ fn quorum_satisfied(numer: usize, denom: usize, q: Quorum) -> bool {
             if denom == 0 {
                 return false;
             }
-            let needed = (denom * (p as usize) + 99) / 100; // ceil(denom*p/100)
+            let needed = (denom * usize::from(p)).div_ceil(100);
             numer >= needed
         }
     }

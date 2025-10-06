@@ -377,7 +377,8 @@ pub enum Error {
 
 impl Error {
     /// Returns the name of the error variant as a string.
-    pub fn variant_name(self: &Self) -> String {
+    #[must_use]
+    pub fn variant_name(&self) -> String {
         match self {
             Error::ConfigError(_) => "ConfigError",
             Error::ChannelRecvError(_) => "ChannelRecvError",

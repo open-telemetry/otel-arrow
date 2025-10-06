@@ -172,6 +172,7 @@ pub enum ErrorSummary {
 
 impl ObservedEvent {
     /// Create an `Admitted` engine-level event.
+    #[must_use]
     pub fn admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -184,6 +185,7 @@ impl ObservedEvent {
     }
 
     /// Create a `Ready` pipeline-level event.
+    #[must_use]
     pub fn ready(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -196,6 +198,7 @@ impl ObservedEvent {
     }
 
     /// Create an `UpdateAdmitted` pipeline-level event.
+    #[must_use]
     pub fn update_admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -208,6 +211,7 @@ impl ObservedEvent {
     }
 
     /// Create an `UpdateApplied` pipeline-level event.
+    #[must_use]
     pub fn update_applied(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -220,6 +224,7 @@ impl ObservedEvent {
     }
 
     /// Create a `RollbackComplete` pipeline-level event.
+    #[must_use]
     pub fn rollback_complete(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -232,6 +237,7 @@ impl ObservedEvent {
     }
 
     /// Create a `Drained` pipeline-level event.
+    #[must_use]
     pub fn drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -244,6 +250,7 @@ impl ObservedEvent {
     }
 
     /// Create a `Deleted` pipeline-level event.
+    #[must_use]
     pub fn deleted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -256,6 +263,7 @@ impl ObservedEvent {
     }
 
     /// Create an `AdmissionError` engine-level event.
+    #[must_use]
     pub fn admission_error(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -272,6 +280,7 @@ impl ObservedEvent {
     }
 
     /// Create a `ConfigRejected` pipeline-level event.
+    #[must_use]
     pub fn config_rejected(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -288,6 +297,7 @@ impl ObservedEvent {
     }
 
     /// Create an `UpdateFailed` pipeline-level event.
+    #[must_use]
     pub fn update_failed(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -304,6 +314,7 @@ impl ObservedEvent {
     }
 
     /// Create a `RollbackFailed` pipeline-level event.
+    #[must_use]
     pub fn rollback_failed(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -320,6 +331,7 @@ impl ObservedEvent {
     }
 
     /// Create a `DrainError` pipeline-level event.
+    #[must_use]
     pub fn drain_error(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -336,6 +348,7 @@ impl ObservedEvent {
     }
 
     /// Create a `DeleteError` pipeline-level event.
+    #[must_use]
     pub fn delete_error(
         key: DeployedPipelineKey,
         message: Option<String>,
@@ -352,6 +365,7 @@ impl ObservedEvent {
     }
 
     /// Create a `RuntimeError` pipeline-level event.
+    #[must_use]
     pub fn pipeline_runtime_error(
         key: DeployedPipelineKey,
         message: impl Into<String>,
@@ -368,6 +382,7 @@ impl ObservedEvent {
     }
 
     /// Create a `RuntimeError` node-level event.
+    #[must_use]
     pub fn node_runtime_error(
         key: DeployedPipelineKey,
         node_id: NodeId,
@@ -386,6 +401,7 @@ impl ObservedEvent {
     }
 
     /// Create a `StartRequested` request-level event.
+    #[must_use]
     pub fn start_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -398,6 +414,7 @@ impl ObservedEvent {
     }
 
     /// Create a `ShutdownRequested` request-level event.
+    #[must_use]
     pub fn shutdown_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -410,6 +427,7 @@ impl ObservedEvent {
     }
 
     /// Create a `DeleteRequested` request-level event.
+    #[must_use]
     pub fn delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
@@ -422,6 +440,7 @@ impl ObservedEvent {
     }
 
     /// Create a `ForceDeleteRequested` request-level event.
+    #[must_use]
     pub fn force_delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,

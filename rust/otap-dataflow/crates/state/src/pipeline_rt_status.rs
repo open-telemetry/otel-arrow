@@ -70,7 +70,7 @@ impl PipelineRuntimeStatus {
     /// Apply a single observed event to this pipeline.
     /// Returns what changed (if anything) or an Error::InvalidTransition.
     pub(crate) fn apply(&mut self, event_type: EventType) -> Result<ApplyOutcome, Error> {
-        let current_phase = self.phase.clone();
+        let current_phase = self.phase;
         let outcome = match (current_phase, event_type) {
             // ----- Pending
             (PipelinePhase::Pending, EventType::Success(OkEv::Admitted)) => {
@@ -239,8 +239,8 @@ impl PipelineRuntimeStatus {
             // Everything else is considered programmer error (strict mode).
             (phase, ev) => {
                 return Err(InvalidTransition {
-                    phase: phase.clone(),
-                    event: ev,
+                    phase,
+                    event: Box::new(ev),
                     message: "event not valid for current phase",
                 });
             }
@@ -261,10 +261,10 @@ impl PipelineRuntimeStatus {
     }
 
     // Helper function: record a phase transition.
-    fn goto(self: &mut Self, to: PipelinePhase) -> ApplyOutcome {
+    fn goto(&mut self, to: PipelinePhase) -> ApplyOutcome {
         if to != self.phase {
-            let from = self.phase.clone();
-            self.phase = to.clone();
+            let from = self.phase;
+            self.phase = to;
             match (from, to) {
                 (PipelinePhase::Failed(from_reason), PipelinePhase::Failed(to_reason)) => {
                     if from_reason != to_reason {
@@ -295,7 +295,7 @@ impl PipelineRuntimeStatus {
     }
 
     // Centralizes entering Deleting and resets flags.
-    fn go_to_deleting(self: &mut Self, mode: DeletionMode) -> ApplyOutcome {
+    fn go_to_deleting(&mut self, mode: DeletionMode) -> ApplyOutcome {
         self.delete_pending = false;
         self.goto(PipelinePhase::Deleting(mode))
     }
