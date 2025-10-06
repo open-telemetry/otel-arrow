@@ -667,8 +667,9 @@ mod tests {
             .await;
         });
 
-        let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
+        let (r1, r2) = tokio_rt.block_on(async move {
             tokio::join!(
+            // tokio::try_join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx),
                 drive_test(
                     server_startup_sender,
@@ -682,10 +683,9 @@ mod tests {
                 )
             )
         });
-
-        // assert no error
-        exporter_result.unwrap();
-        test_drive_result.unwrap();
+        //.unwrap();
+        r1.unwrap();
+        r2.unwrap();
 
         tokio_rt
             .block_on(server_handle)
