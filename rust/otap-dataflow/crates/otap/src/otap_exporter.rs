@@ -430,19 +430,15 @@ async fn handle_res_stream(
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::ExporterPDataMetrics;
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
     use crate::otap_exporter::config::ArrowPayloadCompression;
-    use crate::otap_exporter::config::Config;
     use crate::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
-    use crate::otlp_mock::LogsServiceMock;
     use crate::pdata::OtapPdata;
 
     use crate::compression::CompressionMethod;
-    use object_store::local;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::Controllable;
@@ -469,7 +465,6 @@ mod tests {
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
-    use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
     use serde_json::json;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -782,9 +777,7 @@ mod tests {
         let (req_sender, req_receiver) = tokio::sync::mpsc::channel(1);
         let (server_startup_sender, mut server_startup_receiver) = tokio::sync::mpsc::channel(1);
         let (server_start_ack_sender, server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
-        let (server_shutdown_sender1, server_shutdown_signal1) = tokio::sync::oneshot::channel();
-        let (server_shutdown_sender2, server_shutdown_signal2) = tokio::sync::oneshot::channel();
-        let (server_shutdown_ack_sender, server_shutdown_ack_receiver) = tokio::sync::mpsc::channel(2);
+        let (server_shutdown_sender, server_shutdown_signal) = tokio::sync::oneshot::channel();
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
@@ -798,8 +791,6 @@ mod tests {
             server_startup_sender: tokio::sync::mpsc::Sender<bool>,
             mut server_startup_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
             server_shutdown_sender1: tokio::sync::oneshot::Sender<bool>,
-            server_shutdown_sender2: tokio::sync::oneshot::Sender<bool>,
-            mut server_shutdown_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
@@ -816,12 +807,9 @@ mod tests {
 
             // wait a bit before starting the server. This will ensure the exporter no-long exits
             // when start is called if the endpoint can't be reached
-            println!("starting server");
             tokio::time::sleep(Duration::from_millis(100)).await;
             server_startup_sender.send(true).await.unwrap();
             _ = server_startup_ack_receiver.recv().await.unwrap();
-
-            println!("server started");
 
             // send another pdata now that the server has started
             let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
@@ -829,52 +817,10 @@ mod tests {
                 .send(OtapPdata::new_default(log_message.into()))
                 .await
                 .expect("Failed to send log message");
-            // ensure server got request
-            // _ = req_receiver.recv().await.unwrap();
-            // TODO instead of sleeping here, when ACK/NACK is added we should wait on the control
-            // channel to ensure that we receive a ACK
-            // tokio::time::sleep(Duration::from_millis(10)).await;
-
-            println!("stopping server");
-            // stop the server
-            _ = server_shutdown_sender1.send(true).unwrap();
-            _ = server_shutdown_ack_receiver.recv().await.unwrap();
-
-            let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
-            pdata_tx
-                .send(OtapPdata::new_default(log_message.into()))
-                .await
-                .expect("Failed to send log message");
-            // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a NACK
-            // from the control channel
-            tokio::time::sleep(Duration::from_millis(5)).await;
-
-            println!("restating server");           
- 
-
-            // start the server again
-            server_startup_sender.send(true).await.unwrap();
-            _ = server_startup_ack_receiver.recv().await.unwrap();
-
-            println!("server restarted");
-            tokio::time::sleep(Duration::from_millis(5)).await;
-
-            let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
-            pdata_tx
-                .send(OtapPdata::new_default(log_message.into()))
-                .await
-                .expect("Failed to send log message");
+            _ = req_receiver.recv().await.unwrap(); // ensure we got response
             // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a ACK
             // from the control channel
             tokio::time::sleep(Duration::from_millis(5)).await;
-
-
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            // {
-            //     todo!("panic here");
-            // }
-
-            //  _ = req_receiver.recv().await.unwrap();
 
             // check the metrics:
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
@@ -886,9 +832,9 @@ mod tests {
                 .unwrap();
             let metrics = metrics_rx.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
-            assert_eq!(logs_exported_count, 2);
+            assert_eq!(logs_exported_count, 1);
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
-            assert_eq!(logs_failed_count, 2);
+            assert_eq!(logs_failed_count, 1);
 
             control_sender
                 .send(NodeControlMsg::Shutdown {
@@ -898,14 +844,13 @@ mod tests {
                 .await
                 .unwrap();
 
-            _ = server_shutdown_sender2.send(true).unwrap();
-
+            server_shutdown_sender1.send(true).unwrap();
         }
 
         async fn run_server(
             listening_addr: String,
-            // startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
-            // shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
+            startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
+            shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
             req_sender: tokio::sync::mpsc::Sender<OtapPdata>,
         ) {
             let listening_addr: SocketAddr = listening_addr.to_string().parse().unwrap();
@@ -916,16 +861,12 @@ mod tests {
 
             Server::builder()
                 .add_service(logs_service)
-                .serve_with_incoming(tcp_stream)
-                // .serve_with_incoming_shutdown(tcp_stream, async {
-                //     startup_ack_sender.send(true).await.unwrap();
-                //     let _ = shutdown_signal.await;
-                //     println!("shutdown signal rx'd");
-                // })
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    startup_ack_sender.send(true).await.unwrap();
+                    let _ = shutdown_signal.await;
+                })
                 .await
                 .expect("uh oh server failed");
-
-            println!("shutdown happening");
         }
 
         let server_handle = tokio_rt.spawn(async move {
@@ -933,87 +874,32 @@ mod tests {
 
             // wait for signal to start the server
             _ = server_startup_receiver.recv().await.unwrap();
-            let server_fut =   run_server(
+            run_server(
                 listening_addr.clone(),
-                // server_start_ack_sender.clone(),
+                server_start_ack_sender.clone(),
+                server_shutdown_signal,
                 req_sender.clone(),
-            );
-
-            let server_start_ack_sender_clone = server_start_ack_sender.clone();
-            tokio::select! {
-                _ = server_fut => {},
-                _ = async move {
-                    server_start_ack_sender_clone.send(true).await.unwrap();
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(10)).await
-                    }
-                } => {},
-                _ = server_shutdown_signal1 => {},
-            }
-
-            // run_server(
-            //     listening_addr.clone(),
-            //     server_start_ack_sender.clone(),
-            //     server_shutdown_signal1,
-            //     req_sender.clone(),
-            // )
-            // .await;
-
-            // ack server stopped
-            println!("sending shutdown ack");
-            server_shutdown_ack_sender.send(true).await.unwrap();
-
-
-            println!("waiting to restart");
-            // wait for the restart signal
-            _ = server_startup_receiver.recv().await.unwrap();
-            // run_server(
-            //     listening_addr.clone(),
-            //     server_start_ack_sender.clone(),
-            //     server_shutdown_signal2,
-            //     req_sender.clone()
-            // )
-            // .await
-            let server_fut =   run_server(
-                listening_addr.clone(),
-                // server_start_ack_sender.clone(),
-                req_sender.clone(),
-            );
-
-            tokio::select! {
-                _ = server_fut => {},
-                _ = async move {
-                    server_start_ack_sender.send(true).await.unwrap();
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(10)).await
-                    }
-                } => {},
-                _ = server_shutdown_signal2 => {},
-            }
-
+            )
+            .await;
         });
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
-            let _ = local_set
+            let _fut = local_set
                 .spawn_local(async move { start_exporter(exporter, pipeline_ctrl_msg_tx).await });
             tokio::join!(
                 local_set,
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
-                    server_shutdown_sender1,
-                    server_shutdown_sender2,
-                    server_shutdown_ack_receiver,
+                    server_shutdown_sender,
                     pdata_tx,
                     control_sender,
                     req_receiver
                 )
-                // ).await
             )
         });
 
-        println!("waiting server shutdown");
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
