@@ -133,7 +133,7 @@ impl ObservedStateStore {
 
         // Upsert the core record and its condition snapshot
         let cs = ps
-            .per_core
+            .cores
             .entry(observed_event.key.core_id)
             .or_insert(PipelineRuntimeStatus {
                 phase: PipelinePhase::Pending,
@@ -179,7 +179,6 @@ impl ObservedStateHandle {
         self.pipelines.lock().ok().is_some_and(|pipelines| {
             pipelines
                 .get(pipeline_key)
-                // ToDo use the policy from the pipeline config instead of the default
                 .is_some_and(|ps| ps.liveness())
         })
     }
@@ -190,7 +189,6 @@ impl ObservedStateHandle {
         self.pipelines.lock().ok().is_some_and(|pipelines| {
             pipelines
                 .get(pipeline_key)
-                // ToDo use the policy from the pipeline config instead of the default
                 .is_some_and(|ps| ps.readiness())
         })
     }

@@ -18,7 +18,7 @@ pub struct PipelineStatus {
     phase: PipelineAggPhase,
 
     /// Per-core details to aid debugging and aggregation.
-    pub(crate) per_core: HashMap<CoreId, PipelineRuntimeStatus>,
+    pub(crate) cores: HashMap<CoreId, PipelineRuntimeStatus>,
 
     #[serde(skip)]
     health_policy: HealthPolicy,
@@ -28,7 +28,7 @@ impl PipelineStatus {
     pub(crate) fn new(health_policy: HealthPolicy) -> Self {
         Self {
             phase: PipelineAggPhase::Unknown,
-            per_core: HashMap::new(),
+            cores: HashMap::new(),
             health_policy,
         }
     }
@@ -42,12 +42,12 @@ impl PipelineStatus {
     /// Returns the current per-core status map.
     #[must_use]
     pub fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
-        &self.per_core
+        &self.cores
     }
 
     fn counts(&self) -> AggregateCounts {
         let mut agg = AggregateCounts::default();
-        for c in self.per_core.values() {
+        for c in self.cores.values() {
             match &c.phase {
                 PipelinePhase::Pending => agg.pending += 1,
                 PipelinePhase::Starting => agg.starting += 1,
@@ -210,12 +210,12 @@ impl PipelineStatus {
         F: Fn(&PipelineRuntimeStatus) -> bool,
     {
         let denom = self
-            .per_core
+            .cores
             .values()
             .filter(|c| c.phase.kind() != PhaseKind::Deleted)
             .count();
         let numer = self
-            .per_core
+            .cores
             .values()
             .filter(|c| c.phase.kind() != PhaseKind::Deleted)
             .filter(|c| pred(c))
