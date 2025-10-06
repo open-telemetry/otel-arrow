@@ -3,10 +3,10 @@
 
 //! Definition of all states/phases that a pipeline can be in.
 
+use otap_df_config::health::PhaseKind;
+use serde::Serialize;
 use std::fmt;
 use std::fmt::Display;
-use serde::Serialize;
-use otap_df_config::health::PhaseKind;
 
 /// States/Phases that a pipeline instance (bound to a CPU core) can be in.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
@@ -55,7 +55,7 @@ pub enum PipelineAggPhase {
         /// `forced=true` if any core uses forced deletion
         forced: bool,
         /// How many pipeline core instances are still being deleted
-        remaining: usize
+        remaining: usize,
     },
     /// One or more cores are in a failed state
     Failed {
@@ -64,7 +64,7 @@ pub enum PipelineAggPhase {
         /// How many pipeline instance cores are currently serving
         running: usize,
         /// The most common reason for failure among the failed cores
-        top_reason: Option<FailReason>
+        top_reason: Option<FailReason>,
     },
     /// One or more cores are rejected.
     /// Counts plus most common rejection reason.
@@ -74,28 +74,28 @@ pub enum PipelineAggPhase {
         /// How many cores are currently serving
         running: usize,
         /// The most common reason for rejection among the rejected cores
-        top_reason: Option<RejectReason>
+        top_reason: Option<RejectReason>,
     },
     /// A rollback is underway on at least one core
     RollingBack {
         /// How many cores are currently rolling back
         rolling_back: usize,
         /// How many cores are currently serving
-        running: usize
+        running: usize,
     },
     /// An update is applying on at least one core
     Updating {
         /// How many cores are currently updating
         updating: usize,
         /// How many cores are currently serving
-        running: usize
+        running: usize,
     },
     /// Graceful shutdown in progress on some cores
     Draining {
         /// How many cores are currently in `Draining` state
         draining: usize,
         /// How many cores are currently serving
-        running: usize
+        running: usize,
     },
     /// All non-deleted cores are running (full capacity).
     RunningAll,
@@ -104,29 +104,29 @@ pub enum PipelineAggPhase {
         /// How many cores are currently running
         running: usize,
         /// How many non-deleted cores are there in total
-        total_active: usize
+        total_active: usize,
     },
     /// All non-deleted cores are stopped (safe but not serving)
     StoppedAll {
         /// How many cores are currently stopped
-        stopped: usize
+        stopped: usize,
     },
     /// A mix where some non-deleted cores are stopped (includes how many are active overall)
     StoppedPartial {
         /// How many cores are currently stopped
         stopped: usize,
         /// How many non-deleted cores are there in total
-        total_active: usize
+        total_active: usize,
     },
     /// Early lifecycle: at least one core is pending/starting
     Starting {
         /// How many cores are currently in `Pending` state
         pending: usize,
         /// How many cores are currently in `Starting` state
-        starting: usize
+        starting: usize,
     },
     /// The state has not been determined yet or is inconsistent.
-    Unknown
+    Unknown,
 }
 
 impl Display for PipelinePhase {
@@ -152,16 +152,16 @@ impl PipelinePhase {
     /// Returns the `PhaseKind` corresponding to this `PipelinePhase` (i.e. without details).
     pub fn kind(&self) -> PhaseKind {
         match self {
-            PipelinePhase::Pending      => PhaseKind::Pending,
-            PipelinePhase::Starting     => PhaseKind::Starting,
-            PipelinePhase::Running      => PhaseKind::Running,
-            PipelinePhase::Updating     => PhaseKind::Updating,
-            PipelinePhase::RollingBack  => PhaseKind::RollingBack,
-            PipelinePhase::Draining     => PhaseKind::Draining,
-            PipelinePhase::Stopped      => PhaseKind::Stopped,
-            PipelinePhase::Failed(_)    => PhaseKind::Failed,
-            PipelinePhase::Deleting(_)  => PhaseKind::Deleting,
-            PipelinePhase::Deleted      => PhaseKind::Deleted,
+            PipelinePhase::Pending => PhaseKind::Pending,
+            PipelinePhase::Starting => PhaseKind::Starting,
+            PipelinePhase::Running => PhaseKind::Running,
+            PipelinePhase::Updating => PhaseKind::Updating,
+            PipelinePhase::RollingBack => PhaseKind::RollingBack,
+            PipelinePhase::Draining => PhaseKind::Draining,
+            PipelinePhase::Stopped => PhaseKind::Stopped,
+            PipelinePhase::Failed(_) => PhaseKind::Failed,
+            PipelinePhase::Deleting(_) => PhaseKind::Deleting,
+            PipelinePhase::Deleted => PhaseKind::Deleted,
             PipelinePhase::Rejected(_) => PhaseKind::Rejected,
         }
     }

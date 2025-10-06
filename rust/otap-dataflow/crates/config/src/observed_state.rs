@@ -3,9 +3,9 @@
 
 //! Configuration of the observed store.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use schemars::JsonSchema;
 
 /// Configuration for the observed state store.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

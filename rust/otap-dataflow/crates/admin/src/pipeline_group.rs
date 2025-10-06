@@ -32,7 +32,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/pipeline-groups/status", get(show_status))
         // Shutdown all pipelines in all groups.
         .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
-        // ToDo Global liveness and readiness probes.
+    // ToDo Global liveness and readiness probes.
 }
 
 #[derive(Serialize)]

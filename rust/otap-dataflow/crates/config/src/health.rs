@@ -25,10 +25,10 @@ use serde::{Deserialize, Serialize};
 pub struct HealthPolicy {
     /// Phases in which the system is considered alive.
     #[serde(default = "default_live_if")]
-    pub live_if:   Vec<PhaseKind>,
+    pub live_if: Vec<PhaseKind>,
     /// Phases in which the system is considered ready.
     #[serde(default = "default_ready_if")]
-    pub ready_if:  Vec<PhaseKind>,
+    pub ready_if: Vec<PhaseKind>,
 
     /// Quorum for livez across cores.
     #[serde(default = "default_live_quorum")]
@@ -43,7 +43,7 @@ impl Default for HealthPolicy {
         Self {
             live_if: default_live_if(),
             ready_if: default_ready_if(),
-            live_quorum:  default_live_quorum(),
+            live_quorum: default_live_quorum(),
             ready_quorum: default_ready_quorum(),
         }
     }
@@ -101,9 +101,16 @@ pub enum PhaseKind {
 /// - ready in `Running` and `Updating` (could be optional).
 fn default_live_if() -> Vec<PhaseKind> {
     vec![
-        PhaseKind::Pending, PhaseKind::Starting, PhaseKind::Running, PhaseKind::Updating,
-        PhaseKind::RollingBack, PhaseKind::Draining, PhaseKind::Stopped, PhaseKind::Rejected,
-        PhaseKind::Failed, PhaseKind::Deleting,
+        PhaseKind::Pending,
+        PhaseKind::Starting,
+        PhaseKind::Running,
+        PhaseKind::Updating,
+        PhaseKind::RollingBack,
+        PhaseKind::Draining,
+        PhaseKind::Stopped,
+        PhaseKind::Rejected,
+        PhaseKind::Failed,
+        PhaseKind::Deleting,
     ]
 }
 
@@ -114,9 +121,13 @@ fn default_ready_if() -> Vec<PhaseKind> {
 impl HealthPolicy {
     /// Check if the given phase kind is considered live.
     #[inline]
-    pub fn is_live<K: Into<PhaseKind>>(&self, k: K) -> bool { self.live_if.contains(&k.into()) }
+    pub fn is_live<K: Into<PhaseKind>>(&self, k: K) -> bool {
+        self.live_if.contains(&k.into())
+    }
 
     /// Check if the given phase kind is considered ready.
     #[inline]
-    pub fn is_ready<K: Into<PhaseKind>>(&self, k: K) -> bool { self.ready_if.contains(&k.into()) }
+    pub fn is_ready<K: Into<PhaseKind>>(&self, k: K) -> bool {
+        self.ready_if.contains(&k.into())
+    }
 }

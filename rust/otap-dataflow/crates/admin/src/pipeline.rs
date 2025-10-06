@@ -19,9 +19,9 @@
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::{Json, Router};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::{Json, Router};
 use otap_df_state::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
 
@@ -29,10 +29,19 @@ use otap_df_state::pipeline_status::PipelineStatus;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         // Returns the status of a specific pipeline.
-        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status", get(show_status))
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
+            get(show_status),
+        )
         // liveness and readiness probes.
-        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez", get(liveness))
-        .route("/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz", get(readiness))
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez",
+            get(liveness),
+        )
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz",
+            get(readiness),
+        )
 }
 
 pub async fn show_status(
@@ -54,7 +63,7 @@ pub async fn show_status(
 /// ToDo Implement heartbeat checks.
 async fn liveness(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
-    State(state): State<AppState>
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
     let liveness = state.observed_state_store.liveness(&key);
@@ -74,7 +83,7 @@ async fn liveness(
 /// - Can check key dependencies, but avoid making it too fragile.
 async fn readiness(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
-    State(state): State<AppState>
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
     let readiness = state.observed_state_store.readiness(&key);

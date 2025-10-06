@@ -3,14 +3,14 @@
 
 //! Observed per-core pipeline runtime status and phase transition logic.
 
-use std::time::SystemTime;
-use serde::Serialize;
 use crate::error::Error;
 use crate::error::Error::InvalidTransition;
+use crate::event::{ErrorEvent as ErrEv, RequestEvent as Req, SuccessEvent as OkEv};
 use crate::event::{EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::{DeletionMode, FailReason, PipelinePhase};
 use crate::store::ts_to_rfc3339;
-use crate::event::{RequestEvent as Req, SuccessEvent as OkEv, ErrorEvent as ErrEv};
+use serde::Serialize;
+use std::time::SystemTime;
 
 /// The per-core status of a pipeline runtime.
 #[derive(Debug, Serialize, Clone)]
@@ -45,10 +45,7 @@ pub enum ApplyOutcome {
     },
     ///
     /// Only an internal flag changed (e.g. `delete_pending`) while the phase stayed the same.
-    FlagChange {
-        name: &'static str,
-        value: bool,
-    },
+    FlagChange { name: &'static str, value: bool },
 }
 
 impl Default for PipelineRuntimeStatus {
@@ -57,7 +54,7 @@ impl Default for PipelineRuntimeStatus {
             phase: PipelinePhase::Pending,
             last_beat: SystemTime::now(),
             recent_events: ObservedEventRingBuffer::new(5),
-            delete_pending: false
+            delete_pending: false,
         }
     }
 }
@@ -76,83 +73,154 @@ impl PipelineRuntimeStatus {
         let current_phase = self.phase.clone();
         let outcome = match (current_phase, event_type) {
             // ----- Pending
-            (PipelinePhase::Pending, EventType::Success(OkEv::Admitted)) => self.goto(PipelinePhase::Starting),
-            (PipelinePhase::Pending, EventType::Error(ErrEv::AdmissionError(_))) => self.goto(PipelinePhase::Failed(FailReason::AdmissionError)),
-            (PipelinePhase::Pending, EventType::Request(Req::DeleteRequested)) => self.go_to_deleting(DeletionMode::Graceful),
-            (PipelinePhase::Pending, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
-            (PipelinePhase::Pending, EventType::Request(Req::StartRequested)) => { ApplyOutcome::NoChange }
+            (PipelinePhase::Pending, EventType::Success(OkEv::Admitted)) => {
+                self.goto(PipelinePhase::Starting)
+            }
+            (PipelinePhase::Pending, EventType::Error(ErrEv::AdmissionError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::AdmissionError))
+            }
+            (PipelinePhase::Pending, EventType::Request(Req::DeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Graceful)
+            }
+            (PipelinePhase::Pending, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
+            (PipelinePhase::Pending, EventType::Request(Req::StartRequested)) => {
+                ApplyOutcome::NoChange
+            }
 
             // ----- Starting
-            (PipelinePhase::Starting, EventType::Success(OkEv::Ready)) => self.goto(PipelinePhase::Running),
-            (PipelinePhase::Starting, EventType::Error(ErrEv::ConfigRejected(_))) => self.goto(PipelinePhase::Failed(FailReason::ConfigRejected)),
-            (PipelinePhase::Starting, EventType::Request(Req::DeleteRequested)) => self.go_to_deleting(DeletionMode::Graceful),
-            (PipelinePhase::Starting, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Starting, EventType::Success(OkEv::Ready)) => {
+                self.goto(PipelinePhase::Running)
+            }
+            (PipelinePhase::Starting, EventType::Error(ErrEv::ConfigRejected(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::ConfigRejected))
+            }
+            (PipelinePhase::Starting, EventType::Request(Req::DeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Graceful)
+            }
+            (PipelinePhase::Starting, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Running
-            (PipelinePhase::Running, EventType::Success(OkEv::UpdateAdmitted)) => self.goto(PipelinePhase::Updating),
-            (PipelinePhase::Running, EventType::Request(Req::ShutdownRequested)) => self.goto(PipelinePhase::Draining),
-            (PipelinePhase::Running, EventType::Error(ErrEv::RuntimeError(_))) => self.goto(PipelinePhase::Failed(FailReason::RuntimeError)),
+            (PipelinePhase::Running, EventType::Success(OkEv::UpdateAdmitted)) => {
+                self.goto(PipelinePhase::Updating)
+            }
+            (PipelinePhase::Running, EventType::Request(Req::ShutdownRequested)) => {
+                self.goto(PipelinePhase::Draining)
+            }
+            (PipelinePhase::Running, EventType::Error(ErrEv::RuntimeError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::RuntimeError))
+            }
             (PipelinePhase::Running, EventType::Request(Req::DeleteRequested)) => {
                 self.delete_pending = true;
                 self.goto(PipelinePhase::Draining)
             }
-            (PipelinePhase::Running, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Running, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Updating
-            (PipelinePhase::Updating, EventType::Success(OkEv::UpdateApplied)) => self.goto(PipelinePhase::Running),
-            (PipelinePhase::Updating, EventType::Error(ErrEv::UpdateFailed(_))) => self.goto(PipelinePhase::RollingBack),
+            (PipelinePhase::Updating, EventType::Success(OkEv::UpdateApplied)) => {
+                self.goto(PipelinePhase::Running)
+            }
+            (PipelinePhase::Updating, EventType::Error(ErrEv::UpdateFailed(_))) => {
+                self.goto(PipelinePhase::RollingBack)
+            }
             (PipelinePhase::Updating, EventType::Request(Req::DeleteRequested)) => {
                 self.delete_pending = true;
                 self.goto(PipelinePhase::Draining)
             }
-            (PipelinePhase::Updating, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Updating, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- RollingBack
-            (PipelinePhase::RollingBack, EventType::Success(OkEv::RollbackComplete)) => self.goto(PipelinePhase::Running),
-            (PipelinePhase::RollingBack, EventType::Error(ErrEv::RollbackFailed(_))) => self.goto(PipelinePhase::Failed(FailReason::RollbackFailed)),
+            (PipelinePhase::RollingBack, EventType::Success(OkEv::RollbackComplete)) => {
+                self.goto(PipelinePhase::Running)
+            }
+            (PipelinePhase::RollingBack, EventType::Error(ErrEv::RollbackFailed(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::RollbackFailed))
+            }
             (PipelinePhase::RollingBack, EventType::Request(Req::DeleteRequested)) => {
                 self.delete_pending = true;
                 self.goto(PipelinePhase::Draining)
             }
-            (PipelinePhase::RollingBack, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::RollingBack, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Draining
             (PipelinePhase::Draining, EventType::Success(OkEv::Drained)) if self.delete_pending => {
                 self.delete_pending = false;
                 self.goto(PipelinePhase::Deleting(DeletionMode::Graceful))
             }
-            (PipelinePhase::Draining, EventType::Success(OkEv::Drained)) => self.goto(PipelinePhase::Stopped),
-            (PipelinePhase::Draining, EventType::Error(ErrEv::DrainError(_))) => self.goto(PipelinePhase::Failed(FailReason::DrainError)),
+            (PipelinePhase::Draining, EventType::Success(OkEv::Drained)) => {
+                self.goto(PipelinePhase::Stopped)
+            }
+            (PipelinePhase::Draining, EventType::Error(ErrEv::DrainError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::DrainError))
+            }
             (PipelinePhase::Draining, EventType::Request(Req::DeleteRequested)) => {
                 if !self.delete_pending {
                     self.delete_pending = true;
-                    ApplyOutcome::FlagChange { name: "delete_pending", value: true }
+                    ApplyOutcome::FlagChange {
+                        name: "delete_pending",
+                        value: true,
+                    }
                 } else {
                     ApplyOutcome::NoChange
                 }
             }
-            (PipelinePhase::Draining, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Draining, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Stopped
-            (PipelinePhase::Stopped, EventType::Request(Req::StartRequested)) => self.goto(PipelinePhase::Pending),
-            (PipelinePhase::Stopped, EventType::Request(Req::DeleteRequested)) => self.go_to_deleting(DeletionMode::Graceful),
-            (PipelinePhase::Stopped, EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Stopped, EventType::Request(Req::StartRequested)) => {
+                self.goto(PipelinePhase::Pending)
+            }
+            (PipelinePhase::Stopped, EventType::Request(Req::DeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Graceful)
+            }
+            (PipelinePhase::Stopped, EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Rejected
-            (PipelinePhase::Rejected(_), EventType::Request(Req::StartRequested)) => self.goto(PipelinePhase::Pending),
-            (PipelinePhase::Rejected(_), EventType::Request(Req::DeleteRequested)) => self.go_to_deleting(DeletionMode::Graceful),
-            (PipelinePhase::Rejected(_), EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
-            
+            (PipelinePhase::Rejected(_), EventType::Request(Req::StartRequested)) => {
+                self.goto(PipelinePhase::Pending)
+            }
+            (PipelinePhase::Rejected(_), EventType::Request(Req::DeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Graceful)
+            }
+            (PipelinePhase::Rejected(_), EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
+
             // ----- Failed (can still delete)
-            (PipelinePhase::Failed(_), EventType::Request(Req::StartRequested)) => self.goto(PipelinePhase::Pending),
-            (PipelinePhase::Failed(_), EventType::Request(Req::DeleteRequested)) => self.go_to_deleting(DeletionMode::Graceful),
-            (PipelinePhase::Failed(_), EventType::Request(Req::ForceDeleteRequested)) => self.go_to_deleting(DeletionMode::Forced),
+            (PipelinePhase::Failed(_), EventType::Request(Req::StartRequested)) => {
+                self.goto(PipelinePhase::Pending)
+            }
+            (PipelinePhase::Failed(_), EventType::Request(Req::DeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Graceful)
+            }
+            (PipelinePhase::Failed(_), EventType::Request(Req::ForceDeleteRequested)) => {
+                self.go_to_deleting(DeletionMode::Forced)
+            }
 
             // ----- Deleting (idempotent delete requests)
-            (PipelinePhase::Deleting(_), EventType::Success(OkEv::Deleted)) => self.goto(PipelinePhase::Deleted),
-            (PipelinePhase::Deleting(_), EventType::Error(ErrEv::DeleteError(_))) => self.goto(PipelinePhase::Failed(FailReason::DeleteError)),
+            (PipelinePhase::Deleting(_), EventType::Success(OkEv::Deleted)) => {
+                self.goto(PipelinePhase::Deleted)
+            }
+            (PipelinePhase::Deleting(_), EventType::Error(ErrEv::DeleteError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::DeleteError))
+            }
             (PipelinePhase::Deleting(_), EventType::Request(Req::DeleteRequested))
-            | (PipelinePhase::Deleting(_), EventType::Request(Req::ForceDeleteRequested)) => { ApplyOutcome::NoChange }
+            | (PipelinePhase::Deleting(_), EventType::Request(Req::ForceDeleteRequested)) => {
+                ApplyOutcome::NoChange
+            }
 
             // ----- Deleted (terminal)
             (PipelinePhase::Deleted, _) => {
@@ -166,7 +234,7 @@ impl PipelineRuntimeStatus {
             | (PipelinePhase::Updating, EventType::Success(OkEv::UpdateAdmitted))
             | (PipelinePhase::RollingBack, EventType::Error(ErrEv::UpdateFailed(_)))
             | (PipelinePhase::Draining, EventType::Request(Req::ShutdownRequested))
-            | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => { ApplyOutcome::NoChange }
+            | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => ApplyOutcome::NoChange,
 
             // Everything else is considered programmer error (strict mode).
             (phase, ev) => {
@@ -174,7 +242,7 @@ impl PipelineRuntimeStatus {
                     phase: phase.clone(),
                     event: ev,
                     message: "event not valid for current phase",
-                })
+                });
             }
         };
 
@@ -182,7 +250,7 @@ impl PipelineRuntimeStatus {
     }
 
     /// Apply many events in sequence (oldest -> newest).
-    pub fn apply_many<I: IntoIterator<Item=EventType>>(
+    pub fn apply_many<I: IntoIterator<Item = EventType>>(
         &mut self,
         events: I,
     ) -> Result<(), Error> {
@@ -198,23 +266,27 @@ impl PipelineRuntimeStatus {
             let from = self.phase.clone();
             self.phase = to.clone();
             match (from, to) {
-                (PipelinePhase::Failed(from_reason), PipelinePhase::Failed(to_reason)) => if from_reason != to_reason {
-                    ApplyOutcome::FlagChange {
-                        name: "fail_reason",
-                        value: true,
+                (PipelinePhase::Failed(from_reason), PipelinePhase::Failed(to_reason)) => {
+                    if from_reason != to_reason {
+                        ApplyOutcome::FlagChange {
+                            name: "fail_reason",
+                            value: true,
+                        }
+                    } else {
+                        ApplyOutcome::NoChange
                     }
-                } else {
-                    ApplyOutcome::NoChange
-                },
-                (PipelinePhase::Deleting(from_del_mode), PipelinePhase::Deleting(to_del_mpde)) => if from_del_mode != to_del_mpde {
-                    ApplyOutcome::FlagChange {
-                        name: "deletion_mode",
-                        value: true,
+                }
+                (PipelinePhase::Deleting(from_del_mode), PipelinePhase::Deleting(to_del_mpde)) => {
+                    if from_del_mode != to_del_mpde {
+                        ApplyOutcome::FlagChange {
+                            name: "deletion_mode",
+                            value: true,
+                        }
+                    } else {
+                        ApplyOutcome::NoChange
                     }
-                } else {
-                    ApplyOutcome::NoChange
-                },
-                _ => ApplyOutcome::Transition { from, to } /* valid transition */
+                }
+                _ => ApplyOutcome::Transition { from, to }, /* valid transition */
             }
         } else {
             // Idempotency: repeated events in the same phase are no-ops.
@@ -223,10 +295,7 @@ impl PipelineRuntimeStatus {
     }
 
     // Centralizes entering Deleting and resets flags.
-    fn go_to_deleting(
-        self: &mut Self,
-        mode: DeletionMode,
-    ) -> ApplyOutcome {
+    fn go_to_deleting(self: &mut Self, mode: DeletionMode) -> ApplyOutcome {
         self.delete_pending = false;
         self.goto(PipelinePhase::Deleting(mode))
     }
@@ -234,8 +303,10 @@ impl PipelineRuntimeStatus {
 
 #[cfg(test)]
 mod tests {
-    use crate::event::{ErrorSummary, ErrorEvent as ErrEv, SuccessEvent as OkEv, RequestEvent as Req};
     use super::*;
+    use crate::event::{
+        ErrorEvent as ErrEv, ErrorSummary, RequestEvent as Req, SuccessEvent as OkEv,
+    };
 
     #[test]
     fn happy_path_to_stopped() {
@@ -245,28 +316,41 @@ mod tests {
             EventType::Success(OkEv::Ready),
             EventType::Request(Req::ShutdownRequested),
             EventType::Success(OkEv::Drained),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(p.phase, PipelinePhase::Stopped);
     }
 
     #[test]
     fn update_then_rollback_then_run() {
         let mut p = PipelineRuntimeStatus::default();
-        p.apply_many([EventType::Success(OkEv::Admitted), EventType::Success(OkEv::Ready)]).unwrap();
-        p.apply_many([EventType::Success(OkEv::UpdateAdmitted), EventType::Error(ErrEv::UpdateFailed(ErrorSummary::Pipeline {
-            error_kind: "".to_string(),
-            message: "".to_string(),
-            source: None,
-        }))]).unwrap();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+        ])
+        .unwrap();
+        p.apply_many([
+            EventType::Success(OkEv::UpdateAdmitted),
+            EventType::Error(ErrEv::UpdateFailed(ErrorSummary::Pipeline {
+                error_kind: "".to_string(),
+                message: "".to_string(),
+                source: None,
+            })),
+        ])
+        .unwrap();
         assert_eq!(p.phase, PipelinePhase::RollingBack);
-        _ =p.apply(EventType::Success(OkEv::RollbackComplete)).unwrap();
+        _ = p.apply(EventType::Success(OkEv::RollbackComplete)).unwrap();
         assert_eq!(p.phase, PipelinePhase::Running);
     }
 
     #[test]
     fn graceful_delete_from_running() {
         let mut p = PipelineRuntimeStatus::default();
-        p.apply_many([EventType::Success(OkEv::Admitted), EventType::Success(OkEv::Ready)]).unwrap();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+        ])
+        .unwrap();
         _ = p.apply(EventType::Request(Req::DeleteRequested)).unwrap();
         assert_eq!(p.phase, PipelinePhase::Draining);
         _ = p.apply(EventType::Success(OkEv::Drained)).unwrap();
@@ -276,23 +360,44 @@ mod tests {
     #[test]
     fn force_delete_from_updating() {
         let mut p = PipelineRuntimeStatus::default();
-        p.apply_many([EventType::Success(OkEv::Admitted), EventType::Success(OkEv::Ready), EventType::Success(OkEv::UpdateAdmitted)]).unwrap();
-        _ = p.apply(EventType::Request(Req::ForceDeleteRequested)).unwrap();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+            EventType::Success(OkEv::UpdateAdmitted),
+        ])
+        .unwrap();
+        _ = p
+            .apply(EventType::Request(Req::ForceDeleteRequested))
+            .unwrap();
         assert_eq!(p.phase, PipelinePhase::Deleting(DeletionMode::Forced));
     }
 
     #[test]
     fn deleting_to_deleted_and_error() {
-        let mut p = PipelineRuntimeStatus { phase: PipelinePhase::Deleting(DeletionMode::Graceful), last_beat: SystemTime::now(), recent_events: ObservedEventRingBuffer::new(5), delete_pending: false };
+        let mut p = PipelineRuntimeStatus {
+            phase: PipelinePhase::Deleting(DeletionMode::Graceful),
+            last_beat: SystemTime::now(),
+            recent_events: ObservedEventRingBuffer::new(5),
+            delete_pending: false,
+        };
         _ = p.apply(EventType::Success(OkEv::Deleted)).unwrap();
         assert_eq!(p.phase, PipelinePhase::Deleted);
 
-        let mut p2 = PipelineRuntimeStatus { phase: PipelinePhase::Deleting(DeletionMode::Forced), last_beat: SystemTime::now(), recent_events: ObservedEventRingBuffer::new(5), delete_pending: false };
-        _ = p2.apply(EventType::Error(ErrEv::DeleteError(ErrorSummary::Pipeline {
-            error_kind: "".to_string(),
-            message: "".to_string(),
-            source: None,
-        }))).unwrap();
+        let mut p2 = PipelineRuntimeStatus {
+            phase: PipelinePhase::Deleting(DeletionMode::Forced),
+            last_beat: SystemTime::now(),
+            recent_events: ObservedEventRingBuffer::new(5),
+            delete_pending: false,
+        };
+        _ = p2
+            .apply(EventType::Error(ErrEv::DeleteError(
+                ErrorSummary::Pipeline {
+                    error_kind: "".to_string(),
+                    message: "".to_string(),
+                    source: None,
+                },
+            )))
+            .unwrap();
         assert_eq!(p2.phase, PipelinePhase::Failed(FailReason::DeleteError));
     }
 

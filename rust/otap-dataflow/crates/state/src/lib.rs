@@ -7,12 +7,12 @@ use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 
 pub mod error;
-pub mod reporter;
-pub mod store;
 pub mod event;
 pub mod phase;
 mod pipeline_rt_status;
 pub mod pipeline_status;
+pub mod reporter;
+pub mod store;
 
 type CoreId = usize;
 

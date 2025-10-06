@@ -34,5 +34,5 @@ pub enum Error {
         event: EventType,
         /// Error message.
         message: &'static str,
-    }
+    },
 }

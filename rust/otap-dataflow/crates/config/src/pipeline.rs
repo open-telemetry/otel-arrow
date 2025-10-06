@@ -4,7 +4,9 @@
 //! Pipeline configuration specification.
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
+use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+use crate::observed_state::ObservedStateSettings;
 use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,8 +14,6 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use crate::health::HealthPolicy;
-use crate::observed_state::ObservedStateSettings;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:

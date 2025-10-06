@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::node::NodeKind;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -33,13 +34,12 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::error::Error as EngineError;
 use otap_df_state::DeployedPipelineKey;
+use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
-use otap_df_config::node::NodeKind;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -327,11 +327,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever(
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
+            .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
@@ -355,7 +351,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
             error_kind: "runtime".into(),
             message: error.to_string(),
             source: None,
-        }
+        },
     }
 }
 
@@ -366,50 +362,42 @@ fn error_summary_from(err: &EngineError) -> ErrorSummary {
             kind,
             error,
             source_detail,
-        } => {
-            ErrorSummary::Node {
-                node: receiver.name.to_string(),
-                node_kind: NodeKind::Receiver,
-                error_kind: kind.to_string(),
-                message: error.clone(),
-                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            }
-        }
+        } => ErrorSummary::Node {
+            node: receiver.name.to_string(),
+            node_kind: NodeKind::Receiver,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
         EngineError::ProcessorError {
             processor,
             kind,
             error,
             source_detail,
-        } => {
-            ErrorSummary::Node {
-                node: processor.name.to_string(),
-                node_kind: NodeKind::Processor,
-                error_kind: kind.to_string(),
-                message: error.clone(),
-                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            }
-        }
+        } => ErrorSummary::Node {
+            node: processor.name.to_string(),
+            node_kind: NodeKind::Processor,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
         EngineError::ExporterError {
             exporter,
             kind,
             error,
             source_detail,
-        } => {
-            ErrorSummary::Node {
-                node: exporter.name.to_string(),
-                node_kind: NodeKind::Exporter,
-                error_kind: kind.to_string(),
-                message: error.clone(),
-                source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-            }
-        }
-        _ => {
-            ErrorSummary::Pipeline {
-                error_kind: err.variant_name(),
-                message: err.to_string(),
-                source: None,
-            }
-        }
+        } => ErrorSummary::Node {
+            node: exporter.name.to_string(),
+            node_kind: NodeKind::Exporter,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        _ => ErrorSummary::Pipeline {
+            error_kind: err.variant_name(),
+            message: err.to_string(),
+            source: None,
+        },
     }
 }
 

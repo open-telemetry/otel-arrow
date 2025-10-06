@@ -3,14 +3,14 @@
 
 //! Definition of all signals/conditions that drive state transitions.
 
-use std::collections::VecDeque;
 use crate::DeployedPipelineKey;
+use crate::store::ts_to_rfc3339;
 use otap_df_config::NodeId;
 use otap_df_config::node::NodeKind;
-use std::time::SystemTime;
-use serde::ser::{Serializer, SerializeSeq};
 use serde::Serialize;
-use crate::store::ts_to_rfc3339;
+use serde::ser::{SerializeSeq, Serializer};
+use std::collections::VecDeque;
+use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedEventRingBuffer {
@@ -24,7 +24,8 @@ impl Serialize for ObservedEventRingBuffer {
         S: Serializer,
     {
         let mut seq = serializer.serialize_seq(Some(self.buf.len()))?;
-        for ev in self.buf.iter().rev() {    // <— reverse iteration
+        for ev in self.buf.iter().rev() {
+            // <— reverse iteration
             seq.serialize_element(ev)?;
         }
         seq.end()
@@ -166,7 +167,7 @@ pub enum ErrorSummary {
         #[serde(skip_serializing_if = "Option::is_none")]
         /// Flattened source chain for deeper debugging, if available.
         source: Option<String>,
-    }
+    },
 }
 
 impl ObservedEvent {
@@ -205,7 +206,7 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create an `UpdateApplied` pipeline-level event.
     pub fn update_applied(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
@@ -217,7 +218,7 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `RollbackComplete` pipeline-level event.
     pub fn rollback_complete(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
@@ -229,7 +230,7 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `Drained` pipeline-level event.
     pub fn drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
@@ -241,7 +242,7 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `Deleted` pipeline-level event.
     pub fn deleted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
@@ -253,9 +254,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create an `AdmissionError` engine-level event.
-    pub fn admission_error(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn admission_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -265,9 +270,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `ConfigRejected` pipeline-level event.
-    pub fn config_rejected(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn config_rejected(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -277,9 +286,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create an `UpdateFailed` pipeline-level event.
-    pub fn update_failed(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn update_failed(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -289,9 +302,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `RollbackFailed` pipeline-level event.
-    pub fn rollback_failed(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn rollback_failed(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -301,9 +318,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `DrainError` pipeline-level event.
-    pub fn drain_error(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn drain_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -313,9 +334,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `DeleteError` pipeline-level event.
-    pub fn delete_error(key: DeployedPipelineKey, message: Option<String>, error: ErrorSummary) -> Self {
+    pub fn delete_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -325,9 +350,13 @@ impl ObservedEvent {
             message,
         }
     }
-    
+
     /// Create a `RuntimeError` pipeline-level event.
-    pub fn pipeline_runtime_error(key: DeployedPipelineKey, message: impl Into<String>, error: ErrorSummary) -> Self {
+    pub fn pipeline_runtime_error(
+        key: DeployedPipelineKey,
+        message: impl Into<String>,
+        error: ErrorSummary,
+    ) -> Self {
         Self {
             key,
             node_id: None,
@@ -344,7 +373,7 @@ impl ObservedEvent {
         node_id: NodeId,
         node_kind: NodeKind,
         message: Option<String>,
-        error: ErrorSummary
+        error: ErrorSummary,
     ) -> Self {
         Self {
             key,

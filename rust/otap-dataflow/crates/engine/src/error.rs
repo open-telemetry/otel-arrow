@@ -405,6 +405,6 @@ impl Error {
             Error::InternalError { .. } => "InternalError",
             Error::TooManyNodes {} => "TooManyNodes",
         }
-            .to_owned()
+        .to_owned()
     }
 }

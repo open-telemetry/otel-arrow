@@ -19,7 +19,7 @@ pub struct PipelineStatus {
 
     /// Per-core details to aid debugging and aggregation.
     pub(crate) per_core: HashMap<CoreId, PipelineRuntimeStatus>,
-    
+
     #[serde(skip)]
     health_policy: HealthPolicy,
 }
@@ -68,8 +68,7 @@ impl PipelineStatus {
                 PipelinePhase::Rejected(r) => {
                     agg.rejected += 1;
                     *agg.rejected_reasons.entry(*r).or_insert(0) += 1;
-                }
-                // PipelinePhase::Unknown => agg.unknown += 1,
+                } // PipelinePhase::Unknown => agg.unknown += 1,
             }
         }
         agg

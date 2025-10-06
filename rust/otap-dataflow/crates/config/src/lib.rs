@@ -16,12 +16,12 @@ use std::borrow::Cow;
 pub mod engine;
 pub mod error;
 pub mod experimental;
+pub mod health;
 pub mod node;
+pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
 pub mod urn;
-pub mod health;
-pub mod observed_state;
 
 /// The id of a pipeline group.
 pub type PipelineGroupId = Cow<'static, str>;

@@ -10,12 +10,12 @@ use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
+use otap_df_config::pipeline::PipelineSettings;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
-use otap_df_config::pipeline::PipelineSettings;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
 
@@ -71,7 +71,8 @@ impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
     pub fn new(config: &PipelineSettings) -> Self {
-        let (sender, receiver) = flume::bounded::<ObservedEvent>(config.observed_state.reporting_channel_size);
+        let (sender, receiver) =
+            flume::bounded::<ObservedEvent>(config.observed_state.reporting_channel_size);
 
         Self {
             config: config.clone(),
@@ -84,7 +85,10 @@ impl ObservedStateStore {
     /// Returns a reporter that can be used to send observed events to this store.
     #[must_use]
     pub fn reporter(&self) -> ObservedEventReporter {
-        ObservedEventReporter::new(self.config.observed_state.reporting_timeout, self.sender.clone())
+        ObservedEventReporter::new(
+            self.config.observed_state.reporting_timeout,
+            self.sender.clone(),
+        )
     }
 
     /// Returns a handle that can be used to read the current observed state.
@@ -101,7 +105,9 @@ impl ObservedStateStore {
         // The code below is temporary and should be replaced with a proper event reporting
         // mechanism (see previous todo).
         match &observed_event.r#type {
-            EventType::Request(_) | EventType::Error(_) => eprintln!("Observed event: {observed_event:?}"),
+            EventType::Request(_) | EventType::Error(_) => {
+                eprintln!("Observed event: {observed_event:?}")
+            }
             EventType::Success(_) => { /* no console output for success events */ }
         }
 
