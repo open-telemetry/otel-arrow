@@ -510,6 +510,8 @@ mod tests {
             tokio::sync::mpsc::channel(1);
         let (req_sender, req_receiver) = tokio::sync::mpsc::channel(32);
 
+        println!("here we go");
+
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
@@ -551,6 +553,7 @@ mod tests {
                 .await
                 .unwrap();
             let metrics = metrics_rx.recv_async().await.unwrap();
+            println!("got metrics");
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
             assert_eq!(logs_failed_count, 1);
 
@@ -690,5 +693,8 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
+
+        // fail the job so we can rerun it.
+        assert_eq!(1, 2);
     }
 }
