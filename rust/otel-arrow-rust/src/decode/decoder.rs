@@ -4,10 +4,10 @@
 use crate::decode::record_message::RecordMessage;
 use crate::error;
 use crate::otap::{OtapArrowRecords, from_record_messages};
-use crate::otlp::ProtoBuffer;
 use crate::otlp::logs::LogsProtoBytesEncoder;
 use crate::otlp::metrics::MetricsProtoBytesEncoder;
 use crate::otlp::traces::TracesProtoBytesEncoder;
+use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
