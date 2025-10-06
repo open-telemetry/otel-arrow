@@ -114,34 +114,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ))
             .await;
 
+        let exporter_id = effect_handler.exporter_id();
+        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
+            .map_err(|e| Error::ExporterError { 
+                exporter: exporter_id, 
+                error: format!("grpc channel error {e}"),
+            })?
+            .connect_lazy();
+
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
+
         // start a grpc client and connect to the server
-        let mut arrow_metrics_client =
-            ArrowMetricsServiceClient::connect(self.config.grpc_endpoint.clone())
-                .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
-                })?;
-
-        let mut arrow_logs_client =
-            ArrowLogsServiceClient::connect(self.config.grpc_endpoint.clone())
-                .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
-                })?;
-
-        let mut arrow_traces_client =
-            ArrowTracesServiceClient::connect(self.config.grpc_endpoint.clone())
-                .await
-                .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    error: error.to_string(),
-                })?;
+        let mut arrow_metrics_client = ArrowMetricsServiceClient::new(channel.clone());
+        let mut arrow_logs_client = ArrowLogsServiceClient::new(channel.clone());
+        let mut arrow_traces_client = ArrowTracesServiceClient::new(channel.clone());
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
@@ -442,19 +431,33 @@ async fn handle_res_stream(
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::ExporterPDataMetrics;
+    use crate::otap_exporter::config::Config;
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
     use crate::otap_exporter::config::ArrowPayloadCompression;
     use crate::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
+    use crate::otlp_mock::LogsServiceMock;
     use crate::pdata::OtapPdata;
 
     use crate::compression::CompressionMethod;
+    use object_store::local;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::control::Controllable;
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::control::PipelineCtrlMsgSender;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::local::message::LocalReceiver;
+    use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::message::Receiver;
+    use otap_df_engine::message::Sender;
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
@@ -466,6 +469,7 @@ mod tests {
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
+    use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
     use serde_json::json;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -736,4 +740,143 @@ mod tests {
             exporter.config.arrow.payload_compression
         );
     }
+
+    #[test]
+    fn test_receiver_not_ready_on_start() {
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(pipeline_ctx, &serde_json::json!({
+                "grpc_endpoint": grpc_endpoint,
+                "compression_method": "none"
+            })).unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config()
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        
+        let (req_sender, mut req_receiver) = tokio::sync::mpsc::channel(1);
+        let (server_startup_sender, mut server_startup_receiver) = tokio::sync::mpsc::channel(1);
+        let (server_start_ack_sender, mut server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
+        let (server_shutdown_sender, server_shutdown_signal) = tokio::sync::oneshot::channel();
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>
+        ) -> Result<(), Error> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx).await;
+            Ok(())
+        }
+
+        async fn drive_test(
+            server_startup_sender: tokio::sync::mpsc::Sender<bool>,
+            mut server_startup_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
+            server_shutdown_sender: tokio::sync::oneshot::Sender<bool>,
+            pdata_tx: Sender<OtapPdata>,
+            control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
+        ) {
+
+            println!("drivin test");
+
+            // wait a bit before starting the server. This will ensure the exporter no-long exits
+            // when start is called if the endpoint can't be reached
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            server_startup_sender.send(true).await.unwrap();
+            _ = server_startup_ack_receiver.recv().await.unwrap();
+
+            println!("drive here 1");
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Duration::from_millis(10),
+                    reason: "shutting down".into(),
+                })
+                .await
+                .unwrap();
+
+            println!("drive here 2");
+
+            _ = server_shutdown_sender.send(true).unwrap();
+        }
+
+        async fn run_server(
+            listening_addr: String,
+            startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
+            shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
+            req_sender: tokio::sync::mpsc::Sender<OtapPdata>,
+        ) {
+            let listening_addr: SocketAddr = listening_addr.to_string().parse().unwrap();
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+
+            let logs_service = ArrowLogsServiceServer::new(ArrowLogsServiceMock::new(req_sender));
+            Server::builder()
+                .add_service(logs_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    startup_ack_sender.send(true).await.unwrap();
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("server failed");
+        }
+
+        let server_handle = tokio_rt.spawn(async move {
+            let listening_addr = format!("{grpc_addr}:{grpc_port}");
+
+            // wait for signal to start the server
+            _ = server_startup_receiver.recv().await.unwrap();
+
+            run_server(
+                listening_addr.clone(), 
+                server_start_ack_sender.clone(), 
+                server_shutdown_signal, 
+                req_sender.clone()
+            ).await;
+        });
+
+        let _ = tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let _ = local_set.spawn_local(async move {
+                start_exporter(exporter, pipeline_ctrl_msg_tx).await
+            });
+            tokio::join!(
+                local_set,
+                drive_test(
+                    server_startup_sender, 
+                    server_start_ack_receiver, 
+                    server_shutdown_sender,
+                    pdata_tx, 
+                    control_sender, 
+                    req_receiver
+                )
+            )
+        });
+
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
+    }    
 }
