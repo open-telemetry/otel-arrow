@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Health policy configuration.
+//! Health policy defining liveness and readiness probes.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,13 @@ use serde::{Deserialize, Serialize};
 /// Policy controlling health checks for a pipeline instance.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HealthPolicy {
-    /// Mapping of per-core phases to probes.
-    pub core_probe: HealthProbePolicy,
+    /// Phases in which the system is considered alive.
+    #[serde(default = "default_live_if")]
+    pub live_if:   Vec<PhaseKind>,
+    /// Phases in which the system is considered ready.
+    #[serde(default = "default_ready_if")]
+    pub ready_if:  Vec<PhaseKind>,
+
     /// Quorum for livez across cores.
     #[serde(default = "default_live_quorum")]
     pub live_quorum: Quorum,
@@ -22,7 +27,8 @@ pub struct HealthPolicy {
 impl Default for HealthPolicy {
     fn default() -> Self {
         Self {
-            core_probe:   HealthProbePolicy::default(),
+            live_if: default_live_if(),
+            ready_if: default_ready_if(),
             live_quorum:  default_live_quorum(),
             ready_quorum: default_ready_quorum(),
         }
@@ -76,28 +82,6 @@ pub enum PhaseKind {
     Deleted,
 }
 
-/// Declarative mapping of phases to Kubernetes probes.
-/// - `live_if`: pipeline instance is considered alive (the pod/process is functional/manageable).
-/// - `ready_if`: instance is ready to accept traffic/work.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HealthProbePolicy {
-    /// Phases in which the instance is considered alive.
-    #[serde(default = "default_live_if")]
-    pub live_if:   Vec<PhaseKind>,
-    /// Phases in which the instance is considered ready.
-    #[serde(default = "default_ready_if")]
-    pub ready_if:  Vec<PhaseKind>,
-}
-
-impl Default for HealthProbePolicy {
-    fn default() -> Self {
-        Self {
-            live_if:  default_live_if(),
-            ready_if: default_ready_if(),
-        }
-    }
-}
-
 /// Default policy:
 /// - live in all states except `Deleted`
 /// - ready in `Running` and `Updating` (could be optional).
@@ -113,7 +97,7 @@ fn default_ready_if() -> Vec<PhaseKind> {
     vec![PhaseKind::Running, PhaseKind::Updating]
 }
 
-impl HealthProbePolicy {
+impl HealthPolicy {
     /// Check if the given phase kind is considered live.
     #[inline]
     pub fn is_live<K: Into<PhaseKind>>(&self, k: K) -> bool { self.live_if.contains(&k.into()) }

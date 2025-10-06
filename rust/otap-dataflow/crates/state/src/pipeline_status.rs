@@ -184,7 +184,7 @@ impl PipelineStatus {
     /// Returns a boolean representing the liveness across cores, governed by the aggregation
     /// policy.
     pub fn liveness(&self) -> bool {
-        let (numer, denom) = self.count_quorum(|c| self.health_policy.core_probe.is_live(c.phase.kind()));
+        let (numer, denom) = self.count_quorum(|c| self.health_policy.is_live(c.phase.kind()));
         quorum_satisfied(numer, denom, self.health_policy.live_quorum)
     }
 
@@ -192,7 +192,7 @@ impl PipelineStatus {
     /// policy.
     pub fn readiness(&self) -> bool {
         let (numer, denom) = self.count_quorum(|c| {
-            c.phase.kind() != PhaseKind::Deleted && self.health_policy.core_probe.is_ready(c.phase.kind())
+            c.phase.kind() != PhaseKind::Deleted && self.health_policy.is_ready(c.phase.kind())
         });
         denom > 0 && quorum_satisfied(numer, denom, self.health_policy.ready_quorum)
     }
