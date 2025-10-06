@@ -829,7 +829,7 @@ mod tests {
             _ = req_receiver.recv().await.unwrap(); // ensure we got response
             // TODO instead of sleeping here, once we handle ACK/NACK we should wait to get a ACK
             // from the control channel
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
 
             // check the metrics:
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
