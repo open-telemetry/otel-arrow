@@ -3,7 +3,7 @@ coverage:
     project: # Overall repo coverage
       default:
         target: auto # Increase
-        threshold: 0.5% # Allow small fluctuation
+        threshold: 0.1% # Allow small fluctuation
 
 comment:
   layout: "header, diff, flags, components"
