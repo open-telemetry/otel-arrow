@@ -43,6 +43,9 @@ pub mod perf_exporter;
 
 pub mod fake_data_generator;
 
+/// Accessories used across components
+pub mod accessory;
+
 /// Implementation of debug processor that outputs received signals in a string format for user view
 pub mod debug_processor;
 
