@@ -161,7 +161,7 @@ where
 
 bitflags::bitflags! {
 /// An 8-bit flags struct intended to store various intents describing
-/// callers in in a pipeline, e.g., detail about whether Ack and/or
+/// callers in a pipeline, e.g., detail about whether Ack and/or
 /// Nack should be delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Interests: u8 {
