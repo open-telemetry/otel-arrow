@@ -614,6 +614,9 @@ impl Processor<OtapPdata> for RetryProcessor {
                     }
                     Ok(())
                 }
+                NodeControlMsg::DelayedData { .. } => {
+                    unreachable!("unused");
+                }
                 NodeControlMsg::Shutdown { .. } => {
                     let pending_ids: Vec<u64> = self.pending_messages.keys().cloned().collect();
                     for id in pending_ids {

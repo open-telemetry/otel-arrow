@@ -15,7 +15,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A 8-byte context value. Supports conversion to and from plain data
 /// using bytemuck.
@@ -143,6 +143,15 @@ pub enum NodeControlMsg<PData> {
         metrics_reporter: MetricsReporter,
     },
 
+    /// Delayed data returning to the node which delayed it.
+    DelayedData {
+        /// When resumed
+        when: Instant,
+
+        /// The data.
+        data: Box<PData>,
+    },
+
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
     /// release resources by the specified deadline.
     ///
@@ -187,6 +196,17 @@ pub enum PipelineControlMsg<PData> {
 
         /// Temporarily placed, see #1083. Placement is arbitrary.
         _temp: PhantomData<PData>,
+    },
+    /// Delay this data.
+    DelayData {
+        /// The delayer's node_id
+        node_id: usize,
+
+        /// When to resume
+        when: Instant,
+
+        /// The data
+        data: Box<PData>,
     },
     /// Requests shutdown of the pipeline.
     Shutdown {
