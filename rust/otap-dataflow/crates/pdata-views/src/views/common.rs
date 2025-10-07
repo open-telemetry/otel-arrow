@@ -12,7 +12,7 @@ pub use otel_arrow_rust::schema::{SpanId, TraceId};
 
 /// All current implementations only use borrowed strings from the underlying data.
 /// If lossy UTF-8 support is needed in the future, this can be reverted to `Cow<'src, str>`.
-pub type Str<'src> = &'src str;
+pub type Str<'src> = &'src [u8];
 
 /// View for AnyValue
 pub trait AnyValueView<'val> {

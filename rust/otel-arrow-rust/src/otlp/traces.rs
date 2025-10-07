@@ -7,7 +7,6 @@ use snafu::OptionExt;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
@@ -17,6 +16,7 @@ use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
 use crate::otlp::traces::span_link::{SpanLinkArrays, encode_span_link};
 use crate::otlp::traces::spans_arrays::SpansArrays;
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
+use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
     SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
@@ -111,36 +111,10 @@ impl Default for TracesProtoBytesEncoder {
     }
 }
 
-impl TracesProtoBytesEncoder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            batch_sorter: BatchSorter::new(),
-            root_cursor: SortedBatchCursor::new(),
-            resource_attrs_cursor: SortedBatchCursor::new(),
-            scope_attrs_cursor: SortedBatchCursor::new(),
-            spans_attrs_cursor: SortedBatchCursor::new(),
-            span_links_cursor: SortedBatchCursor::new(),
-            span_links_attrs_cursor: SortedBatchCursor::new(),
-            span_events_cursor: SortedBatchCursor::new(),
-            span_events_attrs_cursor: SortedBatchCursor::new(),
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.root_cursor.reset();
-        self.resource_attrs_cursor.reset();
-        self.scope_attrs_cursor.reset();
-        self.spans_attrs_cursor.reset();
-        self.span_links_cursor.reset();
-        self.span_links_attrs_cursor.reset();
-        self.span_events_cursor.reset();
-        self.span_events_attrs_cursor.reset();
-    }
-
+impl ProtoBytesEncoder for TracesProtoBytesEncoder {
     /// encode the OTAP batch into a proto serialized `TracesData` / `ExportTraceServiceRequest`
     /// message into the target buffer
-    pub fn encode(
+    fn encode(
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
@@ -216,6 +190,34 @@ impl TracesProtoBytesEncoder {
         }
 
         Ok(())
+    }
+}
+
+impl TracesProtoBytesEncoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            spans_attrs_cursor: SortedBatchCursor::new(),
+            span_links_cursor: SortedBatchCursor::new(),
+            span_links_attrs_cursor: SortedBatchCursor::new(),
+            span_events_cursor: SortedBatchCursor::new(),
+            span_events_attrs_cursor: SortedBatchCursor::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.spans_attrs_cursor.reset();
+        self.span_links_cursor.reset();
+        self.span_links_attrs_cursor.reset();
+        self.span_events_cursor.reset();
+        self.span_events_attrs_cursor.reset();
     }
 
     fn encode_resource_spans(

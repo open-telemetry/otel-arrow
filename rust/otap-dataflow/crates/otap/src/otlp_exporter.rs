@@ -4,7 +4,10 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
+use crate::otap_grpc::otlp::client::{
+    LogsServiceClient, MetricsServiceClient, OtlpServiceClient, ServiceDescriptor,
+    TraceServiceClient,
+};
 use crate::pdata::{OtapPayload, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -14,19 +17,22 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
+use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otlp::ProtoBuffer;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
+use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::client::GrpcService;
+use tonic::transport::Channel;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -105,40 +111,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
+        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
+            .map_err(|e| Error::ExporterError {
+                exporter: exporter_id.clone(),
+                error: format!("grpc channel error {e}"),
+            })?
+            .connect_lazy();
+
         // start a grpc client and connect to the server
-        let mut metrics_client = MetricsServiceClient::connect(self.config.grpc_endpoint.clone())
-            .await
-            .map_err(|error| {
-                let source_detail = format_error_sources(&error);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: error.to_string(),
-                    source_detail,
-                }
-            })?;
-        let mut logs_client = LogsServiceClient::connect(self.config.grpc_endpoint.clone())
-            .await
-            .map_err(|error| {
-                let source_detail = format_error_sources(&error);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: error.to_string(),
-                    source_detail,
-                }
-            })?;
-        let mut trace_client = TraceServiceClient::connect(self.config.grpc_endpoint.clone())
-            .await
-            .map_err(|error| {
-                let source_detail = format_error_sources(&error);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: error.to_string(),
-                    source_detail,
-                }
-            })?;
+        let mut metrics_client = MetricsServiceClient::new(channel.clone());
+        let mut logs_client = LogsServiceClient::new(channel.clone());
+        let mut trace_client = TraceServiceClient::new(channel.clone());
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
@@ -182,130 +165,63 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     match (signal_type, payload) {
                         // use optimized direct encoding OTAP -> OTLP bytes directly
                         (SignalType::Logs, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            proto_buffer.clear();
-                            logs_encoder
-                                .encode(&mut otap_batch, &mut proto_buffer)
-                                .map_err(|e| {
-                                    self.pdata_metrics.logs_failed.inc();
-                                    let source_detail = format_error_sources(&e);
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        kind: ExporterErrorKind::Other,
-                                        error: e.to_string(),
-                                        source_detail,
-                                    }
-                                })?;
-                            // TODO we should try to change the client interfaces to accept a slice
-                            // of bytes to avoid the copy here
-                            let bytes = proto_buffer.as_ref().to_vec();
-                            _ = logs_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.logs_failed.inc();
-                                let source_detail = format_error_sources(&e);
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    kind: ExporterErrorKind::Transport,
-                                    error: e.to_string(),
-                                    source_detail,
-                                }
-                            })?;
-                            self.pdata_metrics.logs_exported.inc();
+                            match handle_otap_pdata(
+                                &mut otap_batch,
+                                &mut proto_buffer,
+                                &mut logs_encoder,
+                                &mut logs_client,
+                            )
+                            .await
+                            {
+                                Ok(_) => self.pdata_metrics.logs_exported.inc(),
+                                Err(_) => self.pdata_metrics.logs_failed.inc(),
+                            }
                         }
                         (SignalType::Metrics, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            proto_buffer.clear();
-                            metrics_encoder
-                                .encode(&mut otap_batch, &mut proto_buffer)
-                                .map_err(|e| {
-                                    self.pdata_metrics.metrics_failed.inc();
-                                    let source_detail = format_error_sources(&e);
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        kind: ExporterErrorKind::Other,
-                                        error: e.to_string(),
-                                        source_detail,
-                                    }
-                                })?;
-
-                            let bytes = proto_buffer.as_ref().to_vec();
-                            _ = metrics_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.metrics_failed.inc();
-                                let source_detail = format_error_sources(&e);
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    kind: ExporterErrorKind::Transport,
-                                    error: e.to_string(),
-                                    source_detail,
-                                }
-                            })?;
-                            self.pdata_metrics.metrics_exported.inc()
+                            match handle_otap_pdata(
+                                &mut otap_batch,
+                                &mut proto_buffer,
+                                &mut metrics_encoder,
+                                &mut metrics_client,
+                            )
+                            .await
+                            {
+                                Ok(_) => self.pdata_metrics.metrics_exported.inc(),
+                                Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                            }
                         }
                         (SignalType::Traces, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            proto_buffer.clear();
-                            traces_encoder
-                                .encode(&mut otap_batch, &mut proto_buffer)
-                                .map_err(|e| {
-                                    self.pdata_metrics.traces_failed.inc();
-                                    let source_detail = format_error_sources(&e);
-                                    Error::ExporterError {
-                                        exporter: exporter_id.clone(),
-                                        kind: ExporterErrorKind::Other,
-                                        error: e.to_string(),
-                                        source_detail,
-                                    }
-                                })?;
-
-                            let bytes = proto_buffer.as_ref().to_vec();
-                            _ = trace_client.export(bytes).await.map_err(|e| {
-                                self.pdata_metrics.traces_failed.inc();
-                                let source_detail = format_error_sources(&e);
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    kind: ExporterErrorKind::Transport,
-                                    error: e.to_string(),
-                                    source_detail,
-                                }
-                            })?;
-                            self.pdata_metrics.traces_exported.inc();
+                            match handle_otap_pdata(
+                                &mut otap_batch,
+                                &mut proto_buffer,
+                                &mut traces_encoder,
+                                &mut trace_client,
+                            )
+                            .await
+                            {
+                                Ok(_) => self.pdata_metrics.metrics_exported.inc(),
+                                Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                            }
                         }
                         (_, OtapPayload::OtlpBytes(service_req)) => {
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                    _ = logs_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.logs_failed.inc();
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            kind: ExporterErrorKind::Transport,
-                                            error: e.to_string(),
-                                            source_detail,
-                                        }
-                                    })?;
-                                    self.pdata_metrics.logs_exported.inc();
+                                    match logs_client.export(bytes).await {
+                                        Ok(_) => self.pdata_metrics.logs_exported.inc(),
+                                        Err(_) => self.pdata_metrics.logs_failed.inc(),
+                                    }
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    _ = metrics_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.metrics_failed.inc();
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            kind: ExporterErrorKind::Transport,
-                                            error: e.to_string(),
-                                            source_detail,
-                                        }
-                                    })?;
-                                    self.pdata_metrics.metrics_exported.inc();
+                                    match metrics_client.export(bytes).await {
+                                        Ok(_) => self.pdata_metrics.metrics_exported.inc(),
+                                        Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                                    }
                                 }
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                    _ = trace_client.export(bytes).await.map_err(|e| {
-                                        self.pdata_metrics.traces_failed.inc();
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ExporterError {
-                                            exporter: exporter_id.clone(),
-                                            kind: ExporterErrorKind::Transport,
-                                            error: e.to_string(),
-                                            source_detail,
-                                        }
-                                    })?;
-                                    self.pdata_metrics.traces_exported.inc();
+                                    match trace_client.export(bytes).await {
+                                        Ok(_) => self.pdata_metrics.traces_exported.inc(),
+                                        Err(_) => self.pdata_metrics.traces_failed.inc(),
+                                    }
                                 }
                             };
                         }
@@ -321,6 +237,46 @@ impl Exporter<OtapPdata> for OTLPExporter {
     }
 }
 
+// generic function for converting OTAP records to proto buf and exporting it using the passed
+// grpc service client
+async fn handle_otap_pdata<Enc: ProtoBytesEncoder, T2, Resp, S>(
+    otap_batch: &mut OtapArrowRecords,
+    proto_buffer: &mut ProtoBuffer,
+    encoder: &mut Enc,
+    client: &mut OtlpServiceClient<T2, Resp, S>,
+) -> Result<(), Error>
+where
+    T2: GrpcService<tonic::body::Body>,
+    T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T2::ResponseBody: Send + 'static,
+    <T2::ResponseBody as tonic::transport::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+    S: ServiceDescriptor,
+    Resp: prost::Message + Default + Send + 'static,
+{
+    // convert OTAP records to protobuf
+    proto_buffer.clear();
+    encoder
+        .encode(otap_batch, proto_buffer)
+        .map_err(|e| Error::InternalError {
+            message: e.to_string(),
+        })?;
+
+    // TODO we should try to change the client interfaces to accept a slice
+    // of bytes to avoid the copy here
+    let bytes = proto_buffer.as_ref().to_vec();
+
+    // send the export request
+    _ = client
+        .export(bytes)
+        .await
+        .map_err(|e| Error::InternalError {
+            message: e.to_string(),
+        })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,13 +290,19 @@ mod tests {
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    use otap_df_engine::message::{Receiver, Sender};
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
@@ -495,5 +457,235 @@ mod tests {
             .run_validation(validation_procedure(receiver));
 
         _ = shutdown_sender.send("Shutdown");
+    }
+
+    #[test]
+    fn test_receiver_not_ready_on_start_and_reconnect() {
+        // the purpose of this test is to that the exporter behaves as expected in the face of
+        // server that may start and stop asynchronously of the exporter. it ensures the exporter
+        // doesn't exit early if it can't make the initial connection, and also that the grpc
+        // client will reconnect in the event of a server shutdown
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let mut exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc_endpoint,
+                    compression_method: None,
+                },
+                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+            },
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        // channels for coordinating the test
+        let (server_startup_sender, mut server_startup_receiver) = tokio::sync::mpsc::channel(1);
+        let (server_start_ack_sender, server_start_ack_receiver) = tokio::sync::mpsc::channel(1);
+        let (shutdown_sender1, shutdown_signal1) = tokio::sync::oneshot::channel();
+        let (shutdown_sender2, shutdown_signal2) = tokio::sync::oneshot::channel();
+        let (server_shutdown_ack_sender, server_shutdown_ack_receiver) =
+            tokio::sync::mpsc::channel(1);
+        let (req_sender, req_receiver) = tokio::sync::mpsc::channel(32);
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+        ) -> Result<(), Error> {
+            exporter.start(pipeline_ctrl_msg_tx).await
+        }
+
+        async fn drive_test(
+            server_startup_sender: tokio::sync::mpsc::Sender<bool>,
+            mut server_startup_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
+            mut server_shutdown_ack_receiver: tokio::sync::mpsc::Receiver<bool>,
+            server_shutdown_signal1: tokio::sync::oneshot::Sender<bool>,
+            server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
+            pdata_tx: Sender<OtapPdata>,
+            control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
+        ) -> Result<(), Error> {
+            // pdata
+            let req = ExportLogsServiceRequest::default();
+            let mut req_bytes = vec![];
+            req.encode(&mut req_bytes).unwrap();
+
+            // send a request while the server isn't running and check how we handle it
+            pdata_tx
+                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
+                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                )))
+                .await
+                .unwrap();
+            // TODO when ACK/NACK handling is added, we should wait on the control channel here
+            // to ensure that we receive a NACK
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            // wait a bit before starting the server. This will ensure the exporter no-longer exits
+            // when start is called if the endpoint can't be reached
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            server_startup_sender.send(true).await.unwrap();
+            _ = server_startup_ack_receiver.recv().await.unwrap();
+
+            // send a pdata
+            pdata_tx
+                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
+                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                )))
+                .await
+                .unwrap();
+            // ensure server got request
+            _ = req_receiver.recv().await.unwrap();
+
+            // stop the server
+            server_shutdown_signal1.send(true).unwrap();
+            _ = server_shutdown_ack_receiver.recv().await.unwrap();
+
+            // send a request while the server isn't running and check that we still handle it correctly
+            pdata_tx
+                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
+                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                )))
+                .await
+                .unwrap();
+            // TODO instead of awaiting here, when ACK/NACK is added we should wait on the control
+            // channel to ensure that we receive a NACK
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // restart the server
+            server_startup_sender.send(true).await.unwrap();
+            _ = server_startup_ack_receiver.recv().await.unwrap();
+
+            // send another pdata. This ensures the client can reconnect after it was shut down
+            pdata_tx
+                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
+                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                )))
+                .await
+                .unwrap();
+            _ = req_receiver.recv().await.unwrap();
+
+            // check the metrics:
+            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: metrics_reporter.clone(),
+                })
+                .await
+                .unwrap();
+            // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let metrics = metrics_rx.recv_async().await.unwrap();
+            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            assert_eq!(logs_exported_count, 2);
+            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            assert_eq!(logs_failed_count, 2);
+
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Duration::from_millis(10),
+                    reason: "shutting down".into(),
+                })
+                .await
+                .unwrap();
+
+            server_shutdown_signal2.send(true).unwrap();
+
+            Ok(())
+        }
+
+        async fn run_server(
+            listening_addr: String,
+            startup_ack_sender: tokio::sync::mpsc::Sender<bool>,
+            shutdown_signal: tokio::sync::oneshot::Receiver<bool>,
+            req_sender: tokio::sync::mpsc::Sender<OTLPData>,
+        ) {
+            let listening_addr: SocketAddr = listening_addr.to_string().parse().unwrap();
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+
+            let logs_service = LogsServiceServer::new(LogsServiceMock::new(req_sender));
+
+            Server::builder()
+                .add_service(logs_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    startup_ack_sender.send(true).await.unwrap();
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("uh oh server failed");
+        }
+
+        let server_handle = tokio_rt.spawn(async move {
+            // start the server when the signal is received
+            let listening_addr = format!("{grpc_addr}:{grpc_port}");
+            _ = server_startup_receiver.recv().await.unwrap();
+            run_server(
+                listening_addr.clone(),
+                server_start_ack_sender.clone(),
+                shutdown_signal1,
+                req_sender.clone(),
+            )
+            .await;
+
+            // ack server shutdown for first time
+            server_shutdown_ack_sender.send(true).await.unwrap();
+
+            // when the server shuts down, wait until it should restart & restart it
+            _ = server_startup_receiver.recv().await.unwrap();
+            run_server(
+                listening_addr.clone(),
+                server_start_ack_sender.clone(),
+                shutdown_signal2,
+                req_sender.clone(),
+            )
+            .await;
+        });
+
+        let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
+            tokio::join!(
+                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                drive_test(
+                    server_startup_sender,
+                    server_start_ack_receiver,
+                    server_shutdown_ack_receiver,
+                    shutdown_sender1,
+                    shutdown_sender2,
+                    pdata_tx,
+                    control_sender,
+                    req_receiver
+                )
+            )
+        });
+
+        // assert no error
+        exporter_result.unwrap();
+        test_drive_result.unwrap();
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
     }
 }

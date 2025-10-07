@@ -47,7 +47,9 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes_with_stats},
+    transform::{
+        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+    },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
@@ -112,8 +114,10 @@ pub struct Config {
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
-    // Selected attribute domains to transform
-    domains: HashSet<ApplyDomain>,
+    // Pre-computed flags for domain lookup
+    has_resource_domain: bool,
+    has_scope_domain: bool,
+    has_signal_domain: bool,
     // Metrics handle (set at runtime in factory; None when parsed-only)
     metrics: Option<MetricSet<AttributesProcessorMetrics>>,
 }
@@ -155,6 +159,11 @@ impl AttributesProcessor {
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
+        // Pre-compute domain checks
+        let has_resource_domain = domains.contains(&ApplyDomain::Resource);
+        let has_scope_domain = domains.contains(&ApplyDomain::Scope);
+        let has_signal_domain = domains.contains(&ApplyDomain::Signal);
+
         // TODO: Optimize action composition into a valid AttributesTransform that
         // still reflects the user's intended semantics. Consider:
         // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
@@ -166,12 +175,12 @@ impl AttributesProcessor {
             rename: if renames.is_empty() {
                 None
             } else {
-                Some(renames)
+                Some(RenameTransform::new(renames))
             },
             delete: if deletes.is_empty() {
                 None
             } else {
-                Some(deletes)
+                Some(DeleteTransform::new(deletes))
             },
         };
 
@@ -183,23 +192,28 @@ impl AttributesProcessor {
 
         Ok(Self {
             transform,
-            domains,
+            has_resource_domain,
+            has_scope_domain,
+            has_signal_domain,
             metrics: None,
         })
     }
 
+    #[inline]
     const fn is_noop(&self) -> bool {
         self.transform.rename.is_none() && self.transform.delete.is_none()
     }
 
-    fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+    #[inline]
+    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
         use payload_sets::*;
 
-        let has_resource = self.domains.contains(&ApplyDomain::Resource);
-        let has_scope = self.domains.contains(&ApplyDomain::Scope);
-        let has_signal = self.domains.contains(&ApplyDomain::Signal);
-
-        match (has_resource, has_scope, has_signal, signal) {
+        match (
+            self.has_resource_domain,
+            self.has_scope_domain,
+            self.has_signal_domain,
+            signal,
+        ) {
             // Empty cases
             (false, false, false, _) => EMPTY,
 
@@ -306,14 +320,14 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 // Update domain counters (count once per message when domains are enabled)
                 if let Some(m) = self.metrics.as_mut() {
-                    if self.domains.contains(&ApplyDomain::Signal) {
-                        m.domains_signal.inc();
-                    }
-                    if self.domains.contains(&ApplyDomain::Resource) {
+                    if self.has_resource_domain {
                         m.domains_resource.inc();
                     }
-                    if self.domains.contains(&ApplyDomain::Scope) {
+                    if self.has_scope_domain {
                         m.domains_scope.inc();
+                    }
+                    if self.has_signal_domain {
+                        m.domains_signal.inc();
                     }
                 }
                 // Apply transform across selected domains and collect exact stats
@@ -569,10 +583,10 @@ mod tests {
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
         // default apply_to should include Signal
-        assert!(parsed.domains.contains(&ApplyDomain::Signal));
+        assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
-        assert!(!parsed.domains.contains(&ApplyDomain::Resource));
-        assert!(!parsed.domains.contains(&ApplyDomain::Scope));
+        assert!(!parsed.has_resource_domain);
+        assert!(!parsed.has_scope_domain);
     }
 
     #[test]

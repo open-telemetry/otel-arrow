@@ -304,7 +304,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 for log_record in log_records_slice {
@@ -313,7 +314,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .observed_time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 logs.append_schema_url_n(scope_schema_url, logs_count);
@@ -512,27 +514,35 @@ where
     if let Some(val) = kv.value() {
         match val.value_type() {
             ValueType::String => {
-                attribute_rb_builder.append_str(val.as_string().expect("value to be string"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_str(val.as_string().expect("value to be string"));
             }
-            ValueType::Int64 => {
-                attribute_rb_builder.append_int(val.as_int64().expect("value to be int64"))
-            }
+            ValueType::Int64 => attribute_rb_builder
+                .any_values_builder
+                .append_int(val.as_int64().expect("value to be int64")),
             ValueType::Double => {
-                attribute_rb_builder.append_double(val.as_double().expect("value to be double"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_double(val.as_double().expect("value to be double"));
             }
             ValueType::Bool => {
-                attribute_rb_builder.append_bool(val.as_bool().expect("value to be bool"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_bool(val.as_bool().expect("value to be bool"));
             }
-            ValueType::Bytes => {
-                attribute_rb_builder.append_bytes(val.as_bytes().expect("value to be bytes"))
-            }
+            ValueType::Bytes => attribute_rb_builder
+                .any_values_builder
+                .append_bytes(val.as_bytes().expect("value to be bytes")),
             ValueType::Array => {
                 let mut serialized_values = vec![];
                 cbor::serialize_any_values(
                     val.as_array().expect("value to be array"),
                     &mut serialized_values,
                 )?;
-                attribute_rb_builder.append_slice(&serialized_values)
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_slice(&serialized_values)
             }
             ValueType::KeyValueList => {
                 let mut serialized_value = vec![];
@@ -540,14 +550,16 @@ where
                     val.as_kvlist().expect("value is kvlist"),
                     &mut serialized_value,
                 )?;
-                attribute_rb_builder.append_map(&serialized_value);
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_map(&serialized_value);
             }
             ValueType::Empty => {
-                attribute_rb_builder.append_empty();
+                attribute_rb_builder.any_values_builder.append_empty();
             }
         }
     } else {
-        attribute_rb_builder.append_empty();
+        attribute_rb_builder.any_values_builder.append_empty();
     }
 
     Ok(())
@@ -984,6 +996,7 @@ mod test {
         status::StatusCode,
     };
     use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
@@ -2497,7 +2510,7 @@ mod test {
                     "body",
                     DataType::Struct(
                         vec![
-                            Field::new("type", DataType::UInt8, true),
+                            Field::new("type", DataType::UInt8, false),
                             Field::new(
                                 "str",
                                 DataType::Dictionary(
@@ -2647,7 +2660,7 @@ mod test {
                 // body
                 Arc::new(StructArray::new(
                     vec![
-                        Field::new("type", DataType::UInt8, true),
+                        Field::new("type", DataType::UInt8, false),
                         Field::new(
                             "str",
                             DataType::Dictionary(
@@ -3389,7 +3402,7 @@ mod test {
 
         let expected_body = StructArray::try_new(
             vec![
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(
                     consts::ATTRIBUTE_STR,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
@@ -3514,6 +3527,7 @@ mod test {
         )
         .unwrap();
 
+        assert_eq!(body_column.fields(), expected_body.fields());
         assert_eq!(body_column, &expected_body);
 
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());

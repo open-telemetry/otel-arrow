@@ -3,7 +3,9 @@
 
 use chrono::Utc;
 use otel_arrow_rust::{
-    encode::record::{attributes::AttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder},
+    encode::record::{
+        attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
+    },
     otap::{Logs, OtapArrowRecords},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -16,7 +18,7 @@ use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
-    log_attrs: AttributesRecordBatchBuilder<u16>,
+    log_attrs: StrKeysAttributesRecordBatchBuilder<u16>,
 }
 
 impl Default for ArrowRecordsBuilder {
@@ -32,7 +34,7 @@ impl ArrowRecordsBuilder {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
-            log_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            log_attrs: StrKeysAttributesRecordBatchBuilder::<u16>::new(),
         }
     }
 
@@ -45,16 +47,17 @@ impl ArrowRecordsBuilder {
     /// Appends a parsed syslog message to the builder.
     pub fn append_syslog(&mut self, syslog_message: ParsedSyslogMessage<'_>) {
         self.logs
-            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64));
+            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64).unwrap_or(0));
 
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
         self.logs.append_severity_number(Some(severity_number));
-        self.logs.append_severity_text(Some(severity_text));
+        self.logs
+            .append_severity_text(Some(severity_text.as_bytes()));
 
-        self.logs.body.append_str(syslog_message.input().as_ref());
+        self.logs.body.append_str(syslog_message.input().as_bytes());
 
-        let attributes_added = syslog_message.add_attribues_to_arrow(&mut self.log_attrs);
+        let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
         for _ in 0..attributes_added {
             self.log_attrs.append_parent_id(&self.curr_log_id);
@@ -86,32 +89,15 @@ impl ArrowRecordsBuilder {
             .append_dropped_attributes_count_n(0, log_record_count);
 
         let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        for _ in 0..log_record_count {
-            self.logs
-                .append_observed_time_unix_nano(Some(observed_time));
-        }
-
+        self.logs
+            .append_observed_time_unix_nano_n(observed_time, log_record_count);
         self.logs.append_schema_url_n(None, log_record_count);
+        self.logs
+            .append_dropped_attributes_count_n(0, log_record_count);
 
-        for _ in 0..log_record_count {
-            self.logs.append_dropped_attributes_count(0);
-        }
-
-        for _ in 0..log_record_count {
-            self.logs.append_flags(None);
-        }
-
-        for _ in 0..log_record_count {
-            _ = self.logs.append_trace_id(None);
-        }
-
-        for _logs in 0..log_record_count {
-            _ = self.logs.append_trace_id(None);
-        }
-
-        for _logs in 0..log_record_count {
-            _ = self.logs.append_span_id(None);
-        }
+        self.logs.append_flags_n(None, log_record_count);
+        _ = self.logs.append_trace_id_n(None, log_record_count);
+        _ = self.logs.append_span_id_n(None, log_record_count);
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
 
@@ -133,7 +119,7 @@ mod tests {
     use super::*;
     use crate::syslog_cef_receiver::parser::parse;
     use otel_arrow_rust::{
-        otlp::{ProtoBuffer, logs::LogsProtoBytesEncoder},
+        otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
         },
@@ -1021,7 +1007,7 @@ mod tests {
                     Some(&AttributeValue::String("su".to_string()))
                 );
                 assert_eq!(
-                    log1_attrs.get("syslog.message"),
+                    log1_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
@@ -1058,7 +1044,7 @@ mod tests {
                     Some(&AttributeValue::String("app[1234]".to_string()))
                 );
                 assert_eq!(
-                    log2_attrs.get("syslog.message"),
+                    log2_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "Application started successfully".to_string()
                     ))
@@ -1095,7 +1081,7 @@ mod tests {
                     Some(&AttributeValue::String("kernel".to_string()))
                 );
                 assert_eq!(
-                    log3_attrs.get("syslog.message"),
+                    log3_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "Kernel panic - not syncing: VFS".to_string()
                     ))
@@ -1978,7 +1964,7 @@ mod tests {
                     Some(&AttributeValue::String("su".to_string()))
                 );
                 assert_eq!(
-                    log2_attrs.get("syslog.message"),
+                    log2_attrs.get("syslog.content"),
                     Some(&AttributeValue::String(
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
@@ -2450,7 +2436,7 @@ mod tests {
         );
         assert_eq!(log1_attrs.get("syslog.tag"), Some(&"su".to_string()));
         assert_eq!(
-            log1_attrs.get("syslog.message"),
+            log1_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
 
@@ -2482,7 +2468,7 @@ mod tests {
         );
         assert_eq!(log2_attrs.get("syslog.tag"), Some(&"app[1234]".to_string()));
         assert_eq!(
-            log2_attrs.get("syslog.message"),
+            log2_attrs.get("syslog.content"),
             Some(&"Application started successfully".to_string())
         );
 
@@ -2550,7 +2536,7 @@ mod tests {
         );
         assert_eq!(log3_attrs.get("syslog.tag"), Some(&"kernel".to_string()));
         assert_eq!(
-            log3_attrs.get("syslog.message"),
+            log3_attrs.get("syslog.content"),
             Some(&"Kernel panic - not syncing: VFS".to_string())
         );
 
@@ -3007,7 +2993,7 @@ mod tests {
         );
         assert_eq!(log2_attrs.get("syslog.tag"), Some(&"su".to_string()));
         assert_eq!(
-            log2_attrs.get("syslog.message"),
+            log2_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
 

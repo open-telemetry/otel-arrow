@@ -156,7 +156,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
     #[inline]
     fn as_string(&self) -> Option<Str<'_>> {
         self.inner.value.as_ref().and_then(|v| match v {
-            any_value::Value::StringValue(s) => Some(s.as_str()),
+            any_value::Value::StringValue(s) => Some(s.as_bytes()),
             _ => None,
         })
     }
@@ -204,7 +204,7 @@ impl AttributeView for ObjKeyValue<'_> {
 
     #[inline]
     fn key(&self) -> Str<'_> {
-        self.key
+        self.key.as_bytes()
     }
 
     #[inline]
@@ -226,7 +226,7 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
         if !self.inner.name.is_empty() {
-            Some(self.inner.name.as_str())
+            Some(self.inner.name.as_bytes())
         } else {
             None
         }
@@ -235,7 +235,7 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
         if !self.inner.version.is_empty() {
-            Some(self.inner.version.as_str())
+            Some(self.inner.version.as_bytes())
         } else {
             None
         }
@@ -253,7 +253,7 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
 }
 
 /// A helper function for converting &str into options while dropping empty strings.
-pub(crate) fn read_str(s: &str) -> Option<&str> {
+pub(crate) fn read_str(s: &[u8]) -> Option<&[u8]> {
     (!s.is_empty()).then_some(s)
 }
 

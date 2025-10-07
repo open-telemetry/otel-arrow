@@ -149,7 +149,7 @@ impl ResourceMetricsView for ObjResourceMetrics<'_> {
     }
 
     fn schema_url(&self) -> Str<'_> {
-        &self.inner.schema_url
+        self.inner.schema_url.as_bytes()
     }
 }
 
@@ -178,7 +178,7 @@ impl ScopeMetricsView for ObjScopeMetrics<'_> {
     }
 
     fn schema_url(&self) -> Str<'_> {
-        &self.inner.schema_url
+        self.inner.schema_url.as_bytes()
     }
 }
 
@@ -199,15 +199,15 @@ impl MetricView for ObjMetric<'_> {
         Self: 'att;
 
     fn name(&self) -> Str<'_> {
-        &self.inner.name
+        self.inner.name.as_bytes()
     }
 
     fn description(&self) -> Str<'_> {
-        &self.inner.description
+        self.inner.description.as_bytes()
     }
 
     fn unit(&self) -> Str<'_> {
-        &self.inner.unit
+        self.inner.unit.as_bytes()
     }
 
     fn data(&self) -> Option<Self::Data<'_>> {

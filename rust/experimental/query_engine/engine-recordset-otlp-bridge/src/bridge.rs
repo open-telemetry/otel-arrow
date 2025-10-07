@@ -25,28 +25,54 @@ pub fn parse_kql_query_into_pipeline(
         "scope",
     ]);
 
-    let attributes_schema = options.and_then(|mut v| v.take_attributes_schema());
+    let mut log_record_schema = ParserMapSchema::new()
+        .set_default_map_key("Attributes")
+        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+        .with_key_definition("Body", ParserMapKeySchema::Any)
+        .with_key_definition("TraceId", ParserMapKeySchema::Array)
+        .with_key_definition("SpanId", ParserMapKeySchema::Array)
+        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
+        .with_key_definition("EventName", ParserMapKeySchema::String);
 
-    if let Some(attributes_schema) = attributes_schema.as_ref() {
+    if let Some(mut attributes_schema) = options.and_then(|mut v| v.take_attributes_schema()) {
+        let schema = attributes_schema.get_schema_mut();
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            // Note: If any top-level fields are duplicated on Attributes Schema
+            // they get removed automatically. This is done for two purposes.
+            // The first is to make it easy for callers to pass in something
+            // like a table schema. Many backends flatten log records into
+            // columns. This feature is essentially a convenience thing so
+            // callers with table schema don't need to map columns back to the
+            // log record schema. The second reason is to prevent
+            // accidental\confusing query results. If for example "Body" is
+            // present in Attributes users might query with ambiguous naming.
+            // For example: source | extend Body = 'something' will write to the
+            // top-level field and not Attributes.
+            if let Some(removed) = schema.remove(top_level_key)
+                && &removed != top_level_key_schema
+            {
+                return Err(vec![ParserError::SchemaError(format!(
+                    "'{top_level_key}' key cannot be declared as '{}' type",
+                    &removed
+                ))]);
+            }
+        }
+
         parser_options = parser_options.with_summary_map_schema(attributes_schema.clone());
+
+        log_record_schema = log_record_schema.with_key_definition(
+            "Attributes",
+            ParserMapKeySchema::Map(Some(attributes_schema)),
+        );
     }
 
-    parser_options = parser_options.with_source_map_schema(
-        ParserMapSchema::new()
-            .set_default_map_key("Attributes")
-            .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-            .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-            .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
-            .with_key_definition("SeverityText", ParserMapKeySchema::String)
-            .with_key_definition("Body", ParserMapKeySchema::Any)
-            .with_key_definition("Attributes", ParserMapKeySchema::Map(attributes_schema))
-            .with_key_definition("TraceId", ParserMapKeySchema::Array)
-            .with_key_definition("SpanId", ParserMapKeySchema::Array)
-            .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-            .with_key_definition("EventName", ParserMapKeySchema::String),
-    );
-
-    KqlParser::parse_with_options(query, parser_options)
+    KqlParser::parse_with_options(
+        query,
+        parser_options.with_source_map_schema(log_record_schema),
+    )
 }
 
 pub fn register_pipeline_for_kql_query(
@@ -534,7 +560,8 @@ mod tests {
                 Some(
                     BridgeOptions::new().with_attributes_schema(
                         ParserMapSchema::new()
-                            .with_key_definition("int_value", ParserMapKeySchema::Double),
+                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
                     ),
                 ),
             )
@@ -547,7 +574,8 @@ mod tests {
                 Some(
                     BridgeOptions::new().with_attributes_schema(
                         ParserMapSchema::new()
-                            .with_key_definition("int_value", ParserMapKeySchema::Double),
+                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
                     ),
                 ),
             )
@@ -579,5 +607,23 @@ mod tests {
         run_test_failure(
             "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend Custom = 1234",
         );
+
+        run_test_success("source | extend Body = 'hello world'");
+        // Note: Body gets removed from Attributes schema because it is defined at the root
+        run_test_failure("source | extend Attributes.Body = 'hello world'");
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema_error() {
+        let e = parse_kql_query_into_pipeline(
+            "",
+            Some(BridgeOptions::new().with_attributes_schema(
+                ParserMapSchema::new().with_key_definition("Body", ParserMapKeySchema::Map(None)),
+            )),
+        )
+        .unwrap_err();
+
+        assert_eq!(1, e.len());
+        assert!(matches!(e[0], ParserError::SchemaError(_)));
     }
 }

@@ -27,11 +27,15 @@ pub(super) struct Priority {
 /// Error types that can occur during parsing
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseError {
+    /// Error indicating that the input is empty
+    EmptyInput,
     /// Error parsing priority value
-    /// RFC5424 and RFC3164 messages are expected to start with "<Priority>"
+    /// RFC5424 messages are expected to start with "<Priority>"
     InvalidPriority,
     /// Error parsing version number for RFC5424 messages
     InvalidVersion,
+    /// Error indicating that CEF content is empty
+    EmptyCEFContent,
     /// Error parsing CEF message
     InvalidCef,
     /// Error parsing UTF-8 strings
@@ -55,6 +59,7 @@ pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
 }
 
 /// Parse priority from the beginning of a syslog message
+#[allow(clippy::manual_range_contains)]
 pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseError> {
     if input.is_empty() || input[0] != b'<' {
         return Err(ParseError::InvalidPriority);
@@ -64,14 +69,31 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
         .iter()
         .position(|&b| b == b'>')
         .ok_or(ParseError::InvalidPriority)?;
+
+    if end < 2 || end > 4 {
+        return Err(ParseError::InvalidPriority);
+    }
+
     let priority_bytes = &input[1..end];
+
+    // RFC 3164 Section 4.3.3: Check for leading zeros which make PRI "unidentifiable"
+    // Example: <00> is invalid, <0> is valid
+    if priority_bytes.len() > 1 && priority_bytes[0] == b'0' {
+        return Err(ParseError::InvalidPriority);
+    }
+
     let priority_str = str::from_utf8(priority_bytes).map_err(|_| ParseError::InvalidUtf8)?;
     let priority_num: u8 = priority_str
         .parse()
         .map_err(|_| ParseError::InvalidPriority)?;
 
-    let facility = priority_num >> 3;
-    let severity = priority_num & 0x07;
+    // RFC 3164: Maximum valid priority is 191 (facility 23, severity 7)
+    if priority_num > 191 {
+        return Err(ParseError::InvalidPriority);
+    }
+
+    let facility = priority_num >> 3; // Upper 5 bits are facility. This is equivalent to priority_num / 8
+    let severity = priority_num & 0x07; // Lower 3 bits are severity. This is equivalent to priority_num % 8
 
     Ok((Priority { facility, severity }, &input[end + 1..]))
 }

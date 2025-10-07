@@ -339,6 +339,20 @@ impl Expression for MathScalarExpression {
             MathScalarExpression::Subtract(_) => "MathScalar(Subtract)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            MathScalarExpression::Add(b) => b.fmt_with_indent(f, indent, "Add"),
+            MathScalarExpression::Bin(b) => b.fmt_with_indent(f, indent, "Bin"),
+            MathScalarExpression::Ceiling(u) => u.fmt_with_indent(f, indent, "Ceiling"),
+            MathScalarExpression::Divide(b) => b.fmt_with_indent(f, indent, "Divide"),
+            MathScalarExpression::Floor(u) => u.fmt_with_indent(f, indent, "Floor"),
+            MathScalarExpression::Modulus(b) => b.fmt_with_indent(f, indent, "Modulus"),
+            MathScalarExpression::Multiply(b) => b.fmt_with_indent(f, indent, "Multiply"),
+            MathScalarExpression::Negate(u) => u.fmt_with_indent(f, indent, "Negate"),
+            MathScalarExpression::Subtract(b) => b.fmt_with_indent(f, indent, "Subtract"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -360,6 +374,20 @@ impl UnaryMathematicalScalarExpression {
 
     pub fn get_value_expression(&self) -> &ScalarExpression {
         &self.value_expression
+    }
+
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+        name: &str,
+    ) -> std::fmt::Result {
+        write!(f, "{name}(Scalar): ")?;
+        self.value_expression.fmt_with_indent(
+            f,
+            format!("{indent}{}", " ".repeat(name.len() + 10)).as_str(),
+        )?;
+        Ok(())
     }
 }
 
@@ -399,6 +427,22 @@ impl BinaryMathematicalScalarExpression {
 
     pub fn get_right_expression(&self) -> &ScalarExpression {
         &self.right_expression
+    }
+
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+        name: &str,
+    ) -> std::fmt::Result {
+        writeln!(f, "{name}")?;
+        write!(f, "{indent}├── Left(Scalar): ")?;
+        self.left_expression
+            .fmt_with_indent(f, format!("{indent}│                 ").as_str())?;
+        write!(f, "{indent}└── Right(Scalar): ")?;
+        self.right_expression
+            .fmt_with_indent(f, format!("{indent}                   ").as_str())?;
+        Ok(())
     }
 }
 

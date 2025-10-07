@@ -104,45 +104,25 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 Err(e) => Err(e),
             }
         }
-        LogicalExpression::Chain(c) => {
-            let (first, chain) = c.get_expressions();
+        LogicalExpression::And(a) => {
+            let result = match execute_logical_expression(execution_context, a.get_left())? {
+                false => false,
+                true => execute_logical_expression(execution_context, a.get_right())?,
+            };
 
-            let mut result = execute_logical_expression(execution_context, first)?;
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                logical_expression,
+                || format!("Evaluated as: '{result}'"),
+            );
 
-            for c in chain {
-                match c {
-                    ChainedLogicalExpression::Or(or) => {
-                        if result {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Verbose,
-                                or,
-                                || {
-                                    "Short-circuiting chain because left-hand side of OR is true"
-                                        .into()
-                                },
-                            );
-                            break;
-                        }
-
-                        result = execute_logical_expression(execution_context, or)?;
-                    }
-                    ChainedLogicalExpression::And(and) => {
-                        if !result {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Verbose,
-                                and,
-                                || {
-                                    "Short-circuiting chain because left-hand side of AND is false"
-                                        .into()
-                                },
-                            );
-                            break;
-                        }
-
-                        result = execute_logical_expression(execution_context, and)?;
-                    }
-                }
-            }
+            Ok(result)
+        }
+        LogicalExpression::Or(o) => {
+            let result = match execute_logical_expression(execution_context, o.get_left())? {
+                true => true,
+                false => execute_logical_expression(execution_context, o.get_right())?,
+            };
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -421,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_chain_logical_expression() {
+    fn test_execute_and_or_logical_expression() {
         let run_test = |logical_expression, expected_value: bool| {
             let mut test = TestExecutionContext::new();
 
@@ -433,10 +413,36 @@ mod tests {
             assert_eq!(expected_value, value);
         };
 
-        // Test: true
+        // Test: true || false
         run_test(
-            LogicalExpression::Chain(ChainLogicalExpression::new(
+            LogicalExpression::Or(OrLogicalExpression::new(
                 QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+            )),
+            true,
+        );
+
+        // Test: false || true
+        run_test(
+            LogicalExpression::Or(OrLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -447,10 +453,36 @@ mod tests {
             true,
         );
 
-        // Test: false
+        // Test: false && true
         run_test(
-            LogicalExpression::Chain(ChainLogicalExpression::new(
+            LogicalExpression::And(AndLogicalExpression::new(
                 QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+            )),
+            false,
+        );
+
+        // Test: true && false
+        run_test(
+            LogicalExpression::And(AndLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -461,90 +493,25 @@ mod tests {
             false,
         );
 
-        // Test: true || false
-        let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            ))),
-        );
-
-        chain.push_or(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                false,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(chain), true);
-
-        // Test: false || true
-        let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
-            ))),
-        );
-
-        chain.push_or(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                true,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(chain), true);
-
-        // Test: false && true
-        let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
-            ))),
-        );
-
-        chain.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                true,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(chain), false);
-
-        // Test: true && false
-        let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            ))),
-        );
-
-        chain.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new_fake(),
-                false,
-            )),
-        )));
-
-        run_test(LogicalExpression::Chain(chain), false);
-
         // Test: true && true
-        let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            ))),
-        );
-
-        chain.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
-            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+        run_test(
+            LogicalExpression::And(AndLogicalExpression::new(
                 QueryLocation::new_fake(),
-                true,
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
             )),
-        )));
-
-        run_test(LogicalExpression::Chain(chain), true);
+            true,
+        );
     }
 
     #[test]

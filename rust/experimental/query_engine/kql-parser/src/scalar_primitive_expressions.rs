@@ -10,10 +10,10 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_type_expressions(
-    type_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_type_unary_expressions(
+    type_unary_expressions_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
-    let rule = type_expressions_rule.into_inner().next().unwrap();
+    let rule = type_unary_expressions_rule.into_inner().next().unwrap();
 
     Ok(match rule.as_rule() {
         Rule::null_literal => parse_standard_null_literal(rule),
@@ -26,7 +26,7 @@ pub(crate) fn parse_type_expressions(
         Rule::double_literal => parse_standard_double_literal(rule, None)?,
         Rule::integer_literal => parse_standard_integer_literal(rule)?,
         Rule::string_literal => parse_string_literal(rule),
-        _ => panic!("Unexpected rule in type_expressions: {rule}"),
+        _ => panic!("Unexpected rule in type_unary_expressions: {rule}"),
     })
 }
 
@@ -264,7 +264,9 @@ fn parse_dynamic_expression(
         let query_location = to_query_location(&dynamic_inner_expression_rule);
 
         match dynamic_inner_expression_rule.as_rule() {
-            Rule::type_expressions => Ok(parse_type_expressions(dynamic_inner_expression_rule)?),
+            Rule::type_unary_expressions => {
+                Ok(parse_type_unary_expressions(dynamic_inner_expression_rule)?)
+            }
             Rule::dynamic_array_expression => {
                 let mut values = Vec::new();
 
@@ -502,7 +504,16 @@ pub(crate) fn parse_accessor_expression(
     }
 
     if root_accessor_identity.get_value() == "source" {
-        let value_type = get_value_type(scope, &value_accessor);
+        let selectors = value_accessor.get_selectors_mut();
+
+        let value_type = if selectors.is_empty() {
+            Some(ValueType::Map)
+        } else if let Some(schema) = scope.get_source_schema() {
+            schema
+                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())?
+        } else {
+            None
+        };
 
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
@@ -577,6 +588,8 @@ pub(crate) fn parse_accessor_expression(
                                 ));
                             }
                         }
+                    } else {
+                        resolved_value_type = key.get_value_type();
                     }
 
                     value_accessor.insert_selector(
@@ -662,29 +675,18 @@ pub(crate) fn parse_accessor_expression(
             );
         }
 
-        let value_type = resolved_value_type.or(get_value_type(scope, &value_accessor));
+        if resolved_value_type.is_none() && !value_accessor.has_selectors() {
+            resolved_value_type = Some(ValueType::Map);
+        }
 
         Ok(ScalarExpression::Source(
-            SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
+            SourceScalarExpression::new_with_value_type(
+                query_location,
+                value_accessor,
+                resolved_value_type,
+            ),
         ))
     }
-}
-
-fn get_value_type(scope: &dyn ParserScope, value_accessor: &ValueAccessor) -> Option<ValueType> {
-    let selectors = value_accessor.get_selectors();
-    let mut value_type = None;
-    if selectors.is_empty() {
-        value_type = Some(ValueType::Map);
-    } else if selectors.len() == 1
-        && let Some(schema) = scope.get_source_schema()
-        && let ScalarExpression::Static(StaticScalarExpression::String(key)) =
-            selectors.first().unwrap()
-        && let Some(key_schema) = schema.get_schema_for_key(key.get_value())
-    {
-        value_type = key_schema.get_value_type();
-    }
-
-    value_type
 }
 
 #[cfg(test)]
@@ -1428,7 +1430,8 @@ mod tests {
                 (Rule::identifier_literal, "abc"),
                 (Rule::minus_token, "-"),
                 (Rule::scalar_expression, "'name'"),
-                (Rule::type_expressions, "'name'"),
+                (Rule::scalar_unary_expression, "'name'"),
+                (Rule::type_unary_expressions, "'name'"),
                 (Rule::string_literal, "'name'"),
             ],
         );
@@ -1460,6 +1463,7 @@ mod tests {
                 (Rule::integer_literal, "0"),
                 (Rule::minus_token, "-"),
                 (Rule::scalar_expression, "sub"),
+                (Rule::scalar_unary_expression, "sub"),
                 (Rule::accessor_expression, "sub"),
                 (Rule::identifier_literal, "sub"),
                 (Rule::identifier_literal, "name2"),
@@ -2272,6 +2276,12 @@ mod tests {
             "map.double_value[0]",
             None,
             "Cannot access into key 'double_value' which is defined as a 'Double' type",
+        );
+
+        run_test_failure(
+            "source.field",
+            None,
+            "The name 'field' does not refer to any known key on the target map",
         );
     }
 }

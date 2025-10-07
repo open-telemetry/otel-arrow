@@ -66,6 +66,15 @@ impl Expression for TextScalarExpression {
             TextScalarExpression::Replace(_) => "TextScalar(Replace)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            TextScalarExpression::Capture(c) => c.fmt_with_indent(f, indent),
+            TextScalarExpression::Concat(c) => c.fmt_with_indent(f, indent),
+            TextScalarExpression::Join(j) => j.fmt_with_indent(f, indent),
+            TextScalarExpression::Replace(r) => r.fmt_with_indent(f, indent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +188,21 @@ impl Expression for ReplaceTextScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ReplaceTextScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Replace")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack_expression
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Needle(Scalar): ")?;
+        self.needle_expression
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        write!(f, "{indent}├── Replacement(Scalar): ")?;
+        self.replacement_expression
+            .fmt_with_indent(f, format!("{indent}│                        ").as_str())?;
+        writeln!(f, "{indent}└── CaseInsensitive: {}", self.case_insensitive)?;
+        Ok(())
     }
 }
 
@@ -327,6 +351,17 @@ impl Expression for JoinTextScalarExpression {
     fn get_name(&self) -> &'static str {
         "JoinTextScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Join")?;
+        write!(f, "{indent}├── Separator(Scalar): ")?;
+        self.separator_expression
+            .fmt_with_indent(f, format!("{indent}│                      ").as_str())?;
+        write!(f, "{indent}└── Values(Scalar): ")?;
+        self.values_expression
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -425,6 +460,20 @@ impl Expression for CaptureTextScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "CaptureTextScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Capture")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        write!(f, "{indent}└── CaptureGroup(Scalar): ")?;
+        self.capture_group
+            .fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+        Ok(())
     }
 }
 
