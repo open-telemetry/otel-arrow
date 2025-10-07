@@ -9,11 +9,97 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::Duration;
+
+/// A 8-byte context value. Supports conversion to and from plain data
+/// using bytemuck.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct Context8u8([u8; 8]);
+
+impl<T: Pod> From<T> for Context8u8 {
+    /// From T to Context8u8
+    fn from(v: T) -> Self {
+        const {
+            assert!(size_of::<T>() == 8);
+        }
+        Self(bytemuck::cast(v))
+    }
+}
+
+// --- From Context8u8 to and from Ts of interest
+
+impl TryFrom<Context8u8> for usize {
+    type Error = Error;
+
+    fn try_from(v: Context8u8) -> Result<Self, Self::Error> {
+        bytemuck::try_cast(v.0).map_err(|_| Error::InternalError {
+            message: "bytecast error".into(),
+        })
+    }
+}
+
+impl From<Context8u8> for u64 {
+    fn from(v: Context8u8) -> u64 {
+        bytemuck::cast(v.0)
+    }
+}
+
+/// Standard context values hold two caller-specified fields.  The
+/// size is arbitrary, but shouldn't be larger than needed by
+/// callers. For example: retry count, sequence and generation
+/// numbers, etc.
+pub type CallData = SmallVec<[Context8u8; 2]>;
+
+/// The ACK message.
+#[derive(Debug, Clone)]
+pub struct AckMsg<PData> {
+    /// Accepted pdata being returned.
+    pub accepted: Box<PData>,
+
+    /// Subscriber information returned.
+    pub calldata: CallData,
+}
+
+impl<PData> AckMsg<PData> {
+    /// Creates a new ACK.
+    pub fn new(accepted: PData) -> Self {
+        Self {
+            accepted: Box::new(accepted),
+            calldata: smallvec![],
+        }
+    }
+}
+
+/// The NACK message.
+#[derive(Debug, Clone)]
+pub struct NackMsg<PData> {
+    /// Human-readable reason for the NACK.
+    pub reason: String,
+
+    /// Subscriber information returned.
+    pub calldata: CallData,
+
+    /// Refused pdata being returned.
+    pub refused: Box<PData>,
+}
+
+impl<PData> NackMsg<PData> {
+    /// Creates a new NACK.
+    pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self {
+            reason: reason.into(),
+            calldata: smallvec![],
+            refused: Box::new(refused),
+        }
+    }
+}
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -23,25 +109,13 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack {
-        /// Unique identifier of the message being acknowledged.
-        id: u64,
-    },
+    Ack(AckMsg<PData>),
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
-    Nack {
-        /// Unique identifier of the message not being acknowledged.
-        id: u64,
-        /// Human-readable reason for the NACK.
-        reason: String,
-
-        /// Placeholder for optional return value, making it possible for the
-        /// retry sender to be stateless.
-        pdata: Option<Box<PData>>,
-    },
+    Nack(NackMsg<PData>),
 
     /// Notifies the node of a configuration change.
     ///
@@ -329,7 +403,7 @@ impl<PData> ControlSenders<PData> {
 
             if let Err(error) = typed_sender.sender.send(shutdown_msg).await {
                 errors.push(TypedError::NodeControlMsgSendError {
-                    node: typed_sender.node_id.clone(),
+                    node_id: typed_sender.node_id.index,
                     error,
                 });
             }
