@@ -226,10 +226,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
-            PipelineControlMsg::DelayData { node_id, when, data } => {
-                let delayed = Delayed { node_id, when, data };
-                self.delayed_data.push(delayed);
-            }
+                    PipelineControlMsg::DelayData { node_id, when, data } => {
+                        let delayed = Delayed { node_id, when, data };
+                        self.delayed_data.push(delayed);
+                    }
                     }
                 }
                 // Handle timer expiration events.
