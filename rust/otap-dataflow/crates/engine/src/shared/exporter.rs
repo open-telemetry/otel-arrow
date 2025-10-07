@@ -32,9 +32,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::control::NodeControlMsg;
+use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
@@ -251,6 +251,30 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(
+        &self,
+        ack: AckMsg<PData>,
+        cxf: F,
+    ) -> Result<(), TypedError<AckMsg<PData>>>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(
+        &self,
+        nack: NackMsg<PData>,
+        cxf: F,
+    ) -> Result<(), TypedError<NackMsg<PData>>>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
     }
 
     // More methods will be added in the future as needed.

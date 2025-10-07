@@ -62,10 +62,6 @@ name = "pdata_views"
 harness = false
 
 [[bench]]
-name = "retry_processor"
-harness = false
-
-[[bench]]
 name = "syslog_cef_receiver"
 harness = false
 
