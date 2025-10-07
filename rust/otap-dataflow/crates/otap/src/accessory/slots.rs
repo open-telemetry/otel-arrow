@@ -1,23 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Slot-based correlation system for tracking in-flight gRPC requests
-//! and their responses.
-//!
-//! We expect this to apply to both OTLP and OTAP receivers. The State
-//! struct below
-
-use tokio::sync::oneshot;
-
-/// Placeholder for NackMsg until the control message PR is merged.
-/// The actual NackMsg will include reason, permanent flag, and calldata.
-/// This could be replaced `type Nack = NackMsg<OtapPdata>;`
-/// TODO(#498): Replace with actual NackMsg.
-#[allow(dead_code)]
-pub struct Nack {
-    reason: String,
-    refused: Box<String>,
-}
+//! Slot-based correlation system for correlating in-flight requests
+//! and responses. Provides a CallData to retrieve the data for Ack/Nack handling.
 
 /// Configuration for the slot-based correlation server
 #[derive(Debug, Clone)]
@@ -84,33 +69,35 @@ impl SlotKey {
 }
 
 /// Data stored in an active slot
-struct SlotData {
-    /// Channel to send the response back to the gRPC handler
-    channel: oneshot::Sender<Result<(), Nack>>,
-    /// Current generation number for this slot
+/// Generic over user-provided data (UData)
+struct SlotData<UData> {
+    /// User-provided data (e.g., oneshot::Sender or streaming response info)
+    user: UData,
+    /// Current generation number for this slot (internal)
     generation: SlotGeneration,
 }
 
 /// GenMem represents a slot that is either in use or available.
 /// When available, it remembers the next generation number.
-enum GenMem {
+enum GenMem<UData> {
     /// Slot is currently in use with active request
-    Current(SlotData),
+    Current(SlotData<UData>),
     /// Slot is available, storing the next generation to use
     Available(SlotGeneration),
 }
 
 /// State managing the slot array and free list.
-pub struct State {
+/// Generic over user data type `UData`.
+pub struct State<UData> {
     /// Array of slots, can grow up to max_slots (does not shrink)
-    slots: Vec<GenMem>,
+    slots: Vec<GenMem<UData>>,
     /// Indices of available slots for quick allocation
     free_slots: Vec<SlotIndex>,
     /// Configuration
     config: Config,
 }
 
-impl State {
+impl<UData> State<UData> {
     /// Create new server state with the given configuration
     #[must_use]
     pub fn new(config: Config) -> Self {
@@ -121,8 +108,8 @@ impl State {
         }
     }
 
-    /// Allocate a slot for a new request.
-    pub fn allocate_slot(&mut self, channel: oneshot::Sender<Result<(), Nack>>) -> Option<SlotKey> {
+    /// Allocate a slot for a new request with user-provided data.
+    pub fn allocate_slot(&mut self, user_data: UData) -> Option<SlotKey> {
         // Try to reuse a free slot first
         if let Some(slot_index) = self.free_slots.pop() {
             let slot_ref = &mut self.slots[slot_index.as_usize()];
@@ -130,7 +117,7 @@ impl State {
             if let GenMem::Available(generation) = slot_ref {
                 let current_gen = *generation;
                 *slot_ref = GenMem::Current(SlotData {
-                    channel,
+                    user: user_data,
                     generation: current_gen,
                 });
                 return Some(SlotKey::new(slot_index, current_gen));
@@ -146,7 +133,7 @@ impl State {
             let generation = SlotGeneration(1); // Start at generation 1
 
             self.slots.push(GenMem::Current(SlotData {
-                channel,
+                user: user_data,
                 generation,
             }));
 
@@ -157,7 +144,9 @@ impl State {
         }
     }
 
-    fn extract_current_if_valid(&mut self, slot_key: SlotKey) -> Option<SlotData> {
+    /// Get user data from a slot if generation matches
+    #[must_use]
+    pub fn get_if_current(&mut self, slot_key: SlotKey) -> Option<UData> {
         let slot_index = slot_key.index().as_usize();
         if slot_index >= self.slots.len() {
             return None;
@@ -177,29 +166,19 @@ impl State {
                 let next_generation = data.generation.increment();
                 let mut replacement = GenMem::Available(next_generation);
                 std::mem::swap(slot_ref, &mut replacement);
+                self.free_slots.push(slot_key.index());
 
                 match replacement {
-                    GenMem::Current(slot_data) => Some(slot_data),
+                    GenMem::Current(slot_data) => Some(slot_data.user),
                     _ => unreachable!("is GenMem::Current above"),
                 }
             }
         }
     }
 
-    /// Free a slot when a request is cancelled (e.g., due to timeout).
-    pub fn free_slot(&mut self, slot_key: SlotKey) {
-        if self.extract_current_if_valid(slot_key).is_some() {
-            self.free_slots.push(slot_key.index());
-        }
-    }
-
-    /// Deliver a response to the specified slot.
-    pub fn deliver_response(&mut self, slot_key: SlotKey, result: Result<(), Nack>) {
-        if let Some(slot_data) = self.extract_current_if_valid(slot_key) {
-            // Ignore send errors (receiver may have been dropped)
-            let _ = slot_data.channel.send(result);
-            self.free_slots.push(slot_key.index());
-        }
+    /// Get and drop the user data, if current, and drop it.
+    pub fn cancel(&mut self, slot_key: SlotKey) {
+        let _ = self.get_if_current(slot_key);
     }
 
     /// Get the number of currently allocated slots
@@ -224,8 +203,11 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
-    fn create_test_state() -> State {
+    type TestUData = oneshot::Sender<Result<(), String>>;
+
+    fn create_test_state() -> State<TestUData> {
         State::new(Config { max_slots: 3 })
     }
 
@@ -254,12 +236,12 @@ mod tests {
         assert!(result.is_none(), "beyond capacity");
         assert_eq!(state.allocated_count(), 3);
 
-        state.free_slot(key1);
+        state.cancel(key1);
         assert_eq!(state.allocated_count(), 2);
         assert_eq!(state.total_slots(), 3);
 
-        state.free_slot(key2);
-        state.free_slot(key3);
+        state.cancel(key2);
+        state.cancel(key3);
         assert_eq!(state.allocated_count(), 0);
         assert_eq!(state.total_slots(), 3);
         assert_eq!(state.free_slots.len(), 3);
@@ -272,7 +254,7 @@ mod tests {
         let (tx1, _rx1) = oneshot::channel();
         let key1 = state.allocate_slot(tx1).unwrap();
         assert_eq!(key1.generation().as_usize(), 1);
-        state.free_slot(key1);
+        state.cancel(key1);
 
         let (tx2, _rx2) = oneshot::channel();
         let key2 = state.allocate_slot(tx2).unwrap();
@@ -283,14 +265,18 @@ mod tests {
     }
 
     #[test]
-    fn test_deliver_success() {
+    fn test_get_current() {
         let mut state = create_test_state();
         let (tx, rx) = oneshot::channel();
 
         let key = state.allocate_slot(tx).unwrap();
         assert_eq!(state.allocated_count(), 1);
 
-        state.deliver_response(key, Ok(()));
+        state
+            .get_if_current(key)
+            .map(|channel| channel.send(Ok(())))
+            .expect("sent")
+            .expect("ok");
 
         let result = rx.blocking_recv().unwrap();
         assert!(result.is_ok());
@@ -299,57 +285,36 @@ mod tests {
     }
 
     #[test]
-    fn test_deliver_failure() {
+    fn test_get_old() {
         let mut state = create_test_state();
         let (tx, rx) = oneshot::channel();
 
         let key = state.allocate_slot(tx).unwrap();
-        let nack = Nack {
-            reason: "Test failure".into(),
-            refused: Box::new("hello".into()),
-        };
-        state.deliver_response(key, Err(nack));
-
-        match rx.blocking_recv().unwrap() {
-            Ok(_) => {
-                panic!("incorrect success");
-            }
-            Err(nack) => {
-                assert_eq!(nack.reason, "Test failure");
-            }
-        }
-    }
-
-    #[test]
-    fn test_deliver_old_generation() {
-        let mut state = create_test_state();
-        let (tx, rx) = oneshot::channel();
-
-        let key = state.allocate_slot(tx).unwrap();
-        state.free_slot(key);
+        state.cancel(key);
         assert!(rx.blocking_recv().is_err());
 
         let (tx2, _) = oneshot::channel();
         let _key2 = state.allocate_slot(tx2).unwrap();
 
-        state.deliver_response(key, Ok(()));
+        // Try to get old generation
+        assert!(state.get_if_current(key).is_none());
 
         assert_eq!(state.allocated_count(), 1);
         assert_eq!(state.total_slots(), 1);
     }
 
     #[test]
-    fn test_free_twice() {
+    fn test_cancel_twice() {
         let mut state = create_test_state();
         let (tx, _rx) = oneshot::channel();
 
         let key = state.allocate_slot(tx).unwrap();
         assert_eq!(state.allocated_count(), 1);
 
-        state.free_slot(key);
+        state.cancel(key);
         assert_eq!(state.allocated_count(), 0);
 
-        state.free_slot(key);
+        state.cancel(key);
         assert_eq!(state.allocated_count(), 0);
     }
 
@@ -365,7 +330,7 @@ mod tests {
         let key2 = state.allocate_slot(tx2).unwrap();
         let key3 = state.allocate_slot(tx3).unwrap();
 
-        state.free_slot(key2);
+        state.cancel(key2);
         assert_eq!(state.allocated_count(), 2);
         assert_eq!(key2.generation().as_usize(), 1);
 
@@ -375,9 +340,9 @@ mod tests {
         assert_eq!(key4.index(), key2.index());
         assert_eq!(key4.generation().as_usize(), 2);
 
-        state.free_slot(key1);
-        state.free_slot(key3);
-        state.free_slot(key4);
+        state.cancel(key1);
+        state.cancel(key3);
+        state.cancel(key4);
 
         assert_eq!(state.allocated_count(), 0);
         assert_eq!(state.total_slots(), 3);
