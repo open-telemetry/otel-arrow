@@ -115,10 +115,27 @@ impl SchemaIdBuilder {
             }
 
             Map(field, _) => {
+                let [key_field, value_field] = match field.data_type() {
+                    Struct(fields) => {
+                        // Try the common case first: two fields named "key" and "value"
+                        match fields.iter().as_slice() {
+                            [k, v] if k.name() == "key" && v.name() == "value" => [k, v],
+                            [v, k] if k.name() == "key" && v.name() == "value" => [k, v],
+                            _ => {
+                                let key = fields.iter().find(|f| f.name() == "key")
+                                    .expect("Map field must contain a field named 'key'");
+                                let value = fields.iter().find(|f| f.name() == "value")
+                                    .expect("Map field must contain a field named 'value'");
+                                [key, value]
+                            }
+                        }
+                    },
+                    _ => panic!("Map field must be a struct"),
+                };
                 self.out.push_str("Map<");
-                self.write_data_type(field.data_type());
+                self.write_data_type(key_field.data_type());
                 self.out.push(',');
-                self.write_data_type(field.data_type());
+                self.write_data_type(value_field.data_type());
                 self.out.push('>');
             }
 
@@ -163,7 +180,7 @@ impl Default for SchemaIdBuilder {
 #[cfg(test)]
 mod test {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UnionFields, UnionMode};
-    use std::sync::Arc;
+    use std::{sync::Arc, vec};
 
     use crate::otap::schema::SchemaIdBuilder;
 
@@ -198,7 +215,75 @@ mod test {
             ),
             Field::new(
                 "map",
-                DataType::Map(Arc::new(Field::new("item", DataType::Utf8, true)), true),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("value", DataType::Utf8, true),
+                            ].into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_reversed",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("value", DataType::Float32, true),
+                                Field::new("key", DataType::Utf8, false),
+                            ].into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_extra",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("uint8", DataType::UInt8, true),
+                                Field::new("value", DataType::Boolean, true),
+                            ].into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_nested",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new(
+                                    "value",
+                                    DataType::List(Arc::new(Field::new("item", DataType::UInt16, true))),
+                                    true,
+                                ),
+                            ].into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
                 true,
             ),
             Field::new(
@@ -257,6 +342,9 @@ mod test {
             "int8:I8",
             "list:[U8]",
             "map:Map<Str,Str>",
+            "map_extra:Map<Str,Bol>",
+            "map_nested:Map<Str,[U16]>",
+            "map_reversed:Map<Str,F32>",
             "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
             "string:Str",
             "struct:{s.a:U8,s.b:U16,s.c:U32}",
