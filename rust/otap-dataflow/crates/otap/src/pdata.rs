@@ -124,6 +124,9 @@ impl Context {
             .context
             .next_with_interest(Interests::ACKS)
             .map(|frame| {
+                if frame.interests & Interests::RETURN_DATA == Interests::NONE {
+                    let _drop = ack.accepted.take_payload();
+                }
                 ack.calldata = frame.calldata;
                 (frame.node_id, ack)
             })
@@ -137,6 +140,9 @@ impl Context {
             .context
             .next_with_interest(Interests::NACKS)
             .map(|frame| {
+                if frame.interests & Interests::RETURN_DATA == Interests::NONE {
+                    let _drop = nack.refused.take_payload();
+                }
                 nack.calldata = frame.calldata;
                 (frame.node_id, nack)
             })
@@ -278,6 +284,12 @@ impl OtapPdata {
         self.payload
     }
 
+    /// Take the payload
+    #[must_use]
+    pub fn take_payload(&mut self) -> OtapPayload {
+        self.payload.take_payload()
+    }
+
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
@@ -320,10 +332,10 @@ impl OtapPayload {
 
     /// Removes the payload from this request, leaving an empty request.
     #[must_use]
-    pub fn payload(&mut self) -> Self {
+    pub fn take_payload(&mut self) -> Self {
         match self {
-            Self::OtlpBytes(value) => Self::OtlpBytes(value.payload()),
-            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.payload()),
+            Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
+            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
         }
     }
 
@@ -352,7 +364,7 @@ pub trait OtapPayloadHelpers {
     fn is_empty(&self) -> bool;
 
     /// Takes the payload, leaving an empty payload behind.
-    fn payload(&mut self) -> Self;
+    fn take_payload(&mut self) -> Self;
 }
 
 impl OtapPayloadHelpers for OtapArrowRecords {
@@ -364,7 +376,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::Logs(value) => Self::Logs(std::mem::take(value)),
             Self::Metrics(value) => Self::Metrics(std::mem::take(value)),
@@ -415,7 +427,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::ExportLogsRequest(value) => Self::ExportLogsRequest(std::mem::take(value)),
             Self::ExportMetricsRequest(value) => Self::ExportMetricsRequest(std::mem::take(value)),

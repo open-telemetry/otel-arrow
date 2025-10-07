@@ -165,10 +165,14 @@ bitflags::bitflags! {
 /// Nack should be delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Interests: u8 {
+    /// No interest
+    const NONE = 0;
     /// Acks interest
     const ACKS   = 1 << 0;
     /// Nacks interest
     const NACKS  = 1 << 1;
+    /// Return data
+    const RETURN_DATA = 1 << 2;
 }
 }
 
