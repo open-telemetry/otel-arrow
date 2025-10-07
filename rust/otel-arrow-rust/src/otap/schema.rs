@@ -122,14 +122,18 @@ impl SchemaIdBuilder {
                             [k, v] if k.name() == "key" && v.name() == "value" => [k, v],
                             [v, k] if k.name() == "key" && v.name() == "value" => [k, v],
                             _ => {
-                                let key = fields.iter().find(|f| f.name() == "key")
+                                let key = fields
+                                    .iter()
+                                    .find(|f| f.name() == "key")
                                     .expect("Map field must contain a field named 'key'");
-                                let value = fields.iter().find(|f| f.name() == "value")
+                                let value = fields
+                                    .iter()
+                                    .find(|f| f.name() == "value")
                                     .expect("Map field must contain a field named 'value'");
                                 [key, value]
                             }
                         }
-                    },
+                    }
                     _ => panic!("Map field must be a struct"),
                 };
                 self.out.push_str("Map<");
@@ -222,7 +226,8 @@ mod test {
                             vec![
                                 Field::new("key", DataType::Utf8, false),
                                 Field::new("value", DataType::Utf8, true),
-                            ].into(),
+                            ]
+                            .into(),
                         ),
                         true,
                     )),
@@ -239,7 +244,8 @@ mod test {
                             vec![
                                 Field::new("value", DataType::Float32, true),
                                 Field::new("key", DataType::Utf8, false),
-                            ].into(),
+                            ]
+                            .into(),
                         ),
                         true,
                     )),
@@ -257,7 +263,8 @@ mod test {
                                 Field::new("key", DataType::Utf8, false),
                                 Field::new("uint8", DataType::UInt8, true),
                                 Field::new("value", DataType::Boolean, true),
-                            ].into(),
+                            ]
+                            .into(),
                         ),
                         true,
                     )),
@@ -275,10 +282,15 @@ mod test {
                                 Field::new("key", DataType::Utf8, false),
                                 Field::new(
                                     "value",
-                                    DataType::List(Arc::new(Field::new("item", DataType::UInt16, true))),
+                                    DataType::List(Arc::new(Field::new(
+                                        "item",
+                                        DataType::UInt16,
+                                        true,
+                                    ))),
                                     true,
                                 ),
-                            ].into(),
+                            ]
+                            .into(),
                         ),
                         true,
                     )),
