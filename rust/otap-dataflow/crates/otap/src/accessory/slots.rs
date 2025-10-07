@@ -109,6 +109,7 @@ impl<UData> State<UData> {
     }
 
     /// Allocate a slot for a new request with user-provided data.
+    #[must_use]
     pub fn allocate_slot(&mut self, user_data: UData) -> Option<SlotKey> {
         // Try to reuse a free slot first
         if let Some(slot_index) = self.free_slots.pop() {
@@ -176,7 +177,7 @@ impl<UData> State<UData> {
         }
     }
 
-    /// Get and drop the user data, if current, and drop it.
+    /// Get and drop the user data, if current.
     pub fn cancel(&mut self, slot_key: SlotKey) {
         let _ = self.get_if_current(slot_key);
     }
