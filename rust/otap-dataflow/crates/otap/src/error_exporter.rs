@@ -1,6 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
-//! An error-exporter returns a static error.
+
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;

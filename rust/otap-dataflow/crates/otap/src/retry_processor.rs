@@ -351,7 +351,7 @@ impl TryFrom<CallData> for RetryState {
 
     fn try_from(value: CallData) -> Result<Self, Self::Error> {
         value
-            .get(0)
+            .first()
             .map(|&val0| Ok(Self { id: val0.into() }))
             .unwrap_or(Err(Error::InternalError {
                 message: "invalid calldata".into(),
