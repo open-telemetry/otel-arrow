@@ -117,25 +117,27 @@ impl Context {
     }
 
     /// Consume frames to locate the most recent subscriber with ACKS.
+    /// This is a "transfer function" used in the engine for route_ack.
     #[must_use]
     pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
         ack.accepted
             .context
             .next_with_interest(Interests::ACKS)
             .map(|frame| {
-                ack.calldata = Some(frame.calldata);
+                ack.calldata = frame.calldata;
                 (frame.node_id, ack)
             })
     }
 
     /// Consume frames to locate the most recent subscriber with NACKS.
+    /// This is a "transfer function" used in the engine for route_nack.
     #[must_use]
     pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
         nack.refused
             .context
             .next_with_interest(Interests::NACKS)
             .map(|frame| {
-                nack.calldata = Some(frame.calldata);
+                nack.calldata = frame.calldata;
                 (frame.node_id, nack)
             })
     }

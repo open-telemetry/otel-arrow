@@ -202,18 +202,22 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
-    /// Send a Ack to a node of known-interest.
-    pub async fn route_ack<F>(
+    /// Send a AckMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Acks, if any.  When there is a
+    /// recipient, this returns its node_id and the AckMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_ack<Transfer>(
         &self,
         ack_in: AckMsg<PData>,
-        cxf: F,
+        transfer: Transfer,
     ) -> Result<(), TypedError<AckMsg<PData>>>
     where
-        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+        Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
         // TODO: Placeholder: This returns a SendError::Closed as there
         // is no appropriate message to send yet.
-        cxf(ack_in)
+        transfer(ack_in)
             .map(|(node_id, ack_out)| {
                 Err(TypedError::NodeControlMsgSendError {
                     node_id,
@@ -223,18 +227,22 @@ impl<PData> EffectHandlerCore<PData> {
             .unwrap_or(Ok(()))
     }
 
-    /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(
+    /// Send a NackMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Nacks, if any.  When there is a
+    /// recipient, this returns its node_id and the NackMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_nack<Transfer>(
         &self,
         nack_in: NackMsg<PData>,
-        cxf: F,
+        transfer: Transfer,
     ) -> Result<(), TypedError<NackMsg<PData>>>
     where
-        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+        Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         // TODO: Placeholder: This returns a SendError::Closed as there
         // is no appropriate message to send yet.
-        cxf(nack_in)
+        transfer(nack_in)
             .map(|(node_id, nack_out)| {
                 Err(TypedError::NodeControlMsgSendError {
                     node_id,

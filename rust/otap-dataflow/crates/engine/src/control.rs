@@ -12,7 +12,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::Duration;
@@ -35,9 +35,13 @@ impl<T: Pod> From<T> for Context8u8 {
 
 // --- From Context8u8 to and from Ts of interest
 
-impl From<Context8u8> for usize {
-    fn from(v: Context8u8) -> usize {
-        bytemuck::cast(v.0)
+impl TryFrom<Context8u8> for usize {
+    type Error = Error;
+
+    fn try_from(v: Context8u8) -> Result<Self, Self::Error> {
+        bytemuck::try_cast(v.0).map_err(|_| Error::InternalError {
+            message: "bytecast error".into(),
+        })
     }
 }
 
@@ -60,7 +64,7 @@ pub struct AckMsg<PData> {
     pub accepted: Box<PData>,
 
     /// Subscriber information returned.
-    pub calldata: Option<CallData>,
+    pub calldata: CallData,
 }
 
 impl<PData> AckMsg<PData> {
@@ -68,7 +72,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: None,
+            calldata: smallvec![],
         }
     }
 }
@@ -80,7 +84,7 @@ pub struct NackMsg<PData> {
     pub reason: String,
 
     /// Subscriber information returned.
-    pub calldata: Option<CallData>,
+    pub calldata: CallData,
 
     /// Refused pdata being returned.
     pub refused: Box<PData>,
@@ -91,7 +95,7 @@ impl<PData> NackMsg<PData> {
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
         Self {
             reason: reason.into(),
-            calldata: None,
+            calldata: smallvec![],
             refused: Box::new(refused),
         }
     }

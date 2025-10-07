@@ -346,11 +346,16 @@ impl From<RetryState> for CallData {
     }
 }
 
-impl From<CallData> for RetryState {
-    fn from(value: CallData) -> Self {
-        Self {
-            id: value[0].into(),
-        }
+impl TryFrom<CallData> for RetryState {
+    type Error = Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        value
+            .get(0)
+            .map(|&val0| Ok(Self { id: val0.into() }))
+            .unwrap_or(Err(Error::InternalError {
+                message: "invalid calldata".into(),
+            }))
     }
 }
 
@@ -386,19 +391,18 @@ impl RetryProcessor {
         }
     }
 
-    fn acknowledge(&mut self, ack: AckMsg<OtapPdata>) -> bool {
-        let rstate: RetryState = ack.calldata.expect("has context").into();
+    async fn acknowledge(&mut self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        let rstate: RetryState = ack.calldata.try_into()?;
         let id = rstate.id;
         if let Some(_removed) = self.pending_messages.remove(&id) {
             log::debug!("Acknowledged and removed message with ID: {id}");
             if let Some(m) = self.metrics.as_mut() {
                 m.msgs_acked.inc();
             }
-            true
         } else {
             log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
-            false
         }
+        Ok(())
     }
 
     async fn handle_nack(
@@ -406,7 +410,8 @@ impl RetryProcessor {
         nack: NackMsg<OtapPdata>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let rstate: RetryState = nack.calldata.expect("has context").into();
+        let rstate: RetryState = nack.calldata.try_into()?;
+
         let id = rstate.id;
         if let Some(m) = self.metrics.as_mut() {
             m.nacks_received.inc();
@@ -588,10 +593,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack(ack) => {
-                    let _ = self.acknowledge(ack);
-                    Ok(())
-                }
+                NodeControlMsg::Ack(ack) => self.acknowledge(ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
@@ -748,25 +750,15 @@ mod tests {
 
     fn test_ack_with_id(id: u64) -> AckMsg<OtapPdata> {
         let msg = empty_pdata();
-        // Note: we can insert the caller's interests e.g.,
-        // mut
-        // msg.test_subscribe_to(Interests::ACKS, other_data.into(), node_id);
         let mut ack = AckMsg::new(msg);
-
-        // This is the retry_processor's own interest set by the
-        // engine/pdata before delivering the ack, here simulated for
-        // immediate delivery.
-        ack.calldata = Some(RetryState::new(id).into());
+        ack.calldata = RetryState::new(id).into();
         ack
     }
 
     fn test_nack_with_id<S: Into<String>>(id: u64, reason: S) -> NackMsg<OtapPdata> {
         let msg = empty_pdata();
-        // Note: we can insert the caller's interests e.g.,
-        // mut
-        // msg.test_subscribe_to(Interests::NACKS, other_data.into(), node_id);
         let mut nack = NackMsg::new(reason, msg);
-        nack.calldata = Some(RetryState::new(id).into());
+        nack.calldata = RetryState::new(id).into();
         nack
     }
 
