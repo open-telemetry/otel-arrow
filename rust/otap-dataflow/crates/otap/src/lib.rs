@@ -52,6 +52,9 @@ pub mod debug_processor;
 /// Implementation of a noop exporter that acts as a exporter placeholder
 pub mod noop_exporter;
 
+/// An error-exporter returns a static error.
+pub mod error_exporter;
+
 /// testing utilities
 #[cfg(test)]
 mod otap_mock;
@@ -60,6 +63,9 @@ mod otlp_mock;
 
 #[cfg(test)]
 mod fixtures;
+
+#[cfg(test)]
+pub mod testing;
 
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
