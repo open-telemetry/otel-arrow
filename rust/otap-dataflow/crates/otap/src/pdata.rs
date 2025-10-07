@@ -105,10 +105,15 @@ impl Context {
     /// Subscribe to a set of interests.
     pub(crate) fn subscribe_to(
         &mut self,
-        interests: Interests,
+        mut interests: Interests,
         calldata: CallData,
         node_id: usize,
     ) {
+        if let Some(last) = self.stack.last() {
+            if last.interests & Interests::RETURN_DATA != Interests::NONE {
+                interests |= Interests::RETURN_DATA;
+            }
+        }
         self.stack.push(Frame {
             interests,
             node_id,
@@ -719,9 +724,8 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
-    #[test]
-    fn test_conversion_logs() {
-        let otlp_service_req = ExportLogsServiceRequest::new(vec![
+    fn create_test_logs() -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest::new(vec![
             ResourceLogs::build(Resource::default())
                 .scope_logs(vec![
                     ScopeLogs::build(InstrumentationScope::default())
@@ -733,8 +737,58 @@ mod test {
                         .finish(),
                 ])
                 .finish(),
-        ]);
+        ])
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone)]
+    struct TestData {
+        id0: u64,
+        id1: usize,
+    }
+
+    impl TestData {
+        fn new(id0: u64, id1: usize) -> Self {
+            Self { id0, id1 }
+        }
+    }
+
+    impl From<TestData> for CallData {
+        fn from(value: TestData) -> Self {
+            smallvec::smallvec![value.id0.into(), value.id1.into()]
+        }
+    }
+
+    impl TryFrom<CallData> for TestData {
+        type Error = otap_df_engine::error::Error;
+
+        fn try_from(value: CallData) -> Result<Self, Self::Error> {
+            if value.len() != 2 {
+                return Err(Self::Error::InternalError {
+                    message: "invalid calldata".into(),
+                });
+            }
+            Ok(Self {
+                id0: value[0].into(),
+                id1: value[1].try_into()?,
+            })
+        }
+    }
+
+    fn create_test_pdata() -> (TestData, OtapPdata) {
+        let otlp_service_req = create_test_logs();
         let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
+
+        (
+            TestData::new(100, 1000),
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()),
+        )
+    }
+
+    #[test]
+    fn test_conversion_logs() {
+        let mut otlp_bytes = vec![];
+        let otlp_service_req = create_test_logs();
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
         let pdata =
@@ -1086,5 +1140,179 @@ mod test {
             OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
+    }
+
+    #[test]
+    fn test_context_next_ack_drops_payload_without_return_data() {
+        let (test_data, mut pdata) = create_test_pdata();
+
+        // Subscribe WITHOUT RETURN_DATA interest
+        pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be dropped
+        assert_eq!(ack_msg.accepted.num_items(), 0);
+        assert!(ack_msg.accepted.is_empty());
+        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_ack_preserves_payload_with_return_data() {
+        let (test_data, mut pdata) = create_test_pdata();
+
+        // Subscribe WITH RETURN_DATA interest
+        pdata.test_subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1234,
+        );
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+
+        let (node_id, ack_msg) = result.expect("has");
+        assert_eq!(node_id, 1234);
+        let recv_data: TestData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be preserved
+        assert_eq!(ack_msg.accepted.num_items(), 1);
+        assert!(!ack_msg.accepted.is_empty());
+        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_nack_drops_payload_without_return_data() {
+        let (test_data, mut pdata) = create_test_pdata();
+
+        // Subscribe WITHOUT RETURN_DATA interest
+        pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let nack = NackMsg::new("test error".to_string(), pdata);
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be dropped
+        assert_eq!(nack_msg.refused.num_items(), 0);
+        assert!(nack_msg.refused.is_empty());
+        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_nack_preserves_payload_with_return_data() {
+        let (test_data, mut pdata) = create_test_pdata();
+
+        // Subscribe WITH RETURN_DATA interest
+        pdata.test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1234,
+        );
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let nack = NackMsg::new("test error", pdata);
+
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be preserved
+        assert_eq!(nack_msg.refused.num_items(), 1);
+        assert!(!nack_msg.refused.is_empty());
+        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_ack_nack() {
+        let (test_data, mut pdata) = create_test_pdata();
+
+        // Subscribe multiple frames. RETURN_DATA propagates automatically.
+        pdata.test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1,
+        );
+        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 2);
+        pdata.test_subscribe_to(Interests::NACKS, CallData::default(), 3);
+        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 4);
+
+        // Skipped node 3 (Nack) because call to next_ack()
+
+        let result = Context::next_ack(ack_msg);
+        assert!(result.is_some());
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 2);
+
+        // Payload should be preserved because node 1 has RETURN_DATA
+        assert_eq!(ack_msg.accepted.num_items(), 1);
+        assert!(!ack_msg.accepted.is_empty());
+
+        let nack = NackMsg::new("nope nope", *ack_msg.accepted);
+
+        // Node 1 last, is a Nack.
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1);
+        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+    }
+
+    #[test]
+    fn test_context_no_ack() {
+        let (_, pdata) = create_test_pdata();
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_context_no_nack() {
+        let (_, pdata) = create_test_pdata();
+
+        let nack = NackMsg::new("hey now", pdata);
+
+        let result = Context::next_nack(nack);
+        assert!(result.is_none());
     }
 }
