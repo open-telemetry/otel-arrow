@@ -226,10 +226,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
-            PipelineControlMsg::DelayData { node_id, when, data } => {
-                let delayed = Delayed { node_id, when, data };
-                self.delayed_data.push(delayed);
-            }
+                    PipelineControlMsg::DelayData { node_id, when, data } => {
+                        let delayed = Delayed { node_id, when, data };
+                        self.delayed_data.push(delayed);
+                    }
                     }
                 }
                 // Handle timer expiration events.
@@ -271,7 +271,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             // Use try_send as a fast path:
                             // - avoids allocating/awaiting a future when the channel has capacity
                             // - keeps the event loop responsive and reduces timer jitter
-                // - isolates backpressure to congested channels (only await on Full)
+                            // - isolates backpressure to congested channels (only await on Full)
                             // On Full, fall back to send(msg).await to preserve delivery
                             match sender.try_send(msg) {
                                 Ok(()) => {}
