@@ -8,7 +8,7 @@ Status: **Work-In-Progress**
 
 ToDo: add metrics, event exporters
 
-## Observed State
+## Hierarchical Observed State
 
 ![Observed State](assets/hierarchical-obv-state.svg)
 
@@ -25,9 +25,12 @@ ToDo: add metrics, event exporters
 - RollingBack: Reverting after update failure.
 - Draining: Quiescing; no new work; finishing in-flight.
 - Stopped: Cleanly stopped; can be restarted with re-admission.
-- Rejected(AdmissionError|ConfigRejected): Input was invalid or disallowed; fix inputs.
-- Failed(RuntimeError|DrainError|RollbackFailed|DeleteError): Unrecoverable runtime/teardown failure.
-- Deleting(Graceful|Forced): Teardown in progress (forced may drop in-flight work).
+- Rejected(AdmissionError|ConfigRejected): Input was invalid or disallowed; fix
+  inputs.
+- Failed(RuntimeError|DrainError|RollbackFailed|DeleteError): Unrecoverable
+  runtime/teardown failure.
+- Deleting(Graceful|Forced): Teardown in progress (forced may drop in-flight
+  work).
 - Deleted: All resources removed; terminal.
 
 ## Pipeline Aggregated Decision Flow
@@ -43,14 +46,14 @@ We expose `/livez` and `/readyz` at the logical pipeline level.
 ### Per-core probe mapping (policy-driven)
 
 - ProbePolicy:
-  - live_if: phases considered alive (default: all except `Deleted`).
-  - ready_if: phases considered ready (default: `Running` and optionally `Updating`).
+    - live_if: phases considered alive (default: all except `Deleted`).
+    - ready_if: phases considered ready (default: `Running` and optionally
+      `Updating`).
 
 ### Aggregate probe policy (quorums)
 
 - Quorum: All | AtLeast(n) | Percent(p) (of non-Deleted cores).
 - AggregationPolicy:
-  - core_probe: ProbePolicy
-  - live_quorum (default AtLeast(1))
-  - ready_quorum (default All; popular alternative: Percent(80))
-
+    - core_probe: ProbePolicy
+    - live_quorum (default AtLeast(1))
+    - ready_quorum (default All; popular alternative: Percent(80))
