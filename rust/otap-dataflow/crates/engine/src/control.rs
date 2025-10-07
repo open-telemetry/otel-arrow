@@ -26,6 +26,9 @@ pub struct Context8u8([u8; 8]);
 impl<T: Pod> From<T> for Context8u8 {
     /// From T to Context8u8
     fn from(v: T) -> Self {
+        const {
+            assert!(size_of::<T>() == 8);
+        }
         Self(bytemuck::cast(v))
     }
 }
