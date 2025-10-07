@@ -28,10 +28,10 @@ pub enum TypedError<T> {
     PipelineControlMsgError(SendError<T>),
 
     /// A wrapper for the node control message send errors.
-    #[error("A node control message send error occurred in node {node}: {error}")]
+    #[error("A node control message send error occurred in node {node_id}: {error}")]
     NodeControlMsgSendError {
         /// The name of the node that encountered the error.
-        node: NodeId,
+        node_id: usize,
 
         /// The error that occurred.
         error: SendError<T>,
@@ -52,10 +52,12 @@ impl<T: Sized> From<TypedError<T>> for Error {
             TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
                 error: e.to_string(),
             },
-            TypedError::NodeControlMsgSendError { node, error } => Error::NodeControlMsgSendError {
-                node,
-                error: error.to_string(),
-            },
+            TypedError::NodeControlMsgSendError { node_id, error } => {
+                Error::NodeControlMsgSendError {
+                    node: NodeId::build(node_id, "name is unknown".into()),
+                    error: error.to_string(),
+                }
+            }
             TypedError::Error(e) => e,
         }
     }
