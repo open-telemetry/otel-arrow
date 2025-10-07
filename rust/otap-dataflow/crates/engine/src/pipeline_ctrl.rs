@@ -271,7 +271,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             // Use try_send as a fast path:
                             // - avoids allocating/awaiting a future when the channel has capacity
                             // - keeps the event loop responsive and reduces timer jitter
-                // - isolates backpressure to congested channels (only await on Full)
+                            // - isolates backpressure to congested channels (only await on Full)
                             // On Full, fall back to send(msg).await to preserve delivery
                             match sender.try_send(msg) {
                                 Ok(()) => {}
