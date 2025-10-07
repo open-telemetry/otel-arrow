@@ -17,14 +17,16 @@ use crate::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_engine::control::PipelineControlMsg;
+use otap_df_state::store::ObservedStateHandle;
 use serde::Serialize;
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+    Router::new()
+        .route("/pipeline-groups/status", get(show_status))
+        .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
 }
 
 /// Response body.
@@ -35,15 +37,19 @@ struct ShutdownResponse {
     errors: Option<Vec<String>>,
 }
 
+pub async fn show_status(
+    State(state): State<AppState>,
+) -> Result<Json<ObservedStateHandle>, StatusCode> {
+    Ok(Json(state.observed_state_store))
+}
+
 async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
     let errors: Vec<_> = state
         .ctrl_msg_senders
         .iter()
         .filter_map(|sender| {
             sender
-                .try_send(PipelineControlMsg::Shutdown {
-                    reason: "admin requested shutdown".to_owned(), // ToDo we probably need to codify reasons in the future
-                })
+                .try_send_shutdown("admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
                 .err()
         })
         .map(|e| e.to_string())

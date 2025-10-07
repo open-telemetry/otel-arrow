@@ -24,6 +24,7 @@ use std::sync::Arc;
 ///
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
     ///
@@ -60,6 +61,7 @@ pub enum PipelineType {
 }
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineSettings {
     /// The default size of the node control message channels.
     /// These channels are used for sending control messages by the pipeline engine to nodes.

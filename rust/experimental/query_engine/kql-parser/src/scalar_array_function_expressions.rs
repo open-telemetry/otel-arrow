@@ -7,13 +7,29 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_array_concat_expression(
+pub(crate) fn parse_array_unary_expressions(
+    array_unary_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = array_unary_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::array_concat_expression => parse_array_concat_expression(rule, scope),
+        _ => panic!("Unexpected rule in array_unary_expressions: {rule}"),
+    }
+}
+
+fn parse_array_concat_expression(
     array_concat_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&array_concat_expression_rule);
 
-    let array_concat_rules = array_concat_expression_rule.into_inner();
+    let array_concat_rules = array_concat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 

@@ -1,0 +1,81 @@
+name: CI 100kLRPS
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: load_generator:latest
+        network: testbed
+        command: ["--serve"]
+        environment:
+          # overriden in test steps
+          - SYSLOG_SERVER=df-engine
+          - SYSLOG_PORT=4317
+          - SYSLOG_TRANSPORT=udp
+        ports:
+          - "5001:5001"
+        build:
+          context: ./load_generator
+    execution:
+      pipeline_perf_loadgen:
+        threads: 1
+        target_rate: 5000
+        batch_size: 100
+        load_type: syslog
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:5001/metrics
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "3-3"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "1-1"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component: {}
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: SYSLOG-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otap.yaml
+        backend_receiver_type: otap
+  - name: SYSLOG-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otlp.yaml
+        backend_receiver_type: otlp

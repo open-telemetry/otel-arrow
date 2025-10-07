@@ -1,0 +1,169 @@
+steps:
+  - name: Deploy Backend Engine
+    action:
+      component_action:
+        phase: deploy
+        target: backend-service
+    hooks:
+      run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/backend/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/backend/config.rendered.yaml
+              variables:
+                # ----- General settings -----
+                # default_pipeline_ctrl_msg_channel_size: 100
+                # default_node_ctrl_msg_channel_size: 100
+                # default_pdata_channel_size: 100
+                # ----- Receiver config -----
+                # backend_receiver_type: otap             # Options: otap, otlp, or custom/invalid
+                # listening_addr: "0.0.0.0:1235"
+                # compression_method: zstd                # Default is 'zstd' for otap, 'gzip' for otlp
+                backend_receiver_type: '{{backend_receiver_type}}'
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8087/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Dataflow Engine
+    action:
+      component_action:
+        phase: deploy
+        target: df-engine
+    hooks:
+      run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: '{{engine_config_template}}'
+              output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
+              variables:
+                backend_hostname: backend-service
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8086/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              variables:
+                # ----- General settings -----
+                # default_pipeline_ctrl_msg_channel_size: 100
+                # default_node_ctrl_msg_channel_size: 100
+                # default_pdata_channel_size: 100
+                # ----- Receiver traffic config -----
+                # max_batch_size: 1000
+                # signals_per_second: 100000
+                # metric_weight: 0
+                # trace_weight: 0
+                # log_weight: 100
+                # registry_path: "https://github.com/open-telemetry/semantic-conventions.git[model]"
+                # ----- Exporter config -----
+                # loadgen_exporter_type: otap        # Options: otap, otlp, or custom/invalid
+                # engine_hostname: localhost
+                # exporter_port: 4317
+                # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
+                engine_hostname: df-engine
+                loadgen_exporter_type: '{{loadgen_exporter_type}}'
+
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8085/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  - name: Wait for data
+    action:
+      wait:
+        delay_seconds: {{wait_for_data_interval | default(5)}}
+  # This is the main observation window, marked by custome events at start/stop
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: {{observation_interval | default(20)}}
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+  # Stop the load generator from sending traffic.
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/pipeline-groups/shutdown
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+    action:
+      no_op: {}
+  # Wait for all items in-flight to transit and ensure metrics are updated.
+  - name: Wait For Drain and Reset
+    action:
+      wait:
+        delay_seconds: 3
+  # Stop monitoring all components.
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  # Stop all running components.
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - df-engine
+          - backend-service
+  # Run the report
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - sql_report:
+              name: Integration Report - Logs
+              report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path:  ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: results/integration/gh-actions-benchmark

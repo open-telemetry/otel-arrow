@@ -7,7 +7,30 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_tostring_expression(
+pub(crate) fn parse_conversion_unary_expressions(
+    conversion_unary_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = conversion_unary_expressions_rule
+        .into_inner()
+        .next()
+        .unwrap();
+
+    match rule.as_rule() {
+        Rule::tostring_expression => parse_tostring_expression(rule, scope),
+        Rule::toint_expression => parse_toint_expression(rule, scope),
+        Rule::tobool_expression => parse_tobool_expression(rule, scope),
+        Rule::tofloat_expression => parse_tofloat_expression(rule, scope),
+        Rule::tolong_expression => parse_tolong_expression(rule, scope),
+        Rule::toreal_expression => parse_toreal_expression(rule, scope),
+        Rule::todouble_expression => parse_todouble_expression(rule, scope),
+        Rule::todatetime_expression => parse_todatetime_expression(rule, scope),
+        Rule::totimespan_expression => parse_totimespan_expression(rule, scope),
+        _ => panic!("Unexpected rule in conversion_unary_expressions: {rule}"),
+    }
+}
+
+fn parse_tostring_expression(
     tostring_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -24,7 +47,7 @@ pub(crate) fn parse_tostring_expression(
     )))
 }
 
-pub(crate) fn parse_toint_expression(
+fn parse_toint_expression(
     toint_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -41,7 +64,7 @@ pub(crate) fn parse_toint_expression(
     )))
 }
 
-pub(crate) fn parse_tobool_expression(
+fn parse_tobool_expression(
     tobool_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -56,7 +79,7 @@ pub(crate) fn parse_tobool_expression(
     )))
 }
 
-pub(crate) fn parse_tofloat_expression(
+fn parse_tofloat_expression(
     tofloat_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -71,7 +94,7 @@ pub(crate) fn parse_tofloat_expression(
     )))
 }
 
-pub(crate) fn parse_tolong_expression(
+fn parse_tolong_expression(
     tolong_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -86,7 +109,7 @@ pub(crate) fn parse_tolong_expression(
     )))
 }
 
-pub(crate) fn parse_toreal_expression(
+fn parse_toreal_expression(
     toreal_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -101,7 +124,7 @@ pub(crate) fn parse_toreal_expression(
     )))
 }
 
-pub(crate) fn parse_todouble_expression(
+fn parse_todouble_expression(
     todouble_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -116,7 +139,7 @@ pub(crate) fn parse_todouble_expression(
     )))
 }
 
-pub(crate) fn parse_todatetime_expression(
+fn parse_todatetime_expression(
     todatetime_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -134,7 +157,7 @@ pub(crate) fn parse_todatetime_expression(
     ))
 }
 
-pub(crate) fn parse_totimespan_expression(
+fn parse_totimespan_expression(
     totimespan_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {

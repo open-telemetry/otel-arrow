@@ -73,7 +73,16 @@ impl PipelineExpression {
     }
 
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
-        // todo: Implement constant folding and other optimizations
+        let scope = PipelineResolutionScope {
+            constants: &self.constants,
+        };
+
+        let mut errors = Vec::new();
+        for e in &mut self.expressions {
+            if let Err(e) = e.try_fold(&scope) {
+                errors.push(e);
+            }
+        }
         Ok(())
     }
 }
@@ -94,6 +103,64 @@ impl Expression for PipelineExpression {
     }
 }
 
+impl std::fmt::Display for PipelineExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Pipeline")?;
+
+        writeln!(f, "├── Query: {:?}", self.query)?;
+
+        if self.constants.is_empty() {
+            writeln!(f, "├── Constants: []")?;
+        } else {
+            writeln!(f, "├── Constants:")?;
+            let last_idx = self.constants.len() - 1;
+            for (i, c) in self.constants.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "│   └── {i} = ")?;
+                    c.fmt_with_indent(f, "│       ")?;
+                } else {
+                    write!(f, "│   ├── {i} = ")?;
+                    c.fmt_with_indent(f, "│   │   ")?;
+                }
+            }
+        }
+
+        if self.initializations.is_empty() {
+            writeln!(f, "├── Initializations: []")?;
+        } else {
+            writeln!(f, "├── Initializations:")?;
+            let last_idx = self.initializations.len() - 1;
+            for (i, e) in self.initializations.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "│   └── ")?;
+                    e.fmt_with_indent(f, "│       ")?;
+                } else {
+                    write!(f, "│   ├── ")?;
+                    e.fmt_with_indent(f, "│   │   ")?;
+                }
+            }
+        }
+
+        if self.expressions.is_empty() {
+            writeln!(f, "└── Expressions: []")?;
+        } else {
+            writeln!(f, "└── Expressions:")?;
+            let last_idx = self.expressions.len() - 1;
+            for (i, e) in self.expressions.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "    └── ")?;
+                    e.fmt_with_indent(f, "        ")?;
+                } else {
+                    write!(f, "    ├── ")?;
+                    e.fmt_with_indent(f, "    │   ")?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub struct PipelineResolutionScope<'a> {
     constants: &'a Vec<StaticScalarExpression>,
 }
@@ -110,6 +177,25 @@ pub enum PipelineInitialization {
         name: String,
         value: ScalarExpression,
     },
+}
+
+impl PipelineInitialization {
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        match self {
+            PipelineInitialization::SetGlobalVariable { name, value } => {
+                writeln!(f, "SetGlobalVariable")?;
+                writeln!(f, "{indent}├── Name: {name:?}")?;
+                write!(f, "{indent}└── Value(Scalar): ")?;
+                value.fmt_with_indent(f, format!("{indent}                   ").as_str())?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub struct PipelineExpressionBuilder {
@@ -178,5 +264,51 @@ impl PipelineExpressionBuilder {
 impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
     fn as_ref(&self) -> &PipelineExpression {
         &self.pipeline
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_folding_test() {
+        let actual = PipelineExpressionBuilder::new("")
+            .with_constants(vec![StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )])
+            .with_expressions(vec![DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Boolean(
+                            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                        )),
+                        ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::Boolean,
+                            0,
+                            ValueAccessor::new(),
+                        )),
+                        false,
+                    )),
+                ),
+            )])
+            .build()
+            .unwrap();
+
+        let mut expected = PipelineExpression::new("");
+
+        expected.push_constant(StaticScalarExpression::Boolean(
+            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+        ));
+
+        // Note: In this test the predicate evaluates to a static true so it
+        // gets elided completely.
+        expected.push_expression(DataExpression::Discard(DiscardDataExpression::new(
+            QueryLocation::new_fake(),
+        )));
+
+        assert_eq!(expected, actual);
     }
 }

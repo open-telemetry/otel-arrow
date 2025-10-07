@@ -86,7 +86,7 @@ impl ResourceLogsView for ObjResourceLogs<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        let schema_url = self.inner.schema_url.as_str();
+        let schema_url = self.inner.schema_url.as_bytes();
         if schema_url.is_empty() {
             None
         } else {
@@ -123,7 +123,7 @@ impl ScopeLogsView for ObjScope<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        let schema_url = self.inner.schema_url.as_str();
+        let schema_url = self.inner.schema_url.as_bytes();
         if schema_url.is_empty() {
             None
         } else {
@@ -178,7 +178,7 @@ impl LogRecordView for ObjLogRecord<'_> {
     #[inline]
     fn severity_text(&self) -> Option<Str<'_>> {
         if !self.inner.severity_text.is_empty() {
-            Some(self.inner.severity_text.as_str())
+            Some(self.inner.severity_text.as_bytes())
         } else {
             None
         }
@@ -216,5 +216,14 @@ impl LogRecordView for ObjLogRecord<'_> {
     #[inline]
     fn span_id(&self) -> Option<&SpanId> {
         parse_span_id(&self.inner.span_id)
+    }
+
+    #[inline]
+    fn event_name(&self) -> Option<Str<'_>> {
+        if !self.inner.event_name.is_empty() {
+            Some(self.inner.event_name.as_bytes())
+        } else {
+            None
+        }
     }
 }

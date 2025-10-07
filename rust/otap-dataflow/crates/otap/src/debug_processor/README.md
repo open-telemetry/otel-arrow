@@ -8,10 +8,95 @@ This crate will contain the implementation of the debug processor.
 
 ```yaml
 config:
-    verbosity: normal
+   verbosity: basic
+   mode: batch
+   signals:
+   - metrics
+   - spans
+   - logs
+   filters:
+   - predicate:
+      field: attribute
+      value:
+      - key: service.name
+        value: service_name
+   mode: exclude
 ```
 
+### Verbosity
+
 Valid levels of verbosity are: `basic`, `normal`, and `detailed`
+
+By default the verbosity is set to `normal`
+
+### Modes
+
+You can alter how the output should be sent, via the `mode` setting.
+
+This setting can switch between `batch` and `signal`
+
+In `batch` mode the output will dump the entire batch at once
+
+In `signal` mode the output will output each signal individually
+
+By default mode is set to `batch`
+
+### Signal Selection
+
+Select what signals you want output for, by default the following
+signals will be displayed `metrics`, `logs`, and `spans`
+
+### Filtering
+
+You can filter the signals that get displayed, you can select the filter
+mode `include` or `exclude` and then define the predicate to match the
+signals against, currently we support the following fields `attribute`
+Multiple filter rules can be definied and will be applied in order
+(top to bottom).
+
+### Output
+
+The DebugProcessor is a pass-through processor which allows the the normal
+flow of signals, this processor outputs various debug information on the
+signals/batches passing through. You can configure how the debug information
+is received.
+
+#### Output to file
+
+```yaml
+config:
+   verbosity: normal
+   output: file_name.txt
+```
+
+In this config the debug-processor will write to a file named `file_name.txt`
+it will append to the file rather than overwriting
+
+#### Output to pipeline node
+
+```yaml
+  debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      passthrough_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+      logging_port:
+        destinations:
+          - some_node
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
+      output:
+        - logging_port
+```
+
+In this config we create a processor with multiple out_ports.
+In the config setting we tell the debug-processor to use `logging_port`
+which will send data to another node that has been defined outside of
+this configuration named `some_node`
 
 ## Example Output => Basic Verbosity
 

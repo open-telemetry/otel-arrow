@@ -85,10 +85,7 @@ pub mod logs {
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
 
-    // TODO after we support event_name, set this to non-empty string
-    // to ensure we correctly decode it
-    // https://github.com/open-telemetry/otel-arrow/issues/422
-    const EVENT_NAME: &str = "";
+    const EVENT_NAME: &str = "event123";
     const TIMESTAMP: u64 = 1619712000000000000u64;
 
     pub fn to_export_logs_request(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {

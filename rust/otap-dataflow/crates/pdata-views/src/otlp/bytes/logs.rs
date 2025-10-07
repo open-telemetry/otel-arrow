@@ -7,17 +7,18 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
+use otel_arrow_rust::proto::consts::field_num::logs::{
+    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
+    LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
+    LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID,
+    LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE, RESOURCE_LOGS_RESOURCE,
+    RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS,
+    SCOPE_LOGS_SCHEMA_URL,
+};
+use otel_arrow_rust::proto::consts::wire_types;
 use otel_arrow_rust::schema::{SpanId, TraceId};
 
 use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
-use crate::otlp::bytes::consts::field_num::logs::{
-    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
-    LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
-    LOG_RECORD_SPAN_ID, LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE,
-    RESOURCE_LOGS_RESOURCE, RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE,
-    SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
-};
-use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
@@ -326,10 +327,8 @@ impl ResourceLogsView for RawResourceLogs<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL)?;
-        std::str::from_utf8(slice).ok()
+        self.byte_parser
+            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL)
     }
 
     #[inline]
@@ -371,10 +370,8 @@ impl ScopeLogsView for RawScopeLogs<'_> {
 
     #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL)?;
-        std::str::from_utf8(slice).ok()
+        self.byte_parser
+            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL)
     }
 
     #[inline]
@@ -451,10 +448,8 @@ impl LogRecordView for RawLogRecord<'_> {
 
     #[inline]
     fn severity_text(&self) -> Option<crate::views::common::Str<'_>> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT)?;
-        std::str::from_utf8(slice).ok()
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT)
     }
 
     #[inline]
@@ -478,5 +473,11 @@ impl LogRecordView for RawLogRecord<'_> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_TRACE_ID)
             .and_then(|slice| slice.try_into().ok())
+    }
+
+    #[inline]
+    fn event_name(&self) -> Option<crate::views::common::Str<'_>> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_EVENT_NAME)
     }
 }

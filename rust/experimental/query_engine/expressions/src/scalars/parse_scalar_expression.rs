@@ -28,7 +28,7 @@ impl ParseScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             ParseScalarExpression::Json(p) => p.try_resolve_static(scope),
             ParseScalarExpression::Regex(p) => p.try_resolve_static(scope),
@@ -48,6 +48,13 @@ impl Expression for ParseScalarExpression {
         match self {
             ParseScalarExpression::Json(_) => "ParseScalar(Json)",
             ParseScalarExpression::Regex(_) => "ParseScalar(Regex)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            ParseScalarExpression::Json(p) => p.fmt_with_indent(f, indent),
+            ParseScalarExpression::Regex(p) => p.fmt_with_indent(f, indent),
         }
     }
 }
@@ -83,7 +90,7 @@ impl ParseJsonScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let query_location = self.inner_expression.get_query_location().clone();
 
         match self.inner_expression.try_resolve_static(scope)? {
@@ -110,6 +117,13 @@ impl Expression for ParseJsonScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ParseJsonScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        let header = "ParseJson(Scalar): ";
+        write!(f, "{header}")?;
+        self.inner_expression
+            .fmt_with_indent(f, format!("{indent}{}", " ".repeat(header.len())).as_str())
     }
 }
 
@@ -151,7 +165,7 @@ impl ParseRegexScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let pattern = self.pattern.try_resolve_static(scope)?;
 
         let options = if let Some(o) = &mut self.options {
@@ -193,6 +207,20 @@ impl Expression for ParseRegexScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ParseRegexScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "ParseRegex")?;
+        write!(f, "{indent}├── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        if let Some(o) = &self.options {
+            write!(f, "{indent}└── Options(Scalar): ")?;
+            o.fmt_with_indent(f, format!("{indent}                     ").as_str())?;
+        } else {
+            writeln!(f, "{indent}└── Options: None")?;
+        }
+        Ok(())
     }
 }
 

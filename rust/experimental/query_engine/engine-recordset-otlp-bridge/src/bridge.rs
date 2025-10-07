@@ -15,38 +15,75 @@ const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
 static EXPRESSIONS: LazyLock<RwLock<Vec<PipelineExpression>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
-pub fn parse_kql_query_into_pipeline(query: &str) -> Result<PipelineExpression, Vec<ParserError>> {
-    let options = ParserOptions::new()
-        .with_attached_data_names(&["resource", "instrumentation_scope", "scope"])
-        .with_source_map_schema(
-            ParserMapSchema::new()
-                .set_default_map_key("Attributes")
-                .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-                .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-                .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
-                .with_key_definition("SeverityText", ParserMapKeySchema::String)
-                .with_key_definition("Body", ParserMapKeySchema::Any)
-                .with_key_definition("Attributes", ParserMapKeySchema::Map)
-                .with_key_definition("TraceId", ParserMapKeySchema::Array)
-                .with_key_definition("SpanId", ParserMapKeySchema::Array)
-                .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-                .with_key_definition("EventName", ParserMapKeySchema::String),
-        );
+pub fn parse_kql_query_into_pipeline(
+    query: &str,
+    options: Option<BridgeOptions>,
+) -> Result<PipelineExpression, Vec<ParserError>> {
+    let mut parser_options = ParserOptions::new().with_attached_data_names(&[
+        "resource",
+        "instrumentation_scope",
+        "scope",
+    ]);
 
-    KqlParser::parse_with_options(query, options)
+    let mut log_record_schema = ParserMapSchema::new()
+        .set_default_map_key("Attributes")
+        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+        .with_key_definition("Body", ParserMapKeySchema::Any)
+        .with_key_definition("TraceId", ParserMapKeySchema::Array)
+        .with_key_definition("SpanId", ParserMapKeySchema::Array)
+        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
+        .with_key_definition("EventName", ParserMapKeySchema::String);
+
+    if let Some(mut attributes_schema) = options.and_then(|mut v| v.take_attributes_schema()) {
+        let schema = attributes_schema.get_schema_mut();
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            // Note: If any top-level fields are duplicated on Attributes Schema
+            // they get removed automatically. This is done for two purposes.
+            // The first is to make it easy for callers to pass in something
+            // like a table schema. Many backends flatten log records into
+            // columns. This feature is essentially a convenience thing so
+            // callers with table schema don't need to map columns back to the
+            // log record schema. The second reason is to prevent
+            // accidental\confusing query results. If for example "Body" is
+            // present in Attributes users might query with ambiguous naming.
+            // For example: source | extend Body = 'something' will write to the
+            // top-level field and not Attributes.
+            if let Some(removed) = schema.remove(top_level_key)
+                && &removed != top_level_key_schema
+            {
+                return Err(vec![ParserError::SchemaError(format!(
+                    "'{top_level_key}' key cannot be declared as '{}' type",
+                    &removed
+                ))]);
+            }
+        }
+
+        parser_options = parser_options.with_summary_map_schema(attributes_schema.clone());
+
+        log_record_schema = log_record_schema.with_key_definition(
+            "Attributes",
+            ParserMapKeySchema::Map(Some(attributes_schema)),
+        );
+    }
+
+    KqlParser::parse_with_options(
+        query,
+        parser_options.with_source_map_schema(log_record_schema),
+    )
 }
 
-pub fn register_pipeline_for_kql_query(query: &str) -> Result<usize, Vec<ParserError>> {
-    let pipeline = parse_kql_query_into_pipeline(query);
+pub fn register_pipeline_for_kql_query(
+    query: &str,
+    options: Option<BridgeOptions>,
+) -> Result<usize, Vec<ParserError>> {
+    let pipeline = parse_kql_query_into_pipeline(query, options)?;
 
-    match pipeline {
-        Ok(p) => {
-            let mut expressions = EXPRESSIONS.write().unwrap();
-            expressions.push(p);
-            Ok(expressions.len() - 1)
-        }
-        Err(e) => Err(e),
-    }
+    let mut expressions = EXPRESSIONS.write().unwrap();
+    expressions.push(pipeline);
+    Ok(expressions.len() - 1)
 }
 
 pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -421,7 +458,7 @@ mod tests {
 
         {
             // Include everything
-            let pipeline_id = register_pipeline_for_kql_query("s | where true").unwrap();
+            let pipeline_id = register_pipeline_for_kql_query("s | where true", None).unwrap();
 
             let (included, _) =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -438,7 +475,7 @@ mod tests {
 
         {
             // Drop everything
-            let pipeline_id = register_pipeline_for_kql_query("s | where false").unwrap();
+            let pipeline_id = register_pipeline_for_kql_query("s | where false", None).unwrap();
 
             let (_, dropped) =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -460,7 +497,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        let pipeline = parse_kql_query_into_pipeline("source | where false").unwrap();
+        let pipeline = parse_kql_query_into_pipeline("source | where false", None).unwrap();
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
@@ -480,7 +517,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        let pipeline = parse_kql_query_into_pipeline("source | where true").unwrap();
+        let pipeline = parse_kql_query_into_pipeline("source | where true", None).unwrap();
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
@@ -500,7 +537,8 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        let pipeline = parse_kql_query_into_pipeline("source | summarize Count = count()").unwrap();
+        let pipeline =
+            parse_kql_query_into_pipeline("source | summarize Count = count()", None).unwrap();
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
@@ -512,5 +550,80 @@ mod tests {
 
         assert!(included_records.is_some());
         assert!(dropped_records.is_some());
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema() {
+        let run_test_success = |query: &str| {
+            parse_kql_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                    ),
+                ),
+            )
+            .unwrap();
+        };
+
+        let run_test_failure = |query: &str| {
+            parse_kql_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                    ),
+                ),
+            )
+            .unwrap_err();
+        };
+
+        run_test_success("source | extend int_value = 1234");
+        run_test_failure("source | extend Custom = 1234");
+
+        run_test_success("source | summarize int_value = count()");
+        run_test_success("source | summarize by int_value");
+        run_test_success("source | summarize by int_value | extend int_value = 1");
+
+        run_test_failure("source | summarize by unknown");
+        run_test_failure("source | summarize by unknown = int_value");
+        run_test_failure("source | summarize Count = count()");
+        run_test_failure("source | summarize int_value = count() | extend Custom = 1234");
+
+        run_test_success(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count()",
+        );
+        run_test_failure(
+            "source | summarize by int_value | extend int_value = 1 | summarize Count = count()",
+        );
+
+        run_test_success(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend int_value = 1234",
+        );
+        run_test_failure(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend Custom = 1234",
+        );
+
+        run_test_success("source | extend Body = 'hello world'");
+        // Note: Body gets removed from Attributes schema because it is defined at the root
+        run_test_failure("source | extend Attributes.Body = 'hello world'");
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema_error() {
+        let e = parse_kql_query_into_pipeline(
+            "",
+            Some(BridgeOptions::new().with_attributes_schema(
+                ParserMapSchema::new().with_key_definition("Body", ParserMapKeySchema::Map(None)),
+            )),
+        )
+        .unwrap_err();
+
+        assert_eq!(1, e.len());
+        assert!(matches!(e[0], ParserError::SchemaError(_)));
     }
 }

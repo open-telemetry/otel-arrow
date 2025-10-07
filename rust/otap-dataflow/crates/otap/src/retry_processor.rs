@@ -56,6 +56,7 @@ use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
@@ -68,6 +69,9 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -78,6 +82,158 @@ const MAX_FAILED_MESSAGE_AGE_SECS: u64 = 300;
 
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
+
+/// Telemetry metrics for the RetryProcessor (RFC-aligned items + component counters).
+#[metric_set(name = "retry.processor.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct RetryProcessorMetrics {
+    // RFC-aligned: consumed items by signal and outcome
+    /// Number of items consumed (logs) with outcome=success
+    #[metric(unit = "{item}")]
+    pub consumed_items_logs_success: Counter<u64>,
+    /// Number of items consumed (metrics) with outcome=success
+    #[metric(unit = "{item}")]
+    pub consumed_items_metrics_success: Counter<u64>,
+    /// Number of items consumed (traces) with outcome=success
+    #[metric(unit = "{item}")]
+    pub consumed_items_traces_success: Counter<u64>,
+
+    /// Number of items consumed (logs) with outcome=failure
+    #[metric(unit = "{item}")]
+    pub consumed_items_logs_failure: Counter<u64>,
+    /// Number of items consumed (metrics) with outcome=failure
+    #[metric(unit = "{item}")]
+    pub consumed_items_metrics_failure: Counter<u64>,
+    /// Number of items consumed (traces) with outcome=failure
+    #[metric(unit = "{item}")]
+    pub consumed_items_traces_failure: Counter<u64>,
+
+    /// Number of items consumed (logs) with outcome=refused
+    #[metric(unit = "{item}")]
+    pub consumed_items_logs_refused: Counter<u64>,
+    /// Number of items consumed (metrics) with outcome=refused
+    #[metric(unit = "{item}")]
+    pub consumed_items_metrics_refused: Counter<u64>,
+    /// Number of items consumed (traces) with outcome=refused
+    #[metric(unit = "{item}")]
+    pub consumed_items_traces_refused: Counter<u64>,
+
+    // RFC-aligned: produced items by signal and outcome
+    /// Number of items produced (logs) with outcome=success
+    #[metric(unit = "{item}")]
+    pub produced_items_logs_success: Counter<u64>,
+    /// Number of items produced (metrics) with outcome=success
+    #[metric(unit = "{item}")]
+    pub produced_items_metrics_success: Counter<u64>,
+    /// Number of items produced (traces) with outcome=success
+    #[metric(unit = "{item}")]
+    pub produced_items_traces_success: Counter<u64>,
+
+    /// Number of items produced (logs) with outcome=refused (downstream error)
+    #[metric(unit = "{item}")]
+    pub produced_items_logs_refused: Counter<u64>,
+    /// Number of items produced (metrics) with outcome=refused (downstream error)
+    #[metric(unit = "{item}")]
+    pub produced_items_metrics_refused: Counter<u64>,
+    /// Number of items produced (traces) with outcome=refused (downstream error)
+    #[metric(unit = "{item}")]
+    pub produced_items_traces_refused: Counter<u64>,
+
+    /// Number of items produced (logs) with outcome=failure (originating here)
+    #[metric(unit = "{item}")]
+    pub produced_items_logs_failure: Counter<u64>,
+    /// Number of items produced (metrics) with outcome=failure
+    #[metric(unit = "{item}")]
+    pub produced_items_metrics_failure: Counter<u64>,
+    /// Number of items produced (traces) with outcome=failure
+    #[metric(unit = "{item}")]
+    pub produced_items_traces_failure: Counter<u64>,
+
+    // Component-specific counters
+    /// Number of messages added to the pending retry queue.
+    #[metric(unit = "{msg}")]
+    pub msgs_enqueued: Counter<u64>,
+
+    /// Number of ACKs received that removed a message from the pending queue.
+    #[metric(unit = "{msg}")]
+    pub msgs_acked: Counter<u64>,
+
+    /// Number of NACK control messages processed.
+    #[metric(unit = "{msg}")]
+    pub nacks_received: Counter<u64>,
+
+    /// Number of retry attempts scheduled as a result of NACKs.
+    #[metric(unit = "{event}")]
+    pub retry_attempts: Counter<u64>,
+
+    /// Number of messages re-sent due to a retry.
+    #[metric(unit = "{msg}")]
+    pub msgs_retried: Counter<u64>,
+
+    /// Number of messages dropped because the queue was full.
+    #[metric(unit = "{msg}")]
+    pub msgs_dropped_queue_full: Counter<u64>,
+
+    /// Number of messages dropped after exceeding the maximum retries.
+    #[metric(unit = "{msg}")]
+    pub msgs_dropped_exceeded_retries: Counter<u64>,
+
+    /// Number of expired messages removed during cleanup.
+    #[metric(unit = "{msg}")]
+    pub msgs_removed_expired: Counter<u64>,
+}
+
+impl RetryProcessorMetrics {
+    /// Increment consumed.items with outcome=success for the given signal by n
+    pub fn add_consumed_success(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.consumed_items_logs_success.add(n),
+            SignalType::Metrics => self.consumed_items_metrics_success.add(n),
+            SignalType::Traces => self.consumed_items_traces_success.add(n),
+        }
+    }
+    /// Increment consumed.items with outcome=failure for the given signal by n
+    pub fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.consumed_items_logs_failure.add(n),
+            SignalType::Metrics => self.consumed_items_metrics_failure.add(n),
+            SignalType::Traces => self.consumed_items_traces_failure.add(n),
+        }
+    }
+    /// Increment consumed.items with outcome=refused for the given signal by n
+    pub fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.consumed_items_logs_refused.add(n),
+            SignalType::Metrics => self.consumed_items_metrics_refused.add(n),
+            SignalType::Traces => self.consumed_items_traces_refused.add(n),
+        }
+    }
+
+    /// Increment produced.items with outcome=success for the given signal by n
+    pub fn add_produced_success(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.produced_items_logs_success.add(n),
+            SignalType::Metrics => self.produced_items_metrics_success.add(n),
+            SignalType::Traces => self.produced_items_traces_success.add(n),
+        }
+    }
+    /// Increment produced.items with outcome=refused for the given signal by n
+    pub fn add_produced_refused(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.produced_items_logs_refused.add(n),
+            SignalType::Metrics => self.produced_items_metrics_refused.add(n),
+            SignalType::Traces => self.produced_items_traces_refused.add(n),
+        }
+    }
+    /// Increment produced.items with outcome=failure for the given signal by n
+    pub fn add_produced_failure(&mut self, st: SignalType, n: u64) {
+        match st {
+            SignalType::Logs => self.produced_items_logs_failure.add(n),
+            SignalType::Metrics => self.produced_items_metrics_failure.add(n),
+            SignalType::Traces => self.produced_items_traces_failure.add(n),
+        }
+    }
+}
 
 /// Configuration for the retry processor
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,11 +291,13 @@ pub struct RetryProcessor {
     pending_messages: HashMap<u64, PendingMessage>,
     next_message_id: u64,
     last_cleanup_time: Instant,
+    /// Optional metrics handle (present when constructed with a PipelineContext)
+    metrics: Option<MetricSet<RetryProcessorMetrics>>,
 }
 
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_retry_processor(
-    _pipeline_ctx: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
@@ -151,8 +309,8 @@ pub fn create_retry_processor(
         }
     })?;
 
-    // Create the router processor
-    let router = RetryProcessor::with_config(config);
+    // Create the router processor with metrics registered for this node
+    let router = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config);
 
     // Create NodeUserConfig and wrap as local processor
     let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
@@ -180,14 +338,33 @@ impl RetryProcessor {
             pending_messages: HashMap::new(),
             next_message_id: 1,
             last_cleanup_time: Instant::now(),
+            metrics: None,
         }
     }
 
-    fn acknowledge(&mut self, id: u64) {
+    /// Creates a new RetryProcessor with metrics registered via PipelineContext
+    #[must_use]
+    pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: RetryConfig) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<RetryProcessorMetrics>();
+        Self {
+            config,
+            pending_messages: HashMap::new(),
+            next_message_id: 1,
+            last_cleanup_time: Instant::now(),
+            metrics: Some(metrics),
+        }
+    }
+
+    fn acknowledge(&mut self, id: u64) -> bool {
         if let Some(_removed) = self.pending_messages.remove(&id) {
             log::debug!("Acknowledged and removed message with ID: {id}");
+            if let Some(m) = self.metrics.as_mut() {
+                m.msgs_acked.inc();
+            }
+            true
         } else {
             log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
+            false
         }
     }
 
@@ -198,6 +375,9 @@ impl RetryProcessor {
         _pdata: Option<Box<OtapPdata>>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        if let Some(m) = self.metrics.as_mut() {
+            m.nacks_received.inc();
+        }
         if let Some(mut pending) = self.pending_messages.remove(&id) {
             pending.retry_count += 1;
             pending.last_error = reason;
@@ -213,6 +393,9 @@ impl RetryProcessor {
                 pending.next_retry_time = Instant::now() + Duration::from_millis(delay_ms);
                 let retry_count = pending.retry_count;
                 let _previous = self.pending_messages.insert(id, pending);
+                if let Some(m) = self.metrics.as_mut() {
+                    m.retry_attempts.inc();
+                }
                 log::debug!("Scheduled message {id} for retry attempt {retry_count}");
             } else {
                 log::error!(
@@ -221,6 +404,9 @@ impl RetryProcessor {
                     self.config.max_retries,
                     pending.last_error
                 );
+                if let Some(m) = self.metrics.as_mut() {
+                    m.msgs_dropped_exceeded_retries.inc();
+                }
             }
         } else {
             log::warn!("Attempted to handle nack for non-existent message with ID: {id}");
@@ -243,7 +429,22 @@ impl RetryProcessor {
 
         for (id, data) in ready_messages {
             log::debug!("Retrying message with ID: {id}");
-            effect_handler.send_message(data).await?;
+            let signal = data.signal_type();
+            let items = data.num_items() as u64;
+            match effect_handler.send_message(data).await {
+                Ok(()) => {
+                    if let Some(m) = self.metrics.as_mut() {
+                        m.msgs_retried.inc();
+                        m.add_produced_success(signal, items);
+                    }
+                }
+                Err(e) => {
+                    if let Some(m) = self.metrics.as_mut() {
+                        m.add_produced_refused(signal, items);
+                    }
+                    return Err(e.into());
+                }
+            }
         }
 
         Ok(())
@@ -272,9 +473,16 @@ impl RetryProcessor {
             })
             .collect();
 
+        let mut removed = 0u64;
         for id in expired_ids {
             if self.pending_messages.remove(&id).is_some() {
                 log::warn!("Removed expired message with ID: {id}");
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            if let Some(m) = self.metrics.as_mut() {
+                m.msgs_removed_expired.add(removed);
             }
         }
 
@@ -292,6 +500,8 @@ impl Processor<OtapPdata> for RetryProcessor {
         match msg {
             Message::PData(data) => {
                 // Clone only if we need to add to retry queue AND send downstream
+                let signal = data.signal_type();
+                let items = data.num_items() as u64;
                 // Check if queue is full first to avoid unnecessary clone
                 if self.pending_messages.len() >= self.config.max_pending_messages {
                     let error_msg = format!(
@@ -299,8 +509,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                         self.config.max_pending_messages
                     );
                     log::warn!("{error_msg}");
+                    if let Some(m) = self.metrics.as_mut() {
+                        m.msgs_dropped_queue_full.inc();
+                        m.add_consumed_failure(signal, items);
+                    }
                     // Send NACK upstream to signal backpressure instead of forwarding message
-                    // Note: This would need to be implemented in the effect handler
                     // For now, we'll just log and drop the message
                     return Err(Error::ProcessorError {
                         processor: effect_handler.processor_id(),
@@ -319,15 +532,31 @@ impl Processor<OtapPdata> for RetryProcessor {
                     };
 
                     let _previous = self.pending_messages.insert(id, pending);
+                    if let Some(m) = self.metrics.as_mut() {
+                        m.msgs_enqueued.inc();
+                        m.add_consumed_success(signal, items);
+                    }
                     log::debug!("Added message {id} to retry queue");
 
-                    effect_handler.send_message(data).await?;
+                    match effect_handler.send_message(data).await {
+                        Ok(()) => {
+                            if let Some(m) = self.metrics.as_mut() {
+                                m.add_produced_success(signal, items);
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(m) = self.metrics.as_mut() {
+                                m.add_produced_refused(signal, items);
+                            }
+                            return Err(e.into());
+                        }
+                    }
                 }
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack { id } => {
-                    self.acknowledge(id);
+                    let _ = self.acknowledge(id);
                     Ok(())
                 }
                 NodeControlMsg::Nack { id, reason, pdata } => {
@@ -338,8 +567,12 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
-                NodeControlMsg::CollectTelemetry { .. } => {
-                    // Retry processor has no telemetry collection to perform here.
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    if let Some(metrics) = self.metrics.as_mut() {
+                        let _ = metrics_reporter.report(metrics);
+                    }
                     Ok(())
                 }
                 NodeControlMsg::Config { config } => {
@@ -372,14 +605,14 @@ impl Default for RetryProcessor {
 mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use crate::grpc::OtapArrowBytes;
     use otap_df_channel::mpsc;
-    use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use serde_json::json;
     use tokio::time::{Duration, sleep};
 
@@ -400,44 +633,22 @@ mod tests {
     }
 
     fn create_test_data(_id: u64) -> OtapPdata {
-        OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(
-            create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                num_rows: 1,
-                ..Default::default()
-            }),
-        ))
-    }
-
-    /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
-    fn num_rows(pdata: &OtapPdata) -> usize {
-        match pdata.signal_type() {
-            SignalType::Logs => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
-                records
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Traces => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
-                records
-                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Metrics => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
-                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-        }
+        let mut consumer = Consumer::default();
+        let otap_data = consumer
+            .consume_bar(&mut create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows: 1,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        OtapPdata::new_default(OtapArrowRecords::Logs(from_record_messages(otap_data)).into())
     }
 
     /// Test helper to compare two OtapPdata instances for equivalence.
     fn requests_match(expected: &OtapPdata, actual: &OtapPdata) -> bool {
         // ToDo: Implement full semantic equivalence checking similar to Go's assert.Equiv()
-        num_rows(expected) == num_rows(actual)
+        expected.num_items() == actual.num_items()
     }
 
     #[test]
@@ -830,6 +1041,349 @@ mod tests {
         assert_eq!(
             processor.config.cleanup_interval_secs,
             new_config.cleanup_interval_secs
+        );
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::local::processor::EffectHandler as LocalEffectHandler;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::MetricsSystem;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
+    use std::collections::HashMap;
+    use tokio::time::{Duration, sleep};
+
+    // Helper: create a minimal OtapPdata logs payload with 1 row
+    fn make_test_pdata() -> OtapPdata {
+        let mut consumer = Consumer::default();
+        let otap_data = consumer
+            .consume_bar(&mut create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows: 1,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        OtapPdata::new_default(OtapArrowRecords::Logs(from_record_messages(otap_data)).into())
+    }
+
+    // Collects current metrics for the retry processor set into a map
+    fn collect_retry_metrics_map(
+        registry: &otap_df_telemetry::registry::MetricsRegistryHandle,
+    ) -> std::collections::HashMap<&'static str, u64> {
+        let mut out = std::collections::HashMap::new();
+        registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == "retry.processor.metrics" {
+                for (field, value) in iter {
+                    let _ = out.insert(field.name, value);
+                }
+            }
+        });
+        out
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collect_telemetry_reports_counters() {
+        // 1) Telemetry system and registry/reporter
+        let metrics_system = MetricsSystem::default();
+        let registry = metrics_system.registry();
+        let reporter = metrics_system.reporter();
+        // Start background collection loop
+        let _collector = tokio::spawn(metrics_system.run_collection_loop());
+
+        // 2) Pipeline context to register metrics under
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+
+        // 3) RetryProcessor with metrics registered via pipeline context
+        let cfg = RetryConfig {
+            max_retries: 2,
+            initial_retry_delay_ms: 50,
+            max_retry_delay_ms: 200,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10,
+            cleanup_interval_secs: 1,
+        };
+        let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
+
+        // 4) Local effect handler with a default 'out' port
+        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
+        let mut eh = LocalEffectHandler::new(test_node("retry_proc_telemetry"), senders, None);
+
+        // Enqueue a message (should inc msgs.enqueued) and send downstream
+        let pdata = make_test_pdata();
+        proc.process(Message::PData(pdata), &mut eh).await.unwrap();
+        let _ = rx_out.recv().await.expect("downstream message");
+
+        // NACK it (id=1) to schedule a retry (inc nacks.received, retry.attempts)
+        proc.process(
+            Message::Control(NodeControlMsg::Nack {
+                id: 1,
+                reason: "fail".into(),
+                pdata: None,
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+
+        // Wait and tick to perform retry (inc msgs.retried)
+        sleep(Duration::from_millis(60)).await;
+        proc.process(Message::Control(NodeControlMsg::TimerTick {}), &mut eh)
+            .await
+            .unwrap();
+        let _ = rx_out.recv().await.expect("retry downstream message");
+
+        // ACK it (inc msgs.acked)
+        proc.process(Message::Control(NodeControlMsg::Ack { id: 1 }), &mut eh)
+            .await
+            .unwrap();
+
+        // Trigger telemetry snapshot (report + reset)
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+
+        // Allow collector to pull the snapshot
+        sleep(Duration::from_millis(50)).await;
+
+        let map = collect_retry_metrics_map(&registry);
+        // Basic expectations: enqueued >=1, nacks >=1, retries >=1, retried >=1, acked >=1
+        let get = |key: &str| map.get(key).copied().unwrap_or(0);
+        assert!(
+            get("msgs.enqueued") >= 1,
+            "msgs.enqueued should be >= 1, got {}",
+            get("msgs.enqueued")
+        );
+        assert!(
+            get("nacks.received") >= 1,
+            "nacks.received should be >= 1, got {}",
+            get("nacks.received")
+        );
+        assert!(
+            get("retry.attempts") >= 1,
+            "retry.attempts should be >= 1, got {}",
+            get("retry.attempts")
+        );
+        assert!(
+            get("msgs.retried") >= 1,
+            "msgs.retried should be >= 1, got {}",
+            get("msgs.retried")
+        );
+        assert!(
+            get("msgs.acked") >= 1,
+            "msgs.acked should be >= 1, got {}",
+            get("msgs.acked")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_queue_full_increments_drop_counter() {
+        // Telemetry system
+        let ms = MetricsSystem::default();
+        let registry = ms.registry();
+        let reporter = ms.reporter();
+        let _collector = tokio::spawn(ms.run_collection_loop());
+
+        // Pipeline + processor (capacity 1)
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let cfg = RetryConfig {
+            max_pending_messages: 1,
+            ..Default::default()
+        };
+        let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
+
+        // Effect handler with an 'out' port
+        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(2);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
+        let mut eh = LocalEffectHandler::new(test_node("retry_queue_full"), senders, None);
+
+        // 1st message enqueues fine
+        proc.process(Message::PData(make_test_pdata()), &mut eh)
+            .await
+            .unwrap();
+        let _ = rx_out.recv().await.expect("downstream first");
+
+        // 2nd message should hit queue full and return error
+        let res = proc
+            .process(Message::PData(make_test_pdata()), &mut eh)
+            .await;
+        assert!(res.is_err(), "expected queue full error");
+
+        // Report telemetry
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+        sleep(Duration::from_millis(50)).await;
+
+        let map = collect_retry_metrics_map(&registry);
+        let get = |key: &str| map.get(key).copied().unwrap_or(0);
+        assert!(get("msgs.enqueued") >= 1, "expected at least one enqueued");
+        assert!(
+            get("msgs.dropped.queue.full") >= 1,
+            "expected queue full drop counter to be >= 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_exceeded_retries_dropped_increments_counter() {
+        // Telemetry system
+        let ms = MetricsSystem::default();
+        let registry = ms.registry();
+        let reporter = ms.reporter();
+        let _collector = tokio::spawn(ms.run_collection_loop());
+
+        // Pipeline + processor: allow only 1 retry
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let cfg = RetryConfig {
+            max_retries: 1,
+            initial_retry_delay_ms: 10,
+            max_retry_delay_ms: 10,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10,
+            cleanup_interval_secs: 1,
+        };
+        let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
+
+        // Effect handler
+        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
+        let mut eh = LocalEffectHandler::new(test_node("retry_exceeded"), senders, None);
+
+        // Enqueue and send downstream
+        proc.process(Message::PData(make_test_pdata()), &mut eh)
+            .await
+            .unwrap();
+        let _ = rx_out.recv().await.expect("downstream message");
+
+        // First NACK -> schedule retry (not dropped)
+        proc.process(
+            Message::Control(NodeControlMsg::Nack {
+                id: 1,
+                reason: "fail1".into(),
+                pdata: None,
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+
+        // Second NACK -> exceed max and drop
+        proc.process(
+            Message::Control(NodeControlMsg::Nack {
+                id: 1,
+                reason: "fail2".into(),
+                pdata: None,
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+
+        // Collect telemetry
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+        sleep(Duration::from_millis(30)).await;
+
+        let map = collect_retry_metrics_map(&registry);
+        let get = |key: &str| map.get(key).copied().unwrap_or(0);
+        assert!(
+            get("msgs.dropped.exceeded.retries") >= 1,
+            "expected exceeded retries drop >= 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_cleanup_expired_increments_counter() {
+        use std::time::{Duration as StdDuration, Instant as StdInstant};
+        // Telemetry system
+        let ms = MetricsSystem::default();
+        let registry = ms.registry();
+        let reporter = ms.reporter();
+        let _collector = tokio::spawn(ms.run_collection_loop());
+
+        // Pipeline + processor
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let cfg = RetryConfig {
+            cleanup_interval_secs: 1,
+            max_retries: 0,
+            ..Default::default()
+        };
+        let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
+
+        // Insert a fabricated expired pending message (retry_count > max_retries and age > MAX_FAILED_MESSAGE_AGE_SECS)
+        let expired_id = 42u64;
+        let pending = PendingMessage {
+            data: make_test_pdata(),
+            retry_count: proc.config.max_retries + 1,
+            next_retry_time: StdInstant::now()
+                - StdDuration::from_secs(MAX_FAILED_MESSAGE_AGE_SECS + 5),
+            last_error: "expired".into(),
+        };
+        let _ = proc.pending_messages.insert(expired_id, pending);
+        // Ensure cleanup interval elapsed
+        proc.last_cleanup_time = StdInstant::now() - StdDuration::from_secs(2);
+
+        // Run cleanup
+        proc.cleanup_expired_messages();
+        assert!(
+            !proc.pending_messages.contains_key(&expired_id),
+            "expired message should be removed"
+        );
+
+        // Report telemetry -> should include msgs.removed.expired >= 1
+        // We need an effect handler but won't send data
+        let (tx_out, _rx_out) = otap_df_channel::mpsc::Channel::new(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
+        let mut eh = LocalEffectHandler::new(test_node("retry_cleanup"), senders, None);
+
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
+        sleep(Duration::from_millis(30)).await;
+
+        let map = collect_retry_metrics_map(&registry);
+        let get = |key: &str| map.get(key).copied().unwrap_or(0);
+        assert!(
+            get("msgs.removed.expired") >= 1,
+            "expected msgs.removed.expired >= 1"
         );
     }
 }

@@ -1,96 +1,135 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error::{self, Error, Result};
-use crate::proto::opentelemetry::common::v1::any_value::Value;
-use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
+use crate::error::{self, Result};
+use crate::otlp::ProtoBuffer;
+use crate::proto::consts::field_num::common::{
+    ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
+    ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, ARRAY_VALUE_VALUES,
+    KEY_VALUE_KEY, KEY_VALUE_LIST_VALUES, KEY_VALUE_VALUE,
+};
+use crate::proto::consts::wire_types;
+use crate::proto_encode_len_delimited_unknown_size;
 use snafu::ResultExt;
 
-/// Decode bytes from a serialized attribute into pcommon value.
+/// Decode bytes from a serialized attribute into protobuf bytes value.
 ///
 /// This should be used for values in the `ser` column of attributes and Log bodies.
-pub fn decode_pcommon_val(input: &[u8]) -> Result<Option<Value>> {
-    let decoded_val = ciborium::from_reader::<ciborium::Value, &[u8]>(input)
+pub fn proto_encode_cbor_bytes(input: &[u8], result_buf: &mut ProtoBuffer) -> Result<()> {
+    let value = ciborium::from_reader::<ciborium::Value, &[u8]>(input)
         .context(error::InvalidSerializedAttributeBytesSnafu)?;
 
-    MaybeValue::try_from(decoded_val).map(Into::into)
+    proto_encode_cbor_value(&value, result_buf)?;
+
+    Ok(())
 }
 
-/// `MaybeValue` is a thin wrapper around `Option<Value>`.
-///
-/// We use this so we to avoid violating the coherence rule when implementing TryFrom.
-struct MaybeValue(Option<Value>);
-
-impl From<MaybeValue> for Option<Value> {
-    fn from(value: MaybeValue) -> Self {
-        value.0
-    }
-}
-
-impl TryFrom<ciborium::Value> for MaybeValue {
-    type Error = Error;
-
-    fn try_from(value: ciborium::Value) -> Result<Self> {
-        let val = match value {
-            ciborium::Value::Null => None,
-            ciborium::Value::Text(string_val) => Some(Value::StringValue(string_val)),
-            ciborium::Value::Float(double_val) => Some(Value::DoubleValue(double_val)),
-            ciborium::Value::Bytes(bytes_val) => Some(Value::BytesValue(bytes_val)),
-            ciborium::Value::Bool(bool_val) => Some(Value::BoolValue(bool_val)),
-            ciborium::Value::Integer(int_val) => Some(Value::IntValue(
-                int_val
-                    .try_into()
-                    .context(error::InvalidSerializedIntAttributeValueSnafu)?,
-            )),
-            ciborium::Value::Array(array_vals) => Some(Value::try_from(array_vals)?),
-            ciborium::Value::Map(kv_vals) => Some(Value::try_from(kv_vals)?),
-            other => {
-                return error::UnsupportedSerializedAttributeValueSnafu { actual: other }.fail();
+fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer) -> Result<()> {
+    match value {
+        ciborium::Value::Null => {
+            // do nothing, it's an empty value
+        }
+        ciborium::Value::Bool(bool_val) => {
+            result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+            result_buf.encode_varint(*bool_val as u64);
+        }
+        ciborium::Value::Bytes(bytes_val) => {
+            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, bytes_val);
+        }
+        ciborium::Value::Float(float_val) => {
+            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+            result_buf.extend_from_slice(&float_val.to_le_bytes());
+        }
+        ciborium::Value::Text(str_val) => {
+            result_buf.encode_string(ANY_VALUE_STRING_VALUE, str_val);
+        }
+        ciborium::Value::Integer(int_val) => {
+            let int_val: u64 = (*int_val)
+                .try_into()
+                .context(error::InvalidSerializedIntAttributeValueSnafu)?;
+            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+            result_buf.encode_varint(int_val);
+        }
+        ciborium::Value::Array(list_val) => {
+            proto_encode_len_delimited_unknown_size!(
+                ANY_VALUE_ARRAY_VALUE,
+                proto_encode_array_values(list_val, result_buf)?,
+                result_buf
+            );
+        }
+        ciborium::Value::Map(kv_list_val) => {
+            proto_encode_len_delimited_unknown_size!(
+                ANY_VALUE_KVLIST_VALUE,
+                proto_encode_cbor_kv_list(kv_list_val, result_buf)?,
+                result_buf
+            );
+        }
+        other => {
+            return error::UnsupportedSerializedAttributeValueSnafu {
+                actual: other.clone(),
             }
-        };
-
-        Ok(Self(val))
+            .fail();
+        }
     }
+
+    Ok(())
 }
 
-/// Converts an array of cbor values into the ArrayValue variant of Value
-impl TryFrom<Vec<ciborium::Value>> for Value {
-    type Error = Error;
-
-    fn try_from(values: Vec<ciborium::Value>) -> std::result::Result<Self, Self::Error> {
-        let vals: Result<Vec<_>> = values
-            .into_iter()
-            .map(|element| match MaybeValue::try_from(element) {
-                Ok(val) => Ok(AnyValue { value: val.into() }),
-                Err(e) => Err(e),
-            })
-            .collect();
-
-        Ok(Value::ArrayValue(ArrayValue { values: vals? }))
+fn proto_encode_array_values(
+    list_val: &[ciborium::Value],
+    result_buf: &mut ProtoBuffer,
+) -> Result<()> {
+    for v in list_val {
+        proto_encode_len_delimited_unknown_size!(
+            ARRAY_VALUE_VALUES,
+            proto_encode_cbor_value(v, result_buf)?,
+            result_buf
+        );
     }
+
+    Ok(())
 }
 
-/// Converts the array of cbor kv pairs into the KvlistValue variant of Value
-impl TryFrom<Vec<(ciborium::Value, ciborium::Value)>> for Value {
-    type Error = Error;
-
-    fn try_from(
-        kv_values: Vec<(ciborium::Value, ciborium::Value)>,
-    ) -> std::result::Result<Self, Self::Error> {
-        let kvs: Result<Vec<_>> = kv_values
-            .into_iter()
-            .map(|(k, v)| {
-                if let ciborium::Value::Text(key) = k {
-                    match MaybeValue::try_from(v) {
-                        Ok(val) => Ok(KeyValue::new(key, AnyValue { value: val.into() })),
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    error::InvalidSerializedMapKeyTypeSnafu { actual: k }.fail()
-                }
-            })
-            .collect();
-
-        Ok(Value::KvlistValue(KeyValueList::new(kvs?)))
+fn proto_encode_cbor_kv_list(
+    kv_list: &[(ciborium::Value, ciborium::Value)],
+    result_buf: &mut ProtoBuffer,
+) -> Result<()> {
+    for (k, v) in kv_list {
+        proto_encode_len_delimited_unknown_size!(
+            KEY_VALUE_LIST_VALUES,
+            proto_encode_cbor_kv(k, v, result_buf)?,
+            result_buf
+        );
     }
+
+    Ok(())
+}
+
+fn proto_encode_cbor_kv(
+    key: &ciborium::Value,
+    value: &ciborium::Value,
+    result_buf: &mut ProtoBuffer,
+) -> Result<()> {
+    match key {
+        ciborium::Value::Text(key_str) => {
+            result_buf.encode_string(KEY_VALUE_KEY, key_str);
+        }
+        ciborium::Value::Null => {
+            // empty key
+        }
+        other => {
+            return error::InvalidSerializedMapKeyTypeSnafu {
+                actual: other.clone(),
+            }
+            .fail();
+        }
+    }
+
+    proto_encode_len_delimited_unknown_size!(
+        KEY_VALUE_VALUE,
+        proto_encode_cbor_value(value, result_buf)?,
+        result_buf
+    );
+
+    Ok(())
 }

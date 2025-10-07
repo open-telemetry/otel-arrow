@@ -96,6 +96,9 @@ pub trait CheckedDictionaryAppendSlice {
     /// append a slice of T to the builder. Note that this does not append an individual
     /// element for each value in the slice, it appends the slice as a single row
     fn append_slice(&mut self, val: &[Self::Native]) -> checked::Result<usize>;
+
+    /// append the slice to the builder `n` times.
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> checked::Result<usize>;
 }
 
 // This is the error type for the result that is returned by CheckedDictionaryArrayAppend trait.
@@ -443,6 +446,8 @@ where
         }
     }
 
+    // TODO delete this method in future if it turns out to never be useful
+    #[allow(dead_code)]
     pub fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
         loop {
             let result = match &mut self.variant {
@@ -569,6 +574,34 @@ where
             let append_result = match &mut self.variant {
                 DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
                 DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+            };
+
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(checked::DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key().map_err(|err| match err {
+                        DictionaryBuilderError::DictOverflow {} => {
+                            checked::DictionaryBuilderError::DictOverflow {}
+                        }
+                    })?;
+                    // continue the loop and retry
+                }
+                other => return other,
+            }
+        }
+    }
+
+    pub fn append_slice_n_checked(&mut self, value: &[T], n: usize) -> checked::Result<usize> {
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice_n(value, n),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice_n(value, n),
             };
 
             match append_result {

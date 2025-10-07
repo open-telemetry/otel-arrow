@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StructArray,
-    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
-use related_data::RelatedData;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::OptionExt;
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
@@ -15,17 +13,25 @@ use crate::arrays::{
 };
 use crate::error::{self, Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::common::{ResourceArrays, ScopeArrays};
-use crate::otlp::metrics::AppendAndGet;
+use crate::otlp::ProtoBytesEncoder;
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::common::{
+    AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
+    SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
+};
+use crate::proto::consts::field_num::logs::{
+    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
+    LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
+    LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID,
+    LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCHEMA_URL,
+    RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
+};
+use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use crate::proto::opentelemetry::common::v1::AnyValue;
-use crate::proto::opentelemetry::common::v1::any_value::Value;
-use crate::schema::{consts, is_id_plain_encoded};
+use crate::proto_encode_len_delimited_unknown_size;
+use crate::schema::consts;
 
-use super::attributes::{cbor, store::AttributeValueType};
-
-mod related_data;
+use super::attributes::AttributeValueType;
 
 struct LogsArrays<'a> {
     id: &'a UInt16Array,
@@ -39,6 +45,7 @@ struct LogsArrays<'a> {
     body: Option<LogBodyArrays<'a>>,
     dropped_attributes_count: Option<&'a UInt32Array>,
     flags: Option<&'a UInt32Array>,
+    event_name: Option<StringArrayAccessor<'a>>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
@@ -73,6 +80,10 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
 
         let dropped_attributes_count = get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?;
         let flags = get_u32_array_opt(rb, consts::FLAGS)?;
+        let event_name = rb
+            .column_by_name(consts::EVENT_NAME)
+            .map(StringArrayAccessor::try_new)
+            .transpose()?;
 
         let body = rb
             .column_by_name(consts::BODY)
@@ -101,59 +112,19 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
             body,
             dropped_attributes_count,
             flags,
+            event_name,
         })
     }
 }
 
 struct LogBodyArrays<'a> {
     body: &'a StructArray,
-    value_type: &'a UInt8Array,
-    str: Option<StringArrayAccessor<'a>>,
-    int: Option<&'a Int64Array>,
-    double: Option<&'a Float64Array>,
-    bool: Option<&'a BooleanArray>,
-    bytes: Option<ByteArrayAccessor<'a>>,
-
-    // ser is for serialized value type of AnyValue including "kvlist" and "array"
-    ser: Option<ByteArrayAccessor<'a>>,
+    anyval_arrays: AnyValueArrays<'a>,
 }
 
-impl NullableArrayAccessor for LogBodyArrays<'_> {
-    type Native = Result<AnyValue>;
-
-    fn value_at(&self, idx: usize) -> Option<Self::Native> {
-        if !self.body.is_valid(idx) {
-            return None;
-        }
-
-        let value_type = AttributeValueType::try_from(self.value_type.value_at_or_default(idx))
-            .context(error::UnrecognizedAttributeValueTypeSnafu);
-        let value_type = match value_type {
-            Ok(v) => v,
-            Err(err) => {
-                return Some(Err(err));
-            }
-        };
-
-        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
-            let bytes = self.ser.value_at(idx)?;
-            let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
-            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
-        }
-
-        let value = match value_type {
-            AttributeValueType::Str => Value::StringValue(self.str.value_at_or_default(idx)),
-            AttributeValueType::Int => Value::IntValue(self.int.value_at_or_default(idx)),
-            AttributeValueType::Double => Value::DoubleValue(self.double.value_at_or_default(idx)),
-            AttributeValueType::Bool => Value::BoolValue(self.bool.value_at_or_default(idx)),
-            AttributeValueType::Bytes => Value::BytesValue(self.bytes.value_at_or_default(idx)),
-            _ => {
-                // silently ignore unknown types to avoid DOS attacks
-                return None;
-            }
-        };
-
-        Some(Ok(AnyValue { value: Some(value) }))
+impl<'a> LogBodyArrays<'a> {
+    fn is_valid(&self, idx: usize) -> bool {
+        self.body.is_valid(idx)
     }
 }
 
@@ -162,200 +133,551 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
 
     fn try_from(body: &'a StructArray) -> Result<Self> {
         let column_accessor = StructColumnAccessor::new(body);
+
         Ok(Self {
             body,
-            value_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
-            str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
-            int: column_accessor.primitive_column_op(consts::ATTRIBUTE_INT)?,
-            double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
-            bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-            bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-            ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
+            anyval_arrays: AnyValueArrays {
+                attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
+                attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
+                attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
+                attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
+                attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
+                attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
+                attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
+            },
         })
     }
 }
 
-pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceRequest> {
-    let mut logs = ExportLogsServiceRequest::default();
-    let mut prev_res_id: Option<u16> = None;
-    let mut prev_scope_id: Option<u16> = None;
+pub struct LogsDataArrays<'a> {
+    log_arrays: LogsArrays<'a>,
+    scope_arrays: ScopeArrays<'a>,
+    resource_arrays: ResourceArrays<'a>,
+    log_attrs: Option<Attribute16Arrays<'a>>,
+    resource_attrs: Option<Attribute16Arrays<'a>>,
+    scope_attrs: Option<Attribute16Arrays<'a>>,
+}
 
-    let mut res_id = 0;
-    let mut scope_id = 0;
+impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
+    type Error = Error;
 
-    let rb = logs_otap_batch
-        .get(ArrowPayloadType::Logs)
-        .context(error::LogRecordNotFoundSnafu)?;
+    fn try_from(otap_batch: &'a OtapArrowRecords) -> Result<Self> {
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
 
-    let mut related_data = RelatedData::try_from(&logs_otap_batch)?;
+        Ok(Self {
+            log_arrays: LogsArrays::try_from(logs_rb)?,
+            scope_arrays: ScopeArrays::try_from(logs_rb)?,
+            resource_arrays: ResourceArrays::try_from(logs_rb)?,
+            log_attrs: otap_batch
+                .get(ArrowPayloadType::LogAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            scope_attrs: otap_batch
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+            resource_attrs: otap_batch
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
+        })
+    }
+}
 
-    let resource_arrays = ResourceArrays::try_from(rb)?;
-    let scope_arrays = ScopeArrays::try_from(rb)?;
-    let logs_arrays = LogsArrays::try_from(rb)?;
+pub struct LogsProtoBytesEncoder {
+    batch_sorter: BatchSorter,
+    root_cursor: SortedBatchCursor,
+    resource_attrs_cursor: SortedBatchCursor,
+    scope_attrs_cursor: SortedBatchCursor,
+    log_attrs_cursor: SortedBatchCursor,
+}
 
-    let ids_plain_encoded = is_id_plain_encoded(rb);
+impl Default for LogsProtoBytesEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    let resource_ids_plain_encoded = rb
-        .column_by_name(consts::RESOURCE)
-        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
-        .and_then(|col_struct| col_struct.fields().find(consts::ID))
-        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
-        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
-        .unwrap_or(false);
+impl ProtoBytesEncoder for LogsProtoBytesEncoder {
+    /// encode the OTAP batch into a proto serialized `LogData`/`ExportLogsServiceRequest` message
+    fn encode(
+        &mut self,
+        otap_batch: &mut OtapArrowRecords,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        otap_batch.decode_transport_optimized_ids()?;
+        let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
 
-    let scope_ids_plain_encoded = rb
-        .column_by_name(consts::SCOPE)
-        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
-        .and_then(|col_struct| col_struct.fields().find(consts::ID))
-        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
-        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
-        .unwrap_or(false);
+        self.reset();
 
-    for idx in 0..rb.num_rows() {
-        let res_maybe_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
-        if resource_ids_plain_encoded {
-            res_id = res_maybe_delta_id;
-        } else {
-            res_id += res_maybe_delta_id;
-        }
+        // get the list of indices in the root record to visit in order
+        let logs_rb = otap_batch
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
+        self.batch_sorter
+            .init_cursor_for_root_batch(logs_rb, &mut self.root_cursor)?;
 
-        if prev_res_id != Some(res_id) {
-            // new resource id
-            prev_res_id = Some(res_id);
-            let resource_logs = logs.resource_logs.append_and_get();
-            prev_scope_id = None;
-
-            // Update the resource field of the current resource logs
-            let resource = resource_logs.resource.get_or_insert_default();
-            if let Some(dropped_attributes_count) =
-                resource_arrays.dropped_attributes_count.value_at(idx)
-            {
-                resource.dropped_attributes_count = dropped_attributes_count;
-            }
-
-            if let Some(res_id) = resource_arrays.id.value_at(idx) {
-                if let Some(attrs) = related_data.res_attr_map_store.as_mut().and_then(|store| {
-                    if resource_ids_plain_encoded {
-                        store.attribute_by_id(res_id)
-                    } else {
-                        store.attribute_by_delta_id(res_id)
-                    }
-                }) {
-                    resource.attributes = attrs.to_vec();
-                }
-            }
-
-            resource_logs.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
-        }
-
-        let scope_maybe_delta_id_opt = scope_arrays.id.value_at(idx);
-        if scope_ids_plain_encoded {
-            scope_id = scope_maybe_delta_id_opt.unwrap_or_default();
-        } else {
-            scope_id += scope_maybe_delta_id_opt.unwrap_or_default();
-        }
-
-        if prev_scope_id != Some(scope_id) {
-            prev_scope_id = Some(scope_id);
-            let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_maybe_delta_id_opt {
-                if let Some(attrs) = related_data
-                    .scope_attr_map_store
-                    .as_mut()
-                    .and_then(|store| {
-                        if scope_ids_plain_encoded {
-                            store.attribute_by_id(scope_id)
-                        } else {
-                            store.attribute_by_delta_id(scope_id)
-                        }
-                    })
-                {
-                    scope.attributes = attrs.to_vec();
-                }
-            }
-
-            // safety: we must have appended at least one resource logs when reach here
-            let current_scope_logs_slice = &mut logs
-                .resource_logs
-                .last_mut()
-                .expect("At this stage, we should have at least one resource log.")
-                .scope_logs;
-            let scope_logs = current_scope_logs_slice.append_and_get();
-            scope_logs.scope = Some(scope);
-            scope_logs.schema_url = logs_arrays.schema_url.value_at(idx).unwrap_or_default();
-        }
-
-        // safety: we've appended at least one value at each slice when reach here.
-        let current_scope_logs = &mut logs
-            .resource_logs
-            .last_mut()
-            .expect("At this stage, we should have at least one resource log.")
-            .scope_logs
-            .last_mut()
-            .expect("At this stage, we should have added at least one scope log.");
-
-        let current_log_record = current_scope_logs.log_records.append_and_get();
-        let maybe_delta_id = logs_arrays.id.value_at_or_default(idx);
-        let log_id = if ids_plain_encoded {
-            maybe_delta_id
-        } else {
-            related_data.log_record_id_from_delta(maybe_delta_id)
-        };
-
-        current_log_record.time_unix_nano =
-            logs_arrays.time_unix_nano.value_at_or_default(idx) as u64;
-        current_log_record.observed_time_unix_nano =
-            logs_arrays.observed_time_unix_nano.value_at_or_default(idx) as u64;
-
-        if let Some(trace_id_bytes) = logs_arrays.trace_id.value_at(idx) {
-            ensure!(
-                trace_id_bytes.len() == 16,
-                error::InvalidTraceIdSnafu {
-                    message: format!(
-                        "log_id = {log_id}, index = {idx}, trace_id = {trace_id_bytes:?}"
-                    ),
-                }
+        // get the lists of child indices for attributes to visit in oder:
+        if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &res_attrs.parent_id,
+                &mut self.resource_attrs_cursor,
             );
-            current_log_record.trace_id = trace_id_bytes
         }
-
-        if let Some(span_id_bytes) = logs_arrays.span_id.value_at(idx) {
-            ensure!(
-                span_id_bytes.len() == 8,
-                error::InvalidSpanIdSnafu {
-                    message: format!(
-                        "log_id = {log_id}, index = {idx}, span_id = {span_id_bytes:?}"
-                    ),
-                }
+        if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
+            self.batch_sorter.init_cursor_for_u16_id_column(
+                &scope_attrs.parent_id,
+                &mut self.scope_attrs_cursor,
             );
-            current_log_record.span_id = span_id_bytes;
+        }
+        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(&log_attrs.parent_id, &mut self.log_attrs_cursor);
         }
 
-        current_log_record.severity_number = logs_arrays.severity_number.value_at_or_default(idx);
-        current_log_record.severity_text = logs_arrays.severity_text.value_at_or_default(idx);
-        current_log_record.dropped_attributes_count = logs_arrays
-            .dropped_attributes_count
-            .value_at_or_default(idx);
-        current_log_record.flags = logs_arrays.flags.value_at_or_default(idx);
+        // encode all `ResourceLog`s for this `LogsData`
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                LOGS_DATA_RESOURCE,
+                self.encode_resource_log(&logs_data_arrays, result_buf)?,
+                result_buf
+            );
 
-        if let Some(body_val) = logs_arrays.body.value_at(idx) {
-            current_log_record.body = Some(body_val?)
+            if self.root_cursor.finished() {
+                break;
+            }
         }
 
-        if let Some(attrs) = related_data
-            .log_record_attr_map_store
-            .as_mut()
-            .and_then(|store| {
-                if ids_plain_encoded {
-                    store.attribute_by_id(maybe_delta_id)
-                } else {
-                    store.attribute_by_delta_id(maybe_delta_id)
-                }
-            })
-        {
-            current_log_record.attributes = attrs.to_vec()
+        Ok(())
+    }
+}
+
+impl LogsProtoBytesEncoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root_cursor: SortedBatchCursor::new(),
+            resource_attrs_cursor: SortedBatchCursor::new(),
+            scope_attrs_cursor: SortedBatchCursor::new(),
+            log_attrs_cursor: SortedBatchCursor::new(),
         }
     }
 
-    Ok(logs)
+    fn reset(&mut self) {
+        self.root_cursor.reset();
+        self.resource_attrs_cursor.reset();
+        self.scope_attrs_cursor.reset();
+        self.log_attrs_cursor.reset();
+    }
+
+    fn encode_resource_log(
+        &mut self,
+        logs_data_arrays: &LogsDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
+        // encode the `Resource`
+        proto_encode_len_delimited_unknown_size!(
+            LOGS_DATA_RESOURCE,
+            proto_encode_resource(
+                index,
+                &logs_data_arrays.resource_arrays,
+                logs_data_arrays.resource_attrs.as_ref(),
+                &mut self.resource_attrs_cursor,
+                result_buf
+            )?,
+            result_buf
+        );
+
+        // encode all `ScopeLog`s for this `ResourceLog`
+        let resource_id = logs_data_arrays.resource_arrays.id.value_at(index);
+
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                RESOURCE_LOGS_SCOPE_LOGS,
+                self.encode_scope_logs(logs_data_arrays, result_buf)?,
+                result_buf
+            );
+
+            // break when we've reached the end of the record batch
+            if self.root_cursor.finished() {
+                break;
+            }
+
+            // check if we've found a new resource ID. If so, break
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+            if resource_id != logs_data_arrays.resource_arrays.id.value_at(next_index) {
+                break;
+            }
+        }
+
+        // encode schema url
+        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_scope_logs(
+        &mut self,
+        logs_data_arrays: &LogsDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+        // encode the `InstrumentationScope`
+        proto_encode_len_delimited_unknown_size!(
+            SCOPE_LOG_SCOPE,
+            proto_encode_instrumentation_scope(
+                index,
+                &logs_data_arrays.scope_arrays,
+                logs_data_arrays.scope_attrs.as_ref(),
+                &mut self.scope_attrs_cursor,
+                result_buf
+            )?,
+            result_buf
+        );
+
+        // encode all `LogRecord`s for this `ScopeLog`
+        let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
+
+        loop {
+            proto_encode_len_delimited_unknown_size!(
+                SCOPE_LOGS_LOG_RECORDS,
+                self.encode_log_record(logs_data_arrays, result_buf)?,
+                result_buf
+            );
+
+            // break if we've reached the end of the record batch
+            if self.root_cursor.finished() {
+                break;
+            }
+
+            // check if we've found a new scope ID. If so, break
+            // Safety: we've just checked above that cursor isn't finished
+            let next_index = self.root_cursor.curr_index().expect("cursor not finished");
+            if scope_id != logs_data_arrays.scope_arrays.id.value_at(next_index) {
+                break;
+            }
+        }
+
+        // encode schema url
+        if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_log_record(
+        &mut self,
+        logs_data_arrays: &LogsDataArrays<'_>,
+        result_buf: &mut ProtoBuffer,
+    ) -> Result<()> {
+        let index = match self.root_cursor.curr_index() {
+            Some(index) => index,
+            None => return Ok(()), // no more rows to visit
+        };
+
+        let log_arrays = &logs_data_arrays.log_arrays;
+
+        if let Some(col) = log_arrays.time_unix_nano {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
+                result_buf.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+
+        if let Some(col) = &log_arrays.severity_number {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
+        if let Some(col) = &log_arrays.severity_text {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val);
+            }
+        }
+
+        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body {
+            if log_body_arrays.is_valid(index) {
+                let anyval_arrays = &log_body_arrays.anyval_arrays;
+                if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
+                    if let Ok(value_type) = AttributeValueType::try_from(value_type) {
+                        proto_encode_len_delimited_unknown_size!(
+                            LOG_RECORD_BODY,
+                            encode_any_value(anyval_arrays, index, value_type, result_buf)?,
+                            result_buf
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
+            if let Some(id) = log_arrays.id.value_at(index) {
+                let attrs_index_iter =
+                    ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
+                for attr_index in attrs_index_iter {
+                    proto_encode_len_delimited_unknown_size!(
+                        LOG_RECORD_ATTRIBUTES,
+                        encode_key_value(log_attrs, attr_index, result_buf)?,
+                        result_buf
+                    );
+                }
+            }
+        }
+
+        if let Some(col) = log_arrays.dropped_attributes_count {
+            if let Some(val) = col.value_at(index) {
+                result_buf
+                    .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
+                result_buf.encode_varint(val as u64);
+            }
+        }
+
+        if let Some(col) = &log_arrays.flags {
+            if let Some(val) = col.value_at(index) {
+                result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32);
+                result_buf.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+
+        if let Some(col) = &log_arrays.trace_id {
+            if let Some(val) = col.slice_at(index) {
+                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val);
+            }
+        }
+
+        if let Some(col) = &log_arrays.span_id {
+            if let Some(val) = col.slice_at(index) {
+                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val);
+            }
+        }
+
+        if let Some(col) = log_arrays.observed_time_unix_nano {
+            if let Some(val) = col.value_at(index) {
+                result_buf
+                    .encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64);
+                result_buf.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+
+        if let Some(col) = &log_arrays.event_name {
+            if let Some(val) = col.str_at(index) {
+                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val);
+            }
+        }
+
+        self.root_cursor.advance();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use arrow::array::{
+        RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+    };
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use pretty_assertions::assert_eq;
+    use prost::Message;
+    use std::sync::Arc;
+
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::schema::{FieldExt, consts};
+    use crate::{otap::Logs, proto::opentelemetry::logs::v1::LogsData};
+    use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
+
+    #[test]
+    fn test_proto_encode() {
+        // simple smoke test for proto encoding. This doesn't test every field, but those are
+        // tested in other test suites in this project that encode/decode OTAP -> OTLP
+
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]);
+        let body_struct_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]);
+
+        let logs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(res_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(
+                    consts::BODY,
+                    DataType::Struct(body_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    res_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "scope0", "scope1", "scope2",
+                        ])),
+                    ],
+                    None,
+                )),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "ERROR", "INFO", "DEBUG",
+                ])),
+                Arc::new(StructArray::new(
+                    body_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            AttributeValueType::Str as u8,
+                            3,
+                        ))),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", ""])),
+                    ],
+                    Some(NullBuffer::from_iter(vec![true, true, false])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let attrs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["ka", "ka", "kb"])),
+                Arc::new(StringArray::from_iter_values(vec!["va", "va", "vb"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, logs_record_batch);
+        otap_batch.set(ArrowPayloadType::LogAttrs, attrs_record_batch.clone());
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_record_batch.clone());
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_record_batch.clone());
+        let mut result_buf = ProtoBuffer::new();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        let id_0_attrs = vec![KeyValue::new("ka", AnyValue::new_string("va"))];
+        let id_1_attrs = vec![
+            KeyValue::new("ka", AnyValue::new_string("va")),
+            KeyValue::new("kb", AnyValue::new_string("vb")),
+        ];
+
+        let expected = LogsData::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: id_0_attrs.clone(),
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope0".to_string(),
+                    attributes: id_0_attrs.clone(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 1,
+                    severity_text: "ERROR".to_string(),
+                    body: Some(AnyValue::new_string("a")),
+                    attributes: id_0_attrs.clone(),
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: id_1_attrs.clone(),
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope1".to_string(),
+                    attributes: id_1_attrs.clone(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 2,
+                    severity_text: "INFO".to_string(),
+                    body: Some(AnyValue::new_string("b")),
+                    attributes: id_1_attrs,
+                    ..Default::default()
+                }])
+                .finish(),
+                ScopeLogs::build(InstrumentationScope {
+                    name: "scope2".to_string(),
+                    ..Default::default()
+                })
+                .log_records(vec![LogRecord {
+                    time_unix_nano: 3,
+                    severity_text: "DEBUG".to_string(),
+                    ..Default::default()
+                }])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        assert_eq!(result, expected);
+    }
 }

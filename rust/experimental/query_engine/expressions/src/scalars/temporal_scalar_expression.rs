@@ -22,7 +22,7 @@ impl TemporalScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         _scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             TemporalScalarExpression::Now(_) => Ok(None),
         }
@@ -39,6 +39,12 @@ impl Expression for TemporalScalarExpression {
     fn get_name(&self) -> &'static str {
         match self {
             TemporalScalarExpression::Now(_) => "TemporalScalar(Now)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, _indent: &str) -> std::fmt::Result {
+        match self {
+            TemporalScalarExpression::Now(_) => writeln!(f, "Now"),
         }
     }
 }
