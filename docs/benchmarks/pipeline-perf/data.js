@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759862963381,
+  "lastUpdate": 1759867217397,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "l.querel@f5.com",
-            "name": "Laurent Quérel",
-            "username": "lquerel"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "0d3422f152e8dd7f188bf0c2e9f71b3f4f670e3f",
-          "message": "OTLP and OTAP Exporter Metrics (#1023)\n\nThis PR is a first iteration to progressively comply with this [RFC -\nPipeline Component\nTelemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).\n\nThe OTLP and OTAP exporters have been updated.\n\nThe following metric set has been used:\n```rust\n/// PData metrics for exporters.\n/// Namespace grouped under `exporter.pdata`.\n/// Uses a monotonic counter per outcome.\n#[metric_set(name = \"exporter.pdata\")]\n#[derive(Debug, Default, Clone)]\npub struct ExporterPDataMetrics {\n    /// Number of pdata metrics consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_consumed: Counter<u64>,\n\n    /// Number of pdata metrics successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_exported: Counter<u64>,\n\n    /// Number of pdata metrics that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_failed: Counter<u64>,\n\n    /// Number of pdata logs consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub logs_consumed: Counter<u64>,\n\n    /// Number of pdata logs successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub logs_exported: Counter<u64>,\n\n    /// Number of pdata logs that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub logs_failed: Counter<u64>,\n\n    /// Number of pdata traces consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub traces_consumed: Counter<u64>,\n\n    /// Number of pdata traces successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub traces_exported: Counter<u64>,\n\n    /// Number of pdata traces that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub traces_failed: Counter<u64>,\n}\n```",
-          "timestamp": "2025-08-28T20:57:08Z",
-          "tree_id": "0ed023f63d412c4d8bf401e5c22b80962dd4e1fc",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/0d3422f152e8dd7f188bf0c2e9f71b3f4f670e3f"
-        },
-        "date": 1756415137924,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 731666.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 21950000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 21950000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.61,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.59,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 119.42,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 141.46,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 738166.6666666666,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22145000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22145000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.8,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.93,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 161.69,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 187.93,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 184.59,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "9643cfcb719f532b8de4c6b693a6893255843b07",
+          "message": "Update all patch versions (#1239)\n\n> [!NOTE]\n> Mend has cancelled [the proposed\nrenaming](https://redirect.github.com/renovatebot/renovate/discussions/37842)\nof the Renovate GitHub app being renamed to `mend[bot]`.\n> \n> This notice will be removed on 2025-10-07.\n\n<hr>\n\nThis PR contains the following updates:\n\n| Package | Change | Age | Confidence |\n|---|---|---|---|\n| [grpcio](https://grpc.io)\n([source](https://redirect.github.com/grpc/grpc)) | `==1.75.0` ->\n`==1.75.1` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/grpcio/1.75.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/grpcio/1.75.0/1.75.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n| [pandas](https://redirect.github.com/pandas-dev/pandas) | `==2.3.2` ->\n`==2.3.3` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/pandas/2.3.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pandas/2.3.2/2.3.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n| [pydantic](https://redirect.github.com/pydantic/pydantic)\n([changelog](https://docs.pydantic.dev/latest/changelog/)) | `==2.11.9`\n-> `==2.11.10` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/pydantic/2.11.10?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pydantic/2.11.9/2.11.10?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n| [pyyaml](https://pyyaml.org/)\n([source](https://redirect.github.com/yaml/pyyaml)) | `==6.0.2` ->\n`==6.0.3` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/pyyaml/6.0.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pyyaml/6.0.2/6.0.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>grpc/grpc (grpcio)</summary>\n\n###\n[`v1.75.1`](https://redirect.github.com/grpc/grpc/releases/tag/v1.75.1)\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc/compare/v1.75.0...v1.75.1)\n\nThis is release gRPC Core 1.75.1 (gemini).\n\nFor gRPC documentation, see [grpc.io](https://grpc.io/). For previous\nreleases, see\n[Releases](https://redirect.github.com/grpc/grpc/releases).\n\nThis release contains refinements, improvements, and bug fixes.\n\n##### What's Changed\n\n##### Python\n\n- Release grpcio wheels with Python 3.14 support\n([#&#8203;40403](https://redirect.github.com/grpc/grpc/issues/40403))\n- Asyncio: fixes grpc shutdown race condition occurring during python\ninterpreter finalizations.\n([#&#8203;40447](https://redirect.github.com/grpc/grpc/issues/40447))\n- This also addresses previously reported issues with empty error\nmessage on Python interpreter exit (`Error in sys.excepthook:`/`Original\nexception was:` empty):\n[#&#8203;36655](https://redirect.github.com/grpc/grpc/issues/36655),\n[#&#8203;38679](https://redirect.github.com/grpc/grpc/issues/38679),\n[#&#8203;33342](https://redirect.github.com/grpc/grpc/issues/33342)\n- Python 3.14: preserve current behavior when using grpc.aio async\nmethods outside of a running event loop.\n([#&#8203;40750](https://redirect.github.com/grpc/grpc/issues/40750))\n- Note: using async methods outside of a running event loop is\n[discouraged](https://docs.python.org/3.14/library/asyncio-policy.html#asyncio-policies)\nby Python, and **will be deprecated in future gRPC releases**. Please\nuse the\n[asyncio.run()](https://docs.python.org/3.14/library/asyncio-runner.html#asyncio.run)\nfunction (or\n[asyncio.Runner](https://docs.python.org/3.14/library/asyncio-runner.html#asyncio.Runner)\nfor custom loop factories). For interactive mode, use dedicated [asyncio\nREPL](https://docs.python.org/3/library/asyncio.html#asyncio-cli):\n`python -m asyncio`.\n\n**Full Changelog**:\n<https://github.com/grpc/grpc/compare/v1.75.0...v1.75.1>\n\n</details>\n\n<details>\n<summary>pandas-dev/pandas (pandas)</summary>\n\n###\n[`v2.3.3`](https://redirect.github.com/pandas-dev/pandas/releases/tag/v2.3.3):\nPandas 2.3.3\n\n[Compare\nSource](https://redirect.github.com/pandas-dev/pandas/compare/v2.3.2...v2.3.3)\n\nWe are pleased to announce the release of pandas 2.3.3.\nThis release includes some improvements and fixes to the future string\ndata type (preview feature for the upcoming pandas 3.0). We recommend\nthat all users upgrade to this version.\n\nSee the [full\nwhatsnew](https://pandas.pydata.org/pandas-docs/version/2.3/whatsnew/v2.3.3.html)\nfor a list of all the changes.\nPandas 2.3.3 supports Python 3.9 and higher, and is the first release to\nsupport Python 3.14.\n\nThe release will be available on the conda-forge channel:\n\n```\nconda install pandas --channel conda-forge\n```\n\nOr via PyPI:\n\n```\npython3 -m pip install --upgrade pandas\n```\n\nPlease report any issues with the release on the [pandas issue\ntracker](https://redirect.github.com/pandas-dev/pandas/issues).\n\nThanks to all the contributors who made this release possible.\n\n</details>\n\n<details>\n<summary>pydantic/pydantic (pydantic)</summary>\n\n###\n[`v2.11.10`](https://redirect.github.com/pydantic/pydantic/compare/v2.11.9...v2.11.10)\n\n[Compare\nSource](https://redirect.github.com/pydantic/pydantic/compare/v2.11.9...v2.11.10)\n\n</details>\n\n<details>\n<summary>yaml/pyyaml (pyyaml)</summary>\n\n###\n[`v6.0.3`](https://redirect.github.com/yaml/pyyaml/releases/tag/6.0.3)\n\n[Compare\nSource](https://redirect.github.com/yaml/pyyaml/compare/6.0.2...6.0.3)\n\n#### What's Changed\n\n- Support for Python 3.14 and free-threading (experimental).\n\n**Full Changelog**:\n<https://github.com/yaml/pyyaml/compare/6.0.2...6.0.3>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am every weekday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0MS4xMzEuOSIsInVwZGF0ZWRJblZlciI6IjQxLjEzMS45IiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2025-10-07T19:51:25Z",
+          "tree_id": "1d3759aac0c71f9006e0242a024585e3a65234eb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9643cfcb719f532b8de4c6b693a6893255843b07"
+        },
+        "date": 1759867214467,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 732166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21965000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21965000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 131.37,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 155.82,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 740333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22210000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22210000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.74,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.77,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 165.18,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 197.93,
             "unit": "MiB"
           }
         ]
