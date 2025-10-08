@@ -322,7 +322,7 @@ mod test {
             "int8:I8",
             "list:[U8]",
             "map:Map<Str,Str>",
-            "map_extra:Map<>",
+            "map_invalid:Map<>",
             "map_nested:Map<Str,[U16]>",
             "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
             "string:Str",
