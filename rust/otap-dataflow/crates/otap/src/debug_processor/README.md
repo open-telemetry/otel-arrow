@@ -119,9 +119,10 @@ Here is the default sampling config
 
 The `sampling_initial` value is the number of values that is sent before
 any sampling rate is applied during the `sampling_interval`.
-The `sampling_thereafter` value is the sampling rate that will kick in
-after the inital value is met.
-The `sampling_interval` is how long the sampling will last before it resets.
+The `sampling_thereafter` value is what determines how frequent a msg is
+logged. Lets say that `sampling_thereafter` is set to x then every xth msg
+will get logged while the rest get dropped. The `sampling_interval` is how
+long the sampling will last before it resets.
 
 #### Sampling Example
 
