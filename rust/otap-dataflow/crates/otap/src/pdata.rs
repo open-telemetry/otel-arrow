@@ -683,6 +683,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::testing::TestCallData;
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -716,47 +717,13 @@ mod test {
         ])
     }
 
-    #[derive(Eq, PartialEq, Debug, Clone)]
-    struct TestData {
-        id0: u64,
-        id1: usize,
-    }
-
-    impl TestData {
-        fn new(id0: u64, id1: usize) -> Self {
-            Self { id0, id1 }
-        }
-    }
-
-    impl From<TestData> for CallData {
-        fn from(value: TestData) -> Self {
-            smallvec::smallvec![value.id0.into(), value.id1.into()]
-        }
-    }
-
-    impl TryFrom<CallData> for TestData {
-        type Error = otap_df_engine::error::Error;
-
-        fn try_from(value: CallData) -> Result<Self, Self::Error> {
-            if value.len() != 2 {
-                return Err(Self::Error::InternalError {
-                    message: "invalid calldata".into(),
-                });
-            }
-            Ok(Self {
-                id0: value[0].into(),
-                id1: value[1].try_into()?,
-            })
-        }
-    }
-
-    fn create_test_pdata() -> (TestData, OtapPdata) {
+    fn create_test_pdata() -> (TestCallData, OtapPdata) {
         let otlp_service_req = create_test_logs();
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
         (
-            TestData::new(100, 1000),
+            TestCallData::new(100, 1000),
             OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()),
         )
     }
@@ -1135,7 +1102,7 @@ mod test {
 
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1165,7 +1132,7 @@ mod test {
 
         let (node_id, ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
-        let recv_data: TestData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1190,7 +1157,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1220,7 +1187,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1268,7 +1235,7 @@ mod test {
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
-        let recv_data: TestData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
     }
 
