@@ -292,7 +292,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Clear the bytes for the next iteration
                                                             line_bytes.clear();
 
-                                                            // Flush when batch size threshold is reached (match UDP behavior and main)
+                                                            // Flush when batch size threshold is reached
                                                             if arrow_records_builder.len() >= MAX_BATCH_SIZE {
                                                                 // Build the Arrow records to send them
                                                                 let items = u64::from(arrow_records_builder.len());
@@ -378,7 +378,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             Err(_) => {
                                                                 let mut m = metrics.borrow_mut();
                                                                 m.received_logs_refused.add(items);
-                                                                return; // Break out of the entire task
                                                             }
                                                         }
                                                     }
@@ -1291,15 +1290,17 @@ mod telemetry_tests {
             // Inspect metrics
             let map = collect_syslog_metrics_map(&registry);
             let get = |k: &str| map.get(k).copied().unwrap_or(0);
-            assert!(get("received.logs.success") >= 1, "success >= 1");
-            assert!(get("received.logs.failure") >= 1, "failure >= 1");
-            assert!(get("received.logs.refused") == 0, "refused == 0");
-            assert!(
-                get("received.logs.total") >= 2,
-                "total >= 2 (one valid + one invalid)"
+            assert_eq!(get("received.logs.success"), 1, "success == 1");
+            assert_eq!(get("received.logs.failure"), 1, "failure == 1");
+            assert_eq!(get("received.logs.refused"), 0, "refused == 0");
+            assert_eq!(
+                get("received.logs.total"),
+                2,
+                "total == 2 (one valid + one invalid)"
             );
-            assert!(
-                get("tcp.connections.active") == 0,
+            assert_eq!(
+                get("tcp.connections.active"),
+                0,
                 "active tcp conns == 0 for UDP"
             );
 
