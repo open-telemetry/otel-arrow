@@ -6,7 +6,7 @@
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
-    error::{Error, TypedError},
+    error::Error,
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
@@ -183,10 +183,10 @@ pub trait ProducerEffectHandlerExtension<PData> {
 #[async_trait(?Send)]
 pub trait ConsumerEffectHandlerExtension<PData> {
     /// Triggers the next step of work (if any) in Ack processing.
-    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<AckMsg<PData>>>;
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
 
     /// Triggers the next step of work (if any) in Nack processing.
-    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<NackMsg<PData>>>;
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
 /// Builds a pipeline factory for initialization.

@@ -207,11 +207,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Send an Ack to a node of known-interest.
-    pub async fn route_ack<F>(
-        &self,
-        ack: AckMsg<PData>,
-        cxf: F,
-    ) -> Result<(), TypedError<AckMsg<PData>>>
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
     where
         F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
@@ -219,11 +215,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(
-        &self,
-        nack: NackMsg<PData>,
-        cxf: F,
-    ) -> Result<(), TypedError<NackMsg<PData>>>
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
     where
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
