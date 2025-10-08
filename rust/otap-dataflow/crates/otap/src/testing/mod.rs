@@ -27,12 +27,14 @@ pub struct TestCallData {
 
 impl TestCallData {
     /// Create test calldata
+    #[must_use]
     pub fn new_with(id0: u64, id1: usize) -> Self {
         Self { id0, id1 }
     }
+}
 
-    /// Create a standard test calldata
-    pub fn new() -> TestCallData {
+impl Default for TestCallData {
+    fn default() -> TestCallData {
         TestCallData::new_with(123, 4567)
     }
 }
@@ -78,6 +80,7 @@ pub fn create_test_logs() -> ExportLogsServiceRequest {
 }
 
 /// Create minimal test pdata
+#[must_use]
 pub fn create_test_pdata() -> OtapPdata {
     let otlp_service_req = create_test_logs();
     let mut otlp_bytes = vec![];
@@ -129,7 +132,7 @@ pub fn test_exporter_with_subscription(
         .run_test(move |ctx| async move {
             let mut req_data = create_test_pdata();
 
-            req_data.test_subscribe_to(subscribe_interests, TestCallData::new().into(), 654321);
+            req_data.test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
             ctx.send_pdata(req_data).await.unwrap();
             ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                 .await
@@ -165,7 +168,7 @@ pub fn test_exporter_with_subscription(
 
             if !trigger.is_empty() {
                 let got: TestCallData = calldata.try_into().unwrap();
-                assert_eq!(TestCallData::new(), got);
+                assert_eq!(TestCallData::default(), got);
 		assert_eq!(
 		    reason,
 		    if trigger == Interests::NACKS { "THIS specific error" } else { "success" },

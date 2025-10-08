@@ -701,7 +701,7 @@ mod test {
     use prost::Message;
 
     fn create_test() -> (TestCallData, OtapPdata) {
-        (TestCallData::new(), create_test_pdata())
+        (TestCallData::default(), create_test_pdata())
     }
 
     #[test]
