@@ -266,19 +266,18 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let context = self.create_context();
+        let mut context = self.create_context();
         let ctx_test = context.clone();
         self.rt.block_on(async move {
             f(ctx_test).await;
         });
 
-        let mut context_with_receiver = context;
-        context_with_receiver.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
+        context.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
 
         ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
-            context: context_with_receiver,
+            context,
             run_exporter_handle: self.run_exporter_handle,
         }
     }
