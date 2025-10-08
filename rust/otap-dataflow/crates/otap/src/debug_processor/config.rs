@@ -5,6 +5,7 @@
 
 use super::filter::FilterRules;
 use super::output::OutputMode;
+use super::sampling::SamplingConfig;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -52,6 +53,8 @@ pub struct Config {
     output: OutputMode,
     #[serde(default = "default_filters")]
     filters: Vec<FilterRules>,
+    #[serde(default = "default_sampling")]
+    sampling: SamplingConfig,
 }
 
 fn default_verbosity() -> Verbosity {
@@ -77,6 +80,10 @@ fn default_output_mode() -> OutputMode {
     OutputMode::Console
 }
 
+fn default_sampling() -> SamplingConfig {
+    SamplingConfig::new(1, 1, 1)
+}
+
 impl Config {
     /// Create a new Config object
     #[must_use]
@@ -86,6 +93,7 @@ impl Config {
         signals: HashSet<SignalActive>,
         output: OutputMode,
         filters: Vec<FilterRules>,
+        sampling: SamplingConfig,
     ) -> Self {
         Self {
             verbosity,
@@ -93,6 +101,7 @@ impl Config {
             signals,
             output,
             filters,
+            sampling,
         }
     }
     /// get the verbosity level
@@ -122,6 +131,11 @@ impl Config {
     pub const fn filters(&self) -> &Vec<FilterRules> {
         &self.filters
     }
+
+    #[must_use]
+    pub const fn sampling(&self) -> SamplingConfig {
+        self.sampling
+    }
 }
 
 impl Default for Config {
@@ -132,6 +146,7 @@ impl Default for Config {
             signals: default_active_signal(),
             output: default_output_mode(),
             filters: default_filters(),
+            sampling: default_sampling(),
         }
     }
 }

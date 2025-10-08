@@ -9,9 +9,9 @@
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};
-use self::filter::FilterRules;
 use self::metrics::DebugPdataMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
+use self::sampling::Sampler;
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
     pdata::{OtapPdata, OtlpProtoBytes},
@@ -47,6 +47,7 @@ mod metrics;
 mod normal_marshaler;
 mod output;
 mod predicate;
+mod sampling;
 
 /// The URN for the debug processor
 pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
@@ -55,6 +56,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
 pub struct DebugProcessor {
     config: Config,
     metrics: MetricSet<DebugPdataMetrics>,
+    sampler: Sampler,
 }
 
 /// Factory function to create an DebugProcessor.
@@ -94,7 +96,12 @@ impl DebugProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
-        DebugProcessor { config, metrics }
+        let sampler = Sampler::new(config.sampling());
+        DebugProcessor {
+            config,
+            metrics,
+            sampler,
+        }
     }
 
     /// Creates a new DebugProcessor from a configuration object
@@ -104,7 +111,12 @@ impl DebugProcessor {
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
-        Ok(DebugProcessor { config, metrics })
+        let sampler = Sampler::new(config.sampling());
+        Ok(DebugProcessor {
+            config,
+            metrics,
+            sampler,
+        })
     }
 }
 
@@ -117,7 +129,6 @@ impl local::Processor<OtapPdata> for DebugProcessor {
     ) -> Result<(), Error> {
         // create a marshaler to take the otlp objects and extract various data to report
         let active_signals = self.config.signals();
-        let filters = self.config.filters();
         let output_mode = self.config.output();
 
         // if the outputmode is via outports then we can have multiple outports configured
@@ -208,8 +219,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            process_log(req, filters, debug_output.as_mut(), &mut self.metrics)
-                                .await?;
+                            self.process_log(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.logs_consumed.add(1);
                     }
@@ -220,8 +230,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytesf: {e}"),
                                 }
                             })?;
-                            process_metric(req, filters, debug_output.as_mut(), &mut self.metrics)
-                                .await?;
+                            self.process_metric(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.metrics_consumed.add(1);
                     }
@@ -232,8 +241,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
-                            process_trace(req, filters, debug_output.as_mut(), &mut self.metrics)
-                                .await?;
+                            self.process_trace(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.traces_consumed.add(1);
                     }
@@ -244,163 +252,169 @@ impl local::Processor<OtapPdata> for DebugProcessor {
     }
 }
 
-/// Function to collect and report the data contained in a Metrics object received by the Debug processor
-async fn process_metric(
-    mut metric_request: MetricsData,
-    filters: &Vec<FilterRules>,
-    debug_output: &mut dyn DebugOutput,
-    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
-) -> Result<(), Error> {
-    // collect number of resource metrics
-    // collect number of metrics
-    // collect number of datapoints
-    let resource_metrics = metric_request.resource_metrics.len();
-    let mut data_points = 0;
-    let mut metrics = 0;
-    for resource_metrics in &metric_request.resource_metrics {
-        for scope_metrics in &resource_metrics.scope_metrics {
-            metrics += scope_metrics.metrics.len();
-            for metric in &scope_metrics.metrics {
-                if let Some(data) = &metric.data {
-                    match data {
-                        Data::Gauge(gauge) => {
-                            data_points += gauge.data_points.len();
-                        }
-                        Data::Sum(sum) => {
-                            data_points += sum.data_points.len();
-                        }
-                        Data::Histogram(histogram) => {
-                            data_points += histogram.data_points.len();
-                        }
-                        Data::ExponentialHistogram(exponential_histogram) => {
-                            data_points += exponential_histogram.data_points.len();
-                        }
-                        Data::Summary(summary) => {
-                            data_points += summary.data_points.len();
+impl DebugProcessor {
+    /// Function to collect and report the data contained in a Metrics object received by the Debug processor
+    async fn process_metric(
+        &mut self,
+        mut metric_request: MetricsData,
+        debug_output: &mut dyn DebugOutput,
+    ) -> Result<(), Error> {
+        // collect number of resource metrics
+        // collect number of metrics
+        // collect number of datapoints
+        let filters = self.config.filters();
+        let resource_metrics = metric_request.resource_metrics.len();
+        let mut data_points = 0;
+        let mut metrics = 0;
+        for resource_metrics in &metric_request.resource_metrics {
+            for scope_metrics in &resource_metrics.scope_metrics {
+                metrics += scope_metrics.metrics.len();
+                for metric in &scope_metrics.metrics {
+                    if let Some(data) = &metric.data {
+                        match data {
+                            Data::Gauge(gauge) => {
+                                data_points += gauge.data_points.len();
+                            }
+                            Data::Sum(sum) => {
+                                data_points += sum.data_points.len();
+                            }
+                            Data::Histogram(histogram) => {
+                                data_points += histogram.data_points.len();
+                            }
+                            Data::ExponentialHistogram(exponential_histogram) => {
+                                data_points += exponential_histogram.data_points.len();
+                            }
+                            Data::Summary(summary) => {
+                                data_points += summary.data_points.len();
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    internal_metrics.metric_signals_consumed.add(metrics as u64);
-    internal_metrics
-        .metric_datapoints_consumed
-        .add(data_points as u64);
+        self.metrics.metric_signals_consumed.add(metrics as u64);
+        self.metrics
+            .metric_datapoints_consumed
+            .add(data_points as u64);
 
-    let report_basic = format!(
-        "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
-    );
+        let report_basic = format!(
+            "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
+        );
 
-    debug_output.output_message(report_basic.as_str()).await?;
+        debug_output.output_message(report_basic.as_str()).await?;
 
-    // return early if don't need to output anymore information
-    if debug_output.is_basic() {
-        return Ok(());
-    }
-
-    // if there are filters to apply then apply them
-    if !filters.is_empty() {
-        for filter in filters {
-            filter.filter_metrics(&mut metric_request)
+        // return early if don't need to output anymore information
+        if debug_output.is_basic() {
+            return Ok(());
         }
-    }
 
-    debug_output.output_metrics(metric_request).await?;
-
-    Ok(())
-}
-
-async fn process_trace(
-    mut trace_request: TracesData,
-    filters: &Vec<FilterRules>,
-    debug_output: &mut dyn DebugOutput,
-    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
-) -> Result<(), Error> {
-    // collect number of resource spans
-    // collect number of spans
-    let resource_spans = trace_request.resource_spans.len();
-    let mut spans = 0;
-    let mut events = 0;
-    let mut links = 0;
-    for resource_span in &trace_request.resource_spans {
-        for scope_span in &resource_span.scope_spans {
-            spans += scope_span.spans.len();
-            for span in &scope_span.spans {
-                events += span.events.len();
-                links += span.links.len();
+        // if there are filters to apply then apply them
+        if !filters.is_empty() {
+            for filter in filters {
+                filter.filter_metrics(&mut metric_request)
             }
         }
-    }
-    internal_metrics.span_signals_consumed.add(spans as u64);
-    internal_metrics.span_events_consumed.add(events as u64);
-    internal_metrics.span_links_consumed.add(links as u64);
 
-    let report_basic = format!(
-        "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
-    );
+        debug_output
+            .output_metrics(metric_request, &mut self.sampler)
+            .await?;
 
-    debug_output.output_message(report_basic.as_str()).await?;
-    // return early if don't need to output anymore information
-    if debug_output.is_basic() {
-        return Ok(());
+        Ok(())
     }
 
-    // if there are filters to apply then apply them
-    if !filters.is_empty() {
-        for filter in filters {
-            filter.filter_traces(&mut trace_request)
-        }
-    }
-
-    debug_output.output_traces(trace_request).await?;
-    Ok(())
-}
-
-async fn process_log(
-    mut log_request: LogsData,
-    filters: &Vec<FilterRules>,
-    debug_output: &mut dyn DebugOutput,
-    internal_metrics: &mut MetricSet<DebugPdataMetrics>,
-) -> Result<(), Error> {
-    let resource_logs = log_request.resource_logs.len();
-    let mut log_records = 0;
-    let mut events = 0;
-    for resource_log in &log_request.resource_logs {
-        for scope_log in &resource_log.scope_logs {
-            log_records += scope_log.log_records.len();
-            for log_record in &scope_log.log_records {
-                if !log_record.event_name.is_empty() {
-                    events += 1;
+    async fn process_trace(
+        &mut self,
+        mut trace_request: TracesData,
+        debug_output: &mut dyn DebugOutput,
+    ) -> Result<(), Error> {
+        // collect number of resource spans
+        // collect number of spans
+        let filters = self.config.filters();
+        let resource_spans = trace_request.resource_spans.len();
+        let mut spans = 0;
+        let mut events = 0;
+        let mut links = 0;
+        for resource_span in &trace_request.resource_spans {
+            for scope_span in &resource_span.scope_spans {
+                spans += scope_span.spans.len();
+                for span in &scope_span.spans {
+                    events += span.events.len();
+                    links += span.links.len();
                 }
             }
         }
-    }
-    internal_metrics
-        .log_signals_consumed
-        .add(log_records as u64);
-    internal_metrics.events_consumed.add(events);
+        self.metrics.span_signals_consumed.add(spans as u64);
+        self.metrics.span_events_consumed.add(events as u64);
+        self.metrics.span_links_consumed.add(links as u64);
 
-    let report_basic = format!(
-        "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
-    );
+        let report_basic = format!(
+            "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
+        );
 
-    debug_output.output_message(report_basic.as_str()).await?;
-
-    // return early if don't need to output anymore information
-    if debug_output.is_basic() {
-        return Ok(());
-    }
-
-    if !filters.is_empty() {
-        for filter in filters {
-            filter.filter_logs(&mut log_request)
+        debug_output.output_message(report_basic.as_str()).await?;
+        // return early if don't need to output anymore information
+        if debug_output.is_basic() {
+            return Ok(());
         }
-    }
-    debug_output.output_logs(log_request).await?;
 
-    Ok(())
+        // if there are filters to apply then apply them
+        if !filters.is_empty() {
+            for filter in filters {
+                filter.filter_traces(&mut trace_request)
+            }
+        }
+
+        debug_output
+            .output_traces(trace_request, &mut self.sampler)
+            .await?;
+        Ok(())
+    }
+
+    async fn process_log(
+        &mut self,
+        mut log_request: LogsData,
+        debug_output: &mut dyn DebugOutput,
+    ) -> Result<(), Error> {
+        let filters = self.config.filters();
+        let resource_logs = log_request.resource_logs.len();
+        let mut log_records = 0;
+        let mut events = 0;
+        for resource_log in &log_request.resource_logs {
+            for scope_log in &resource_log.scope_logs {
+                log_records += scope_log.log_records.len();
+                for log_record in &scope_log.log_records {
+                    if !log_record.event_name.is_empty() {
+                        events += 1;
+                    }
+                }
+            }
+        }
+        self.metrics.log_signals_consumed.add(log_records as u64);
+        self.metrics.events_consumed.add(events);
+
+        let report_basic = format!(
+            "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
+        );
+
+        debug_output.output_message(report_basic.as_str()).await?;
+
+        // return early if don't need to output anymore information
+        if debug_output.is_basic() {
+            return Ok(());
+        }
+
+        if !filters.is_empty() {
+            for filter in filters {
+                filter.filter_logs(&mut log_request)
+            }
+        }
+        debug_output
+            .output_logs(log_request, &mut self.sampler)
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +426,7 @@ mod tests {
     use crate::debug_processor::predicate::{
         KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
     };
+    use crate::debug_processor::sampling::SamplingConfig;
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use crate::pdata::{OtapPdata, OtlpProtoBytes};
     use otap_df_config::node::NodeUserConfig;
@@ -682,12 +697,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_normal.txt".to_string();
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Batch,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
@@ -720,12 +737,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_basic.txt".to_string();
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Basic,
             DisplayMode::Batch,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -756,12 +775,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_detailed.txt".to_string();
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -813,13 +834,14 @@ mod tests {
 
         let output_file = "debug_logs.txt".to_string();
         let signals = HashSet::from([SignalActive::Logs]);
-
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -871,12 +893,14 @@ mod tests {
 
         let output_file = "debug_metrics.txt".to_string();
         let signals = HashSet::from([SignalActive::Metrics]);
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -986,6 +1010,7 @@ mod tests {
 
         let output_file = "debug_spans.txt".to_string();
         let signals = HashSet::from([SignalActive::Spans]);
+        let sampling = SamplingConfig::new(1, 1, 1);
 
         let config = Config::new(
             Verbosity::Detailed,
@@ -993,6 +1018,7 @@ mod tests {
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -1023,13 +1049,14 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_signal_mode.txt".to_string();
-
+        let sampling = SamplingConfig::new(1, 1, 1);
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Signal,
             signals,
             OutputMode::File(output_file.clone()),
             Vec::new(),
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -1060,7 +1087,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_filter_include.txt".to_string();
-
+        let sampling = SamplingConfig::new(1, 1, 1);
         let filterrule = vec![FilterRules::new(
             Predicate::new(
                 SignalField::Attribute,
@@ -1077,6 +1104,7 @@ mod tests {
             signals,
             OutputMode::File(output_file.clone()),
             filterrule,
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -1107,7 +1135,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_filter_exclude.txt".to_string();
-
+        let sampling = SamplingConfig::new(1, 1, 1);
         let filterrule = vec![FilterRules::new(
             Predicate::new(
                 SignalField::Attribute,
@@ -1124,6 +1152,7 @@ mod tests {
             signals,
             OutputMode::File(output_file.clone()),
             filterrule,
+            sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
@@ -1141,6 +1170,64 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure_exclude_attribute(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+        fn validation_procedure_sampling(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                // initial message of 1 should be outputted
+                assert!(reader.contains("ResourceLog"));
+                // we don't log the second message
+                assert!(!reader.contains("ResourceMetric"));
+                // third message will get outputted (sampling_thereafter = 2)
+                assert!(reader.contains("ResourceSpan"));
+
+            })
+        }
+    }
+    #[test]
+    fn test_debug_processor_sampling() {
+         let test_runtime = TestRuntime::new();
+        let signals = HashSet::from([
+            SignalActive::Metrics,
+            SignalActive::Logs,
+            SignalActive::Spans,
+        ]);
+        let output_file = "debug_output_samping.txt".to_string();
+        let sampling = SamplingConfig::new(1, 2, 1);
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.clone()),
+            Vec::new(),
+            sampling,
+        );
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure_sampling(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
     }
