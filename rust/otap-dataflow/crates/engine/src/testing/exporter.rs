@@ -39,6 +39,8 @@ pub struct TestContext<PData> {
     pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
     counters: CtrlMsgCounters,
+    /// Receiver for pipeline control messages
+    pipeline_ctrl_msg_receiver: Option<PipelineCtrlMsgReceiver<PData>>,
 }
 
 impl<PData> Clone for TestContext<PData> {
@@ -47,6 +49,7 @@ impl<PData> Clone for TestContext<PData> {
             control_tx: self.control_tx.clone(),
             pdata_tx: self.pdata_tx.clone(),
             counters: self.counters.clone(),
+            pipeline_ctrl_msg_receiver: None,
         }
     }
 }
@@ -63,6 +66,7 @@ impl<PData> TestContext<PData> {
             control_tx,
             pdata_tx,
             counters,
+            pipeline_ctrl_msg_receiver: None,
         }
     }
 
@@ -70,6 +74,12 @@ impl<PData> TestContext<PData> {
     #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
+    }
+
+    /// Takes the pipeline control message receiver from the context.
+    /// Returns None if already taken.
+    pub fn take_pipeline_ctrl_receiver(&mut self) -> Option<PipelineCtrlMsgReceiver<PData>> {
+        self.pipeline_ctrl_msg_receiver.take()
     }
 
     /// Sends a timer tick control message.
@@ -173,11 +183,6 @@ pub struct ValidationPhase<PData> {
 
     /// Join handle for the running the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
-
-    // ToDo implement support for pipeline control messages in a future PR.
-    #[allow(unused_variables)]
-    #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -267,12 +272,14 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             f(ctx_test).await;
         });
 
+        let mut context_with_receiver = context;
+        context_with_receiver.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
+
         ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
-            context,
+            context: context_with_receiver,
             run_exporter_handle: self.run_exporter_handle,
-            pipeline_ctrl_msg_receiver: self.pipeline_ctrl_msg_receiver,
         }
     }
 

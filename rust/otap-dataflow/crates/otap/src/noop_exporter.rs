@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn test_noop_exporter_with_subscription_fails() {
+    fn test_noop_exporter_with_subscription_succeeds() {
         test_exporter_with_subscription(&NOOP_EXPORTER, json!({}));
     }
 }
