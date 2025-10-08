@@ -3,8 +3,9 @@
 
 //! Common foundation of all effect handlers.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
@@ -199,6 +200,56 @@ impl<PData> EffectHandlerCore<PData> {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
+    }
+
+    /// Send a AckMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Acks, if any.  When there is a
+    /// recipient, this returns its node_id and the AckMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_ack<Transfer>(
+        &self,
+        ack_in: AckMsg<PData>,
+        transfer: Transfer,
+    ) -> Result<(), TypedError<AckMsg<PData>>>
+    where
+        Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        // TODO: Placeholder: This returns a SendError::Closed as there
+        // is no appropriate message to send yet.
+        transfer(ack_in)
+            .map(|(node_id, ack_out)| {
+                Err(TypedError::NodeControlMsgSendError {
+                    node_id,
+                    error: SendError::Closed(ack_out),
+                })
+            })
+            .unwrap_or(Ok(()))
+    }
+
+    /// Send a NackMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Nacks, if any.  When there is a
+    /// recipient, this returns its node_id and the NackMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_nack<Transfer>(
+        &self,
+        nack_in: NackMsg<PData>,
+        transfer: Transfer,
+    ) -> Result<(), TypedError<NackMsg<PData>>>
+    where
+        Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        // TODO: Placeholder: This returns a SendError::Closed as there
+        // is no appropriate message to send yet.
+        transfer(nack_in)
+            .map(|(node_id, nack_out)| {
+                Err(TypedError::NodeControlMsgSendError {
+                    node_id,
+                    error: SendError::Closed(nack_out),
+                })
+            })
+            .unwrap_or(Ok(()))
     }
 }
 
