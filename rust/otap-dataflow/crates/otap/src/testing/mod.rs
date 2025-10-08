@@ -3,12 +3,19 @@
 
 //! Ultra-minimal test utilities for OTAP components
 
-use crate::pdata::{OtapPayload, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
     control::{CallData, PipelineControlMsg},
 };
+use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_rust::proto::opentelemetry::{
+    common::v1::{AnyValue, InstrumentationScope, KeyValue},
+    logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+    resource::v1::Resource,
+};
+use prost::Message;
 use serde_json::Value;
 
 /// TestCallData helps test the CallData type.
@@ -20,8 +27,13 @@ pub struct TestCallData {
 
 impl TestCallData {
     /// Create test calldata
-    pub fn new(id0: u64, id1: usize) -> Self {
+    pub fn new_with(id0: u64, id1: usize) -> Self {
         Self { id0, id1 }
+    }
+
+    /// Create a standard test calldata
+    pub fn new() -> TestCallData {
+        TestCallData::new_with(123, 4567)
     }
 }
 
@@ -47,17 +59,31 @@ impl TryFrom<CallData> for TestCallData {
     }
 }
 
-/// Create a standard test calldata
-fn create_test_data() -> TestCallData {
-    TestCallData::new(123, 4567)
+/// Create minimal test data
+#[must_use]
+pub fn create_test_logs() -> ExportLogsServiceRequest {
+    ExportLogsServiceRequest::new(vec![
+        ResourceLogs::build(Resource::default())
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::default())
+                    .log_records(vec![
+                        LogRecord::build(2u64, SeverityNumber::Info, "event")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                    ])
+                    .finish(),
+            ])
+            .finish(),
+    ])
 }
 
-/// Create minimal empty test data
-#[must_use]
-pub fn empty_logs_pdata() -> OtapPdata {
-    OtapPdata::new_todo_context(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-        vec![],
-    )))
+/// Create minimal test pdata
+pub fn create_test_pdata() -> OtapPdata {
+    let otlp_service_req = create_test_logs();
+    let mut otlp_bytes = vec![];
+    otlp_service_req.encode(&mut otlp_bytes).unwrap();
+
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into())
 }
 
 /// Simple exporter test where there is NO subscribe_to() in the context.
@@ -68,7 +94,7 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
     test_runtime
         .set_exporter(exporter)
         .run_test(|ctx| async move {
-            ctx.send_pdata(empty_logs_pdata()).await.unwrap();
+            ctx.send_pdata(create_test_pdata()).await.unwrap();
             ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                 .await
                 .unwrap();
@@ -90,19 +116,20 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
 }
 
 /// Simple exporter test where there is a subscribe_to() in the context.
-pub fn test_exporter_with_subscription(factory: &ExporterFactory<OtapPdata>, config: Value) {
+pub fn test_exporter_with_subscription(
+    factory: &ExporterFactory<OtapPdata>,
+    config: Value,
+    subscribe_interests: Interests,
+    expect_interest: Interests,
+) {
     let test_runtime = TestRuntime::new();
     let exporter = create_exporter_from_factory(factory, config).unwrap();
     test_runtime
         .set_exporter(exporter)
-        .run_test(|ctx| async move {
-            let mut req_data = empty_logs_pdata();
+        .run_test(move |ctx| async move {
+            let mut req_data = create_test_pdata();
 
-            req_data.test_subscribe_to(
-                Interests::ACKS | Interests::NACKS,
-                create_test_data().into(),
-                654321,
-            );
+            req_data.test_subscribe_to(subscribe_interests, TestCallData::new().into(), 654321);
             ctx.send_pdata(req_data).await.unwrap();
             ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                 .await
@@ -112,13 +139,51 @@ pub fn test_exporter_with_subscription(factory: &ExporterFactory<OtapPdata>, con
             result.expect("success");
 
             let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
-            match pipeline_rx.recv().await {
+            let (trigger, calldata, reqdata, reason) = match pipeline_rx.recv().await {
                 Ok(PipelineControlMsg::DeliverAck { ack, node_id }) => {
                     assert_eq!(node_id, 654321);
-                    let got_data: TestCallData = ack.calldata.try_into().unwrap();
-                    assert_eq!(create_test_data(), got_data);
+                    (Interests::ACKS, ack.calldata, Some(ack.accepted), "success".into())
                 }
-                other => panic!("expected DeliverAck, got {other:?}"),
+                Ok(PipelineControlMsg::DeliverNack { nack, node_id }) => {
+                    assert_eq!(node_id, 654321);
+                    (Interests::NACKS, nack.calldata, Some(nack.refused), nack.reason)
+                }
+                Ok(other) => (
+                    Interests::empty(),
+                    CallData::default(),
+		    None,
+                    format!("other message {other:?}"),
+                ),
+                Err(err) => (
+		    Interests::empty(),
+                    CallData::default(),
+		    None,
+                    format!("error {err:?}"),
+                ),
+            };
+            assert_eq!(expect_interest&Interests::ACKS_OR_NACKS, trigger);
+
+            if !trigger.is_empty() {
+                let got: TestCallData = calldata.try_into().unwrap();
+                assert_eq!(TestCallData::new(), got);
+		assert_eq!(
+		    reason,
+		    if trigger == Interests::NACKS { "THIS specific error" } else { "success" },
+		);
+
+		assert_eq!(reqdata.expect("has payload").num_items(),
+			   if (subscribe_interests & Interests::RETURN_DATA).is_empty() {
+			       0
+			   } else {
+			       1
+			   });
+
+            } else {
+                assert!(
+                    reason.contains("Closed"),
+                    "subscribed {subscribe_interests:?}: expecting {expect_interest:?}: trigger {trigger:?}: failed reason {reason}",
+                );
+                assert_eq!(calldata.len(), 0);
             }
         });
 }

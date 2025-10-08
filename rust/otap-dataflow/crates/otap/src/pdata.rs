@@ -23,7 +23,7 @@
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-//!     resource::v1::Resource    
+//!     resource::v1::Resource
 //! };
 //! # use otap_df_otap::pdata::{Context, OtapPdata, OtapPayload, OtlpProtoBytes};
 //! # use prost::Message;
@@ -54,25 +54,25 @@
 //!
 //! Internally, conversions are happening using various utility functions:
 //! ```text
-//!                                      ┌───────────────────────┐                                            
-//!                                      │                       │                                            
-//!                                      │      OTLP Bytes       │                                            
-//!                                      │                       │                                            
-//!                                      └───┬───────────────────┘                                            
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
+//!                                      ┌───────────────────────┐
+//!                                      │                       │
+//!                                      │      OTLP Bytes       │
+//!                                      │                       │
+//!                                      └───┬───────────────────┘
+//!                                          │                 ▲
+//!                                          │                 │
+//!                                          │                 │
+//!                                          ▼                 │
 //!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from()
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!                                      ┌─────────────────────┴───┐                                          
-//!                                      │                         │                                          
-//!                                      │    OTAP Arrow Records   │                                          
-//!                                      │                         │                                          
-//!                                      └─────────────────────────┘                                          
+//!                                          │                 ▲
+//!                                          │                 │
+//!                                          │                 │
+//!                                          ▼                 │
+//!                                      ┌─────────────────────┴───┐
+//!                                      │                         │
+//!                                      │    OTAP Arrow Records   │
+//!                                      │                         │
+//!                                      └─────────────────────────┘
 //! ```
 // ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
 // directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
@@ -110,9 +110,8 @@ impl Context {
         node_id: usize,
     ) {
         if let Some(last) = self.stack.last() {
-            if last.interests & Interests::RETURN_DATA != Interests::NONE {
-                interests |= Interests::RETURN_DATA;
-            }
+            // Inherit the preceding frame's RETURN_DATA bit
+            interests |= last.interests & Interests::RETURN_DATA;
         }
         self.stack.push(Frame {
             interests,
@@ -129,7 +128,7 @@ impl Context {
             .context
             .next_with_interest(Interests::ACKS)
             .map(|frame| {
-                if frame.interests & Interests::RETURN_DATA == Interests::NONE {
+                if (frame.interests & Interests::RETURN_DATA).is_empty() {
                     let _drop = ack.accepted.take_payload();
                 }
                 ack.calldata = frame.calldata;
@@ -145,7 +144,7 @@ impl Context {
             .context
             .next_with_interest(Interests::NACKS)
             .map(|frame| {
-                if frame.interests & Interests::RETURN_DATA == Interests::NONE {
+                if (frame.interests & Interests::RETURN_DATA).is_empty() {
                     let _drop = nack.refused.take_payload();
                 }
                 nack.calldata = frame.calldata;
@@ -683,7 +682,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::testing::TestCallData;
+    use crate::testing::{TestCallData, create_test_logs, create_test_pdata};
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -701,31 +700,8 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
-    fn create_test_logs() -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![
-                            LogRecord::build(2u64, SeverityNumber::Info, "event")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                                .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ])
-    }
-
-    fn create_test_pdata() -> (TestCallData, OtapPdata) {
-        let otlp_service_req = create_test_logs();
-        let mut otlp_bytes = vec![];
-        otlp_service_req.encode(&mut otlp_bytes).unwrap();
-
-        (
-            TestCallData::new(100, 1000),
-            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()),
-        )
+    fn create_test() -> (TestCallData, OtapPdata) {
+        (TestCallData::new(), create_test_pdata())
     }
 
     #[test]
@@ -1087,7 +1063,7 @@ mod test {
 
     #[test]
     fn test_context_next_ack_drops_payload_without_return_data() {
-        let (test_data, mut pdata) = create_test_pdata();
+        let (test_data, mut pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
         pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
@@ -1113,7 +1089,7 @@ mod test {
 
     #[test]
     fn test_context_next_ack_preserves_payload_with_return_data() {
-        let (test_data, mut pdata) = create_test_pdata();
+        let (test_data, mut pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
         pdata.test_subscribe_to(
@@ -1143,7 +1119,7 @@ mod test {
 
     #[test]
     fn test_context_next_nack_drops_payload_without_return_data() {
-        let (test_data, mut pdata) = create_test_pdata();
+        let (test_data, mut pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
         pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
@@ -1168,7 +1144,7 @@ mod test {
 
     #[test]
     fn test_context_next_nack_preserves_payload_with_return_data() {
-        let (test_data, mut pdata) = create_test_pdata();
+        let (test_data, mut pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
         pdata.test_subscribe_to(
@@ -1198,7 +1174,7 @@ mod test {
 
     #[test]
     fn test_context_next_ack_nack() {
-        let (test_data, mut pdata) = create_test_pdata();
+        let (test_data, mut pdata) = create_test();
 
         // Subscribe multiple frames. RETURN_DATA propagates automatically.
         pdata.test_subscribe_to(
@@ -1241,7 +1217,7 @@ mod test {
 
     #[test]
     fn test_context_no_ack() {
-        let (_, pdata) = create_test_pdata();
+        let (_, pdata) = create_test();
 
         let ack = AckMsg::new(pdata);
 
@@ -1251,7 +1227,7 @@ mod test {
 
     #[test]
     fn test_context_no_nack() {
-        let (_, pdata) = create_test_pdata();
+        let (_, pdata) = create_test();
 
         let nack = NackMsg::new("hey now", pdata);
 

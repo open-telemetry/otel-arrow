@@ -68,15 +68,33 @@ impl Exporter<OtapPdata> for NoopExporter {
 mod tests {
     use super::*;
     use crate::testing::*;
+    use otap_df_engine::Interests;
     use serde_json::json;
 
     #[test]
-    fn test_noop_exporter_no_subscription_succeeds() {
+    fn test_noop_exporter_no_subscription() {
         test_exporter_no_subscription(&NOOP_EXPORTER, json!({}));
     }
 
     #[test]
-    fn test_noop_exporter_with_subscription_succeeds() {
-        test_exporter_with_subscription(&NOOP_EXPORTER, json!({}));
+    fn test_noop_exporter_with_subscription() {
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS | Interests::RETURN_DATA,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::NACKS,
+            Interests::empty(),
+        );
     }
 }
