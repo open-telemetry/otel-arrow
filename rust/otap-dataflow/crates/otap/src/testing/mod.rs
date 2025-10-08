@@ -8,6 +8,47 @@ use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factor
 use otap_df_engine::{ExporterFactory, Interests, control::CallData};
 use serde_json::Value;
 
+/// TestCallData helps test the CallData type.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct TestCallData {
+    id0: u64,
+    id1: usize,
+}
+
+impl TestCallData {
+    /// Create test calldata
+    pub fn new_with(id0: u64, id1: usize) -> Self {
+        Self { id0, id1 }
+    }
+
+    /// Create a standard test calldata
+    pub fn new() -> TestCallData {
+        TestCallData::new_with(123, 4567)
+    }
+}
+
+impl From<TestCallData> for CallData {
+    fn from(value: TestCallData) -> Self {
+        smallvec::smallvec![value.id0.into(), value.id1.into()]
+    }
+}
+
+impl TryFrom<CallData> for TestCallData {
+    type Error = otap_df_engine::error::Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        if value.len() != 2 {
+            return Err(Self::Error::InternalError {
+                message: "invalid calldata".into(),
+            });
+        }
+        Ok(Self {
+            id0: value[0].into(),
+            id1: value[1].try_into()?,
+        })
+    }
+}
+
 /// Create minimal empty test data
 #[must_use]
 pub fn empty_logs_pdata() -> OtapPdata {
