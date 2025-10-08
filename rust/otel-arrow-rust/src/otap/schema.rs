@@ -222,7 +222,7 @@ mod test {
                 true,
             ),
             Field::new(
-                "map_extra",
+                "map_invalid",
                 DataType::Map(
                     Arc::new(Field::new(
                         "entries",
