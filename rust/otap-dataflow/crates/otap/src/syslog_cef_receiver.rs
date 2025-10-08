@@ -378,7 +378,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             Err(_) => {
                                                                 let mut m = metrics.borrow_mut();
                                                                 m.received_logs_refused.add(items);
-                                                                m.tcp_connections_active.dec();
                                                                 return; // Break out of the entire task
                                                             }
                                                         }
