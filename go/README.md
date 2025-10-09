@@ -51,7 +51,3 @@ OpenTelemetry Collector records is found in
 [./pkg/otel/arrow_record/producer.go](./pkg/otel/arrow_record/producer.go)
 
 [OTELARROWRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
-
-
-
-
