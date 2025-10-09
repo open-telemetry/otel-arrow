@@ -19,7 +19,7 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
@@ -116,9 +116,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
         let exporter_id = effect_handler.exporter_id();
         let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| Error::ExporterError {
-                exporter: exporter_id,
-                error: format!("grpc channel error {e}"),
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id,
+                    kind: ExporterErrorKind::Connect,
+                    error: format!("grpc channel error {e}"),
+                    source_detail,
+                }
             })?
             .connect_lazy();
 
@@ -227,7 +232,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     _ => {
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_id(),
+                            kind: ExporterErrorKind::Other,
                             error: "Unknown control message".to_owned(),
+                            source_detail: "".to_owned()
                         });
                     }
                 },
