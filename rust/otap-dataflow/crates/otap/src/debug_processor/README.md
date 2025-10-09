@@ -106,7 +106,6 @@ You can control how often msgs are sent out via the sampling settings
 current we support only two sampling modes `zap_sampling` and `no_sampling`.
 The default mode is `no_sampling`.
 
-
 #### Zap Sampling Config Example
 
 Below is how you would configure `zap_sampling` if you were to enable it

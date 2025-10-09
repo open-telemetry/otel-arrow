@@ -1174,7 +1174,7 @@ mod tests {
         remove_file(output_file).expect("Failed to remove file");
     }
 
-        fn validation_procedure_zap_sampling(
+    fn validation_procedure_zap_sampling(
         output_file: String,
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
@@ -1188,20 +1188,23 @@ mod tests {
                 assert!(!reader.contains("ResourceMetric"));
                 // third message will get outputted (sampling_thereafter = 2)
                 assert!(reader.contains("ResourceSpan"));
-
             })
         }
     }
     #[test]
     fn test_debug_processor_zap_sampling() {
-         let test_runtime = TestRuntime::new();
+        let test_runtime = TestRuntime::new();
         let signals = HashSet::from([
             SignalActive::Metrics,
             SignalActive::Logs,
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_samping.txt".to_string();
-        let sampling = SamplingConfig::ZapSampling{sampling_initial: 1, sampling_thereafter: 2, sampling_interval: 1};
+        let sampling = SamplingConfig::ZapSampling {
+            sampling_initial: 1,
+            sampling_thereafter: 2,
+            sampling_interval: 1,
+        };
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Batch,
