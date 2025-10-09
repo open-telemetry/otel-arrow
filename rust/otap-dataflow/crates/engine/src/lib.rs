@@ -5,6 +5,7 @@
 
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    control::{AckMsg, CallData, NackMsg},
     error::Error,
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
@@ -15,6 +16,7 @@ use crate::{
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
 };
+use async_trait::async_trait;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
@@ -155,6 +157,43 @@ where
             .map(|f| (f.name(), f.clone()))
             .collect::<HashMap<&'static str, T>>()
     })
+}
+
+bitflags::bitflags! {
+/// An 8-bit flags struct intended to store various intents describing
+/// callers in a pipeline, e.g., detail about whether Ack and/or
+/// Nack should be delivered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interests: u8 {
+    /// Acks interest
+    const ACKS   = 1 << 0;
+
+    /// Nacks interest
+    const NACKS  = 1 << 1;
+
+    /// Acks or Nacks interest subset
+    const ACKS_OR_NACKS = Self::ACKS.bits() | Self::NACKS.bits();
+
+    /// Return data
+    const RETURN_DATA = 1 << 2;
+}
+}
+
+/// Effect handler extensions for producers specific to data type.
+#[async_trait(?Send)]
+pub trait ProducerEffectHandlerExtension<PData> {
+    /// Subscribe to a set of interests.
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+}
+
+/// Effect handler extensions for consumers specific to data type.
+#[async_trait(?Send)]
+pub trait ConsumerEffectHandlerExtension<PData> {
+    /// Triggers the next step of work (if any) in Ack processing.
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
+
+    /// Triggers the next step of work (if any) in Nack processing.
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
 /// Builds a pipeline factory for initialization.
@@ -625,4 +664,14 @@ fn collect_hyper_edges_runtime<PData>(
         }
     }
     edges
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_interests() {
+        assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
+    }
 }

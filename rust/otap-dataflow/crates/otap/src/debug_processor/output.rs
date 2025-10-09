@@ -8,11 +8,12 @@ use crate::debug_processor::Verbosity;
 use crate::debug_processor::detailed_marshaler::DetailedViewMarshaler;
 use crate::debug_processor::marshaler::ViewMarshaler;
 use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
+use crate::debug_processor::sampling::Sampler;
 use crate::fake_data_generator::config::OTLPSignal;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use otap_df_config::PortName;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
 use otel_arrow_rust::proto::opentelemetry::{
@@ -35,9 +36,21 @@ pub enum OutputMode {
 #[async_trait(?Send)]
 pub trait DebugOutput {
     async fn output_message(&mut self, message: &str) -> Result<(), Error>;
-    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error>;
-    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error>;
-    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error>;
+    async fn output_metrics(
+        &mut self,
+        metric_request: MetricsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error>;
+    async fn output_traces(
+        &mut self,
+        trace_request: TracesData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error>;
+    async fn output_logs(
+        &mut self,
+        log_request: LogsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error>;
     fn is_basic(&self) -> bool;
 }
 
@@ -64,9 +77,14 @@ impl DebugOutputWriter {
                     .create(true)
                     .open(file_name)
                     .await
-                    .map_err(|e| Error::ProcessorError {
-                        processor: processor_id.clone(),
-                        error: format!("File error: {e}"),
+                    .map_err(|e| {
+                        let source_detail = format_error_sources(&e);
+                        Error::ProcessorError {
+                            processor: processor_id.clone(),
+                            kind: ProcessorErrorKind::Configuration,
+                            error: format!("File error: {e}"),
+                            source_detail,
+                        }
                     })?;
                 Box::new(file)
             }
@@ -94,17 +112,29 @@ impl DebugOutput for DebugOutputWriter {
         self.writer
             .write_all(message.as_bytes())
             .await
-            .map_err(|e| Error::ProcessorError {
-                processor: self.processor_id.clone(),
-                error: format!("Write error: {e}"),
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ProcessorError {
+                    processor: self.processor_id.clone(),
+                    kind: ProcessorErrorKind::Transport,
+                    error: format!("Write error: {e}"),
+                    source_detail,
+                }
             })
     }
-    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error> {
+    async fn output_metrics(
+        &mut self,
+        metric_request: MetricsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         if let Some(marshaler) = self.marshaler.take() {
             match self.display_mode {
                 DisplayMode::Batch => {
-                    let report = marshaler.marshal_metrics(metric_request);
-                    self.output_message(format!("{report}\n").as_str()).await?;
+                    let send_message = async || -> Result<(), Error> {
+                        let report = marshaler.marshal_metrics(metric_request);
+                        self.output_message(format!("{report}\n").as_str()).await
+                    };
+                    sampler.sample(send_message).await?;
                 }
                 DisplayMode::Signal => {
                     let metric_signals = metric_request
@@ -113,8 +143,11 @@ impl DebugOutput for DebugOutputWriter {
                         .flat_map(|resource| resource.scope_metrics)
                         .flat_map(|scope| scope.metrics);
                     for (index, metric) in metric_signals.enumerate() {
-                        let report = marshaler.marshal_metric_signal(&metric, index);
-                        self.output_message(format!("{report}\n").as_str()).await?;
+                        let send_message = async || -> Result<(), Error> {
+                            let report = marshaler.marshal_metric_signal(&metric, index);
+                            self.output_message(format!("{report}\n").as_str()).await
+                        };
+                        sampler.sample(send_message).await?;
                     }
                 }
             }
@@ -122,12 +155,19 @@ impl DebugOutput for DebugOutputWriter {
         }
         Ok(())
     }
-    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error> {
+    async fn output_traces(
+        &mut self,
+        trace_request: TracesData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         if let Some(marshaler) = self.marshaler.take() {
             match self.display_mode {
                 DisplayMode::Batch => {
-                    let report = marshaler.marshal_traces(trace_request);
-                    self.output_message(format!("{report}\n").as_str()).await?;
+                    let send_message = async || -> Result<(), Error> {
+                        let report = marshaler.marshal_traces(trace_request);
+                        self.output_message(format!("{report}\n").as_str()).await
+                    };
+                    sampler.sample(send_message).await?;
                 }
                 DisplayMode::Signal => {
                     let span_signals = trace_request
@@ -136,8 +176,11 @@ impl DebugOutput for DebugOutputWriter {
                         .flat_map(|resource| resource.scope_spans)
                         .flat_map(|scope| scope.spans);
                     for (index, span) in span_signals.enumerate() {
-                        let report = marshaler.marshal_span_signal(&span, index);
-                        self.output_message(format!("{report}\n").as_str()).await?;
+                        let send_message = async || -> Result<(), Error> {
+                            let report = marshaler.marshal_span_signal(&span, index);
+                            self.output_message(format!("{report}\n").as_str()).await
+                        };
+                        sampler.sample(send_message).await?;
                     }
                 }
             }
@@ -145,12 +188,19 @@ impl DebugOutput for DebugOutputWriter {
         }
         Ok(())
     }
-    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error> {
+    async fn output_logs(
+        &mut self,
+        log_request: LogsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         if let Some(marshaler) = self.marshaler.take() {
             match self.display_mode {
                 DisplayMode::Batch => {
-                    let report = marshaler.marshal_logs(log_request);
-                    self.output_message(format!("{report}\n").as_str()).await?;
+                    let send_message = async || -> Result<(), Error> {
+                        let report = marshaler.marshal_logs(log_request);
+                        self.output_message(format!("{report}\n").as_str()).await
+                    };
+                    sampler.sample(send_message).await?;
                 }
                 DisplayMode::Signal => {
                     let log_signals = log_request
@@ -159,8 +209,11 @@ impl DebugOutput for DebugOutputWriter {
                         .flat_map(|resource| resource.scope_logs)
                         .flat_map(|scope| scope.log_records);
                     for (index, log_record) in log_signals.enumerate() {
-                        let report = marshaler.marshal_log_signal(&log_record, index);
-                        self.output_message(format!("{report}\n").as_str()).await?;
+                        let send_message = async || -> Result<(), Error> {
+                            let report = marshaler.marshal_log_signal(&log_record, index);
+                            self.output_message(format!("{report}\n").as_str()).await
+                        };
+                        sampler.sample(send_message).await?;
                     }
                 }
             }
@@ -205,11 +258,14 @@ impl DebugOutputPorts {
                 .map(|port_name| port_name.as_ref())
                 .collect::<Vec<&str>>()
                 .join(", ");
+
             return Err(Error::ProcessorError {
                 processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error: format!(
                     "The following ports are not connected [{invalid_ports_list}], these are connected ports to this node [{connected_ports_list}]"
                 ),
+                source_detail: "".to_owned(),
             });
         }
 
@@ -338,49 +394,78 @@ impl DebugOutput for DebugOutputPorts {
         // since we are sending to ports we don't do anything with the &str data
         Ok(())
     }
-    async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error> {
+    async fn output_metrics(
+        &mut self,
+        metric_request: MetricsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         match self.display_mode {
             DisplayMode::Batch => {
-                self.send_outports(OTLPSignal::Metrics(metric_request).try_into()?)
-                    .await?;
+                let send_message = async || -> Result<(), Error> {
+                    self.send_outports(OTLPSignal::Metrics(metric_request).try_into()?)
+                        .await
+                };
+                sampler.sample(send_message).await?;
             }
             DisplayMode::Signal => {
                 let metric_signals = self.split_metrics(metric_request);
                 for metric in metric_signals {
-                    self.send_outports(OTLPSignal::Metrics(metric).try_into()?)
-                        .await?;
+                    let send_message = async || -> Result<(), Error> {
+                        self.send_outports(OTLPSignal::Metrics(metric).try_into()?)
+                            .await
+                    };
+                    sampler.sample(send_message).await?;
                 }
             }
         }
         Ok(())
     }
-    async fn output_traces(&mut self, trace_request: TracesData) -> Result<(), Error> {
+    async fn output_traces(
+        &mut self,
+        trace_request: TracesData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         match self.display_mode {
             DisplayMode::Batch => {
-                self.send_outports(OTLPSignal::Traces(trace_request).try_into()?)
-                    .await?;
+                let send_message = async || -> Result<(), Error> {
+                    self.send_outports(OTLPSignal::Traces(trace_request).try_into()?)
+                        .await
+                };
+                sampler.sample(send_message).await?;
             }
             DisplayMode::Signal => {
                 let trace_signals = self.split_traces(trace_request);
                 for trace in trace_signals {
-                    self.send_outports(OTLPSignal::Traces(trace).try_into()?)
-                        .await?;
+                    let send_message = async || -> Result<(), Error> {
+                        self.send_outports(OTLPSignal::Traces(trace).try_into()?)
+                            .await
+                    };
+                    sampler.sample(send_message).await?;
                 }
             }
         }
         Ok(())
     }
-    async fn output_logs(&mut self, log_request: LogsData) -> Result<(), Error> {
+    async fn output_logs(
+        &mut self,
+        log_request: LogsData,
+        sampler: &mut Sampler,
+    ) -> Result<(), Error> {
         match self.display_mode {
             DisplayMode::Batch => {
-                self.send_outports(OTLPSignal::Logs(log_request).try_into()?)
-                    .await?;
+                let send_message = async || -> Result<(), Error> {
+                    self.send_outports(OTLPSignal::Logs(log_request).try_into()?)
+                        .await
+                };
+                sampler.sample(send_message).await?;
             }
             DisplayMode::Signal => {
                 let log_signals = self.split_logs(log_request);
                 for log in log_signals {
-                    self.send_outports(OTLPSignal::Logs(log).try_into()?)
-                        .await?;
+                    let send_message = async || -> Result<(), Error> {
+                        self.send_outports(OTLPSignal::Logs(log).try_into()?).await
+                    };
+                    sampler.sample(send_message).await?;
                 }
             }
         }

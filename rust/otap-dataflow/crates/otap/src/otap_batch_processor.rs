@@ -25,6 +25,7 @@ use std::time::Duration;
 // Telemetry metrics
 pub mod metrics;
 use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_telemetry::metrics::MetricSet;
 // For optional conversion during flush/partitioning
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -655,7 +656,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
         match msg {
             Message::Control(ctrl) => {
                 match ctrl {
-                    otap_df_engine::control::NodeControlMsg::TimerTick { .. } => {
+                    NodeControlMsg::TimerTick { .. } => {
                         // Flush on timer only when thresholds were crossed and buffers are non-empty (unchanged behavior)
                         if self.dirty_logs && !self.current_logs.is_empty() {
                             if let Some(metrics) = &mut self.metrics {
@@ -695,14 +696,14 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         }
                         Ok(())
                     }
-                    otap_df_engine::control::NodeControlMsg::Config { .. } => Ok(()),
-                    otap_df_engine::control::NodeControlMsg::Shutdown { .. } => {
+                    NodeControlMsg::Config { .. } => Ok(()),
+                    NodeControlMsg::Shutdown { .. } => {
                         // Flush and shutdown
                         self.flush_current(effect, FlushReason::Shutdown).await?;
                         effect.info(LOG_MSG_SHUTTING_DOWN).await;
                         Ok(())
                     }
-                    otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                    NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
                         if let Some(metrics) = &mut self.metrics {
@@ -710,8 +711,10 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         }
                         Ok(())
                     }
-                    otap_df_engine::control::NodeControlMsg::Ack { .. }
-                    | otap_df_engine::control::NodeControlMsg::Nack { .. } => Ok(()),
+                    NodeControlMsg::DelayedData { .. } => {
+                        unreachable!("unused");
+                    }
+                    NodeControlMsg::Ack { .. } | NodeControlMsg::Nack { .. } => Ok(()),
                 }
             }
             Message::PData(request) => {
@@ -980,7 +983,6 @@ mod tests {
     use super::*;
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;

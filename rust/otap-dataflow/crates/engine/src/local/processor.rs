@@ -32,8 +32,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, TypedError};
+use crate::error::{Error, ProcessorErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::message::Message;
 use crate::node::NodeId;
@@ -152,9 +153,11 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
+                source_detail: String::new(),
             })),
         }
     }
@@ -178,10 +181,12 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.processor_id()
                 ),
+                source_detail: String::new(),
             })),
         }
     }
@@ -203,6 +208,22 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
     }
 
     // More methods will be added in the future as needed.
