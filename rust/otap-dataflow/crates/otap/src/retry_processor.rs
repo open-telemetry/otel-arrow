@@ -62,8 +62,8 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
-    error::{Error, ProcessorErrorKind},
     control::{AckMsg, CallData, NackMsg, NodeControlMsg},
+    error::{Error, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
