@@ -148,8 +148,9 @@ impl<PData> EffectHandlerCore<PData> {
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
     }
 
-    // Re-usable function
-    async fn pipeline_msg_sender(
+    /// Re-usable function to send a pipeline control message. This returns a reference
+    /// to the sender to place in a cancelation, for example.
+    async fn send_pipeline_ctrl_msg(
         &self,
         msg: PipelineControlMsg<PData>,
     ) -> Result<PipelineCtrlMsgSender<PData>, SendError<PipelineControlMsg<PData>>> {
@@ -168,7 +169,7 @@ impl<PData> EffectHandlerCore<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self
-            .pipeline_msg_sender(PipelineControlMsg::StartTimer {
+            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTimer {
                 node_id: self.node_id.index,
                 duration,
             })
@@ -190,7 +191,7 @@ impl<PData> EffectHandlerCore<PData> {
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self
-            .pipeline_msg_sender(PipelineControlMsg::StartTelemetryTimer {
+            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTelemetryTimer {
                 node_id: self.node_id.index,
                 duration,
             })
@@ -219,7 +220,7 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
         if let Some((node_id, ack)) = transfer(ack_in) {
-            self.pipeline_msg_sender(PipelineControlMsg::DeliverAck { node_id, ack })
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {
@@ -244,7 +245,7 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         if let Some((node_id, nack)) = transfer(nack_in) {
-            self.pipeline_msg_sender(PipelineControlMsg::DeliverNack { node_id, nack })
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {

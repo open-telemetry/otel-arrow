@@ -231,10 +231,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             self.delayed_data.push(delayed);
                         }
                         PipelineControlMsg::DeliverAck { node_id, ack } => {
-                            self.try_send(node_id, NodeControlMsg::Ack(ack)).await;
+                            self.send(node_id, NodeControlMsg::Ack(ack)).await;
                         }
                         PipelineControlMsg::DeliverNack { node_id, nack } => {
-                            self.try_send(node_id, NodeControlMsg::Nack(nack)).await;
+                            self.send(node_id, NodeControlMsg::Nack(nack)).await;
                         }
                     }
                 }
@@ -273,7 +273,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        self.try_send(node_id, msg).await;
+                        self.send(node_id, msg).await;
                     }
                 }
             }
@@ -281,7 +281,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         Ok(())
     }
 
-    async fn try_send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+    async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
         if let Some(sender) = self.control_senders.get(node_id) {
             // Use try_send as a fast path:
             // - avoids allocating/awaiting a future when the channel has capacity
