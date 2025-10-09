@@ -11,6 +11,7 @@ use tokio::time::{Duration, Instant};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SamplingConfig {
     NoSampling,
+    // ToDo: Come up with a different name for this?
     ZapSampling {
         sampling_initial: u64,
         sampling_thereafter: u64,
