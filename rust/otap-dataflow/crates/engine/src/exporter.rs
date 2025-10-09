@@ -256,8 +256,8 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::ExporterErrorKind;
     use crate::control::{AckMsg, NodeControlMsg};
+    use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
