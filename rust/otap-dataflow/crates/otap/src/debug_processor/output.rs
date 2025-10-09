@@ -12,7 +12,7 @@ use crate::fake_data_generator::config::OTLPSignal;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use otap_df_config::PortName;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
 use otel_arrow_rust::proto::opentelemetry::{
@@ -64,9 +64,14 @@ impl DebugOutputWriter {
                     .create(true)
                     .open(file_name)
                     .await
-                    .map_err(|e| Error::ProcessorError {
-                        processor: processor_id.clone(),
-                        error: format!("File error: {e}"),
+                    .map_err(|e| {
+                        let source_detail = format_error_sources(&e);
+                        Error::ProcessorError {
+                            processor: processor_id.clone(),
+                            kind: ProcessorErrorKind::Configuration,
+                            error: format!("File error: {e}"),
+                            source_detail,
+                        }
                     })?;
                 Box::new(file)
             }
@@ -94,9 +99,14 @@ impl DebugOutput for DebugOutputWriter {
         self.writer
             .write_all(message.as_bytes())
             .await
-            .map_err(|e| Error::ProcessorError {
-                processor: self.processor_id.clone(),
-                error: format!("Write error: {e}"),
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ProcessorError {
+                    processor: self.processor_id.clone(),
+                    kind: ProcessorErrorKind::Transport,
+                    error: format!("Write error: {e}"),
+                    source_detail,
+                }
             })
     }
     async fn output_metrics(&mut self, metric_request: MetricsData) -> Result<(), Error> {
@@ -205,11 +215,14 @@ impl DebugOutputPorts {
                 .map(|port_name| port_name.as_ref())
                 .collect::<Vec<&str>>()
                 .join(", ");
+
             return Err(Error::ProcessorError {
                 processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error: format!(
                     "The following ports are not connected [{invalid_ports_list}], these are connected ports to this node [{connected_ports_list}]"
                 ),
+                source_detail: "".to_owned(),
             });
         }
 

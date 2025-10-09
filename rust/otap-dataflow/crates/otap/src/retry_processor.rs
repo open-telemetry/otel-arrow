@@ -63,7 +63,7 @@ use otap_df_engine::{
     Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg},
-    error::Error,
+    error::{Error, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
@@ -555,7 +555,9 @@ impl Processor<OtapPdata> for RetryProcessor {
                     // For now, we'll just log and drop the message
                     return Err(Error::ProcessorError {
                         processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Transport,
                         error: error_msg,
+                        source_detail: String::new(),
                     });
                 } else {
                     // Queue has space, add message for retry and send downstream
