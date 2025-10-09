@@ -6,8 +6,11 @@
 use otap_df_config::{PipelineGroupId, PipelineId};
 use serde::{Serialize, Serializer};
 
-mod config;
 pub mod error;
+pub mod event;
+pub mod phase;
+mod pipeline_rt_status;
+pub mod pipeline_status;
 pub mod reporter;
 pub mod store;
 
@@ -29,6 +32,24 @@ impl PipelineKey {
             pipeline_id,
         }
     }
+
+    /// Returns the pipeline group identifier.
+    #[must_use]
+    pub fn pipeline_group_id(&self) -> &PipelineGroupId {
+        &self.pipeline_group_id
+    }
+
+    /// Returns the pipeline identifier.
+    #[must_use]
+    pub fn pipeline_id(&self) -> &PipelineId {
+        &self.pipeline_id
+    }
+
+    /// Returns a `group_id:pipeline_id` string representation.
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        format!("{}:{}", self.pipeline_group_id, self.pipeline_id)
+    }
 }
 
 impl Serialize for PipelineKey {
@@ -42,7 +63,7 @@ impl Serialize for PipelineKey {
 }
 
 /// Unique key for identifying a pipeline running on a specific core.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeployedPipelineKey {
     /// The unique ID of the pipeline group the pipeline belongs to.
     pub pipeline_group_id: PipelineGroupId,

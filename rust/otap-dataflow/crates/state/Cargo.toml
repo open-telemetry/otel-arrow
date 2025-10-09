@@ -16,6 +16,7 @@ workspace = true
 otap-df-config = { path = "../config" }
 
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 chrono = { workspace = true }
 flume = { workspace = true }
 thiserror = { workspace = true }
