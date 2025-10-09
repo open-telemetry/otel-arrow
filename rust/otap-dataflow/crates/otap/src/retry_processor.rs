@@ -60,7 +60,7 @@ use otap_df_config::experimental::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
-    ProcessorFactory,
+    Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg},
     error::{Error, ProcessorErrorKind},
@@ -536,7 +536,7 @@ impl Processor<OtapPdata> for RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::PData(data) => {
+            Message::PData(mut data) => {
                 // Clone only if we need to add to retry queue AND send downstream
                 let signal = data.signal_type();
                 let items = data.num_items() as u64;
@@ -577,6 +577,12 @@ impl Processor<OtapPdata> for RetryProcessor {
                         m.add_consumed_success(signal, items);
                     }
                     log::debug!("Added message {id} to retry queue");
+
+                    effect_handler.subscribe_to(
+                        Interests::NACKS | Interests::RETURN_DATA,
+                        RetryState { id }.into(),
+                        &mut data,
+                    );
 
                     match effect_handler.send_message(data).await {
                         Ok(()) => {

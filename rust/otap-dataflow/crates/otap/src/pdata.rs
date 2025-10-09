@@ -23,7 +23,7 @@
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-//!     resource::v1::Resource    
+//!     resource::v1::Resource
 //! };
 //! # use otap_df_otap::pdata::{Context, OtapPdata, OtapPayload, OtlpProtoBytes};
 //! # use prost::Message;
@@ -54,25 +54,25 @@
 //!
 //! Internally, conversions are happening using various utility functions:
 //! ```text
-//!                                      ┌───────────────────────┐                                            
-//!                                      │                       │                                            
-//!                                      │      OTLP Bytes       │                                            
-//!                                      │                       │                                            
-//!                                      └───┬───────────────────┘                                            
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
+//!                                      ┌───────────────────────┐
+//!                                      │                       │
+//!                                      │      OTLP Bytes       │
+//!                                      │                       │
+//!                                      └───┬───────────────────┘
+//!                                          │                 ▲
+//!                                          │                 │
+//!                                          │                 │
+//!                                          ▼                 │
 //!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from()
-//!                                          │                 ▲                                              
-//!                                          │                 │                                              
-//!                                          │                 │                                              
-//!                                          ▼                 │                                              
-//!                                      ┌─────────────────────┴───┐                                          
-//!                                      │                         │                                          
-//!                                      │    OTAP Arrow Records   │                                          
-//!                                      │                         │                                          
-//!                                      └─────────────────────────┘                                          
+//!                                          │                 ▲
+//!                                          │                 │
+//!                                          │                 │
+//!                                          ▼                 │
+//!                                      ┌─────────────────────┴───┐
+//!                                      │                         │
+//!                                      │    OTAP Arrow Records   │
+//!                                      │                         │
+//!                                      └─────────────────────────┘
 //! ```
 // ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
 // directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
@@ -80,7 +80,7 @@
 
 use async_trait::async_trait;
 use otap_df_config::experimental::SignalType;
-use otap_df_engine::error::TypedError;
+use otap_df_engine::error::Error;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
@@ -105,10 +105,14 @@ impl Context {
     /// Subscribe to a set of interests.
     pub(crate) fn subscribe_to(
         &mut self,
-        interests: Interests,
+        mut interests: Interests,
         calldata: CallData,
         node_id: usize,
     ) {
+        if let Some(last) = self.stack.last() {
+            // Inherit the preceding frame's RETURN_DATA bit
+            interests |= last.interests & Interests::RETURN_DATA;
+        }
         self.stack.push(Frame {
             interests,
             node_id,
@@ -124,6 +128,9 @@ impl Context {
             .context
             .next_with_interest(Interests::ACKS)
             .map(|frame| {
+                if (frame.interests & Interests::RETURN_DATA).is_empty() {
+                    let _drop = ack.accepted.take_payload();
+                }
                 ack.calldata = frame.calldata;
                 (frame.node_id, ack)
             })
@@ -137,6 +144,9 @@ impl Context {
             .context
             .next_with_interest(Interests::NACKS)
             .map(|frame| {
+                if (frame.interests & Interests::RETURN_DATA).is_empty() {
+                    let _drop = nack.refused.take_payload();
+                }
                 nack.calldata = frame.calldata;
                 (frame.node_id, nack)
             })
@@ -278,6 +288,12 @@ impl OtapPdata {
         self.payload
     }
 
+    /// Take the payload
+    #[must_use]
+    pub fn take_payload(&mut self) -> OtapPayload {
+        self.payload.take_payload()
+    }
+
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
@@ -320,10 +336,10 @@ impl OtapPayload {
 
     /// Removes the payload from this request, leaving an empty request.
     #[must_use]
-    pub fn payload(&mut self) -> Self {
+    pub fn take_payload(&mut self) -> Self {
         match self {
-            Self::OtlpBytes(value) => Self::OtlpBytes(value.payload()),
-            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.payload()),
+            Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
+            Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
         }
     }
 
@@ -352,7 +368,7 @@ pub trait OtapPayloadHelpers {
     fn is_empty(&self) -> bool;
 
     /// Takes the payload, leaving an empty payload behind.
-    fn payload(&mut self) -> Self;
+    fn take_payload(&mut self) -> Self;
 }
 
 impl OtapPayloadHelpers for OtapArrowRecords {
@@ -364,7 +380,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::Logs(value) => Self::Logs(std::mem::take(value)),
             Self::Metrics(value) => Self::Metrics(std::mem::take(value)),
@@ -415,7 +431,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         }
     }
 
-    fn payload(&mut self) -> Self {
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::ExportLogsRequest(value) => Self::ExportLogsRequest(std::mem::take(value)),
             Self::ExportMetricsRequest(value) => Self::ExportMetricsRequest(std::mem::take(value)),
@@ -615,17 +631,11 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(
-        &self,
-        ack: AckMsg<OtapPdata>,
-    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         self.route_ack(ack, Context::next_ack).await
     }
 
-    async fn notify_nack(
-        &self,
-        nack: NackMsg<OtapPdata>,
-    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -634,17 +644,11 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(
-        &self,
-        ack: AckMsg<OtapPdata>,
-    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         self.route_ack(ack, Context::next_ack).await
     }
 
-    async fn notify_nack(
-        &self,
-        nack: NackMsg<OtapPdata>,
-    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -653,17 +657,11 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(
-        &self,
-        ack: AckMsg<OtapPdata>,
-    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         self.route_ack(ack, Context::next_ack).await
     }
 
-    async fn notify_nack(
-        &self,
-        nack: NackMsg<OtapPdata>,
-    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -672,17 +670,11 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(
-        &self,
-        ack: AckMsg<OtapPdata>,
-    ) -> Result<(), TypedError<AckMsg<OtapPdata>>> {
+    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         self.route_ack(ack, Context::next_ack).await
     }
 
-    async fn notify_nack(
-        &self,
-        nack: NackMsg<OtapPdata>,
-    ) -> Result<(), TypedError<NackMsg<OtapPdata>>> {
+    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -690,6 +682,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::testing::{TestCallData, create_test_logs, create_test_pdata};
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -707,22 +700,14 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
+    fn create_test() -> (TestCallData, OtapPdata) {
+        (TestCallData::default(), create_test_pdata())
+    }
+
     #[test]
     fn test_conversion_logs() {
-        let otlp_service_req = ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![
-                            LogRecord::build(2u64, SeverityNumber::Info, "event")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                                .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ]);
         let mut otlp_bytes = vec![];
+        let otlp_service_req = create_test_logs();
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
         let pdata =
@@ -1074,5 +1059,179 @@ mod test {
             OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
+    }
+
+    #[test]
+    fn test_context_next_ack_drops_payload_without_return_data() {
+        let (test_data, mut pdata) = create_test();
+
+        // Subscribe WITHOUT RETURN_DATA interest
+        pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be dropped
+        assert_eq!(ack_msg.accepted.num_items(), 0);
+        assert!(ack_msg.accepted.is_empty());
+        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_ack_preserves_payload_with_return_data() {
+        let (test_data, mut pdata) = create_test();
+
+        // Subscribe WITH RETURN_DATA interest
+        pdata.test_subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1234,
+        );
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+
+        let (node_id, ack_msg) = result.expect("has");
+        assert_eq!(node_id, 1234);
+        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be preserved
+        assert_eq!(ack_msg.accepted.num_items(), 1);
+        assert!(!ack_msg.accepted.is_empty());
+        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_nack_drops_payload_without_return_data() {
+        let (test_data, mut pdata) = create_test();
+
+        // Subscribe WITHOUT RETURN_DATA interest
+        pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let nack = NackMsg::new("test error".to_string(), pdata);
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be dropped
+        assert_eq!(nack_msg.refused.num_items(), 0);
+        assert!(nack_msg.refused.is_empty());
+        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_nack_preserves_payload_with_return_data() {
+        let (test_data, mut pdata) = create_test();
+
+        // Subscribe WITH RETURN_DATA interest
+        pdata.test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1234,
+        );
+
+        assert_eq!(pdata.num_items(), 1);
+        assert!(!pdata.is_empty());
+
+        let nack = NackMsg::new("test error", pdata);
+
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1234);
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+
+        // Payload should be preserved
+        assert_eq!(nack_msg.refused.num_items(), 1);
+        assert!(!nack_msg.refused.is_empty());
+        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
+    }
+
+    #[test]
+    fn test_context_next_ack_nack() {
+        let (test_data, mut pdata) = create_test();
+
+        // Subscribe multiple frames. RETURN_DATA propagates automatically.
+        pdata.test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            test_data.clone().into(),
+            1,
+        );
+        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 2);
+        pdata.test_subscribe_to(Interests::NACKS, CallData::default(), 3);
+        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_some());
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 4);
+
+        // Skipped node 3 (Nack) because call to next_ack()
+
+        let result = Context::next_ack(ack_msg);
+        assert!(result.is_some());
+        let (node_id, ack_msg) = result.unwrap();
+        assert_eq!(node_id, 2);
+
+        // Payload should be preserved because node 1 has RETURN_DATA
+        assert_eq!(ack_msg.accepted.num_items(), 1);
+        assert!(!ack_msg.accepted.is_empty());
+
+        let nack = NackMsg::new("nope nope", *ack_msg.accepted);
+
+        // Node 1 last, is a Nack.
+        let result = Context::next_nack(nack);
+        assert!(result.is_some());
+        let (node_id, nack_msg) = result.unwrap();
+        assert_eq!(node_id, 1);
+        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv_data, test_data);
+    }
+
+    #[test]
+    fn test_context_no_ack() {
+        let (_, pdata) = create_test();
+
+        let ack = AckMsg::new(pdata);
+
+        let result = Context::next_ack(ack);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_context_no_nack() {
+        let (_, pdata) = create_test();
+
+        let nack = NackMsg::new("hey now", pdata);
+
+        let result = Context::next_nack(nack);
+        assert!(result.is_none());
     }
 }
