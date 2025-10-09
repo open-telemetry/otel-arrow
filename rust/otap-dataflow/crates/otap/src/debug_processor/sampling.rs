@@ -7,25 +7,11 @@ use otap_df_engine::error::Error;
 use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 
-/// Sampling Settings
 #[derive(Debug, Clone, Copy, Deserialize)]
-pub struct SamplingConfig {
-    // number of samples to log initially within the sampling interval
-    pub sampling_initial: u64,
-    // given sampling_thereafter = n, every nth msg is logged
-    pub sampling_thereafter: u64,
-    // the interval that we sample in, unit is seconds
-    pub sampling_interval: u64,
-}
-
-impl SamplingConfig {
-    pub fn new(sampling_initial: u64, sampling_thereafter: u64, sampling_interval: u64) -> Self {
-        Self {
-            sampling_initial,
-            sampling_thereafter,
-            sampling_interval,
-        }
-    }
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SamplingConfig {
+    NoSampling,
+    ZapSampling{sampling_initial: u64, sampling_thereafter: u64, sampling_interval: u64}
 }
 
 /// The sampler keeps track of the current state, number of msgs seen and next interval
@@ -42,7 +28,7 @@ impl Sampler {
         Self {
             sampling_config,
             msgs_current_interval: 0,
-            next_interval: Instant::now() + Duration::from_secs(sampling_config.sampling_interval),
+            next_interval: Instant::now()
         }
     }
 
@@ -51,21 +37,30 @@ impl Sampler {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(), Error>>,
     {
-        if Instant::now() < self.next_interval {
-            // increment the msgs we have seen in this interval
-            self.msgs_current_interval += 1;
-            // allow msgs through during initial sampling and sampling rate
-            if (self.msgs_current_interval <= self.sampling_config.sampling_initial)
-                || ((self.msgs_current_interval - self.sampling_config.sampling_initial)
-                        % self.sampling_config.sampling_thereafter
-                        == 0)
-            {
+        match self.sampling_config {
+            SamplingConfig::ZapSampling{sampling_initial, sampling_thereafter, sampling_interval} => {
+                // preform zap sampling
+                if Instant::now() < self.next_interval {
+                    // increment the msgs we have seen in this interval
+                    self.msgs_current_interval += 1;
+                    // allow msgs through during initial sampling and sampling rate
+                    if (self.msgs_current_interval <= sampling_initial)
+                        || ((self.msgs_current_interval - sampling_initial)
+                                % sampling_thereafter
+                                == 0)
+                    {
+                    send_message().await?;
+                }
+                } else {
+                    self.next_interval += Duration::from_secs(sampling_interval);
+                    self.msgs_current_interval = 1;
+                    send_message().await?;
+                }
+            },
+            SamplingConfig::NoSampling => {
+                // we don't do any sampling
                 send_message().await?;
             }
-        } else {
-            self.next_interval += Duration::from_secs(self.sampling_config.sampling_interval);
-            self.msgs_current_interval = 1;
-            send_message().await?;
         }
         Ok(())
     }

@@ -21,9 +21,7 @@ config:
       - key: service.name
         value: service_name
    sampling:
-      sampling_initial: 1
-      sampling_thereafter: 2
-      sampling_interval: 1
+      type: no_sampling
    mode: exclude
 ```
 
@@ -105,17 +103,21 @@ this configuration named `some_node`
 ### Sampling
 
 You can control how often msgs are sent out via the sampling settings
+current we support only two sampling modes `zap_sampling` and `no_sampling`.
+The default mode is `no_sampling`.
 
-#### Sampling Config
+
+#### Zap Sampling Config Example
+
+Below is how you would configure `zap_sampling` if you were to enable it
 
 ```yaml
    sampling:
-      sampling_initial: 1
-      sampling_thereafter: 1
-      sampling_interval: 1
+      type: zap_sampling
+      sampling_initial: 2
+      sampling_thereafter: 5
+      sampling_interval: 2
 ```
-
-Here is the default sampling config
 
 The `sampling_initial` value is the number of values that is sent before
 any sampling rate is applied during the `sampling_interval`.
@@ -124,16 +126,7 @@ logged. Lets say that `sampling_thereafter` is set to x then every xth msg
 will get logged while the rest get dropped. The `sampling_interval` is how
 long the sampling will last before it resets.
 
-#### Sampling Example
-
-```yaml
-   sampling:
-      sampling_initial: 2
-      sampling_thereafter: 5
-      sampling_interval: 2
-```
-
-In this example configuration we will log the first 2 messages
+In the example configuration we will log the first 2 messages
 (set by the `sampling_initial`), after that we only log every
 5th message received (set by the `sampling_thereafter`).
 This all happens in the 2 second `sampling_interval`, after the

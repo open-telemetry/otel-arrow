@@ -4,7 +4,7 @@
 //! Implementation of the OTLP Debug processor node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
-//! ToDo: Handle configuration changes
+//! ToDo: Handle configuration changes, configuration change should update the sampler
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
@@ -697,7 +697,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_normal.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Batch,
@@ -737,7 +737,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_basic.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Basic,
             DisplayMode::Batch,
@@ -775,7 +775,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_detailed.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
@@ -834,7 +834,7 @@ mod tests {
 
         let output_file = "debug_logs.txt".to_string();
         let signals = HashSet::from([SignalActive::Logs]);
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
@@ -893,7 +893,7 @@ mod tests {
 
         let output_file = "debug_metrics.txt".to_string();
         let signals = HashSet::from([SignalActive::Metrics]);
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Detailed,
             DisplayMode::Batch,
@@ -1010,7 +1010,7 @@ mod tests {
 
         let output_file = "debug_spans.txt".to_string();
         let signals = HashSet::from([SignalActive::Spans]);
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
 
         let config = Config::new(
             Verbosity::Detailed,
@@ -1049,7 +1049,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_signal_mode.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Signal,
@@ -1087,7 +1087,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_filter_include.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let filterrule = vec![FilterRules::new(
             Predicate::new(
                 SignalField::Attribute,
@@ -1135,7 +1135,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_filter_exclude.txt".to_string();
-        let sampling = SamplingConfig::new(1, 1, 1);
+        let sampling = SamplingConfig::NoSampling;
         let filterrule = vec![FilterRules::new(
             Predicate::new(
                 SignalField::Attribute,
@@ -1174,7 +1174,7 @@ mod tests {
         remove_file(output_file).expect("Failed to remove file");
     }
 
-        fn validation_procedure_sampling(
+        fn validation_procedure_zap_sampling(
         output_file: String,
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
@@ -1193,7 +1193,7 @@ mod tests {
         }
     }
     #[test]
-    fn test_debug_processor_sampling() {
+    fn test_debug_processor_zap_sampling() {
          let test_runtime = TestRuntime::new();
         let signals = HashSet::from([
             SignalActive::Metrics,
@@ -1201,7 +1201,7 @@ mod tests {
             SignalActive::Spans,
         ]);
         let output_file = "debug_output_samping.txt".to_string();
-        let sampling = SamplingConfig::new(1, 2, 1);
+        let sampling = SamplingConfig::ZapSampling{sampling_initial: 1, sampling_thereafter: 2, sampling_interval: 1};
         let config = Config::new(
             Verbosity::Normal,
             DisplayMode::Batch,
@@ -1227,7 +1227,7 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(scenario())
-            .validate(validation_procedure_sampling(output_file.clone()));
+            .validate(validation_procedure_zap_sampling(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
     }

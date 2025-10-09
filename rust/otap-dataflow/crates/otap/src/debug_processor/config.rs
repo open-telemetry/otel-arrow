@@ -81,7 +81,7 @@ fn default_output_mode() -> OutputMode {
 }
 
 fn default_sampling() -> SamplingConfig {
-    SamplingConfig::new(1, 1, 1)
+    SamplingConfig::NoSampling
 }
 
 impl Config {
