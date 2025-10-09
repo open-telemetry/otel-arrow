@@ -6,7 +6,7 @@
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
-    error::{Error, TypedError},
+    error::Error,
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
@@ -167,8 +167,15 @@ bitflags::bitflags! {
 pub struct Interests: u8 {
     /// Acks interest
     const ACKS   = 1 << 0;
+
     /// Nacks interest
     const NACKS  = 1 << 1;
+
+    /// Acks or Nacks interest subset
+    const ACKS_OR_NACKS = Self::ACKS.bits() | Self::NACKS.bits();
+
+    /// Return data
+    const RETURN_DATA = 1 << 2;
 }
 }
 
@@ -183,10 +190,10 @@ pub trait ProducerEffectHandlerExtension<PData> {
 #[async_trait(?Send)]
 pub trait ConsumerEffectHandlerExtension<PData> {
     /// Triggers the next step of work (if any) in Ack processing.
-    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), TypedError<AckMsg<PData>>>;
+    async fn notify_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
 
     /// Triggers the next step of work (if any) in Nack processing.
-    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), TypedError<NackMsg<PData>>>;
+    async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
 /// Builds a pipeline factory for initialization.
@@ -657,4 +664,14 @@ fn collect_hyper_edges_runtime<PData>(
         }
     }
     edges
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_interests() {
+        assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
+    }
 }

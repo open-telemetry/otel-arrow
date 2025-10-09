@@ -3,13 +3,14 @@
 
 //! Configuration of the observed store.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Configuration for the observed state store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub struct ObservedStateSettings {
     /// The size of the reporting channel.
     pub reporting_channel_size: usize,
 
@@ -17,7 +18,7 @@ pub struct Config {
     pub reporting_timeout: Duration,
 }
 
-impl Default for Config {
+impl Default for ObservedStateSettings {
     fn default() -> Self {
         Self {
             reporting_channel_size: 100,

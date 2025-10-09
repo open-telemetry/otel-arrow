@@ -3,7 +3,7 @@
 
 //! A reporter of observed events.
 
-use crate::store::ObservedEvent;
+use crate::event::ObservedEvent;
 use std::time::Duration;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.

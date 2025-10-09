@@ -29,7 +29,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
@@ -211,7 +211,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 _ => {
                     return Err(Error::ExporterError {
                         exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Other,
                         error: "Unknown control message".to_owned(),
+                        source_detail: String::new(),
                     });
                 }
             }
