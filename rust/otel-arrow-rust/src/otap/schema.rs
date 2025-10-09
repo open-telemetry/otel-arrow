@@ -116,9 +116,16 @@ impl SchemaIdBuilder {
 
             Map(field, _) => {
                 self.out.push_str("Map<");
-                self.write_data_type(field.data_type());
-                self.out.push(',');
-                self.write_data_type(field.data_type());
+                if let Struct(fields) = field.data_type() {
+                    if fields.len() == 2 {
+                        // Assume the first field is key type and the second field is value type for simplicity
+                        // arrow-go has similar logic
+                        // See https://github.com/apache/arrow-go/blob/3ae84281674622d33b4617c878e099d13d4a1113/arrow/datatype_nested.go#L593-L596
+                        self.write_data_type(fields[0].data_type());
+                        self.out.push(',');
+                        self.write_data_type(fields[1].data_type());
+                    }
+                }
                 self.out.push('>');
             }
 
@@ -198,7 +205,65 @@ mod test {
             ),
             Field::new(
                 "map",
-                DataType::Map(Arc::new(Field::new("item", DataType::Utf8, true)), true),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("value", DataType::Utf8, true),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_invalid",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("value", DataType::Boolean, true),
+                                Field::new("uint8", DataType::UInt8, true),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_nested",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new(
+                                    "value",
+                                    DataType::List(Arc::new(Field::new(
+                                        "item",
+                                        DataType::UInt16,
+                                        true,
+                                    ))),
+                                    true,
+                                ),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
                 true,
             ),
             Field::new(
@@ -257,6 +322,8 @@ mod test {
             "int8:I8",
             "list:[U8]",
             "map:Map<Str,Str>",
+            "map_invalid:Map<>",
+            "map_nested:Map<Str,[U16]>",
             "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
             "string:Str",
             "struct:{s.a:U8,s.b:U16,s.c:U32}",
