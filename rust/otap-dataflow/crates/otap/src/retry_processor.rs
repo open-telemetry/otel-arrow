@@ -62,8 +62,8 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
-    control::NodeControlMsg,
     error::{Error, ProcessorErrorKind},
+    control::{AckMsg, CallData, NackMsg, NodeControlMsg},
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
@@ -323,6 +323,42 @@ pub fn create_retry_processor(
     ))
 }
 
+/// RetryState is a placeholder for assumptions the retry_processor
+/// makes about Ack/Nack message identifiers. This is to satisfy
+/// internal testing, however we plan to use a stateless design where
+/// retry count and timestamp are stored in call data, not separate
+/// maps.
+#[derive(Debug)]
+struct RetryState {
+    id: u64,
+}
+
+impl RetryState {
+    #[cfg(test)]
+    fn new(id: u64) -> Self {
+        Self { id }
+    }
+}
+
+impl From<RetryState> for CallData {
+    fn from(value: RetryState) -> Self {
+        smallvec::smallvec![value.id.into()]
+    }
+}
+
+impl TryFrom<CallData> for RetryState {
+    type Error = Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        value
+            .first()
+            .map(|&val0| Ok(Self { id: val0.into() }))
+            .unwrap_or(Err(Error::InternalError {
+                message: "invalid calldata".into(),
+            }))
+    }
+}
+
 impl RetryProcessor {
     /// Creates a new RetryProcessor with default configuration
     #[must_use]
@@ -355,32 +391,34 @@ impl RetryProcessor {
         }
     }
 
-    fn acknowledge(&mut self, id: u64) -> bool {
+    async fn acknowledge(&mut self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        let rstate: RetryState = ack.calldata.try_into()?;
+        let id = rstate.id;
         if let Some(_removed) = self.pending_messages.remove(&id) {
             log::debug!("Acknowledged and removed message with ID: {id}");
             if let Some(m) = self.metrics.as_mut() {
                 m.msgs_acked.inc();
             }
-            true
         } else {
             log::warn!("Attempted to acknowledge non-existent message with ID: {id}");
-            false
         }
+        Ok(())
     }
 
     async fn handle_nack(
         &mut self,
-        id: u64,
-        reason: String,
-        _pdata: Option<Box<OtapPdata>>,
+        nack: NackMsg<OtapPdata>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        let rstate: RetryState = nack.calldata.try_into()?;
+
+        let id = rstate.id;
         if let Some(m) = self.metrics.as_mut() {
             m.nacks_received.inc();
         }
         if let Some(mut pending) = self.pending_messages.remove(&id) {
             pending.retry_count += 1;
-            pending.last_error = reason;
+            pending.last_error = nack.reason;
 
             if pending.retry_count <= self.config.max_retries {
                 let delay_ms = (self.config.initial_retry_delay_ms as f64
@@ -557,13 +595,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                NodeControlMsg::Ack { id } => {
-                    let _ = self.acknowledge(id);
-                    Ok(())
-                }
-                NodeControlMsg::Nack { id, reason, pdata } => {
-                    self.handle_nack(id, reason, pdata, effect_handler).await
-                }
+                NodeControlMsg::Ack(ack) => self.acknowledge(ack).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
                     self.cleanup_expired_messages();
@@ -582,6 +615,9 @@ impl Processor<OtapPdata> for RetryProcessor {
                         self.config = new_config;
                     }
                     Ok(())
+                }
+                NodeControlMsg::DelayedData { .. } => {
+                    unreachable!("unused");
                 }
                 NodeControlMsg::Shutdown { .. } => {
                     let pending_ids: Vec<u64> = self.pending_messages.keys().cloned().collect();
@@ -607,15 +643,21 @@ impl Default for RetryProcessor {
 mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
+    use crate::pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_channel::mpsc;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::local::processor::EffectHandler as LocalEffectHandler;
+    use otap_df_engine::message::Message;
     use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::MetricsSystem;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::Consumer;
     use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use serde_json::json;
+    use std::collections::HashMap;
     use tokio::time::{Duration, sleep};
 
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
@@ -705,6 +747,26 @@ mod tests {
         assert!(requests_match(&test_data, &received));
     }
 
+    fn empty_pdata() -> OtapPdata {
+        OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+            vec![],
+        )))
+    }
+
+    fn test_ack_with_id(id: u64) -> AckMsg<OtapPdata> {
+        let msg = empty_pdata();
+        let mut ack = AckMsg::new(msg);
+        ack.calldata = RetryState::new(id).into();
+        ack
+    }
+
+    fn test_nack_with_id<S: Into<String>>(id: u64, reason: S) -> NackMsg<OtapPdata> {
+        let msg = empty_pdata();
+        let mut nack = NackMsg::new(reason, msg);
+        nack.calldata = RetryState::new(id).into();
+        nack
+    }
+
     #[tokio::test]
     async fn test_ack_removes_pending() {
         let mut processor = create_test_processor();
@@ -727,7 +789,7 @@ mod tests {
         // ACK the message
         processor
             .process(
-                Message::Control(NodeControlMsg::Ack { id: 1 }),
+                Message::Control(NodeControlMsg::Ack(test_ack_with_id(1))),
                 &mut effect_handler,
             )
             .await
@@ -756,11 +818,7 @@ mod tests {
         // NACK the message
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                 &mut effect_handler,
             )
             .await
@@ -793,11 +851,10 @@ mod tests {
         for i in 1..=4 {
             processor
                 .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: 1,
-                        reason: format!("Test failure {i}"),
-                        pdata: None,
-                    }),
+                    Message::Control(NodeControlMsg::Nack(test_nack_with_id(
+                        1,
+                        format!("Test failure {i}"),
+                    ))),
                     &mut effect_handler,
                 )
                 .await
@@ -826,11 +883,7 @@ mod tests {
 
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Test failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                 &mut effect_handler,
             )
             .await
@@ -908,11 +961,7 @@ mod tests {
         // NACK it to get first retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "First failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "First failure"))),
                 &mut effect_handler,
             )
             .await
@@ -924,11 +973,7 @@ mod tests {
         // NACK it again to get second retry count
         processor
             .process(
-                Message::Control(NodeControlMsg::Nack {
-                    id: 1,
-                    reason: "Second failure".to_string(),
-                    pdata: None,
-                }),
+                Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Second failure"))),
                 &mut effect_handler,
             )
             .await
@@ -961,11 +1006,7 @@ mod tests {
 
             processor
                 .process(
-                    Message::Control(NodeControlMsg::Nack {
-                        id: i,
-                        reason: "Test failure".to_string(),
-                        pdata: None,
-                    }),
+                    Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "Test failure"))),
                     &mut effect_handler,
                 )
                 .await
@@ -1045,23 +1086,6 @@ mod tests {
             new_config.cleanup_interval_secs
         );
     }
-}
-
-#[cfg(test)]
-mod telemetry_tests {
-    use super::*;
-    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::local::processor::EffectHandler as LocalEffectHandler;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::test_node;
-    use otap_df_telemetry::MetricsSystem;
-    use otel_arrow_rust::Consumer;
-    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
-    use std::collections::HashMap;
-    use tokio::time::{Duration, sleep};
 
     // Helper: create a minimal OtapPdata logs payload with 1 row
     fn make_test_pdata() -> OtapPdata {
@@ -1079,7 +1103,7 @@ mod telemetry_tests {
 
     // Collects current metrics for the retry processor set into a map
     fn collect_retry_metrics_map(
-        registry: &otap_df_telemetry::registry::MetricsRegistryHandle,
+        registry: &MetricsRegistryHandle,
     ) -> std::collections::HashMap<&'static str, u64> {
         let mut out = std::collections::HashMap::new();
         registry.visit_current_metrics(|desc, _attrs, iter| {
@@ -1117,7 +1141,7 @@ mod telemetry_tests {
         let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
 
         // 4) Local effect handler with a default 'out' port
-        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(4);
+        let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh = LocalEffectHandler::new(test_node("retry_proc_telemetry"), senders, None);
@@ -1129,11 +1153,7 @@ mod telemetry_tests {
 
         // NACK it (id=1) to schedule a retry (inc nacks.received, retry.attempts)
         proc.process(
-            Message::Control(NodeControlMsg::Nack {
-                id: 1,
-                reason: "fail".into(),
-                pdata: None,
-            }),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail"))),
             &mut eh,
         )
         .await
@@ -1147,9 +1167,12 @@ mod telemetry_tests {
         let _ = rx_out.recv().await.expect("retry downstream message");
 
         // ACK it (inc msgs.acked)
-        proc.process(Message::Control(NodeControlMsg::Ack { id: 1 }), &mut eh)
-            .await
-            .unwrap();
+        proc.process(
+            Message::Control(NodeControlMsg::Ack(test_ack_with_id(1))),
+            &mut eh,
+        )
+        .await
+        .unwrap();
 
         // Trigger telemetry snapshot (report + reset)
         proc.process(
@@ -1212,7 +1235,7 @@ mod telemetry_tests {
         let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
 
         // Effect handler with an 'out' port
-        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(2);
+        let (tx_out, rx_out) = mpsc::Channel::new(2);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh = LocalEffectHandler::new(test_node("retry_queue_full"), senders, None);
@@ -1271,7 +1294,7 @@ mod telemetry_tests {
         let mut proc = RetryProcessor::with_pipeline_ctx(pipeline, cfg);
 
         // Effect handler
-        let (tx_out, rx_out) = otap_df_channel::mpsc::Channel::new(4);
+        let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh = LocalEffectHandler::new(test_node("retry_exceeded"), senders, None);
@@ -1284,11 +1307,7 @@ mod telemetry_tests {
 
         // First NACK -> schedule retry (not dropped)
         proc.process(
-            Message::Control(NodeControlMsg::Nack {
-                id: 1,
-                reason: "fail1".into(),
-                pdata: None,
-            }),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail1"))),
             &mut eh,
         )
         .await
@@ -1296,11 +1315,7 @@ mod telemetry_tests {
 
         // Second NACK -> exceed max and drop
         proc.process(
-            Message::Control(NodeControlMsg::Nack {
-                id: 1,
-                reason: "fail2".into(),
-                pdata: None,
-            }),
+            Message::Control(NodeControlMsg::Nack(test_nack_with_id(1, "fail2"))),
             &mut eh,
         )
         .await
@@ -1366,7 +1381,7 @@ mod telemetry_tests {
 
         // Report telemetry -> should include msgs.removed.expired >= 1
         // We need an effect handler but won't send data
-        let (tx_out, _rx_out) = otap_df_channel::mpsc::Channel::new(1);
+        let (tx_out, _rx_out) = mpsc::Channel::new(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh = LocalEffectHandler::new(test_node("retry_cleanup"), senders, None);
