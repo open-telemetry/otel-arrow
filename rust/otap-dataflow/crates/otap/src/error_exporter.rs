@@ -98,15 +98,34 @@ impl Exporter<OtapPdata> for ErrorExporter {
 mod tests {
     use super::*;
     use crate::testing::*;
+    use otap_df_engine::Interests;
     use serde_json::json;
 
     #[test]
-    fn test_error_exporter_no_subscription_succeeds() {
+    fn test_error_exporter_no_subscription() {
         test_exporter_no_subscription(&ERROR_EXPORTER, json!({"message": "Test error"}));
     }
 
     #[test]
-    fn test_error_exporter_with_subscription_fails() {
-        test_exporter_with_subscription(&ERROR_EXPORTER, json!({"message": "Test error"}));
+    fn test_error_exporter_with_subscription() {
+        let config = json!({"message": "THIS specific error"});
+        test_exporter_with_subscription(
+            &ERROR_EXPORTER,
+            config.clone(),
+            Interests::NACKS,
+            Interests::NACKS,
+        );
+        test_exporter_with_subscription(
+            &ERROR_EXPORTER,
+            config.clone(),
+            Interests::NACKS,
+            Interests::NACKS | Interests::RETURN_DATA,
+        );
+        test_exporter_with_subscription(
+            &ERROR_EXPORTER,
+            config,
+            Interests::ACKS,
+            Interests::empty(),
+        );
     }
 }

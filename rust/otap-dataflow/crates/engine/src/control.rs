@@ -208,6 +208,20 @@ pub enum PipelineControlMsg<PData> {
         /// The data
         data: Box<PData>,
     },
+    /// Deliver an Ack to the preceding subscriber in the pipeline.
+    DeliverAck {
+        /// The recipient node_id
+        node_id: usize,
+        /// The Ack
+        ack: AckMsg<PData>,
+    },
+    /// Deliver an Nack to the preceding subscriber in the pipeline.
+    DeliverNack {
+        /// The recipient node_id
+        node_id: usize,
+        /// The Nack
+        nack: NackMsg<PData>,
+    },
     /// Requests shutdown of the pipeline.
     Shutdown {
         /// Human-readable reason for the shutdown.
