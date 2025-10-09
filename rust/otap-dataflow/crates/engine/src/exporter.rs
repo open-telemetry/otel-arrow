@@ -246,7 +246,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg;
+    use crate::control::{AckMsg, NodeControlMsg};
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
@@ -453,10 +453,12 @@ mod tests {
     #[tokio::test]
     async fn test_control_priority() {
         let (control_tx, pdata_tx, mut channel) = make_chan();
+        let pdata1 = "pdata1".to_owned();
+        let pdata2 = "pdata2".to_owned();
 
-        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        pdata_tx.send_async(pdata2.clone()).await.unwrap();
         control_tx
-            .send_async(NodeControlMsg::Ack { id: 1 })
+            .send_async(NodeControlMsg::Ack(AckMsg::new(pdata1.clone())))
             .await
             .unwrap();
 
@@ -464,12 +466,12 @@ mod tests {
         let msg = channel.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Message::Control(NodeControlMsg::Ack { id: 1 })
+            Message::Control(NodeControlMsg::Ack(ref a)) if *a.accepted == pdata1
         ));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+        assert!(matches!(msg, Message::PData(ref s) if *s == pdata2));
     }
 
     #[tokio::test]
@@ -628,7 +630,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack(AckMsg::new("99".to_owned())))
                 .await
                 .is_err()
         );
