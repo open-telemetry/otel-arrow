@@ -310,6 +310,143 @@ pub(crate) fn parse_scalar_unary_expression(
     })
 }
 
+pub(crate) fn try_resolve_identifier(
+    scalar_expression: &ScalarExpression,
+    scope: &dyn ParserScope,
+) -> Result<Option<Vec<Box<str>>>, ParserError> {
+    let r = match scalar_expression {
+        ScalarExpression::Attached(a) => {
+            parse_identifier_from_accessor(a.get_name().get_value(), a.get_value_accessor(), scope)
+        }
+        ScalarExpression::Constant(c) => {
+            let name = scope
+                .get_constant_name(c.get_constant_id())
+                .expect("Constant not found");
+
+            parse_identifier_from_accessor(name, c.get_value_accessor(), scope)
+        }
+        ScalarExpression::Source(s) => {
+            parse_identifier_from_accessor("source", s.get_value_accessor(), scope)
+        }
+        ScalarExpression::Variable(v) => {
+            parse_identifier_from_accessor(v.get_name().get_value(), v.get_value_accessor(), scope)
+        }
+        ScalarExpression::Math(m) => match m {
+            MathScalarExpression::Add(_) => Ok(None),
+            MathScalarExpression::Bin(b) => try_resolve_identifier(b.get_left_expression(), scope),
+            MathScalarExpression::Ceiling(u) => {
+                try_resolve_identifier(u.get_value_expression(), scope)
+            }
+            MathScalarExpression::Divide(_) => Ok(None),
+            MathScalarExpression::Floor(u) => {
+                try_resolve_identifier(u.get_value_expression(), scope)
+            }
+            MathScalarExpression::Modulus(_) => Ok(None),
+            MathScalarExpression::Multiply(_) => Ok(None),
+            MathScalarExpression::Negate(_) => Ok(None),
+            MathScalarExpression::Subtract(_) => Ok(None),
+        },
+        ScalarExpression::Convert(c) => match c {
+            ConvertScalarExpression::Boolean(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::DateTime(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::Double(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::Integer(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::String(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::TimeSpan(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+        },
+        ScalarExpression::Case(_) => Ok(None),
+        ScalarExpression::Coalesce(_) => Ok(None),
+        ScalarExpression::Collection(_) => Ok(None),
+        ScalarExpression::Conditional(_) => Ok(None),
+        ScalarExpression::Temporal(_) => Ok(None),
+        ScalarExpression::Length(l) => {
+            if let Some(mut i) = try_resolve_identifier(l.get_inner_expression(), scope)? {
+                i.insert(0, "len".into());
+                return Ok(Some(i));
+            }
+
+            Ok(None)
+        }
+        ScalarExpression::Logical(_) => Ok(None),
+        ScalarExpression::Parse(_) => Ok(None),
+        ScalarExpression::Slice(_) => Ok(None),
+        ScalarExpression::Static(_) => Ok(None),
+        ScalarExpression::Text(_) => Ok(None),
+    };
+
+    if let Ok(Some(mut identifier)) = r {
+        // Note: The identifier path may contain source.[default_map_key]. We always
+        // remove "source" and then remove the default_map_key if the mode is
+        // enabled.
+        if let Some("source") = identifier.first().map(|v| v.as_ref()) {
+            identifier.remove(0);
+
+            if let Some(schema) = scope.get_source_schema()
+                && let Some((key, _)) = schema.get_default_map()
+                && let Some(first) = identifier.first().map(|v| v.as_ref())
+                && key == first
+            {
+                identifier.remove(0);
+            }
+        }
+        return Ok(Some(identifier));
+    }
+
+    r
+}
+
+fn parse_identifier_from_accessor(
+    root: &str,
+    value_accessor: &ValueAccessor,
+    scope: &dyn ParserScope,
+) -> Result<Option<Vec<Box<str>>>, ParserError> {
+    let mut identifier: Vec<Box<str>> = vec![root.into()];
+    for selector in value_accessor.get_selectors() {
+        match selector {
+            ScalarExpression::Static(s) => match s.to_value() {
+                Value::String(s) => {
+                    identifier.push(s.get_value().into());
+                }
+                Value::Integer(i) => {
+                    identifier.push(format!("{}", i.get_value()).into());
+                }
+                _ => {
+                    return Ok(None);
+                }
+            },
+            ScalarExpression::Constant(c) => {
+                let name = scope
+                    .get_constant_name(c.get_constant_id())
+                    .expect("Constant not found");
+
+                if let Some(mut i) =
+                    parse_identifier_from_accessor(name, c.get_value_accessor(), scope)?
+                {
+                    identifier.append(&mut i);
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(identifier))
+}
+
 #[cfg(test)]
 mod tests {
     use pest::Parser;
