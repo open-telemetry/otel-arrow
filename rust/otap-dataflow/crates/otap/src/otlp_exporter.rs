@@ -271,6 +271,34 @@ impl Exporter<OtapPdata> for OTLPExporter {
     }
 }
 
+/// Helper function to handle export result and send Ack/Nack accordingly.
+/// Returns true on success, false on failure.
+async fn handle_export_result<T>(
+    result: Result<T, tonic::Status>,
+    context: Context,
+    saved_payload: OtapPayload,
+    effect_handler: &EffectHandler<OtapPdata>,
+) -> Result<bool, Error> {
+    match result {
+        Ok(_) => {
+            effect_handler
+                .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
+                .await?;
+            Ok(true)
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            effect_handler
+                .notify_nack(NackMsg::new(
+                    &error_msg,
+                    OtapPdata::new(context, saved_payload),
+                ))
+                .await?;
+            Ok(false)
+        }
+    }
+}
+
 /// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
 /// and handling Ack/Nack delivery. Returns true on success, false on failure.
 async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
@@ -305,24 +333,8 @@ where
     let saved_payload: OtapPayload = otap_batch.into();
 
     // Export and handle result with Ack/Nack
-    match client.export(bytes).await {
-        Ok(_) => {
-            effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
-                .await?;
-            Ok(true)
-        }
-        Err(e) => {
-            let error_msg = e.to_string();
-            effect_handler
-                .notify_nack(NackMsg::new(
-                    &error_msg,
-                    OtapPdata::new(context, saved_payload),
-                ))
-                .await?;
-            Ok(false)
-        }
-    }
+    let result = client.export(bytes).await;
+    handle_export_result(result, context, saved_payload, effect_handler).await
 }
 
 /// Generic function for exporting OTLP bytes via gRPC and handling Ack/Nack delivery.
@@ -347,24 +359,8 @@ where
     let saved_payload = save_payload_fn(&bytes);
 
     // Export and handle result with Ack/Nack
-    match client.export(bytes).await {
-        Ok(_) => {
-            effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
-                .await?;
-            Ok(true)
-        }
-        Err(e) => {
-            let error_msg = e.to_string();
-            effect_handler
-                .notify_nack(NackMsg::new(
-                    &error_msg,
-                    OtapPdata::new(context, saved_payload),
-                ))
-                .await?;
-            Ok(false)
-        }
-    }
+    let result = client.export(bytes).await;
+    handle_export_result(result, context, saved_payload, effect_handler).await
 }
 
 #[cfg(test)]
