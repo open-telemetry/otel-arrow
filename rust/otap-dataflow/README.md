@@ -60,7 +60,7 @@ equivalent, signal-specific representations:
 - OTLP bytes (Logs, Traces, Metrics): An signal-specific enum of
   `Vec<u8>` corresponding with one of the export requests (e.g.,
   `ExportLogsServiceRequest`).
-- OTAP records (Logs, Traces Metrics): A signal-specific array of
+- OTAP records (Logs, Traces, Metrics): A signal-specific array of
   [Arrow
   `RecordBatch`](https://docs.rs/arrow/latest/arrow/record_batch/struct.RecordBatch.html)
   objects defining aspects of the OpenTelemetry data model, where
