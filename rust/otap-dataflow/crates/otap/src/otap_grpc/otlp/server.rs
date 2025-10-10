@@ -18,12 +18,11 @@ use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRes
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg};
+use otap_df_engine::control::{AckMsg, CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use prost::Message;
 use prost::bytes::Buf;
-use smallvec::smallvec;
 use tokio::sync::oneshot;
 use tonic::Status;
 use tonic::body::Body;
@@ -54,22 +53,27 @@ fn route_response(
     result: Result<(), NackMsg<OtapPdata>>,
 ) {
     // Decode slot key from calldata
-    if calldata.len() != 2 {
-        return; // Invalid calldata format
-    }
-
-    let slot_index: usize = calldata[0].try_into().unwrap_or(0);
-    let slot_generation: usize = calldata[1].try_into().unwrap_or(0);
-    let slot_key = SlotKey::new(
-        crate::accessory::slots::SlotIndex::from_usize(slot_index),
-        crate::accessory::slots::SlotGeneration::from_usize(slot_generation),
-    );
+    let slot_key: SlotKey = match calldata.try_into() {
+        Ok(data) => data,
+        Err(_) => {
+            // Invalid calldata format
+            return;
+        }
+    };
 
     // Try to get the channel from the slot
     if let Ok(mut state) = state.lock() {
         if let Some(sender) = state.get_if_current(slot_key) {
-            // Send the result back to the waiting gRPC handler
-            let _ = sender.send(result);
+            match sender.send(result) {
+                Ok(()) => {
+                    // Sent
+                    return;
+                }
+                Err(_) => {
+                    // E.g., channel closed
+                    return;
+                }
+            }
         }
     }
 }
@@ -235,16 +239,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 state: state.clone(),
             };
 
-            // Create CallData with slot index and generation
-            let call_data: CallData = smallvec![
-                Context8u8::from(slot_key.index().as_usize()),
-                Context8u8::from(slot_key.generation().as_usize()),
-            ];
-
             // Subscribe to Ack/Nack responses
             effect_handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
-                call_data,
+                slot_key.into(),
                 &mut otap_batch,
             );
 
@@ -258,9 +256,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                             "Pipeline processing failed: {}",
                             nack.reason
                         ))),
-                        Err(_) => Err(Status::internal(
-                            "Response channel closed unexpectedly",
-                        )),
+                        Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
                     }
                 }
                 Err(e) => {

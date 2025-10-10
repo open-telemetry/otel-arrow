@@ -4,6 +4,9 @@
 //! Slot-based correlation system for correlating in-flight requests
 //! and responses. Provides a CallData to retrieve the data for Ack/Nack handling.
 
+use otap_df_engine::control::CallData;
+use otap_df_engine::error::Error;
+
 /// Configuration for the slot-based correlation server
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -15,49 +18,47 @@ pub struct Config {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SlotIndex(usize);
 
+impl From<usize> for SlotIndex {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SlotIndex> for usize {
+    fn from(value: SlotIndex) -> usize {
+        value.0
+    }
+}
+
 /// Generation number to prevent ABA problem when slots are reused
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SlotGeneration(usize);
+
+impl From<usize> for SlotGeneration {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SlotGeneration> for usize {
+    fn from(value: SlotGeneration) -> usize {
+        value.0
+    }
+}
+
+impl SlotGeneration {
+    /// Increment generation number (with wrapping)
+    #[must_use]
+    fn increment(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
 
 /// Combined slot identifier used for correlation
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotKey {
     index: SlotIndex,
     generation: SlotGeneration,
-}
-
-impl SlotIndex {
-    /// Convert to usize for array indexing
-    #[must_use]
-    pub fn as_usize(self) -> usize {
-        self.0
-    }
-
-    /// Create from usize
-    #[must_use]
-    pub fn from_usize(val: usize) -> Self {
-        Self(val)
-    }
-}
-
-impl SlotGeneration {
-    /// Convert to usize for serialization
-    #[must_use]
-    pub fn as_usize(self) -> usize {
-        self.0
-    }
-
-    /// Create from usize
-    #[must_use]
-    pub fn from_usize(val: usize) -> Self {
-        Self(val)
-    }
-
-    /// Increment generation number (with wrapping)
-    #[must_use]
-    pub fn increment(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
 }
 
 impl SlotKey {
@@ -77,6 +78,29 @@ impl SlotKey {
     #[must_use]
     pub fn generation(self) -> SlotGeneration {
         self.generation
+    }
+}
+
+impl From<SlotKey> for CallData {
+    fn from(value: SlotKey) -> Self {
+        smallvec::smallvec![value.index().0.into(), value.generation().0.into()]
+    }
+}
+
+impl TryFrom<CallData> for SlotKey {
+    type Error = Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        if value.len() != 2 {
+            return Err(Error::InternalError {
+                message: "invalid calldata format".into(),
+            });
+        }
+
+        let slot_index: usize = value[0].try_into()?;
+        let slot_generation: usize = value[1].try_into()?;
+
+        Ok(SlotKey::new(slot_index.into(), slot_generation.into()))
     }
 }
 
@@ -125,7 +149,8 @@ impl<UData> State<UData> {
     pub fn allocate_slot(&mut self, user_data: UData) -> Option<SlotKey> {
         // Try to reuse a free slot first
         if let Some(slot_index) = self.free_slots.pop() {
-            let slot_ref = &mut self.slots[slot_index.as_usize()];
+            let idx: usize = slot_index.into();
+            let slot_ref = &mut self.slots[idx];
 
             if let GenMem::Available(generation) = slot_ref {
                 let current_gen = *generation;
@@ -160,12 +185,12 @@ impl<UData> State<UData> {
     /// Get user data from a slot if generation matches
     #[must_use]
     pub fn get_if_current(&mut self, slot_key: SlotKey) -> Option<UData> {
-        let slot_index = slot_key.index().as_usize();
-        if slot_index >= self.slots.len() {
+        let idx: usize = slot_key.index().into();
+        if idx >= self.slots.len() {
             return None;
         }
 
-        let slot_ref = &mut self.slots[slot_index];
+        let slot_ref = &mut self.slots[idx];
 
         match slot_ref {
             GenMem::Available(_) => None,
@@ -237,9 +262,9 @@ mod tests {
         let (tx3, _) = oneshot::channel();
         let key3 = state.allocate_slot(tx3).unwrap();
 
-        assert_eq!(key1.index().as_usize(), 0);
-        assert_eq!(key2.index().as_usize(), 1);
-        assert_eq!(key3.index().as_usize(), 2);
+        assert_eq!(key1.index().0, 0);
+        assert_eq!(key2.index().0, 1);
+        assert_eq!(key3.index().0, 2);
         assert_eq!(state.allocated_count(), 3);
         assert_eq!(state.total_slots(), 3);
 
@@ -266,14 +291,14 @@ mod tests {
 
         let (tx1, _rx1) = oneshot::channel();
         let key1 = state.allocate_slot(tx1).unwrap();
-        assert_eq!(key1.generation().as_usize(), 1);
+        assert_eq!(key1.generation().0, 1);
         state.cancel(key1);
 
         let (tx2, _rx2) = oneshot::channel();
         let key2 = state.allocate_slot(tx2).unwrap();
 
         assert_eq!(key2.index(), key1.index());
-        assert_eq!(key2.generation().as_usize(), 2,);
+        assert_eq!(key2.generation().0, 2,);
         assert_eq!(state.total_slots(), 1);
     }
 
@@ -345,13 +370,13 @@ mod tests {
 
         state.cancel(key2);
         assert_eq!(state.allocated_count(), 2);
-        assert_eq!(key2.generation().as_usize(), 1);
+        assert_eq!(key2.generation().0, 1);
 
         let (tx4, _) = oneshot::channel();
         let key4 = state.allocate_slot(tx4).unwrap();
 
         assert_eq!(key4.index(), key2.index());
-        assert_eq!(key4.generation().as_usize(), 2);
+        assert_eq!(key4.generation().0, 2);
 
         state.cancel(key1);
         state.cancel(key3);
@@ -364,7 +389,7 @@ mod tests {
         let key5 = state.allocate_slot(tx5).unwrap();
 
         assert_eq!(key5.index(), key2.index());
-        assert_eq!(key5.generation().as_usize(), 3);
+        assert_eq!(key5.generation().0, 3);
 
         assert_eq!(state.allocated_count(), 1);
         assert_eq!(state.total_slots(), 3);
