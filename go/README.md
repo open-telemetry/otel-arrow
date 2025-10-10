@@ -48,6 +48,6 @@ representation.
 
 The main Consumer entry point for converting from OTAP streams into
 OpenTelemetry Collector records is found in
-[./pkg/otel/arrow_record/producer.go](./pkg/otel/arrow_record/producer.go)
+[./pkg/otel/arrow_record/consumer.go](./pkg/otel/arrow_record/consumer.go)
 
 [OTELARROWRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
