@@ -13,9 +13,6 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
-use otap_df_state::DeployedPipelineKey;
-use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::ObservedEvent;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -87,8 +84,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
         self,
-        pipeline_key: DeployedPipelineKey,
-        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
@@ -156,7 +151,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .run_until(async {
                     let mut task_results = Vec::new();
 
-                    obs_evt_reporter.report(ObservedEvent::pipeline_running(pipeline_key));
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
@@ -278,7 +272,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {
-                node: node_id.clone(),
+                node_id: node_id.index,
                 error: e,
             }),
             None => Err(TypedError::Error(Error::InternalError {

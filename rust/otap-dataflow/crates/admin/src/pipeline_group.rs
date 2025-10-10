@@ -19,14 +19,26 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_state::store::ObservedStateHandle;
+use chrono::Utc;
+use otap_df_state::PipelineKey;
+use otap_df_state::pipeline_status::PipelineStatus;
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        // Returns a summary of all pipelines and their statuses.
         .route("/pipeline-groups/status", get(show_status))
+        // Shutdown all pipelines in all groups.
         .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+    // ToDo Global liveness and readiness probes.
+}
+
+#[derive(Serialize)]
+pub struct PipelineGroupsStatusResponse {
+    generated_at: String,
+    pipelines: HashMap<PipelineKey, PipelineStatus>,
 }
 
 /// Response body.
@@ -39,8 +51,10 @@ struct ShutdownResponse {
 
 pub async fn show_status(
     State(state): State<AppState>,
-) -> Result<Json<ObservedStateHandle>, StatusCode> {
-    Ok(Json(state.observed_state_store))
+) -> Result<Json<PipelineGroupsStatusResponse>, StatusCode> {
+    let snapshot = state.observed_state_store.snapshot();
+    let response = build_status_response(snapshot);
+    Ok(Json(response))
 }
 
 async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
@@ -71,5 +85,19 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
                 errors: Some(errors),
             }),
         )
+    }
+}
+
+fn build_status_response(
+    mut pipelines: HashMap<PipelineKey, PipelineStatus>,
+) -> PipelineGroupsStatusResponse {
+    // Aggregated phase are computed on-demand.
+    for pipeline_status in pipelines.values_mut() {
+        pipeline_status.infer_agg_phase();
+    }
+
+    PipelineGroupsStatusResponse {
+        generated_at: Utc::now().to_rfc3339(),
+        pipelines,
     }
 }

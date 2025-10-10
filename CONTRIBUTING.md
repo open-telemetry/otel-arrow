@@ -27,6 +27,16 @@ To work with this repository, you'll need:
 
 ## Local Run/Build
 
+Initialize Git submodules so that the OpenTelemetry protocol references
+used in building from `.proto` definitions can succeed:
+
+```bash
+git submodule update --init --recursive
+```
+
+When successful, you will find the directory `proto/opentelemetry-proto/`
+populated with the OpenTelemetry protocol definition used in this repository.
+
 ### How to set up and run a local OTel-Arrow collector
 
 See [collector/README.md](./collector/README.md) for instructions on running the

@@ -9,7 +9,7 @@
 
 use crate::config::ExporterConfig;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -142,11 +142,15 @@ impl<PData> ExporterWrapper<PData> {
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Configuration,
                     error: "Control receiver not initialized".to_owned(),
+                    source_detail: String::new(),
                 })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Configuration,
                     error: "PData receiver not initialized".to_owned(),
+                    source_detail: String::new(),
                 })?;
                 effect_handler
                     .core
@@ -164,11 +168,15 @@ impl<PData> ExporterWrapper<PData> {
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Configuration,
                     error: "Control receiver not initialized".to_owned(),
+                    source_detail: String::new(),
                 })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Configuration,
                     error: "PData receiver not initialized".to_owned(),
+                    source_detail: String::new(),
                 })?;
                 effect_handler
                     .core
@@ -238,7 +246,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
                 exporter: node_id,
+                kind: ExporterErrorKind::Configuration,
                 error: "Expected a shared receiver for PData".to_owned(),
+                source_detail: String::new(),
             }),
         }
     }
@@ -246,7 +256,8 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg;
+    use crate::control::{AckMsg, NodeControlMsg};
+    use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
@@ -306,7 +317,9 @@ mod tests {
                     _ => {
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_id(),
+                            kind: ExporterErrorKind::Other,
                             error: "Unknown control message".to_owned(),
+                            source_detail: String::new(),
                         });
                     }
                 }
@@ -341,7 +354,9 @@ mod tests {
                     _ => {
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_id(),
+                            kind: ExporterErrorKind::Other,
                             error: "Unknown control message".to_owned(),
+                            source_detail: String::new(),
                         });
                     }
                 }
@@ -453,10 +468,12 @@ mod tests {
     #[tokio::test]
     async fn test_control_priority() {
         let (control_tx, pdata_tx, mut channel) = make_chan();
+        let pdata1 = "pdata1".to_owned();
+        let pdata2 = "pdata2".to_owned();
 
-        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        pdata_tx.send_async(pdata2.clone()).await.unwrap();
         control_tx
-            .send_async(NodeControlMsg::Ack { id: 1 })
+            .send_async(NodeControlMsg::Ack(AckMsg::new(pdata1.clone())))
             .await
             .unwrap();
 
@@ -464,12 +481,12 @@ mod tests {
         let msg = channel.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Message::Control(NodeControlMsg::Ack { id: 1 })
+            Message::Control(NodeControlMsg::Ack(ref a)) if *a.accepted == pdata1
         ));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+        assert!(matches!(msg, Message::PData(ref s) if *s == pdata2));
     }
 
     #[tokio::test]
@@ -628,7 +645,7 @@ mod tests {
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(NodeControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack(AckMsg::new("99".to_owned())))
                 .await
                 .is_err()
         );

@@ -3,7 +3,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
@@ -148,6 +148,18 @@ impl<PData> EffectHandlerCore<PData> {
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
     }
 
+    /// Re-usable function to send a pipeline control message. This returns a reference
+    /// to the sender to place in a cancelation, for example.
+    async fn send_pipeline_ctrl_msg(
+        &self,
+        msg: PipelineControlMsg<PData>,
+    ) -> Result<PipelineCtrlMsgSender<PData>, SendError<PipelineControlMsg<PData>>> {
+        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_ctrl_msg_sender.send(msg).await?;
+        Ok(pipeline_ctrl_msg_sender)
+    }
+
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
     ///
@@ -156,15 +168,12 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
-            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::StartTimer {
+        let pipeline_ctrl_msg_sender = self
+            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTimer {
                 node_id: self.node_id.index,
                 duration,
             })
             .await
-            // Drop the SendError
             .map_err(|e| Error::PipelineControlMsgError {
                 error: e.to_string(),
             })?;
@@ -182,11 +191,7 @@ impl<PData> EffectHandlerCore<PData> {
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         let pipeline_ctrl_msg_sender = self
-            .pipeline_ctrl_msg_sender
-            .clone()
-            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::StartTelemetryTimer {
+            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTelemetryTimer {
                 node_id: self.node_id.index,
                 duration,
             })
@@ -199,6 +204,56 @@ impl<PData> EffectHandlerCore<PData> {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
+    }
+
+    /// Send a AckMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Acks, if any.  When there is a
+    /// recipient, this returns its node_id and the AckMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_ack<Transfer>(
+        &self,
+        ack_in: AckMsg<PData>,
+        transfer: Transfer,
+    ) -> Result<(), Error>
+    where
+        Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        if let Some((node_id, ack)) = transfer(ack_in) {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
+                .await
+                .map(|_| ())
+                .map_err(|e| Error::PipelineControlMsgError {
+                    error: e.to_string(),
+                })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Send a NackMsg using a context-transfer function.  The context
+    /// transfer function applies PData-specific logic to discover the
+    /// next recipient in the chain of Nacks, if any.  When there is a
+    /// recipient, this returns its node_id and the NackMsg prepared for
+    /// delivery with the recipient's calldata.
+    pub async fn route_nack<Transfer>(
+        &self,
+        nack_in: NackMsg<PData>,
+        transfer: Transfer,
+    ) -> Result<(), Error>
+    where
+        Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        if let Some((node_id, nack)) = transfer(nack_in) {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
+                .await
+                .map(|_| ())
+                .map_err(|e| Error::PipelineControlMsgError {
+                    error: e.to_string(),
+                })
+        } else {
+            Ok(())
+        }
     }
 }
 
