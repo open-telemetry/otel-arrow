@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1760127647247,
+  "lastUpdate": 1760129860645,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "dcdbdef991111ab4128e5739a5d4e10ecefb65a2",
-          "message": "Small parquet exporter fixes and add example config (#1044)\n\nFixes a few small issues with parquet exporter:\n- fix `flush_when_older_than` missing value not being deserialized as\n`None` by serde\n- fix bug generating unique IDs for ID columns with null values\n\nAlso adds a configuration example for generating parquet data.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-09-03T01:02:37Z",
-          "tree_id": "704f61dd972765526050c862c1d6255687037680",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/dcdbdef991111ab4128e5739a5d4e10ecefb65a2"
-        },
-        "date": 1756862142230,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 740833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22225000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22225000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.71,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.66,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 125.84,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 155.12,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 738833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22165000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22165000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.63,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.57,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 166.87,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 192.35,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 180.54,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f26769706c0ba307d5d39ce01ba96563a9615fed",
+          "message": "[query-engine] Validate unique identifiers in KQL summarize statements (#1267)\n\nRelates to #1262\n\n## Changes\n\n* Validate unique identifiers in KQL summarize statements",
+          "timestamp": "2025-10-10T20:49:21Z",
+          "tree_id": "da73c29921d35470af3885942da66e1f276799bb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f26769706c0ba307d5d39ce01ba96563a9615fed"
+        },
+        "date": 1760129858287,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 733666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22010000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22010000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.63,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.61,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 125.42,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 146.46,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 728000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 21840000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 21840000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.64,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 159.15,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 187,
             "unit": "MiB"
           }
         ]
