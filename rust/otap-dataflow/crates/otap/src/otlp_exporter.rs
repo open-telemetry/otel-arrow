@@ -424,7 +424,8 @@ mod tests {
                         return Ok(());
                     }
                     Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack {
-                        node_id, ..
+                        node_id,
+                        ..
                     }) => {
                         if expect_ack {
                             return Err(format!("Got Nack but expected Ack {}", context));
@@ -722,14 +723,9 @@ mod tests {
             );
             pdata_tx.send(pdata).await.unwrap();
             // Wait for NACK since server is down
-            wait_for_ack_or_nack(
-                &mut pipeline_ctrl_msg_rx,
-                false,
-                123,
-                "when server is down",
-            )
-            .await
-            .expect("Expected Nack when server down");
+            wait_for_ack_or_nack(&mut pipeline_ctrl_msg_rx, false, 123, "when server is down")
+                .await
+                .expect("Expected Nack when server down");
 
             // wait a bit before starting the server. This will ensure the exporter no-longer exits
             // when start is called if the endpoint can't be reached
