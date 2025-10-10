@@ -22,7 +22,7 @@ data.
 > provided as a means to test and validate OTAP pipelines built using
 > the dataflow engine.
 >
-> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implement
+> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implements
 > low-level details of the conversion between OTAP and OTLP, will be
 > incorporated into this set of crates.
 
