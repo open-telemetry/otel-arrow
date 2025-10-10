@@ -206,14 +206,11 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         let effect_handler = self.effect_handler.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // Create oneshot channel for response
-            let (tx, rx) = oneshot::channel();
-
-            // Allocate a slot for this request
-            let slot_key = {
+            // Allocate slot with closure that creates the channel only if slot is available
+            let (slot_key, rx) = {
                 let mut state = state.lock().unwrap();
-                match state.allocate_slot(tx) {
-                    Some(key) => key,
+                match state.allocate_slot(|| oneshot::channel()) {
+                    Some((key, rx)) => (key, rx),
                     None => {
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
@@ -239,30 +236,22 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 state: state.clone(),
             };
 
-            // Subscribe to Ack/Nack responses
             effect_handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
                 slot_key.into(),
                 &mut otap_batch,
             );
 
-            // Send the message to the pipeline
             match effect_handler.send_message(otap_batch).await {
-                Ok(_) => {
-                    // Wait for Ack or Nack response
-                    match rx.await {
-                        Ok(Ok(())) => Ok(tonic::Response::new(())),
-                        Ok(Err(nack)) => Err(Status::internal(format!(
-                            "Pipeline processing failed: {}",
-                            nack.reason
-                        ))),
-                        Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
-                    }
-                }
-                Err(e) => {
-                    // Failed to send to pipeline - clean up via guard drop
-                    Err(Status::internal(format!("Failed to send to pipeline: {e}")))
-                }
+                Ok(_) => match rx.await {
+                    Ok(Ok(())) => Ok(tonic::Response::new(())),
+                    Ok(Err(nack)) => Err(Status::internal(format!(
+                        "Pipeline processing failed: {}",
+                        nack.reason
+                    ))),
+                    Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
+                },
+                Err(e) => Err(Status::internal(format!("Failed to send to pipeline: {e}"))),
             }
         })
     }
@@ -311,8 +300,8 @@ pub struct LogsServiceServer {
 impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
-        let config = SlotsConfig { max_slots: 1000 };
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
+        let config = SlotsConfig { max_slots };
         let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,
@@ -393,8 +382,8 @@ pub struct MetricsServiceServer {
 impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
-        let config = SlotsConfig { max_slots: 1000 };
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
+        let config = SlotsConfig { max_slots };
         let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,
@@ -475,8 +464,8 @@ pub struct TraceServiceServer {
 impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
-        let config = SlotsConfig { max_slots: 1000 };
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
+        let config = SlotsConfig { max_slots };
         let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,

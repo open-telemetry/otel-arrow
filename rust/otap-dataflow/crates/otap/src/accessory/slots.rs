@@ -144,9 +144,14 @@ impl<UData> State<UData> {
         }
     }
 
-    /// Allocate a slot for a new request with user-provided data.
+    /// Allocate a slot for a new request.
+    /// The closure is called only if a slot is available, creating the user data and returning
+    /// any additional data needed by the caller (e.g., the receiver end of a channel).
     #[must_use]
-    pub fn allocate_slot(&mut self, user_data: UData) -> Option<SlotKey> {
+    pub fn allocate_slot<F, R>(&mut self, create: F) -> Option<(SlotKey, R)>
+    where
+        F: FnOnce() -> (UData, R),
+    {
         // Try to reuse a free slot first
         if let Some(slot_index) = self.free_slots.pop() {
             let idx: usize = slot_index.into();
@@ -154,11 +159,12 @@ impl<UData> State<UData> {
 
             if let GenMem::Available(generation) = slot_ref {
                 let current_gen = *generation;
+                let (user_data, return_data) = create();
                 *slot_ref = GenMem::Current(SlotData {
                     user: user_data,
                     generation: current_gen,
                 });
-                return Some(SlotKey::new(slot_index, current_gen));
+                return Some((SlotKey::new(slot_index, current_gen), return_data));
             } else {
                 // This should not happen - free_slots should only contain Available slots
                 return None;
@@ -169,13 +175,14 @@ impl<UData> State<UData> {
         if self.slots.len() < self.config.max_slots {
             let slot_index = SlotIndex(self.slots.len());
             let generation = SlotGeneration(1); // Start at generation 1
+            let (user_data, return_data) = create();
 
             self.slots.push(GenMem::Current(SlotData {
                 user: user_data,
                 generation,
             }));
 
-            Some(SlotKey::new(slot_index, generation))
+            Some((SlotKey::new(slot_index, generation), return_data))
         } else {
             // At capacity
             None
@@ -253,14 +260,9 @@ mod tests {
     fn test_allocate() {
         let mut state = create_test_state();
 
-        let (tx1, _) = oneshot::channel();
-        let key1 = state.allocate_slot(tx1).unwrap();
-
-        let (tx2, _) = oneshot::channel();
-        let key2 = state.allocate_slot(tx2).unwrap();
-
-        let (tx3, _) = oneshot::channel();
-        let key3 = state.allocate_slot(tx3).unwrap();
+        let (key1, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
+        let (key2, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
+        let (key3, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         assert_eq!(key1.index().0, 0);
         assert_eq!(key2.index().0, 1);
@@ -268,8 +270,7 @@ mod tests {
         assert_eq!(state.allocated_count(), 3);
         assert_eq!(state.total_slots(), 3);
 
-        let (tx4, _) = oneshot::channel();
-        let result = state.allocate_slot(tx4);
+        let result = state.allocate_slot(|| oneshot::channel());
 
         assert!(result.is_none(), "beyond capacity");
         assert_eq!(state.allocated_count(), 3);
@@ -289,13 +290,11 @@ mod tests {
     fn test_reuse() {
         let mut state = create_test_state();
 
-        let (tx1, _rx1) = oneshot::channel();
-        let key1 = state.allocate_slot(tx1).unwrap();
+        let (key1, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
         assert_eq!(key1.generation().0, 1);
         state.cancel(key1);
 
-        let (tx2, _rx2) = oneshot::channel();
-        let key2 = state.allocate_slot(tx2).unwrap();
+        let (key2, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         assert_eq!(key2.index(), key1.index());
         assert_eq!(key2.generation().0, 2,);
@@ -305,9 +304,8 @@ mod tests {
     #[test]
     fn test_get_current() {
         let mut state = create_test_state();
-        let (tx, rx) = oneshot::channel();
 
-        let key = state.allocate_slot(tx).unwrap();
+        let (key, rx) = state.allocate_slot(|| oneshot::channel()).unwrap();
         assert_eq!(state.allocated_count(), 1);
 
         state
@@ -325,14 +323,12 @@ mod tests {
     #[test]
     fn test_get_old() {
         let mut state = create_test_state();
-        let (tx, rx) = oneshot::channel();
 
-        let key = state.allocate_slot(tx).unwrap();
+        let (key, rx) = state.allocate_slot(|| oneshot::channel()).unwrap();
         state.cancel(key);
         assert!(rx.blocking_recv().is_err());
 
-        let (tx2, _) = oneshot::channel();
-        let _key2 = state.allocate_slot(tx2).unwrap();
+        let (_key2, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         // Try to get old generation
         assert!(state.get_if_current(key).is_none());
@@ -344,9 +340,8 @@ mod tests {
     #[test]
     fn test_cancel_twice() {
         let mut state = create_test_state();
-        let (tx, _rx) = oneshot::channel();
 
-        let key = state.allocate_slot(tx).unwrap();
+        let (key, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
         assert_eq!(state.allocated_count(), 1);
 
         state.cancel(key);
@@ -360,20 +355,15 @@ mod tests {
     fn test_allocs_and_deallocs() {
         let mut state = create_test_state();
 
-        let (tx1, _) = oneshot::channel();
-        let (tx2, _) = oneshot::channel();
-        let (tx3, _) = oneshot::channel();
-
-        let key1 = state.allocate_slot(tx1).unwrap();
-        let key2 = state.allocate_slot(tx2).unwrap();
-        let key3 = state.allocate_slot(tx3).unwrap();
+        let (key1, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
+        let (key2, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
+        let (key3, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         state.cancel(key2);
         assert_eq!(state.allocated_count(), 2);
         assert_eq!(key2.generation().0, 1);
 
-        let (tx4, _) = oneshot::channel();
-        let key4 = state.allocate_slot(tx4).unwrap();
+        let (key4, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         assert_eq!(key4.index(), key2.index());
         assert_eq!(key4.generation().0, 2);
@@ -385,8 +375,7 @@ mod tests {
         assert_eq!(state.allocated_count(), 0);
         assert_eq!(state.total_slots(), 3);
 
-        let (tx5, _) = oneshot::channel();
-        let key5 = state.allocate_slot(tx5).unwrap();
+        let (key5, _) = state.allocate_slot(|| oneshot::channel()).unwrap();
 
         assert_eq!(key5.index(), key2.index());
         assert_eq!(key5.generation().0, 3);

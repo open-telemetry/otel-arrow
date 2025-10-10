@@ -39,6 +39,13 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
+    /// Maximum number of concurrent in-flight requests (default: 1000)
+    #[serde(default = "default_max_slots")]
+    max_slots: usize,
+}
+
+fn default_max_slots() -> usize {
+    1000
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
@@ -108,9 +115,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone(), self.config.max_slots);
 
         // Store correlation states for response routing
         let logs_correlation_state = logs_service_server.state();
@@ -480,6 +487,7 @@ mod tests {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
+                    max_slots: 1000,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -492,5 +500,42 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
             .run_validation_concurrent(validation_procedure());
+    }
+
+    #[test]
+    fn test_config_parsing() {
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        // Test with custom max_slots
+        let config_with_max_slots = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_slots": 5000
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots)
+            .expect("Failed to parse config with max_slots");
+        assert_eq!(receiver.config.max_slots, 5000);
+
+        // Test with default max_slots
+        let config_default = json!({
+            "listening_addr": "127.0.0.1:4317"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default)
+            .expect("Failed to parse config with default max_slots");
+        assert_eq!(receiver.config.max_slots, 1000);
+
+        // Test with compression and max_slots
+        let config_full = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "compression_method": "gzip",
+            "max_slots": 2500
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full)
+            .expect("Failed to parse full config");
+        assert_eq!(receiver.config.max_slots, 2500);
     }
 }
