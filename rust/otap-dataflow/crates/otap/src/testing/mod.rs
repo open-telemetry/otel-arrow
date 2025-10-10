@@ -130,9 +130,8 @@ pub fn test_exporter_with_subscription(
     test_runtime
         .set_exporter(exporter)
         .run_test(move |ctx| async move {
-            let mut req_data = create_test_pdata();
-
-            req_data.test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
+            let req_data = create_test_pdata()
+		.test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
             ctx.send_pdata(req_data).await.unwrap();
             ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
                 .await
