@@ -45,52 +45,34 @@ pub struct SendValidateContext<PData> {
 }
 
 impl<PData> TestContext<PData> {
-    /// Sends a timer tick control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), Error> {
+    /// Sends a control message to the receiver.
+    pub async fn send_control_msg(&self, msg: NodeControlMsg<PData>) -> Result<(), Error> {
         self.control_sender
-            .send(NodeControlMsg::TimerTick {})
+            .send(msg)
             .await
-            // Drop the SendError
             .map_err(|e| Error::PipelineControlMsgError {
                 error: e.to_string(),
             })
+    }
+
+    /// Sends a timer tick control message.
+    pub async fn send_timer_tick(&self) -> Result<(), Error> {
+        self.send_control_msg(NodeControlMsg::TimerTick {}).await
     }
 
     /// Sends a config control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
     pub async fn send_config(&self, config: Value) -> Result<(), Error> {
-        self.control_sender
-            .send(NodeControlMsg::Config { config })
+        self.send_control_msg(NodeControlMsg::Config { config })
             .await
-            // Drop the SendError
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
     }
 
     /// Sends a shutdown control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
     pub async fn send_shutdown(&self, deadline: Duration, reason: &str) -> Result<(), Error> {
-        self.control_sender
-            .send(NodeControlMsg::Shutdown {
-                deadline,
-                reason: reason.to_owned(),
-            })
-            .await
-            // Drop the SendError
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
+        self.send_control_msg(NodeControlMsg::Shutdown {
+            deadline,
+            reason: reason.to_owned(),
+        })
+        .await
     }
 
     /// Sleeps for the specified duration.
@@ -113,9 +95,8 @@ impl<PData> NotSendValidateContext<PData> {
 
     /// Sends a control message to the receiver (e.g., Ack, Nack).
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
+    /// This is useful for injecting control messages during concurrent validation,
+    /// such as sending Ack/Nack messages in response to received pdata.
     pub async fn send_control_msg(&self, msg: NodeControlMsg<PData>) -> Result<(), Error> {
         self.control_sender
             .send(msg)
