@@ -407,7 +407,7 @@ pub(crate) fn parse_summarize_expression(
                             _ => {
                                 return Err(ParserError::SyntaxError(
                                     group_by_first_rule_location,
-                                    "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                                    "Could not determine the identifier for summary group-by expression. Try using assignment syntax instead (identifier = [expression]).".into(),
                                 ));
                             }
                         }
@@ -3334,7 +3334,7 @@ mod tests {
 
         run_test_failure(
             "summarize by Attributes[tostring(now())]",
-            "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+            "Could not determine the identifier for summary group-by expression. Try using assignment syntax instead (identifier = [expression]).",
         );
     }
 
