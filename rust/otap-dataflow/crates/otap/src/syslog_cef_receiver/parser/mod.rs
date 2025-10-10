@@ -44,18 +44,41 @@ pub enum ParseError {
 
 /// Parse a syslog message from bytes, automatically detecting the format
 pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
-    // Check if it's a CEF message first
+    // Check if it's a raw CEF message (starts with "CEF:")
     if input.starts_with(b"CEF:") {
         return parse_cef(input).map(ParsedSyslogMessage::Cef);
     }
 
     // Try RFC 5424 first
-    if let Ok(msg) = parse_rfc5424(input) {
-        return Ok(ParsedSyslogMessage::Rfc5424(msg));
+    if let Ok(syslog_msg) = parse_rfc5424(input) {
+        // Check if the message content is a CEF message
+        if let Some(content) = syslog_msg.message {
+            if content.starts_with(b"CEF:") {
+                // Parse CEF from the same input buffer (zero-copy)
+                if let Ok(cef_msg) = parse_cef(content) {
+                    return Ok(ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg));
+                }
+            }
+        }
+        return Ok(ParsedSyslogMessage::Rfc5424(syslog_msg));
     }
 
-    // Fallback to RFC 3164
-    parse_rfc3164(input).map(ParsedSyslogMessage::Rfc3164)
+    // Try RFC 3164
+    if let Ok(syslog_msg) = parse_rfc3164(input) {
+        // Check if the message content is a CEF message
+        if let Some(content) = syslog_msg.content {
+            if content.starts_with(b"CEF:") {
+                // Parse CEF from the same input buffer (zero-copy)
+                if let Ok(cef_msg) = parse_cef(content) {
+                    return Ok(ParsedSyslogMessage::CefWithRfc3164(syslog_msg, cef_msg));
+                }
+            }
+        }
+        return Ok(ParsedSyslogMessage::Rfc3164(syslog_msg));
+    }
+
+    // If all parsing attempts fail, return an error
+    Err(ParseError::InvalidPriority)
 }
 
 /// Parse priority from the beginning of a syslog message

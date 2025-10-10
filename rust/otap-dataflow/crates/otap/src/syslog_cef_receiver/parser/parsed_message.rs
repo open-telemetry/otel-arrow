@@ -30,7 +30,7 @@ const CEF_VERSION: &str = "cef.version";
 const CEF_DEVICE_VENDOR: &str = "cef.device_vendor";
 const CEF_DEVICE_PRODUCT: &str = "cef.device_product";
 const CEF_DEVICE_VERSION: &str = "cef.device_version";
-const CEF_SIGNATURE_ID: &str = "cef.signature_id";
+const CEF_DEVICE_EVENT_CLASS_ID: &str = "cef.device_event_class_id";
 const CEF_NAME: &str = "cef.name";
 const CEF_SEVERITY: &str = "cef.severity";
 
@@ -41,8 +41,12 @@ pub enum ParsedSyslogMessage<'a> {
     Rfc5424(Rfc5424Message<'a>),
     /// RFC 3164 formatted message
     Rfc3164(Rfc3164Message<'a>),
-    /// CEF formatted message
+    /// Raw CEF message (without syslog header)
     Cef(CefMessage<'a>),
+    /// CEF message with RFC 3164 syslog header
+    CefWithRfc3164(Rfc3164Message<'a>, CefMessage<'a>),
+    /// CEF message with RFC 5424 syslog header
+    CefWithRfc5424(Rfc5424Message<'a>, CefMessage<'a>),
 }
 
 impl ParsedSyslogMessage<'_> {
@@ -52,6 +56,8 @@ impl ParsedSyslogMessage<'_> {
             ParsedSyslogMessage::Rfc5424(msg) => String::from_utf8_lossy(msg.input),
             ParsedSyslogMessage::Rfc3164(msg) => String::from_utf8_lossy(msg.input),
             ParsedSyslogMessage::Cef(msg) => String::from_utf8_lossy(msg.input),
+            ParsedSyslogMessage::CefWithRfc3164(msg, _) => String::from_utf8_lossy(msg.input),
+            ParsedSyslogMessage::CefWithRfc5424(msg, _) => String::from_utf8_lossy(msg.input),
         }
     }
 
@@ -59,238 +65,279 @@ impl ParsedSyslogMessage<'_> {
     // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
     pub(crate) fn timestamp(&self) -> Option<u64> {
         match self {
-            ParsedSyslogMessage::Rfc5424(msg) => msg.timestamp.and_then(|ts| {
-                std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
-                    // RFC 5424 timestamps are in ISO 8601 format (e.g., "2003-10-11T22:14:15.003Z")
-                    // Try to parse as RFC 3339 (ISO 8601)
-                    DateTime::parse_from_rfc3339(timestamp_str)
-                        .ok()
-                        .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64)
+            ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
+                msg.timestamp.and_then(|ts| {
+                    std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
+                        // RFC 5424 timestamps are in ISO 8601 format (e.g., "2003-10-11T22:14:15.003Z")
+                        // Try to parse as RFC 3339 (ISO 8601)
+                        DateTime::parse_from_rfc3339(timestamp_str)
+                            .ok()
+                            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64)
+                    })
                 })
-            }),
-            ParsedSyslogMessage::Rfc3164(msg) => msg.timestamp.and_then(|ts| {
-                std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
-                    // RFC 3164 format: "Oct 11 22:14:15"
-                    // We need to assume the current year and local timezone
-                    let current_year = Local::now().year();
+            }
+            ParsedSyslogMessage::Rfc3164(msg) | ParsedSyslogMessage::CefWithRfc3164(msg, _) => {
+                msg.timestamp.and_then(|ts| {
+                    std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
+                        // RFC 3164 format: "Oct 11 22:14:15"
+                        // We need to assume the current year and local timezone
+                        let current_year = Local::now().year();
 
-                    // Parse the timestamp with assumed year
-                    let full_timestamp = format!("{current_year} {timestamp_str}");
+                        // Parse the timestamp with assumed year
+                        let full_timestamp = format!("{current_year} {timestamp_str}");
 
-                    // Try to parse with format "%Y %b %d %H:%M:%S"
-                    if let Ok(naive_dt) =
-                        NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S")
-                    {
-                        // Convert to local timezone, then to UTC
-                        if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
-                            return Some(
-                                local_dt
-                                    .with_timezone(&Utc)
-                                    .timestamp_nanos_opt()
-                                    .unwrap_or(0) as u64,
-                            );
+                        // Try to parse with format "%Y %b %d %H:%M:%S"
+                        if let Ok(naive_dt) =
+                            NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S")
+                        {
+                            // Convert to local timezone, then to UTC
+                            if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
+                                return Some(
+                                    local_dt
+                                        .with_timezone(&Utc)
+                                        .timestamp_nanos_opt()
+                                        .unwrap_or(0) as u64,
+                                );
+                            }
                         }
-                    }
 
-                    None
+                        None
+                    })
                 })
-            }),
-            ParsedSyslogMessage::Cef(_) => None, // CEF does not have a timestamp field
+            }
+            ParsedSyslogMessage::Cef(_) => None,
         }
     }
 
     /// Returns the severity level of the log message.
     pub(crate) fn severity(&self) -> Option<(i32, &str)> {
         match self {
-            ParsedSyslogMessage::Rfc5424(msg) => {
+            ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
                 Some(Self::to_otel_severity(msg.priority.severity))
             }
-            ParsedSyslogMessage::Rfc3164(msg) => {
-                // Only return severity if it was actually present in the message
-                msg.priority
-                    .as_ref()
-                    .map(|p| Self::to_otel_severity(p.severity))
-            }
-            ParsedSyslogMessage::Cef(_) => {
-                // CEF does not have a severity field, return None
-                None
-            }
+            ParsedSyslogMessage::Rfc3164(msg) | ParsedSyslogMessage::CefWithRfc3164(msg, _) => msg
+                .priority
+                .as_ref()
+                .map(|p| Self::to_otel_severity(p.severity)),
+            ParsedSyslogMessage::Cef(_) => None,
         }
     }
 
     /// Adds attributes to the log record attributes Arrow record batch.
-    /// Returns the number of attributes added.
     #[must_use]
     pub(crate) fn add_attributes_to_arrow(
         &self,
         log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
     ) -> u16 {
         let mut attributes_count = 0;
+
         match self {
-            ParsedSyslogMessage::Rfc5424(msg) => {
-                attributes_count += 3; // version, facility, and severity are always present
-
-                log_attributes_arrow_records.append_key(SYSLOG_VERSION);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_int(msg.version.into());
-
-                log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_int(msg.priority.facility.into());
-
-                log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_int(msg.priority.severity.into());
-
-                if let Some(hostname) = msg.hostname {
-                    log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(hostname);
-                    attributes_count += 1;
-                }
-
-                if let Some(appname) = msg.app_name {
-                    log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(appname);
-                    attributes_count += 1;
-                }
-
-                if let Some(proc_id) = msg.proc_id {
-                    log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
-                    log_attributes_arrow_records.any_values_builder.append_int(
-                        std::str::from_utf8(proc_id)
-                            .unwrap_or_default()
-                            .parse::<i64>()
-                            .unwrap_or(0),
-                    );
-                    attributes_count += 1;
-                }
-
-                if let Some(msg_id) = msg.msg_id {
-                    log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(msg_id);
-                    attributes_count += 1;
-                }
-
-                if let Some(structured_data) = &msg.structured_data {
-                    log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(structured_data);
-                    attributes_count += 1;
-                }
-
-                if let Some(message) = msg.message {
-                    log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(message);
-                    attributes_count += 1;
-                }
-
+            ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
+                // Add syslog RFC5424 attributes
+                attributes_count +=
+                    self.add_rfc5424_attributes(syslog_msg, log_attributes_arrow_records);
+                // Add CEF attributes
+                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
                 attributes_count
+            }
+            ParsedSyslogMessage::CefWithRfc3164(syslog_msg, cef_msg) => {
+                // Add syslog RFC3164 attributes
+                attributes_count +=
+                    self.add_rfc3164_attributes(syslog_msg, log_attributes_arrow_records);
+                // Add CEF attributes
+                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                attributes_count
+            }
+            ParsedSyslogMessage::Rfc5424(msg) => {
+                self.add_rfc5424_attributes(msg, log_attributes_arrow_records)
             }
             ParsedSyslogMessage::Rfc3164(msg) => {
-                // Only add facility and severity if they were present in the original message
-                if let Some(priority) = msg.priority.as_ref() {
-                    log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_int(priority.facility.into());
-                    attributes_count += 1;
-
-                    log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_int(priority.severity.into());
-                    attributes_count += 1;
-                }
-
-                if let Some(hostname) = msg.hostname {
-                    log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(hostname);
-                    attributes_count += 1;
-                }
-
-                if let Some(tag) = msg.tag {
-                    log_attributes_arrow_records.append_key(SYSLOG_TAG);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(tag);
-                    attributes_count += 1;
-                }
-
-                if let Some(content) = msg.content {
-                    log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(content);
-                    attributes_count += 1;
-                }
-
-                attributes_count
+                self.add_rfc3164_attributes(msg, log_attributes_arrow_records)
             }
             ParsedSyslogMessage::Cef(msg) => {
-                attributes_count += 7; // version, device_vendor, device_product, device_version, signature_id, name, and severity are always present
-
-                log_attributes_arrow_records.append_key(CEF_VERSION);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_int(msg.version.into());
-
-                log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.device_vendor);
-
-                log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.device_product);
-
-                log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.device_version);
-
-                log_attributes_arrow_records.append_key(CEF_SIGNATURE_ID);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.device_event_class_id);
-
-                log_attributes_arrow_records.append_key(CEF_NAME);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.name);
-
-                log_attributes_arrow_records.append_key(CEF_SEVERITY);
-                log_attributes_arrow_records
-                    .any_values_builder
-                    .append_str(msg.severity);
-
-                let mut extensions_iter = msg.parse_extensions();
-                while let Some((key, value)) = extensions_iter.next_extension() {
-                    log_attributes_arrow_records
-                        .append_key(std::str::from_utf8(key).unwrap_or_default());
-                    log_attributes_arrow_records
-                        .any_values_builder
-                        .append_str(value);
-                    attributes_count += 1;
-                }
-
-                attributes_count
+                self.add_cef_attributes(msg, log_attributes_arrow_records)
             }
         }
+    }
+
+    // Extract the attribute adding logic into helper methods to avoid duplication
+    fn add_rfc5424_attributes(
+        &self,
+        msg: &Rfc5424Message<'_>,
+        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+    ) -> u16 {
+        let mut attributes_count = 3; // version, facility, and severity are always present
+
+        log_attributes_arrow_records.append_key(SYSLOG_VERSION);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_int(msg.version.into());
+
+        log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_int(msg.priority.facility.into());
+
+        log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_int(msg.priority.severity.into());
+
+        if let Some(hostname) = msg.hostname {
+            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(hostname);
+            attributes_count += 1;
+        }
+
+        if let Some(appname) = msg.app_name {
+            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(appname);
+            attributes_count += 1;
+        }
+
+        if let Some(proc_id) = msg.proc_id {
+            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+            log_attributes_arrow_records.any_values_builder.append_int(
+                std::str::from_utf8(proc_id)
+                    .unwrap_or_default()
+                    .parse::<i64>()
+                    .unwrap_or(0),
+            );
+            attributes_count += 1;
+        }
+
+        if let Some(msg_id) = msg.msg_id {
+            log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(msg_id);
+            attributes_count += 1;
+        }
+
+        if let Some(structured_data) = &msg.structured_data {
+            log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(structured_data);
+            attributes_count += 1;
+        }
+
+        if let Some(message) = msg.message {
+            log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(message);
+            attributes_count += 1;
+        }
+
+        attributes_count
+    }
+
+    fn add_rfc3164_attributes(
+        &self,
+        msg: &Rfc3164Message<'_>,
+        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+    ) -> u16 {
+        let mut attributes_count = 0;
+
+        // Only add facility and severity if they were present in the original message
+        if let Some(priority) = msg.priority.as_ref() {
+            log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_int(priority.facility.into());
+            attributes_count += 1;
+
+            log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_int(priority.severity.into());
+            attributes_count += 1;
+        }
+
+        if let Some(hostname) = msg.hostname {
+            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(hostname);
+            attributes_count += 1;
+        }
+
+        if let Some(tag) = msg.tag {
+            log_attributes_arrow_records.append_key(SYSLOG_TAG);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(tag);
+            attributes_count += 1;
+        }
+
+        if let Some(content) = msg.content {
+            log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(content);
+            attributes_count += 1;
+        }
+
+        attributes_count
+    }
+
+    fn add_cef_attributes(
+        &self,
+        msg: &CefMessage<'_>,
+        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+    ) -> u16 {
+        let mut attributes_count = 7; // version, device_vendor, device_product, device_version, device_event_class_id, name, and severity are always present
+
+        log_attributes_arrow_records.append_key(CEF_VERSION);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_int(msg.version.into());
+
+        log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.device_vendor);
+
+        log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.device_product);
+
+        log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.device_version);
+
+        log_attributes_arrow_records.append_key(CEF_DEVICE_EVENT_CLASS_ID);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.device_event_class_id);
+
+        log_attributes_arrow_records.append_key(CEF_NAME);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.name);
+
+        log_attributes_arrow_records.append_key(CEF_SEVERITY);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(msg.severity);
+
+        let mut extensions_iter = msg.parse_extensions();
+        while let Some((key, value)) = extensions_iter.next_extension() {
+            log_attributes_arrow_records.append_key(std::str::from_utf8(key).unwrap_or_default());
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(value);
+            attributes_count += 1;
+        }
+
+        attributes_count
     }
 
     /// Follows the severity number mapping mentioned in the Data Model Appendix B in the logs specification:
@@ -381,5 +428,159 @@ mod tests {
             input_str,
             "<34>1 2003-10-11T22:14:15.003Z host app - - - Test message"
         );
+    }
+
+    #[test]
+    fn test_cef_with_rfc5424_header() {
+        // Test CEF message embedded in RFC 5424 syslog
+        let input = b"<134>1 2024-10-09T12:34:56.789Z firewall.example.com CEF - - CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232";
+        let result = parse(input).unwrap();
+        
+        match result {
+            ParsedSyslogMessage::CefWithRfc5424(syslog, cef) => {
+                // Verify all syslog header fields
+                assert_eq!(syslog.priority.facility, 16); // 134 >> 3
+                assert_eq!(syslog.priority.severity, 6);  // 134 & 0x07
+                assert_eq!(syslog.version, 1);
+                assert_eq!(syslog.hostname, Some(&b"firewall.example.com"[..]));
+                assert_eq!(syslog.app_name, Some(&b"CEF"[..]));
+                assert_eq!(syslog.proc_id, None); // Should be None for "-"
+                assert_eq!(syslog.msg_id, None);  // Should be None for "-"
+                assert_eq!(syslog.structured_data, None); // No structured data in this message
+                
+                // Verify timestamp
+                assert!(syslog.timestamp.is_some());
+                assert_eq!(syslog.timestamp, Some(&b"2024-10-09T12:34:56.789Z"[..]));
+                
+                // Verify the message field contains the exact CEF message
+                assert!(syslog.message.is_some());
+                assert_eq!(syslog.message, Some(&b"CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232"[..]));
+
+                // Verify all CEF fields
+                assert_eq!(cef.version, 0);
+                assert_eq!(cef.device_vendor, &b"Security"[..]);
+                assert_eq!(cef.device_product, &b"threatmanager"[..]);
+                assert_eq!(cef.device_version, &b"1.0"[..]);
+                assert_eq!(cef.device_event_class_id, &b"100"[..]);
+                assert_eq!(cef.name, &b"worm successfully stopped"[..]);
+                assert_eq!(cef.severity, &b"10"[..]);
+                
+                // Verify extensions using collect_all()
+                let extensions = cef.parse_extensions().collect_all();
+                assert_eq!(extensions.len(), 3);
+                assert_eq!(extensions[0].0.as_slice(), b"src");
+                assert_eq!(extensions[0].1.as_slice(), b"10.0.0.1");
+                assert_eq!(extensions[1].0.as_slice(), b"dst");
+                assert_eq!(extensions[1].1.as_slice(), b"2.1.2.2");
+                assert_eq!(extensions[2].0.as_slice(), b"spt");
+                assert_eq!(extensions[2].1.as_slice(), b"1232");
+                
+                // Verify input field is preserved
+                assert_eq!(syslog.input, input);
+                assert_eq!(cef.input, syslog.message.unwrap());
+            }
+            _ => panic!("Expected CefWithRfc5424, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cef_with_rfc3164_header() {
+        // Test CEF message embedded in RFC 3164 syslog
+        let input = b"<34>Oct 11 22:14:15 firewall CEF: CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked src=192.168.1.100";
+        let result = parse(input).unwrap();
+        
+        match result {
+            ParsedSyslogMessage::CefWithRfc3164(syslog, cef) => {
+                // Verify all syslog header fields
+                assert!(syslog.priority.is_some());
+                assert_eq!(syslog.priority.as_ref().unwrap().facility, 4); // 34 >> 3
+                assert_eq!(syslog.priority.as_ref().unwrap().severity, 2); // 34 & 0x07
+                
+                // Verify timestamp
+                assert!(syslog.timestamp.is_some());
+                assert_eq!(syslog.timestamp, Some(&b"Oct 11 22:14:15"[..]));
+                
+                // Verify hostname and tag
+                assert_eq!(syslog.hostname, Some(&b"firewall"[..]));
+                assert_eq!(syslog.tag, Some(&b"CEF"[..]));
+                
+                // Verify content contains the exact CEF message
+                assert!(syslog.content.is_some());
+                assert_eq!(syslog.content, Some(&b"CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked src=192.168.1.100"[..]));
+
+                // Verify all CEF fields
+                assert_eq!(cef.version, 0);
+                assert_eq!(cef.device_vendor, &b"Vendor"[..]);
+                assert_eq!(cef.device_product, &b"Product"[..]);
+                assert_eq!(cef.device_version, &b"2.0"[..]);
+                assert_eq!(cef.device_event_class_id, &b"signature-123"[..]);
+                assert_eq!(cef.name, &b"Intrusion detected"[..]);
+                assert_eq!(cef.severity, &b"7"[..]);
+                
+                // Verify extensions using collect_all()
+                let extensions = cef.parse_extensions().collect_all();
+                assert_eq!(extensions.len(), 2);
+                assert_eq!(extensions[0].0.as_slice(), b"act");
+                assert_eq!(extensions[0].1.as_slice(), b"blocked");
+                assert_eq!(extensions[1].0.as_slice(), b"src");
+                assert_eq!(extensions[1].1.as_slice(), b"192.168.1.100");
+                
+                // Verify input field is preserved
+                assert_eq!(syslog.input, input);
+                assert_eq!(cef.input, syslog.content.unwrap());
+            }
+            _ => panic!("Expected CefWithRfc3164, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cef_with_rfc3164_header_no_priority() {
+        // Test CEF message embedded in RFC 3164 syslog without priority
+        // This is a valid format according to CEF specification
+        let input = b"Sep 29 08:26:10 host CEF:1|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232";
+        let result = parse(input).unwrap();
+        
+        match result {
+            ParsedSyslogMessage::CefWithRfc3164(syslog, cef) => {
+                // Verify syslog header fields
+                assert!(syslog.priority.is_none()); // No priority in this format
+                
+                // Verify timestamp
+                assert!(syslog.timestamp.is_some());
+                assert_eq!(syslog.timestamp, Some(&b"Sep 29 08:26:10"[..]));
+                
+                // Verify hostname but no tag (CEF starts directly after hostname)
+                assert_eq!(syslog.hostname, Some(&b"host"[..]));
+                // Tag detection depends on parser - might be None or "CEF"
+                
+                // Verify content contains the exact CEF message
+                assert!(syslog.content.is_some());
+                assert_eq!(syslog.content, Some(&b"CEF:1|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232"[..]));
+
+                // Verify all CEF fields
+                assert_eq!(cef.version, 1); // Note: CEF version 1 in this example
+                assert_eq!(cef.device_vendor, &b"Security"[..]);
+                assert_eq!(cef.device_product, &b"threatmanager"[..]);
+                assert_eq!(cef.device_version, &b"1.0"[..]);
+                assert_eq!(cef.device_event_class_id, &b"100"[..]);
+                assert_eq!(cef.name, &b"worm successfully stopped"[..]);
+                assert_eq!(cef.severity, &b"10"[..]);
+                
+                // Verify extensions using collect_all()
+                let extensions = cef.parse_extensions().collect_all();
+                assert_eq!(extensions.len(), 3);
+                assert_eq!(extensions[0].0.as_slice(), b"src");
+                assert_eq!(extensions[0].1.as_slice(), b"10.0.0.1");
+                assert_eq!(extensions[1].0.as_slice(), b"dst");
+                assert_eq!(extensions[1].1.as_slice(), b"2.1.2.2");
+                assert_eq!(extensions[2].0.as_slice(), b"spt");
+                assert_eq!(extensions[2].1.as_slice(), b"1232");
+                
+                // Verify input field is preserved
+                assert_eq!(syslog.input, input);
+                assert_eq!(cef.input, syslog.content.unwrap());
+            }
+            _ => panic!("Expected CefWithRfc3164, got {:?}", result),
+        }
     }
 }
