@@ -164,7 +164,7 @@ A simple component that returns success. All requests succeed.
 
 #### Fake Data Generator
 
-A simple component to produce synthetic data.
+A simple component to produce synthetic data from semantic convention registries.
 
 #### Batch processor
 
