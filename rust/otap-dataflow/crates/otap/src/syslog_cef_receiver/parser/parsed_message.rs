@@ -435,23 +435,23 @@ mod tests {
         // Test CEF message embedded in RFC 5424 syslog
         let input = b"<134>1 2024-10-09T12:34:56.789Z firewall.example.com CEF - - CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232";
         let result = parse(input).unwrap();
-        
+
         match result {
             ParsedSyslogMessage::CefWithRfc5424(syslog, cef) => {
                 // Verify all syslog header fields
                 assert_eq!(syslog.priority.facility, 16); // 134 >> 3
-                assert_eq!(syslog.priority.severity, 6);  // 134 & 0x07
+                assert_eq!(syslog.priority.severity, 6); // 134 & 0x07
                 assert_eq!(syslog.version, 1);
                 assert_eq!(syslog.hostname, Some(&b"firewall.example.com"[..]));
                 assert_eq!(syslog.app_name, Some(&b"CEF"[..]));
                 assert_eq!(syslog.proc_id, None); // Should be None for "-"
-                assert_eq!(syslog.msg_id, None);  // Should be None for "-"
+                assert_eq!(syslog.msg_id, None); // Should be None for "-"
                 assert_eq!(syslog.structured_data, None); // No structured data in this message
-                
+
                 // Verify timestamp
                 assert!(syslog.timestamp.is_some());
                 assert_eq!(syslog.timestamp, Some(&b"2024-10-09T12:34:56.789Z"[..]));
-                
+
                 // Verify the message field contains the exact CEF message
                 assert!(syslog.message.is_some());
                 assert_eq!(syslog.message, Some(&b"CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232"[..]));
@@ -464,7 +464,7 @@ mod tests {
                 assert_eq!(cef.device_event_class_id, &b"100"[..]);
                 assert_eq!(cef.name, &b"worm successfully stopped"[..]);
                 assert_eq!(cef.severity, &b"10"[..]);
-                
+
                 // Verify extensions using collect_all()
                 let extensions = cef.parse_extensions().collect_all();
                 assert_eq!(extensions.len(), 3);
@@ -474,7 +474,7 @@ mod tests {
                 assert_eq!(extensions[1].1.as_slice(), b"2.1.2.2");
                 assert_eq!(extensions[2].0.as_slice(), b"spt");
                 assert_eq!(extensions[2].1.as_slice(), b"1232");
-                
+
                 // Verify input field is preserved
                 assert_eq!(syslog.input, input);
                 assert_eq!(cef.input, syslog.message.unwrap());
@@ -488,22 +488,22 @@ mod tests {
         // Test CEF message embedded in RFC 3164 syslog
         let input = b"<34>Oct 11 22:14:15 firewall CEF: CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked src=192.168.1.100";
         let result = parse(input).unwrap();
-        
+
         match result {
             ParsedSyslogMessage::CefWithRfc3164(syslog, cef) => {
                 // Verify all syslog header fields
                 assert!(syslog.priority.is_some());
                 assert_eq!(syslog.priority.as_ref().unwrap().facility, 4); // 34 >> 3
                 assert_eq!(syslog.priority.as_ref().unwrap().severity, 2); // 34 & 0x07
-                
+
                 // Verify timestamp
                 assert!(syslog.timestamp.is_some());
                 assert_eq!(syslog.timestamp, Some(&b"Oct 11 22:14:15"[..]));
-                
+
                 // Verify hostname and tag
                 assert_eq!(syslog.hostname, Some(&b"firewall"[..]));
                 assert_eq!(syslog.tag, Some(&b"CEF"[..]));
-                
+
                 // Verify content contains the exact CEF message
                 assert!(syslog.content.is_some());
                 assert_eq!(syslog.content, Some(&b"CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked src=192.168.1.100"[..]));
@@ -516,7 +516,7 @@ mod tests {
                 assert_eq!(cef.device_event_class_id, &b"signature-123"[..]);
                 assert_eq!(cef.name, &b"Intrusion detected"[..]);
                 assert_eq!(cef.severity, &b"7"[..]);
-                
+
                 // Verify extensions using collect_all()
                 let extensions = cef.parse_extensions().collect_all();
                 assert_eq!(extensions.len(), 2);
@@ -524,7 +524,7 @@ mod tests {
                 assert_eq!(extensions[0].1.as_slice(), b"blocked");
                 assert_eq!(extensions[1].0.as_slice(), b"src");
                 assert_eq!(extensions[1].1.as_slice(), b"192.168.1.100");
-                
+
                 // Verify input field is preserved
                 assert_eq!(syslog.input, input);
                 assert_eq!(cef.input, syslog.content.unwrap());
@@ -539,20 +539,20 @@ mod tests {
         // This is a valid format according to CEF specification
         let input = b"Sep 29 08:26:10 host CEF:1|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232";
         let result = parse(input).unwrap();
-        
+
         match result {
             ParsedSyslogMessage::CefWithRfc3164(syslog, cef) => {
                 // Verify syslog header fields
                 assert!(syslog.priority.is_none()); // No priority in this format
-                
+
                 // Verify timestamp
                 assert!(syslog.timestamp.is_some());
                 assert_eq!(syslog.timestamp, Some(&b"Sep 29 08:26:10"[..]));
-                
-                // Verify hostname but no tag (CEF starts directly after hostname)
+
+                // Verify hostname and tag (parser extracts "CEF" as tag from "CEF:1|...")
                 assert_eq!(syslog.hostname, Some(&b"host"[..]));
-                // Tag detection depends on parser - might be None or "CEF"
-                
+                assert_eq!(syslog.tag, Some(&b"CEF"[..])); // Tag should be "CEF"
+
                 // Verify content contains the exact CEF message
                 assert!(syslog.content.is_some());
                 assert_eq!(syslog.content, Some(&b"CEF:1|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232"[..]));
@@ -565,7 +565,7 @@ mod tests {
                 assert_eq!(cef.device_event_class_id, &b"100"[..]);
                 assert_eq!(cef.name, &b"worm successfully stopped"[..]);
                 assert_eq!(cef.severity, &b"10"[..]);
-                
+
                 // Verify extensions using collect_all()
                 let extensions = cef.parse_extensions().collect_all();
                 assert_eq!(extensions.len(), 3);
@@ -575,7 +575,7 @@ mod tests {
                 assert_eq!(extensions[1].1.as_slice(), b"2.1.2.2");
                 assert_eq!(extensions[2].0.as_slice(), b"spt");
                 assert_eq!(extensions[2].1.as_slice(), b"1232");
-                
+
                 // Verify input field is preserved
                 assert_eq!(syslog.input, input);
                 assert_eq!(cef.input, syslog.content.unwrap());
