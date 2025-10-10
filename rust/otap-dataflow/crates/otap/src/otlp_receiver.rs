@@ -3,8 +3,8 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::otlp::server::{
-    route_ack_response, route_nack_response, LogsServiceServer, MetricsServiceServer,
-    TraceServiceServer,
+    LogsServiceServer, MetricsServiceServer, TraceServiceServer, route_ack_response,
+    route_nack_response,
 };
 use crate::pdata::OtapPdata;
 
@@ -115,9 +115,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone(), self.config.max_slots);
-        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone(), self.config.max_slots);
-        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut logs_service_server =
+            LogsServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut metrics_service_server =
+            MetricsServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut trace_service_server =
+            TraceServiceServer::new(effect_handler.clone(), self.config.max_slots);
 
         // Store correlation states for response routing
         let logs_correlation_state = logs_service_server.state();
@@ -392,9 +395,9 @@ mod tests {
                 assert_eq!(&expected_bytes, logs_proto.as_bytes());
 
                 // Send Ack back to unblock the gRPC handler
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(
-                    AckMsg::new(logs_pdata)
-                ) {
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("Failed to send Ack for logs");
@@ -423,9 +426,9 @@ mod tests {
                 assert_eq!(&expected_bytes, metrics_proto.as_bytes());
 
                 // Send Ack back to unblock the gRPC handler
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(
-                    AckMsg::new(metrics_pdata)
-                ) {
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("Failed to send Ack for metrics");
@@ -454,9 +457,9 @@ mod tests {
                 assert_eq!(&expected_bytes, trace_proto.as_bytes());
 
                 // Send Ack back to unblock the gRPC handler
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(
-                    AckMsg::new(trace_pdata)
-                ) {
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(trace_pdata))
+                {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("Failed to send Ack for traces");
@@ -511,31 +514,26 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
-        // Test with custom max_slots
         let config_with_max_slots = json!({
             "listening_addr": "127.0.0.1:4317",
             "max_slots": 5000
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots)
-            .expect("Failed to parse config with max_slots");
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots).unwrap();
         assert_eq!(receiver.config.max_slots, 5000);
 
-        // Test with default max_slots
         let config_default = json!({
             "listening_addr": "127.0.0.1:4317"
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default)
-            .expect("Failed to parse config with default max_slots");
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
         assert_eq!(receiver.config.max_slots, 1000);
 
-        // Test with compression and max_slots
         let config_full = json!({
             "listening_addr": "127.0.0.1:4317",
             "compression_method": "gzip",
             "max_slots": 2500
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full)
-            .expect("Failed to parse full config");
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
         assert_eq!(receiver.config.max_slots, 2500);
     }
 }
