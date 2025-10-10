@@ -35,6 +35,7 @@ pub struct TestContext<PData> {
 pub struct NotSendValidateContext<PData> {
     pdata_receiver: Receiver<PData>,
     counters: CtrlMsgCounters,
+    control_sender: Sender<NodeControlMsg<PData>>,
 }
 
 /// Context used during the validation phase of a test (Send context).
@@ -109,6 +110,20 @@ impl<PData> NotSendValidateContext<PData> {
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
     }
+
+    /// Sends a control message to the receiver (e.g., Ack, Nack).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message could not be sent.
+    pub async fn send_control_msg(&self, msg: NodeControlMsg<PData>) -> Result<(), Error> {
+        self.control_sender
+            .send(msg)
+            .await
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
+    }
 }
 
 impl<PData> SendValidateContext<PData> {
@@ -168,6 +183,9 @@ pub struct ValidationPhase<PData> {
     counters: CtrlMsgCounters,
 
     pdata_receiver: Receiver<PData>,
+
+    /// Control sender for injecting control messages during validation
+    control_sender: Sender<NodeControlMsg<PData>>,
 
     /// Join handle for the running the receiver task
     run_receiver_handle: tokio::task::JoinHandle<()>,
@@ -268,6 +286,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
+        let control_sender_for_validation = self.control_sender.clone();
+
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
                 .start(pipeline_ctrl_msg_tx)
@@ -286,6 +306,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             local_tasks: self.local_tasks,
             counters: self.counters,
             pdata_receiver,
+            control_sender: control_sender_for_validation,
             run_receiver_handle,
             run_test_handle,
             pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
@@ -294,8 +315,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
 }
 
 impl<PData> ValidationPhase<PData> {
-    /// Runs all spawned tasks to completion and executes the provided future to validate test
-    /// expectations.
+    /// Runs all spawned tasks to completion, then executes the validation sequentially.
+    ///
+    /// This is the traditional approach where validation runs after the test scenario
+    /// completes. Use this when the validation needs to check final state after all
+    /// test operations are done.
     ///
     /// # Type Parameters
     ///
@@ -314,9 +338,10 @@ impl<PData> ValidationPhase<PData> {
         let context = NotSendValidateContext {
             pdata_receiver: self.pdata_receiver,
             counters: self.counters,
+            control_sender: self.control_sender,
         };
 
-        // First run all the spawned tasks to completion
+        // Run all spawned tasks (receiver and test scenario) to completion
         self.rt.block_on(self.local_tasks);
 
         self.rt
@@ -329,5 +354,54 @@ impl<PData> ValidationPhase<PData> {
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))
+    }
+
+    /// Runs validation concurrently with the test scenario.
+    ///
+    /// This is useful when the validation needs to interact with the test scenario
+    /// in real-time, such as sending Ack/Nack messages while the scenario is running.
+    /// Use this when the validation must respond to messages as they arrive, not just
+    /// check final state.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `F` - A function that creates a future with access to the test context.
+    /// * `Fut` - The future type returned by the function.
+    /// * `T` - The output type of the future.
+    ///
+    /// # Returns
+    ///
+    /// The result of the provided future.
+    pub fn run_validation_concurrent<F, Fut, T>(self, future_fn: F) -> T
+    where
+        F: FnOnce(NotSendValidateContext<PData>) -> Fut + 'static,
+        Fut: Future<Output = T> + 'static,
+        T: 'static,
+    {
+        let context = NotSendValidateContext {
+            pdata_receiver: self.pdata_receiver,
+            counters: self.counters,
+            control_sender: self.control_sender,
+        };
+
+        // Spawn the validation task to run concurrently with test scenario
+        let validation_handle = self.local_tasks.spawn_local(future_fn(context));
+
+        // Run all spawned tasks concurrently until completion
+        self.rt.block_on(self.local_tasks);
+
+        // Wait for receiver and test to complete
+        self.rt
+            .block_on(self.run_receiver_handle)
+            .expect("Receiver task failed");
+
+        self.rt
+            .block_on(self.run_test_handle)
+            .expect("Test task failed");
+
+        // Return the validation result
+        self.rt
+            .block_on(validation_handle)
+            .expect("Validation task failed")
     }
 }

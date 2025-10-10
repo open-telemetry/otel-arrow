@@ -8,23 +8,71 @@
 //! requires it
 
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
+use crate::accessory::slots::{Config as SlotsConfig, SlotKey, State as SlotsState};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use futures::future::BoxFuture;
 use http::{Request, Response};
+use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
+use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use prost::Message;
 use prost::bytes::Buf;
+use smallvec::smallvec;
+use tokio::sync::oneshot;
 use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{
     Codec, CompressionEncoding, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder,
 };
 use tonic::server::{Grpc, NamedService, UnaryService};
+
+/// Shared state for correlating requests with responses using slots
+pub type SharedCorrelationState =
+    Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>;
+
+/// Route an Ack response back to the appropriate correlation slot
+pub fn route_ack_response(state: &SharedCorrelationState, ack: AckMsg<OtapPdata>) {
+    route_response(state, ack.calldata, Ok(()));
+}
+
+/// Route a Nack response back to the appropriate correlation slot
+pub fn route_nack_response(state: &SharedCorrelationState, mut nack: NackMsg<OtapPdata>) {
+    let calldata = std::mem::take(&mut nack.calldata);
+    route_response(state, calldata, Err(nack));
+}
+
+/// Internal helper to route responses to slots
+fn route_response(
+    state: &SharedCorrelationState,
+    calldata: CallData,
+    result: Result<(), NackMsg<OtapPdata>>,
+) {
+    // Decode slot key from calldata
+    if calldata.len() != 2 {
+        return; // Invalid calldata format
+    }
+
+    let slot_index: usize = calldata[0].try_into().unwrap_or(0);
+    let slot_generation: usize = calldata[1].try_into().unwrap_or(0);
+    let slot_key = SlotKey::new(
+        crate::accessory::slots::SlotIndex::from_usize(slot_index),
+        crate::accessory::slots::SlotGeneration::from_usize(slot_generation),
+    );
+
+    // Try to get the channel from the slot
+    if let Ok(mut state) = state.lock() {
+        if let Some(sender) = state.get_if_current(slot_key) {
+            // Send the result back to the waiting gRPC handler
+            let _ = sender.send(result);
+        }
+    }
+}
 
 /// identifier
 #[derive(Clone)]
@@ -132,11 +180,15 @@ impl Decoder for OtapBatchDecoder {
 /// implementation of tonic service that handles the decoded request (the OtapBatch).
 struct OtapBatchService {
     effect_handler: EffectHandler<OtapPdata>,
+    state: SharedCorrelationState,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
-        Self { effect_handler }
+    fn new(effect_handler: EffectHandler<OtapPdata>, state: SharedCorrelationState) -> Self {
+        Self {
+            effect_handler,
+            state,
+        }
     }
 }
 
@@ -145,15 +197,76 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
-        let otap_batch = request.into_inner();
+        let mut otap_batch = request.into_inner();
 
         let effect_handler = self.effect_handler.clone();
+        let state = self.state.clone();
         Box::pin(async move {
+            // Create oneshot channel for response
+            let (tx, rx) = oneshot::channel();
+
+            // Allocate a slot for this request
+            let slot_key = {
+                let mut state = state.lock().unwrap();
+                match state.allocate_slot(tx) {
+                    Some(key) => key,
+                    None => {
+                        return Err(Status::resource_exhausted("Too many concurrent requests"));
+                    }
+                }
+            };
+
+            // Create guard to clean up slot if this future is cancelled/dropped
+            struct SlotGuard {
+                slot_key: SlotKey,
+                state: SharedCorrelationState,
+            }
+
+            impl Drop for SlotGuard {
+                fn drop(&mut self) {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.cancel(self.slot_key);
+                    }
+                }
+            }
+
+            let _guard = SlotGuard {
+                slot_key,
+                state: state.clone(),
+            };
+
+            // Create CallData with slot index and generation
+            let call_data: CallData = smallvec![
+                Context8u8::from(slot_key.index().as_usize()),
+                Context8u8::from(slot_key.generation().as_usize()),
+            ];
+
+            // Subscribe to Ack/Nack responses
+            effect_handler.subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                call_data,
+                &mut otap_batch,
+            );
+
+            // Send the message to the pipeline
             match effect_handler.send_message(otap_batch).await {
-                Ok(result) => Ok(tonic::Response::new(result)),
-                Err(e) => Err(Status::internal(format!(
-                    "internal error handling request: {e}",
-                ))),
+                Ok(_) => {
+                    // Wait for Ack or Nack response
+                    match rx.await {
+                        Ok(Ok(())) => Ok(tonic::Response::new(())),
+                        Ok(Err(nack)) => Err(Status::internal(format!(
+                            "Pipeline processing failed: {}",
+                            nack.reason
+                        ))),
+                        Err(_) => Err(Status::internal(
+                            "Response channel closed unexpectedly",
+                        )),
+                    }
+                }
+                Err(e) => {
+                    // Failed to send to pipeline - clean up via guard drop
+                    Err(Status::internal(format!("Failed to send to pipeline: {e}")))
+                }
             }
         })
     }
@@ -164,13 +277,15 @@ async fn handle_service_request(
     req: Request<Body>,
     signal: Signal,
     effect_handler: EffectHandler<OtapPdata>,
+    state: SharedCorrelationState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 ) -> Response<Body> {
     let codec = OtlpBytesCodec::new(signal);
     let mut grpc = Grpc::new(codec)
         .apply_compression_config(accept_compression_encodings, send_compression_encodings);
-    grpc.unary(OtapBatchService::new(effect_handler), req).await
+    grpc.unary(OtapBatchService::new(effect_handler, state), req)
+        .await
 }
 
 /// generate a response for a path the grpc server does not know about
@@ -192,6 +307,7 @@ fn unimplemented_resp() -> Response<Body> {
 #[derive(Clone)]
 pub struct LogsServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
+    state: SharedCorrelationState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -200,11 +316,20 @@ impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
     pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
+        let config = SlotsConfig { max_slots: 1000 };
+        let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,
+            state,
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
+    }
+
+    /// Get the correlation state for routing responses
+    #[must_use]
+    pub fn state(&self) -> SharedCorrelationState {
+        self.state.clone()
     }
 
     /// compress responses with the given encoding if the client supports it
@@ -231,6 +356,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let effect_handler = self.effect_handler.clone();
+                let state = self.state.clone();
                 let accept_compression_encodings = self.accept_compression_encodings;
                 let send_compression_encodings = self.send_compression_encodings;
                 Box::pin(async move {
@@ -238,6 +364,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
                         req,
                         Signal::Logs,
                         effect_handler,
+                        state,
                         accept_compression_encodings,
                         send_compression_encodings,
                     )
@@ -262,6 +389,7 @@ impl NamedService for LogsServiceServer {
 #[derive(Clone)]
 pub struct MetricsServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
+    state: SharedCorrelationState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -270,11 +398,20 @@ impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
     pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
+        let config = SlotsConfig { max_slots: 1000 };
+        let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,
+            state,
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
+    }
+
+    /// Get the correlation state for routing responses
+    #[must_use]
+    pub fn state(&self) -> SharedCorrelationState {
+        self.state.clone()
     }
 
     /// compress responses with the given encoding if the client supports it
@@ -301,6 +438,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let effect_handler = self.effect_handler.clone();
+                let state = self.state.clone();
                 let accept_compression_encodings = self.accept_compression_encodings;
                 let send_compression_encodings = self.send_compression_encodings;
                 Box::pin(async move {
@@ -308,6 +446,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
                         req,
                         Signal::Metrics,
                         effect_handler,
+                        state,
                         accept_compression_encodings,
                         send_compression_encodings,
                     )
@@ -332,6 +471,7 @@ impl NamedService for MetricsServiceServer {
 #[derive(Clone)]
 pub struct TraceServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
+    state: SharedCorrelationState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -340,11 +480,20 @@ impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
     pub fn new(effect_handler: EffectHandler<OtapPdata>) -> Self {
+        let config = SlotsConfig { max_slots: 1000 };
+        let state = Arc::new(Mutex::new(SlotsState::new(config)));
         Self {
             effect_handler,
+            state,
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
+    }
+
+    /// Get the correlation state for routing responses
+    #[must_use]
+    pub fn state(&self) -> SharedCorrelationState {
+        self.state.clone()
     }
 
     /// compress responses with the given encoding if the client supports it
@@ -371,6 +520,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let effect_handler = self.effect_handler.clone();
+                let state = self.state.clone();
                 let accept_compression_encodings = self.accept_compression_encodings;
                 let send_compression_encodings = self.send_compression_encodings;
                 Box::pin(async move {
@@ -378,6 +528,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
                         req,
                         Signal::Traces,
                         effect_handler,
+                        state,
                         accept_compression_encodings,
                         send_compression_encodings,
                     )

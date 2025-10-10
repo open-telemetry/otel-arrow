@@ -32,6 +32,12 @@ impl SlotIndex {
     pub fn as_usize(self) -> usize {
         self.0
     }
+
+    /// Create from usize
+    #[must_use]
+    pub fn from_usize(val: usize) -> Self {
+        Self(val)
+    }
 }
 
 impl SlotGeneration {
@@ -39,6 +45,12 @@ impl SlotGeneration {
     #[must_use]
     pub fn as_usize(self) -> usize {
         self.0
+    }
+
+    /// Create from usize
+    #[must_use]
+    pub fn from_usize(val: usize) -> Self {
+        Self(val)
     }
 
     /// Increment generation number (with wrapping)
