@@ -57,7 +57,7 @@ type is a struct consisting of "context" and "payload", where context
 is used for routing "Ack" and "Nack" responses, and payload has two
 equivalent, signal-specific representations:
 
-- OTLP bytes (Logs, Traces, Metrics): An signal-specific enum of
+- OTLP bytes (Logs, Traces, Metrics): A signal-specific enum of
   `Vec<u8>` corresponding with one of the export requests (e.g.,
   `ExportLogsServiceRequest`).
 - OTAP records (Logs, Traces, Metrics): A signal-specific array of
