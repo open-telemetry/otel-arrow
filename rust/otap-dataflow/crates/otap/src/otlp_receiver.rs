@@ -149,7 +149,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         tokio::select! {
             biased;
 
-                        // Process internal events
+            // Process internal events
             ctrl_msg_result = async {
                 loop {
                     match ctrl_msg_recv.recv().await {
@@ -204,13 +204,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::pdata::OtlpProtoBytes;
-
     use super::*;
-
-    use std::pin::Pin;
-    use std::time::Duration;
-
+    use crate::pdata::OtlpProtoBytes;
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -230,6 +225,7 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NackMsg;
     use otap_df_engine::control::{AckMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -238,6 +234,8 @@ mod tests {
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
+    use std::pin::Pin;
+    use std::time::Duration;
     use tokio::time::timeout;
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
@@ -308,6 +306,38 @@ mod tests {
                 schema_url: "opentelemetry.io/schema/traces".to_string(),
             }],
         }
+    }
+
+    #[test]
+    fn test_config_parsing() {
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config_with_max_slots = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_slots": 5000
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots).unwrap();
+        assert_eq!(receiver.config.max_slots, 5000);
+
+        let config_default = json!({
+            "listening_addr": "127.0.0.1:4317"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
+        assert_eq!(receiver.config.max_slots, 1000);
+
+        let config_full = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "compression_method": "gzip",
+            "max_slots": 2500
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
+        assert_eq!(receiver.config.max_slots, 2500);
     }
 
     fn scenario(
@@ -545,15 +575,12 @@ mod tests {
 
                 assert!(result.is_err(), "Expected error response");
                 let status = result.unwrap_err();
-                
+
                 // Verify we get UNAVAILABLE status code
                 assert_eq!(status.code(), tonic::Code::Unavailable);
-                
-                // Verify the error message contains our nack reason
                 assert!(status.message().contains("Test nack reason"));
                 assert!(status.message().contains("Pipeline processing failed"));
 
-                // Shutdown the receiver
                 ctx.send_shutdown(Duration::from_millis(0), "Test complete")
                     .await
                     .expect("Failed to send shutdown");
@@ -562,16 +589,13 @@ mod tests {
 
         let nack_validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
-                use otap_df_engine::control::NackMsg;
-                
-                // Receive the logs pdata
+                // Receive the logs pdata, create Nack message and send it back
                 let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Create Nack message and send it back to the gRPC handler
-                let nack = NackMsg::new("Test nack reason".to_string(), logs_pdata);
+                let nack = NackMsg::new("Test nack reason", logs_pdata);
                 if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
                     ctx.send_control_msg(NodeControlMsg::Nack(nack))
                         .await
@@ -584,37 +608,5 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
-    }
-
-    #[test]
-    fn test_config_parsing() {
-        use serde_json::json;
-
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
-
-        let config_with_max_slots = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "max_slots": 5000
-        });
-        let receiver =
-            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots).unwrap();
-        assert_eq!(receiver.config.max_slots, 5000);
-
-        let config_default = json!({
-            "listening_addr": "127.0.0.1:4317"
-        });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
-        assert_eq!(receiver.config.max_slots, 1000);
-
-        let config_full = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "compression_method": "gzip",
-            "max_slots": 2500
-        });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
-        assert_eq!(receiver.config.max_slots, 2500);
     }
 }

@@ -67,11 +67,9 @@ fn route_response(
             match sender.send(result) {
                 Ok(()) => {
                     // Sent
-                    return;
                 }
                 Err(_) => {
                     // E.g., channel closed
-                    return;
                 }
             }
         }
@@ -208,7 +206,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         Box::pin(async move {
             // Allocate slot with closure that creates the channel only if slot is available
             let (slot_key, rx) = {
-                let mut state = state.lock().unwrap();
+                let mut state = state.lock().expect("lock acquired");
                 match state.allocate_slot(|| oneshot::channel()) {
                     Some((key, rx)) => (key, rx),
                     None => {
