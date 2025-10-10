@@ -41,6 +41,12 @@ impl<M: MetricSetHandler> DerefMut for MetricSet<M> {
     }
 }
 
+impl<M: MetricSetHandler> Into<MetricSetSnapshot> for MetricSet<M> {
+    fn into(self) -> MetricSetSnapshot {
+        self.snapshot()
+    }
+}
+
 /// Immutable snapshot of a metric set's current values.
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricsKey,

@@ -46,6 +46,7 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
+pub mod terminal_state;
 
 /// Trait for factory types that expose a name.
 ///
