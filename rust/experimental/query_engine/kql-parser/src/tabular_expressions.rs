@@ -356,11 +356,32 @@ pub(crate) fn parse_summarize_expression(
     let mut aggregation_expressions: HashMap<Box<str>, AggregationExpression> = HashMap::new();
     let mut group_by_expressions: HashMap<Box<str>, ScalarExpression> = HashMap::new();
     let mut post_expressions = Vec::new();
+    let mut identifiers = HashSet::new();
+
+    fn validate_unique_identifier(
+        location: QueryLocation,
+        identifiers: &mut HashSet<Box<str>>,
+        identifier: &str,
+    ) -> Result<(), ParserError> {
+        if !identifiers.insert(identifier.into()) {
+            return Err(ParserError::QueryLanguageDiagnostic {
+                location,
+                diagnostic_id: "KS171",
+                message: format!("A column with the name '{identifier}' is already declared"),
+            });
+        }
+
+        Ok(())
+    }
 
     for summarize_rule in summarize_expression_rule.into_inner() {
         match summarize_rule.as_rule() {
             Rule::aggregate_expression => {
+                let location = to_query_location(&summarize_rule);
+
                 let (key, aggregate) = parse_aggregate_expression(summarize_rule, scope)?;
+
+                validate_unique_identifier(location, &mut identifiers, key.as_ref())?;
 
                 aggregation_expressions.insert(key, aggregate);
             }
@@ -374,8 +395,14 @@ pub(crate) fn parse_summarize_expression(
                     Rule::identifier_literal => {
                         let identifier = validate_summary_identifier(
                             scope,
-                            group_by_first_rule_location,
+                            group_by_first_rule_location.clone(),
                             &[group_by_first_rule.as_str().trim().into()],
+                        )?;
+
+                        validate_unique_identifier(
+                            group_by_first_rule_location,
+                            &mut identifiers,
+                            identifier.as_ref(),
                         )?;
 
                         let scalar = parse_scalar_expression(group_by.next().unwrap(), scope)?;
@@ -389,7 +416,7 @@ pub(crate) fn parse_summarize_expression(
                             Some(identifier) => {
                                 let full_identifier = validate_summary_identifier(
                                     scope,
-                                    group_by_first_rule_location,
+                                    group_by_first_rule_location.clone(),
                                     &identifier,
                                 )?;
 
@@ -401,6 +428,12 @@ pub(crate) fn parse_summarize_expression(
                                         "Cannot refer to a root map directly in a group-by expression".into(),
                                     ));
                                 }
+
+                                validate_unique_identifier(
+                                    group_by_first_rule_location,
+                                    &mut identifiers,
+                                    full_identifier.as_ref(),
+                                )?;
 
                                 group_by_expressions.insert(full_identifier.into(), scalar);
                             }
@@ -2879,7 +2912,7 @@ mod tests {
             assert_eq!(DataExpression::Summary(expected), expression);
         };
 
-        let run_test_failure = |input: &str, expected: &str| {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_message: &str| {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
@@ -2905,7 +2938,13 @@ mod tests {
 
             let e = parse_summarize_expression(result.next().unwrap(), &state).unwrap_err();
 
-            assert!(matches!(e, ParserError::SyntaxError(_, msg) if msg == expected))
+            if let Some(expected_id) = expected_id {
+                assert!(
+                    matches!(e, ParserError::QueryLanguageDiagnostic{location: _, diagnostic_id: id, message: msg} if id == expected_id && msg == expected_message)
+                )
+            } else {
+                assert!(matches!(e, ParserError::SyntaxError(_, msg) if msg == expected_message))
+            }
         };
 
         run_test_success(
@@ -3319,22 +3358,44 @@ mod tests {
 
         run_test_failure(
             "summarize | extend v = 1",
+            None,
             "Invalid summarize operator: missing both aggregates and group-by expressions",
         );
 
         run_test_failure(
             "summarize by source",
+            None,
             "Cannot refer to a root map directly in a group-by expression",
         );
 
         run_test_failure(
             "summarize by resource",
+            None,
             "Cannot refer to a root map directly in a group-by expression",
         );
 
         run_test_failure(
             "summarize by Attributes[tostring(now())]",
+            None,
             "Could not determine the identifier for summary group-by expression. Try using assignment syntax instead (identifier = [expression]).",
+        );
+
+        run_test_failure(
+            "summarize Count = count(), Count = count()",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
+        );
+
+        run_test_failure(
+            "summarize Count = count() by Count = 1",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
+        );
+
+        run_test_failure(
+            "summarize by Count = 1, Count = 2",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
         );
     }
 
