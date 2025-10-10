@@ -310,6 +310,7 @@ impl OtapPdata {
     /// Enable testing Ack/Nack without an effect handler. Consumes,
     /// modifies and returns self.
     #[cfg(test)]
+    #[must_use]
     pub fn test_subscribe_to(
         mut self,
         interests: Interests,
