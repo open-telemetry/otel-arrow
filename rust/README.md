@@ -61,6 +61,6 @@ Here, find our experimental projects. As part of the OTel-Arrow Phase
 developing transform and filter capabilities based around the OTAP
 records representation.
 
-- [Query abstraction: interemediate representation for common OTTL and KQL phrases](./experimental/query_abstraction/README.md)
+- [Query abstraction: intermediate representation for common OTTL and KQL phrases](./experimental/query_abstraction/README.md)
 - [Query engine: reference implementation for the abstraction layer](./experimental/query_engine/README.md)
 - [Parquet query examples: using OTel-Arrow data in Parquet files](./parquet_query_examples/README.md)
