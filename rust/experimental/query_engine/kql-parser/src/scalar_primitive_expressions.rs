@@ -544,7 +544,7 @@ pub(crate) fn parse_accessor_expression(
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
             if let Some((constant_id, value_type)) =
-                scope.get_constant(root_accessor_identity.get_value())
+                scope.get_constant_id(root_accessor_identity.get_value())
             {
                 return Ok(ScalarExpression::Constant(
                     ReferenceConstantScalarExpression::new(
