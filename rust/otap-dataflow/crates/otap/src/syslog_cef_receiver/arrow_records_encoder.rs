@@ -2643,7 +2643,10 @@ mod tests {
             log1_attrs.get("cef.device_version"),
             Some(&"1.0".to_string())
         );
-        assert_eq!(log1_attrs.get("cef.device_event_class_id"), Some(&"100".to_string()));
+        assert_eq!(
+            log1_attrs.get("cef.device_event_class_id"),
+            Some(&"100".to_string())
+        );
         assert_eq!(
             log1_attrs.get("cef.name"),
             Some(&"worm successfully stopped".to_string())
@@ -2711,7 +2714,10 @@ mod tests {
             log2_attrs.get("cef.device_version"),
             Some(&"2.4.1".to_string())
         );
-        assert_eq!(log2_attrs.get("cef.device_event_class_id"), Some(&"400".to_string()));
+        assert_eq!(
+            log2_attrs.get("cef.device_event_class_id"),
+            Some(&"400".to_string())
+        );
         assert_eq!(
             log2_attrs.get("cef.name"),
             Some(&"Successful Login".to_string())
@@ -3050,7 +3056,10 @@ mod tests {
             log3_attrs.get("cef.device_version"),
             Some(&"1.0".to_string())
         );
-        assert_eq!(log3_attrs.get("cef.device_event_class_id"), Some(&"100".to_string()));
+        assert_eq!(
+            log3_attrs.get("cef.device_event_class_id"),
+            Some(&"100".to_string())
+        );
         assert_eq!(
             log3_attrs.get("cef.name"),
             Some(&"worm successfully stopped".to_string())
