@@ -100,17 +100,13 @@ pub trait Receiver<PData> {
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel<PData> {
     rx: crate::message::Receiver<NodeControlMsg<PData>>,
-    pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
     pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
-        Self {
-            rx,
-            pending_shutdown: None,
-        }
+        Self {rx}
     }
 
     /// Asynchronously receives the next control message.
@@ -120,23 +116,6 @@ impl<PData> ControlChannel<PData> {
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
         self.rx.recv().await
-        // // If we have a pending shutdown, return it first.
-        // if let Some(shutdown) = self.pending_shutdown.take() {
-        //     return Ok(shutdown);
-        // }
-        //
-        // let control_msg = self.rx.recv().await?;
-        // match control_msg {
-        //     // If we receive a Shutdown, we first inject a CollectTelemetry message to properly
-        //     // gather final metrics before shutting down.
-        //     NodeControlMsg::Shutdown { .. } => {
-        //         self.pending_shutdown = Some(control_msg);
-        //         Ok(NodeControlMsg::CollectTelemetry {
-        //             metrics_reporter: self.metrics_reporter.clone(),
-        //         })
-        //     }
-        //     other => Ok(other),
-        // }
     }
 }
 
