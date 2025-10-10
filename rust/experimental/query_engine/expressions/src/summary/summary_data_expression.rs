@@ -108,8 +108,8 @@ impl AggregationExpression {
         self.aggregation_function.clone()
     }
 
-    pub fn get_value_expression(&self) -> &Option<ScalarExpression> {
-        &self.value_expression
+    pub fn get_value_expression(&self) -> Option<&ScalarExpression> {
+        self.value_expression.as_ref()
     }
 
     pub(crate) fn try_fold(
