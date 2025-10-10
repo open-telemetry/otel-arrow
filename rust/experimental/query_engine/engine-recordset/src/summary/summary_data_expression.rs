@@ -61,7 +61,7 @@ pub fn execute_summary_data_expression<'a, TRecord: Record>(
                     None => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Warn,
-                            expression.get_value_expression().as_ref().unwrap(),
+                            expression.get_value_expression().unwrap(),
                             || {
                                 format!(
                                     "Value expression value of '{:?}' type could not be converted to integer or double",
@@ -104,7 +104,7 @@ pub fn execute_summary_data_expression<'a, TRecord: Record>(
                     None => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Warn,
-                            expression.get_value_expression().as_ref().unwrap(),
+                            expression.get_value_expression().unwrap(),
                             || {
                                 format!(
                                     "Value expression value of '{:?}' type could not be converted to integer or double",

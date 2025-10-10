@@ -284,7 +284,7 @@ sum_aggregate_expression = {
     "sum" ~ "(" ~ scalar_expression ~ ")"
 }
 
-aggregate_expression = _{
+aggregate_expressions = _{
     average_aggregate_expression
     | count_aggregate_expression
     | maximum_aggregate_expression
@@ -292,18 +292,19 @@ aggregate_expression = _{
     | sum_aggregate_expression
 }
 
-aggregate_assignment_expression = {
-    identifier_literal ~ "=" ~ aggregate_expression
+aggregate_expression = {
+    identifier_literal ~ "=" ~ aggregate_expressions
+    | aggregate_expressions
 }
 
 group_by_expression = {
     identifier_literal ~ "=" ~ scalar_expression
-    | accessor_expression
+    | scalar_expression
 }
 
 summarize_expression = {
     "summarize"
-        ~ (aggregate_assignment_expression ~ ("," ~ aggregate_assignment_expression)*)?
+        ~ (aggregate_expression ~ ("," ~ aggregate_expression)*)?
         ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
         ~ ("|" ~ tabular_expressions)*
 }
