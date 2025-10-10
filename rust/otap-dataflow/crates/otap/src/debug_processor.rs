@@ -23,12 +23,13 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{CallData, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::{
     logs::v1::LogsData,
@@ -38,6 +39,7 @@ use otel_arrow_rust::proto::opentelemetry::{
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod config;
 mod detailed_marshaler;
@@ -120,6 +122,60 @@ impl DebugProcessor {
     }
 }
 
+#[derive(Debug)]
+struct DebugCallData {
+    micros: u128,
+}
+
+impl Default for DebugCallData {
+    fn default() -> Self {
+        Self {
+            micros: Self::current_micros(),
+        }
+    }
+}
+
+impl DebugCallData {
+    fn elapsed(&self) -> Duration {
+        let elap = Self::current_micros() - self.micros;
+        Duration::from_micros(elap as u64)
+    }
+
+    fn current_micros() -> u128 {
+        let now = SystemTime::now();
+        match now.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_micros(),
+            Err(_) => unreachable!(),
+        }
+    }
+}
+
+impl From<DebugCallData> for CallData {
+    fn from(value: DebugCallData) -> Self {
+        let msb = (value.micros >> 64) as u64;
+        let lsb = value.micros as u64;
+        smallvec::smallvec![msb.into(), lsb.into()]
+    }
+}
+
+impl TryFrom<CallData> for DebugCallData {
+    type Error = Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        if value.len() != 2 {
+            return Err(Self::Error::InternalError {
+                message: "invalid calldata".into(),
+            });
+        }
+        let msb: u64 = value[0].into();
+        let lsb: u64 = value[1].into();
+        let m128 = (msb as u128) << 64;
+        let l128 = lsb as u128;
+        let micros = m128 | l128;
+        Ok(Self { micros })
+    }
+}
+
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for DebugProcessor {
     async fn process(
@@ -190,6 +246,18 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .output_message("Shutdown message received\n")
                             .await?;
                     }
+                    NodeControlMsg::Ack(ackmsg) => {
+                        let dd: DebugCallData = ackmsg.calldata.try_into()?;
+                        debug_output
+                            .output_message(&format!("ACK received after {:?}\n", dd.elapsed()))
+                            .await?;
+                    }
+                    NodeControlMsg::Nack(nackmsg) => {
+                        let dd: DebugCallData = nackmsg.calldata.try_into()?;
+                        debug_output
+                            .output_message(&format!("NACK received after {:?}\n", dd.elapsed()))
+                            .await?;
+                    }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
@@ -199,10 +267,19 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
                 Ok(())
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
+                if self.config.verbosity() == Verbosity::Detailed {
+                    // Print ACK/NACK detail only in Detailed mode.
+                    effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        DebugCallData::default().into(),
+                        &mut pdata,
+                    );
+                }
                 // ToDo: handle multiple out_ports differently here?
                 if let Some(ports) = main_ports {
                     for port in ports {
+                        // Note each clone has its own clone of the context.
                         effect_handler.send_message_to(port, pdata.clone()).await?;
                     }
                 } else {
@@ -227,7 +304,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         if active_signals.contains(&SignalActive::Metrics) {
                             let req = MetricsData::decode(bytes.as_slice()).map_err(|e| {
                                 Error::PdataConversionError {
-                                    error: format!("error decoding proto bytesf: {e}"),
+                                    error: format!("error decoding proto bytes: {e}"),
                                 }
                             })?;
                             self.process_metric(req, debug_output.as_mut()).await?;
