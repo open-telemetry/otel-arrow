@@ -21,10 +21,10 @@ data.
 > program built through `cargo` in [`src/main.rs`](./src/main.rs) is
 > provided as a means to test and validate OTAP pipelines built using
 > the dataflow engine.
-
-> [!NOTE] The other OTel-Arrow Rust library in `../otel-arrow-rust`,
-> which implement low-level details of the conversion between OTAP and
-> OTLP, will be incorporated into this set of crates.
+>
+> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implement
+> low-level details of the conversion between OTAP and OTLP, will be
+> incorporated into this set of crates.
 
 ## Features
 
@@ -93,7 +93,7 @@ single-thread pipeline for generic type `PData`. Generally, users do
 not construct these, as they are managed by a controller instance.
 Here are the key files to know about:
 
-```
+```text
 crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 |-- attributes.rs:       Host, process/container IDs
 |-- context.rs:          CPU, NUMA, thread context
@@ -125,7 +125,7 @@ for receivers and processors to subscribe to the `NodeControlMsg::Ack`
 and `NodeControlMsg::Nack` messages. Here are the key files to know
 that support the components in this crate:
 
-```
+```text
 crates/otap/lib.rs:      OTAP Dataflow pipeline factory
 |-- compression.rs:      OTLP and OTAP compression settings
 |-- encoder.rs:          Computes OTAP from OTLP view representations
