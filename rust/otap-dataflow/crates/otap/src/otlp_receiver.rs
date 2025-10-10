@@ -99,7 +99,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
         mut self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
-        effect_handler: shared::EffectHandler<OtapPdata>,
+        mut effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
@@ -138,9 +138,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             return Ok(());
                         },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                        Ok(NodeControlMsg::CollectTelemetry { .. }) => {
                             // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
+                            _ = effect_handler.report_metrics(&mut self.metrics);
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));

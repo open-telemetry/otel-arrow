@@ -101,7 +101,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     async fn start(
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
-        effect_handler: local::EffectHandler<OtapPdata>,
+        mut effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
@@ -133,10 +133,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(NodeControlMsg::CollectTelemetry {
-                            mut metrics_reporter,
-                        }) => {
-                            _ = metrics_reporter.report(&mut self.metrics);
+                        Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                            _ = effect_handler.report_metrics(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function

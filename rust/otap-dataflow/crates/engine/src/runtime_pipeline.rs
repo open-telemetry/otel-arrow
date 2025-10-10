@@ -108,9 +108,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 exporter.control_sender(),
             );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
-            );
+            let metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            }));
         }
         for processor in self.processors {
             control_senders.register(
@@ -119,9 +120,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 processor.control_sender(),
             );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
-            );
+            let metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                processor
+                    .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                    .await
+            }));
         }
         for receiver in self.receivers {
             control_senders.register(
@@ -130,9 +134,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 receiver.control_sender(),
             );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
-            );
+            let metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                receiver.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            }));
         }
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
@@ -140,8 +145,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_ctrl_msg_rx,
-                control_senders,
-                metrics_reporter,
+                control_senders
             );
             manager.run().await
         }));

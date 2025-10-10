@@ -22,6 +22,7 @@ use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtim
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
@@ -30,6 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
+use otap_df_telemetry::metrics::MetricSetSnapshot;
 
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
@@ -170,6 +172,8 @@ pub struct TestPhase<PData> {
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
+
+    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -238,9 +242,10 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let run_exporter_handle = self
-            .local_tasks
-            .spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await });
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+        });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -249,6 +254,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             pdata_sender: pdata_tx,
             run_exporter_handle,
             pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
+            metrics_receiver: metrics_rx
         }
     }
 }

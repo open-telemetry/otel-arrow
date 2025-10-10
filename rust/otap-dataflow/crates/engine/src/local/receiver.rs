@@ -40,6 +40,9 @@ use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -97,13 +100,17 @@ pub trait Receiver<PData> {
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel<PData> {
     rx: crate::message::Receiver<NodeControlMsg<PData>>,
+    pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
     pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
-        Self { rx }
+        Self {
+            rx,
+            pending_shutdown: None,
+        }
     }
 
     /// Asynchronously receives the next control message.
@@ -113,6 +120,23 @@ impl<PData> ControlChannel<PData> {
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
         self.rx.recv().await
+        // // If we have a pending shutdown, return it first.
+        // if let Some(shutdown) = self.pending_shutdown.take() {
+        //     return Ok(shutdown);
+        // }
+        //
+        // let control_msg = self.rx.recv().await?;
+        // match control_msg {
+        //     // If we receive a Shutdown, we first inject a CollectTelemetry message to properly
+        //     // gather final metrics before shutting down.
+        //     NodeControlMsg::Shutdown { .. } => {
+        //         self.pending_shutdown = Some(control_msg);
+        //         Ok(NodeControlMsg::CollectTelemetry {
+        //             metrics_reporter: self.metrics_reporter.clone(),
+        //         })
+        //     }
+        //     other => Ok(other),
+        // }
     }
 }
 
@@ -137,8 +161,9 @@ impl<PData> EffectHandler<PData> {
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
         node_request_sender: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id);
+        let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
 
         // Determine and cache the default sender
@@ -274,6 +299,14 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
+    /// Reports metrics collected by the receiver.
+    pub fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
+    }
+
     // More methods will be added in the future as needed.
 }
 
@@ -303,7 +336,8 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -323,7 +357,8 @@ mod tests {
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -339,7 +374,14 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(test_node("recv"), senders, Some("a".into()), ctrl_tx);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            Some("a".into()),
+            ctrl_tx,
+            metrics_reporter,
+        );
 
         eh.send_message(11).await.unwrap();
 
@@ -361,7 +403,8 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -389,7 +432,8 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

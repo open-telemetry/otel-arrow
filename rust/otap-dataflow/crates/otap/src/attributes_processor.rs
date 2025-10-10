@@ -284,11 +284,9 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(control_msg) => match control_msg {
-                otap_df_engine::control::NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } => {
+                otap_df_engine::control::NodeControlMsg::CollectTelemetry { .. } => {
                     if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(metrics);
+                        let _ = effect_handler.report_metrics(metrics);
                     }
                     Ok(())
                 }
@@ -996,26 +994,23 @@ mod telemetry_tests {
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_telemetry::MetricsSystem;
     use prost::Message as _;
     use serde_json::json;
 
     #[test]
     fn test_metrics_collect_telemetry_reports_counters() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
-        // 1) Telemetry system (no async yet); we will start the collector inside the test runtime
-        let metrics_system = MetricsSystem::default();
-        let registry = metrics_system.registry();
-        let reporter = metrics_system.reporter();
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let registry = rt.metrics_registry();
 
         // Shared place to store the collector JoinHandle started inside the runtime
-        let collector_handle: Arc<
-            Mutex<Option<tokio::task::JoinHandle<Result<(), otap_df_telemetry::error::Error>>>>,
-        > = Arc::new(Mutex::new(None));
+        // let collector_handle: Arc<
+        //     Mutex<Option<tokio::task::JoinHandle<Result<(), otap_df_telemetry::error::Error>>>>,
+        // > = Arc::new(Mutex::new(None));
 
         // 2) Pipeline context sharing the same registry handle
-        let controller = ControllerContext::new(registry.clone());
+        let controller = ControllerContext::new(rt.metrics_registry().clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
         // 3) Build processor with simple rename+delete (applies to signal domain by default)
@@ -1084,30 +1079,16 @@ mod telemetry_tests {
         };
 
         // 5) Drive processor with TestRuntime; start collector inside and then request a telemetry snapshot
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let phase = rt.set_processor(proc);
-
-        let reporter_run = reporter.clone();
-        let collector_handle_rt = collector_handle.clone();
-        let metrics_system_rt = metrics_system; // move into runtime
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        let cancel_for_rt = cancel_token.clone();
-
         phase
             .run_test(|mut ctx| async move {
-                // Start collector inside the runtime with a cancellation token to ensure shutdown
-                let handle = tokio::spawn(metrics_system_rt.run(cancel_for_rt));
-                *collector_handle_rt.lock().unwrap() = Some(handle);
-
                 // Process one message
                 let pdata =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(input_bytes).into());
                 ctx.process(Message::PData(pdata)).await.expect("pdata");
 
                 // Trigger telemetry snapshot
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter_run.clone(),
-                }))
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
                 .await
                 .expect("collect");
             })
@@ -1142,16 +1123,6 @@ mod telemetry_tests {
                 assert!(found_renamed_entries, "renamed.entries should be >= 1");
                 assert!(found_deleted_entries, "deleted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");
-
-                // Tear down collector by cancelling and awaiting the handle
-                cancel_token.cancel();
-                let handle_opt = {
-                    let mut guard = collector_handle.lock().unwrap();
-                    guard.take()
-                };
-                if let Some(handle) = handle_opt {
-                    handle.await.unwrap().unwrap();
-                }
             });
     }
 }

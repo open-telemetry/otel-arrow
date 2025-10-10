@@ -97,7 +97,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        effect_handler: EffectHandler<OtapPdata>,
+        mut effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         effect_handler
             .info(&format!(
@@ -154,10 +154,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = timer_cancel_handle.cancel().await;
                     break;
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                    _ = effect_handler.report_metrics(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {
                     // Capture signal type before moving pdata into try_from
@@ -315,6 +313,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -519,8 +518,9 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
         }
 
         async fn drive_test(
@@ -532,6 +532,7 @@ mod tests {
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
+            metrics_receiver: flume::Receiver<MetricSetSnapshot>,
         ) -> Result<(), Error> {
             // pdata
             let req = ExportLogsServiceRequest::default();
@@ -594,15 +595,12 @@ mod tests {
             _ = req_receiver.recv().await.unwrap();
 
             // check the metrics:
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
             control_sender
-                .send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: metrics_reporter.clone(),
-                })
+                .send(NodeControlMsg::CollectTelemetry)
                 .await
                 .unwrap();
             // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
+            let metrics = metrics_receiver.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
             assert_eq!(logs_exported_count, 2);
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
@@ -669,9 +667,12 @@ mod tests {
             .await;
         });
 
+        let (metrics_rx, metrics_reporter) =
+            MetricsReporter::create_new_and_receiver(1);
+
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter),
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
@@ -680,7 +681,8 @@ mod tests {
                     shutdown_sender2,
                     pdata_tx,
                     control_sender,
-                    req_receiver
+                    req_receiver,
+                    metrics_rx
                 )
             )
         });

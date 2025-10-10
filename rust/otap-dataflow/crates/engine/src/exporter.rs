@@ -20,6 +20,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
@@ -35,8 +36,6 @@ pub enum ExporterWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
-        /// The effect handler instance for the exporter.
-        effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -52,8 +51,6 @@ pub enum ExporterWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
-        /// The effect handler instance for the exporter.
-        effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -92,9 +89,8 @@ impl<PData> ExporterWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
-            node_id: node_id.clone(),
+            node_id,
             user_config,
-            effect_handler: local::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
@@ -117,9 +113,8 @@ impl<PData> ExporterWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
-            node_id: node_id.clone(),
+            node_id,
             user_config,
-            effect_handler: shared::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
@@ -131,15 +126,20 @@ impl<PData> ExporterWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
-        match self {
-            ExporterWrapper::Local {
-                mut effect_handler,
-                exporter,
-                control_receiver,
-                pdata_receiver,
-                ..
-            } => {
+        match (self, metrics_reporter) {
+            (
+                ExporterWrapper::Local {
+                    node_id,
+                    exporter,
+                    control_receiver,
+                    pdata_receiver,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
+                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -159,13 +159,17 @@ impl<PData> ExporterWrapper<PData> {
                     message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
-            ExporterWrapper::Shared {
-                mut effect_handler,
-                exporter,
-                control_receiver,
-                pdata_receiver,
-                ..
-            } => {
+            (
+                ExporterWrapper::Shared {
+                    node_id,
+                    exporter,
+                    control_receiver,
+                    pdata_receiver,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
+                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

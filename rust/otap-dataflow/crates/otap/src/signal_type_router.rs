@@ -173,12 +173,9 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(ctrl) => {
-                if let NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } = ctrl
-                {
+                if let NodeControlMsg::CollectTelemetry { .. } = ctrl {
                     if let Some(m) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(m);
+                        let _ = effect_handler.report_metrics(m);
                     }
                 }
                 Ok(())
@@ -444,7 +441,8 @@ mod tests {
                 let (tx_logs, rx_logs) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), LocalSender::MpscSender(tx_logs));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 // Send a logs pdata -> should route to named port
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
@@ -459,9 +457,7 @@ mod tests {
                 // Flush metrics via CollectTelemetry
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -516,7 +512,8 @@ mod tests {
                 drop(rx_logs); // close to trigger SendError::Closed
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), LocalSender::MpscSender(tx_logs));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
@@ -525,9 +522,7 @@ mod tests {
                 // Flush metrics
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -578,7 +573,8 @@ mod tests {
                 let (tx_out, rx_out) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
@@ -591,9 +587,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -645,7 +639,8 @@ mod tests {
                 drop(rx_out);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
@@ -656,9 +651,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -708,7 +701,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -720,9 +714,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -763,7 +755,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -772,9 +765,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -814,7 +805,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -826,9 +818,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -869,7 +859,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -878,9 +869,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -921,7 +910,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -933,9 +923,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -978,7 +966,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -987,9 +976,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -1031,7 +1018,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -1043,9 +1031,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await
@@ -1088,7 +1074,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -1097,9 +1084,7 @@ mod tests {
 
                 router
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
+                        Message::Control(NodeControlMsg::CollectTelemetry),
                         &mut eh,
                     )
                     .await

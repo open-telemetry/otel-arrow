@@ -20,6 +20,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -136,16 +137,20 @@ impl<PData> ReceiverWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
-        match self {
-            ReceiverWrapper::Local {
-                node_id,
-                receiver,
-                control_receiver,
-                pdata_senders,
-                user_config,
-                ..
-            } => {
+        match (self, metrics_reporter) {
+            (
+                ReceiverWrapper::Local {
+                    node_id,
+                    receiver,
+                    control_receiver,
+                    pdata_senders,
+                    user_config,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
                         receiver: node_id.clone(),
@@ -163,17 +168,21 @@ impl<PData> ReceiverWrapper<PData> {
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
+                    metrics_reporter,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
-            ReceiverWrapper::Shared {
-                node_id,
-                receiver,
-                control_receiver,
-                pdata_senders,
-                user_config,
-                ..
-            } => {
+            (
+                ReceiverWrapper::Shared {
+                    node_id,
+                    receiver,
+                    control_receiver,
+                    pdata_senders,
+                    user_config,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
                         receiver: node_id.clone(),
@@ -191,6 +200,7 @@ impl<PData> ReceiverWrapper<PData> {
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
+                    metrics_reporter,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }

@@ -128,7 +128,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        effect_handler: EffectHandler<OtapPdata>,
+        mut effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
@@ -203,14 +203,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         }
                     }
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
                     if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        _ = metrics_reporter.report(metrics);
+                        _ = effect_handler.report_metrics(metrics);
                     }
                     if let Some(metrics) = self.io_metrics.as_mut() {
-                        _ = metrics_reporter.report(metrics);
+                        _ = effect_handler.report_metrics(metrics);
                     }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
@@ -864,7 +862,9 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
         }
 
         async fn send_messages(
@@ -1007,7 +1007,9 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
         }
 
         async fn run_test(
@@ -1148,7 +1150,9 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
         }
 
         let (_exporter_result, _ignored) = rt.block_on(async move {
@@ -1371,8 +1375,9 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
         }
 
         async fn drive_test(
@@ -1402,9 +1407,7 @@ mod test {
 
             // Trigger telemetry collection
             control_sender
-                .send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter.clone(),
-                })
+                .send(NodeControlMsg::CollectTelemetry)
                 .await
                 .unwrap();
 
@@ -1426,7 +1429,7 @@ mod test {
             let _handle = tokio::task::spawn_local(metrics_system.run_collection_loop());
 
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
                 drive_test(control_sender, pdata_tx, reporter.clone()),
             )
         }));

@@ -105,7 +105,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        effect_handler: local::EffectHandler<OtapPdata>,
+        mut effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         effect_handler
             .info(&format!(
@@ -196,10 +196,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     // handle control messages
                     Message::Control(NodeControlMsg::TimerTick { .. })
                     | Message::Control(NodeControlMsg::Config { .. }) => {}
-                    Message::Control(NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    }) => {
-                        _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                        _ = effect_handler.report_metrics(&mut self.pdata_metrics);
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { .. }) => {
@@ -480,6 +478,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
 
     const METRIC_BATCH_ID: i64 = 0;
     const LOG_BATCH_ID: i64 = 1;
@@ -789,8 +788,9 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
             Ok(())
         }
 
@@ -801,6 +801,7 @@ mod tests {
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
+            metrics_receiver: flume::Receiver<MetricSetSnapshot>
         ) {
             // send a request before while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -830,14 +831,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             // check the metrics:
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
             control_sender
-                .send(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: metrics_reporter.clone(),
-                })
+                .send(NodeControlMsg::CollectTelemetry)
                 .await
                 .unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
+            let metrics = metrics_receiver.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
             assert_eq!(logs_exported_count, 1);
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
@@ -889,11 +887,13 @@ mod tests {
             )
             .await;
         });
+        let (metrics_rx, metrics_reporter) =
+            MetricsReporter::create_new_and_receiver(1);
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
             let _fut = local_set
-                .spawn_local(async move { start_exporter(exporter, pipeline_ctrl_msg_tx).await });
+                .spawn_local(async move { start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter).await });
             tokio::join!(
                 local_set,
                 drive_test(
@@ -902,7 +902,8 @@ mod tests {
                     server_shutdown_sender,
                     pdata_tx,
                     control_sender,
-                    req_receiver
+                    req_receiver,
+                    metrics_rx
                 )
             )
         });

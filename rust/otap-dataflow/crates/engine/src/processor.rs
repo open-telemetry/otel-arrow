@@ -20,6 +20,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -150,7 +151,10 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Prepare the processor runtime components without starting the processing loop.
     /// This allows external control over the message processing loop.
-    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error> {
+    pub async fn prepare_runtime(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -171,8 +175,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?,
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    local::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = local::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -198,8 +206,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    shared::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = shared::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -213,8 +225,9 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime().await?;
+        let runtime = self.prepare_runtime(metrics_reporter).await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {

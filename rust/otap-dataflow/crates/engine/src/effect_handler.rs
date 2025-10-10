@@ -7,6 +7,9 @@ use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender}
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -19,14 +22,16 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
+    pub(crate) metrics_reporter: MetricsReporter,
 }
 
 impl<PData> EffectHandlerCore<PData> {
-    /// Creates a new EffectHandlerCore with node_id.
-    pub(crate) fn new(node_id: NodeId) -> Self {
+    /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
+    pub(crate) fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         Self {
             node_id,
             pipeline_ctrl_msg_sender: None,
+            metrics_reporter,
         }
     }
 
@@ -146,6 +151,14 @@ impl<PData> EffectHandlerCore<PData> {
         sock.bind(&addr.into()).map_err(into_engine_error)?;
 
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
+    }
+
+    /// Reports the provided metrics to the engine.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.metrics_reporter.report(metrics)
     }
 
     /// Re-usable function to send a pipeline control message. This returns a reference

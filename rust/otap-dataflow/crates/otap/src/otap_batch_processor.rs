@@ -703,11 +703,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         effect.info(LOG_MSG_SHUTTING_DOWN).await;
                         Ok(())
                     }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
+                    NodeControlMsg::CollectTelemetry { .. } => {
                         if let Some(metrics) = &mut self.metrics {
-                            let _ = metrics_reporter.report(metrics);
+                            let _ = effect.report_metrics(metrics);
                         }
                         Ok(())
                     }
@@ -986,7 +984,6 @@ mod tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
-    use otap_df_telemetry::MetricsSystem;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use serde_json::json;
 
@@ -1004,10 +1001,8 @@ mod tests {
         use serde_json::json;
         use std::time::Duration;
 
-        // Metrics system: provides registry + reporter + collection loop
-        let ms = MetricsSystem::default();
-        let registry = ms.registry();
-        let reporter = ms.reporter();
+        let test_rt = TestRuntime::new();
+        let registry = test_rt.metrics_registry();
 
         // Create a MetricSet for the batch processor using a PipelineContext bound to the registry
         let controller_ctx = ControllerContext::new(registry.clone());
@@ -1036,13 +1031,9 @@ mod tests {
         .expect("proc from config with metrics");
 
         // Start test runtime and concurrently run metrics collection loop
-        let test_rt = TestRuntime::new();
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            // Spawn metrics collection loop (detached)
-            let _bg = tokio::spawn(ms.run_collection_loop());
-
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
             // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
@@ -1073,24 +1064,18 @@ mod tests {
                 .expect("timer tick");
 
             // 4) Trigger telemetry collection (report + reset)
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }))
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
             .await
             .expect("collect telemetry");
 
             // Let collector accumulate snapshot and flush again to minimize timing races.
             ctx.sleep(Duration::from_millis(10)).await;
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }))
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
             .await
             .expect("collect telemetry (2)");
             ctx.sleep(Duration::from_millis(10)).await;
             // 5) One more collection to ensure snapshots hit the collector
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }))
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
             .await
             .expect("collect telemetry (3)");
             ctx.sleep(Duration::from_millis(30)).await;
@@ -1318,7 +1303,7 @@ mod tests {
 
         validation.validate(|_vctx| async move {});
     }
-
+    
     #[test]
     fn test_immediate_flush_on_max_reached() {
         use crate::pdata::OtapPdata;

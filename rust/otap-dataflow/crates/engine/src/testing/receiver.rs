@@ -18,17 +18,20 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
+use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
+use otap_df_telemetry::metrics::MetricSetSnapshot;
 
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {
     /// Sender for control messages
     control_sender: Sender<NodeControlMsg<PData>>,
+    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -268,15 +271,17 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start(pipeline_ctrl_msg_tx)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
                 .await
                 .expect("Receiver event loop failed");
         });
 
         let context = TestContext {
             control_sender: self.control_sender,
+            metrics_receiver: metrics_rx
         };
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;

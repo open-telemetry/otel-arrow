@@ -62,6 +62,7 @@ rand = "0.9.2"
 zip = "=4.2.0"
 
 [dev-dependencies]
+flume = { workspace = true }
 portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true

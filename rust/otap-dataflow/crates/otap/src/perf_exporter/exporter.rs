@@ -107,7 +107,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        effect_handler: local::EffectHandler<OtapPdata>,
+        mut effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
@@ -123,11 +123,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    _ = metrics_reporter.report(&mut self.metrics);
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                    _ = effect_handler.report_metrics(&mut self.metrics);
+                    _ = effect_handler.report_metrics(&mut self.pdata_metrics);
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}

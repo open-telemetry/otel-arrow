@@ -608,11 +608,9 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
-                NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } => {
+                NodeControlMsg::CollectTelemetry { .. } => {
                     if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(metrics);
+                        let _ = effect_handler.report_metrics(metrics);
                     }
                     Ok(())
                 }
@@ -651,23 +649,50 @@ mod tests {
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_channel::mpsc;
+    use otap_df_config::PortName;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::local::processor::EffectHandler as LocalEffectHandler;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::MetricsSystem;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use otel_arrow_rust::Consumer;
     use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use serde_json::json;
     use std::collections::HashMap;
     use tokio::time::{Duration, sleep};
-
+    
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
+    }
+
+    fn make_effect_handler(
+        node_name: &str,
+        senders: HashMap<PortName, LocalSender<OtapPdata>>,
+    ) -> EffectHandler<OtapPdata> {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        EffectHandler::new(
+            test_node(node_name.to_owned()),
+            senders,
+            None,
+            metrics_reporter,
+        )
+    }
+
+    fn make_effect_handler_with_metrics_reporter(
+        node_name: &str,
+        senders: HashMap<PortName, LocalSender<OtapPdata>>,
+        metrics_reporter: MetricsReporter
+    ) -> EffectHandler<OtapPdata> {
+        EffectHandler::new(
+            test_node(node_name.to_owned()),
+            senders,
+            None,
+            metrics_reporter,
+        )
     }
 
     fn create_test_processor() -> RetryProcessor {
@@ -735,7 +760,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         let test_data = create_test_data(1);
         let message = Message::PData(test_data.clone());
@@ -779,7 +804,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -811,7 +836,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -843,7 +868,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -877,7 +902,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add a message and NACK it
         let test_data = create_test_data(1);
@@ -922,7 +947,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Fill the queue
         for i in 1..=2 {
@@ -954,7 +979,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -999,7 +1024,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         // Add multiple messages and NACK them
         for i in 1..=3 {
@@ -1048,7 +1073,7 @@ mod tests {
         let (sender, _receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
+        let mut effect_handler = make_effect_handler("retry", senders_map);
 
         let new_config = RetryConfig {
             max_retries: 5,
@@ -1150,7 +1175,7 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = LocalEffectHandler::new(test_node("retry_proc_telemetry"), senders, None);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_proc_telemetry", senders, reporter);
 
         // Enqueue a message (should inc msgs.enqueued) and send downstream
         let pdata = make_test_pdata();
@@ -1182,9 +1207,7 @@ mod tests {
 
         // Trigger telemetry snapshot (report + reset)
         proc.process(
-            Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }),
+            Message::Control(NodeControlMsg::CollectTelemetry),
             &mut eh,
         )
         .await
@@ -1244,7 +1267,7 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(2);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = LocalEffectHandler::new(test_node("retry_queue_full"), senders, None);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_queue_full", senders, reporter);
 
         // 1st message enqueues fine
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1260,9 +1283,7 @@ mod tests {
 
         // Report telemetry
         proc.process(
-            Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }),
+            Message::Control(NodeControlMsg::CollectTelemetry),
             &mut eh,
         )
         .await
@@ -1303,7 +1324,7 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = LocalEffectHandler::new(test_node("retry_exceeded"), senders, None);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_exceeded", senders, reporter);
 
         // Enqueue and send downstream
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1329,9 +1350,7 @@ mod tests {
 
         // Collect telemetry
         proc.process(
-            Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }),
+            Message::Control(NodeControlMsg::CollectTelemetry),
             &mut eh,
         )
         .await
@@ -1390,12 +1409,10 @@ mod tests {
         let (tx_out, _rx_out) = mpsc::Channel::new(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = LocalEffectHandler::new(test_node("retry_cleanup"), senders, None);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_cleanup", senders, reporter);
 
         proc.process(
-            Message::Control(NodeControlMsg::CollectTelemetry {
-                metrics_reporter: reporter.clone(),
-            }),
+            Message::Control(NodeControlMsg::CollectTelemetry),
             &mut eh,
         )
         .await
