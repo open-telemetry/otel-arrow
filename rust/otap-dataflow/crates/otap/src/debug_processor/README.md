@@ -20,6 +20,8 @@ config:
       value:
       - key: service.name
         value: service_name
+   sampling:
+      type: no_sampling
    mode: exclude
 ```
 
@@ -97,6 +99,37 @@ In this config we create a processor with multiple out_ports.
 In the config setting we tell the debug-processor to use `logging_port`
 which will send data to another node that has been defined outside of
 this configuration named `some_node`
+
+### Sampling
+
+You can control how often msgs are sent out via the sampling settings
+current we support only two sampling modes `zap_sampling` and `no_sampling`.
+The default mode is `no_sampling`.
+
+#### Zap Sampling Config Example
+
+Below is how you would configure `zap_sampling` if you were to enable it
+
+```yaml
+   sampling:
+      type: zap_sampling
+      sampling_initial: 2
+      sampling_thereafter: 5
+      sampling_interval: 2
+```
+
+The `sampling_initial` value is the number of values that is sent before
+any sampling rate is applied during the `sampling_interval`.
+The `sampling_thereafter` value is what determines how frequent a msg is
+logged. Lets say that `sampling_thereafter` is set to x then every xth msg
+will get logged while the rest get dropped. The `sampling_interval` is how
+long the sampling will last before it resets.
+
+In the example configuration we will log the first 2 messages
+(set by the `sampling_initial`), after that we only log every
+5th message received (set by the `sampling_thereafter`).
+This all happens in the 2 second `sampling_interval`, after the
+2 seconds we start back at the beginning.
 
 ## Example Output => Basic Verbosity
 

@@ -84,8 +84,8 @@ still fundamentally row-oriented.
 
 We are building an end-to-end OpenTelemetry Protocol with Apache Arrow
 (OTAP) pipeline and we believe this form of pipeline will have substantially
-lower overhead than a row-oriented architecture.  [See our Phase 2 design
-document](./docs/phase2-design.md).
+lower overhead than a row-oriented architecture.  [See our Phase 2 OTAP
+Dataflow engine documentation](./rust/otap-dataflow/README.md).
 
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:

@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::node::NodeKind;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -31,9 +32,11 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::error::Error as EngineError;
 use otap_df_state::DeployedPipelineKey;
+use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_state::store::{ObservedEvent, ObservedStateStore};
+use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -74,7 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let obs_state_store = ObservedStateStore::default();
+        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
@@ -108,7 +111,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 pipeline_id: pipeline_id.clone(),
                 core_id: core_id.id,
             };
-            obs_evt_reporter.report(ObservedEvent::pipeline_pending(pipeline_key.clone()));
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
                 pipeline
                     .pipeline_settings()
@@ -187,16 +189,28 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_stopped(pipeline_key));
+                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
-                    // ToDo Report errors as a `condition object` to the pipeline status.
+                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "Pipeline encountered a runtime error.",
+                        err_summary,
+                    ));
                     results.push(Err(e));
                 }
                 Err(e) => {
-                    // ToDo Report errors as a `condition object` to the pipeline status.
-                    obs_evt_reporter.report(ObservedEvent::pipeline_failed(pipeline_key));
+                    let err_summary = ErrorSummary::Pipeline {
+                        error_kind: "panic".into(),
+                        message: "The pipeline panicked during execution.".into(),
+                        source: Some(format!("{e:?}")),
+                    };
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "The pipeline panicked during execution.",
+                        err_summary,
+                    ));
                     // Thread join failed, handle the error
                     return Err(Error::ThreadPanic {
                         thread_name,
@@ -294,6 +308,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // ToDo Add a warning here once logging is implemented.
         }
 
+        obs_evt_reporter.report(ObservedEvent::admitted(
+            pipeline_key.clone(),
+            Some("Pipeline admission successful.".to_owned()),
+        ));
+
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
             .build(pipeline_handle, pipeline_config.clone())
@@ -301,18 +320,84 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 source: Box::new(e),
             })?;
 
+        obs_evt_reporter.report(ObservedEvent::ready(
+            pipeline_key.clone(),
+            Some("Pipeline initialization successful.".to_owned()),
+        ));
+
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever(
-                pipeline_key,
-                obs_evt_reporter,
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
+            .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
+    }
+}
+
+fn error_summary_from_gen(error: &Error) -> ErrorSummary {
+    match error {
+        Error::PipelineRuntimeError { source } => {
+            if let Some(engine_error) = source.downcast_ref::<EngineError>() {
+                error_summary_from(engine_error)
+            } else {
+                ErrorSummary::Pipeline {
+                    error_kind: "runtime".into(),
+                    message: source.to_string(),
+                    source: None,
+                }
+            }
+        }
+        _ => ErrorSummary::Pipeline {
+            error_kind: "runtime".into(),
+            message: error.to_string(),
+            source: None,
+        },
+    }
+}
+
+fn error_summary_from(err: &EngineError) -> ErrorSummary {
+    match err {
+        EngineError::ReceiverError {
+            receiver,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: receiver.name.to_string(),
+            node_kind: NodeKind::Receiver,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        EngineError::ProcessorError {
+            processor,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: processor.name.to_string(),
+            node_kind: NodeKind::Processor,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        EngineError::ExporterError {
+            exporter,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: exporter.name.to_string(),
+            node_kind: NodeKind::Exporter,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        _ => ErrorSummary::Pipeline {
+            error_kind: err.variant_name(),
+            message: err.to_string(),
+            source: None,
+        },
     }
 }
 
