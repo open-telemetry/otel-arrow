@@ -35,6 +35,9 @@ pub mod syslog_cef_receiver;
 /// Generated protobuf files
 pub mod proto;
 
+/// Common component accessories (e.g., context-state management).
+pub mod accessory;
+
 pub mod pdata;
 
 pub mod parquet_exporter;
