@@ -506,6 +506,87 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_receiver_nack() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: Config {
+                    listening_addr: addr,
+                    compression_method: None,
+                    max_slots: 1000,
+                },
+                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let nack_scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server");
+
+                let result = logs_client.export(create_logs_service_request()).await;
+
+                assert!(result.is_err(), "Expected error response");
+                let status = result.unwrap_err();
+                
+                // Verify we get UNAVAILABLE status code
+                assert_eq!(status.code(), tonic::Code::Unavailable);
+                
+                // Verify the error message contains our nack reason
+                assert!(status.message().contains("Test nack reason"));
+                assert!(status.message().contains("Pipeline processing failed"));
+
+                // Shutdown the receiver
+                ctx.send_shutdown(Duration::from_millis(0), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let nack_validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                use otap_df_engine::control::NackMsg;
+                
+                // Receive the logs pdata
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                // Create Nack message and send it back to the gRPC handler
+                let nack = NackMsg::new("Test nack reason".to_string(), logs_pdata);
+                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                        .await
+                        .expect("Failed to send Nack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(nack_scenario)
+            .run_validation_concurrent(nack_validation);
+    }
+
+    #[test]
     fn test_config_parsing() {
         use serde_json::json;
 

@@ -245,10 +245,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             match effect_handler.send_message(otap_batch).await {
                 Ok(_) => match rx.await {
                     Ok(Ok(())) => Ok(tonic::Response::new(())),
-                    Ok(Err(nack)) => Err(Status::internal(format!(
-                        "Pipeline processing failed: {}",
-                        nack.reason
-                    ))),
+                    Ok(Err(nack)) => {
+                        // TODO: Use more specific status codes based on nack reason/type
+                        // when more detailed error information is available from the pipeline
+                        Err(Status::unavailable(format!(
+                            "Pipeline processing failed: {}",
+                            nack.reason
+                        )))
+                    }
                     Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
                 },
                 Err(e) => Err(Status::internal(format!("Failed to send to pipeline: {e}"))),
