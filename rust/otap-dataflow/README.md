@@ -124,7 +124,7 @@ with the pipeline engine, including `ProducerEffectHandlerExtension`,
 for receivers and processors to subscribe to the `NodeControlMsg::Ack`
 and `NodeControlMsg::Nack` messages, and
 `ConsumerEffectHandlerExtension` for processors and exporters to
-notify the next recipient in the chain of subscribers. 
+notify the next recipient in the chain of subscribers.
 
 Here are the key files to know that support the components in this
 crate:
