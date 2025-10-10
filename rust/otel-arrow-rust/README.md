@@ -1,5 +1,13 @@
 # OTel-Arrow Protocol Implementation in Rust
 
+[![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
+[![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml)
+[![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=tmWKFoMT2G&component=otap-dataflow)](https://codecov.io/gh/open-telemetry/otel-arrow)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Slack](https://img.shields.io/badge/Slack-OTEL_Arrow-purple)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+
+----
+
 Rust reference implementation for the [OpenTelemetry-Arrow Protocol
 (OTAP)](../../README.md). Here are some of the main data use-cases:
 
@@ -68,7 +76,7 @@ After passing through an intermediate representation,
 
 The production OTAP-Dataflow engine uses the `otap_df_pdata_views`
 crate to encode and decode OTLP bytes directly to and from OTAP
-records. 
+records.
 
 The Prost crate (`prost_build`) is used to derive OpenTelemetry
 Protocol (OTLP) message objects which are used as a reference

@@ -15,17 +15,16 @@ to produce an OpenTelemetry pipeline support, for use as an embedded
 software component, providing a framework for collecting OpenTelemetry
 data.
 
-> [!NOTE]
-> These Rust libraries are the main deliverable of Phase 2 of the
-> OTel-Arrow project, as defined in the [project phases](../../docs/project-phases2.md).
-> The `df_engine` main program built through `cargo` in [`src/main.rs`](./src/main.rs) 
-> is provided as a means to test and validate OTAP pipelines built
-> using the dataflow engine.
+> [!NOTE] These Rust libraries are the main deliverable of Phase 2 of
+> the OTel-Arrow project, as defined in the [project
+> phases](../../docs/project-phases2.md).  The `df_engine` main
+> program built through `cargo` in [`src/main.rs`](./src/main.rs) is
+> provided as a means to test and validate OTAP pipelines built using
+> the dataflow engine.
 
-> [!NOTE]
-> The other OTel-Arrow Rust library in `../otel-arrow-rust`, which 
-> implement low-level details of the conversion between OTAP and OTLP,
-> will be incorporated into this set of crates.
+> [!NOTE] The other OTel-Arrow Rust library in `../otel-arrow-rust`,
+> which implement low-level details of the conversion between OTAP and
+> OTLP, will be incorporated into this set of crates.
 
 ## Features
 
@@ -44,7 +43,8 @@ are the major aspects of its design:
   data objects.
 - Thread-per-core approach. Our design aims to support single-threaded
   _nothing-shared_ pipelines as our first priority. We make use of a
-  [Local async runtime](https://docs.rs/tokio/latest/tokio/runtime/struct.LocalRuntime.html)
+  [Local async
+  runtime](https://docs.rs/tokio/latest/tokio/runtime/struct.LocalRuntime.html)
   freeing the pipeline from synchronizing instructions.
   Multi-threaded components are possible using `shared` adapters, but
   we choose single-threaded `local` components when possible.
@@ -61,7 +61,8 @@ equivalent, signal-specific representations:
   `Vec<u8>` corresponding with one of the export requests (e.g.,
   `ExportLogsServiceRequest`).
 - OTAP records (Logs, Traces Metrics): A signal-specific array of
-  [Arrow `RecordBatch`](https://docs.rs/arrow/latest/arrow/record_batch/struct.RecordBatch.html)
+  [Arrow
+  `RecordBatch`](https://docs.rs/arrow/latest/arrow/record_batch/struct.RecordBatch.html)
   objects defining aspects of the OpenTelemetry data model, where
   unused columns are omitted. For example, The Logs form of OTAP
   records consists of four record batches, corresponding with Logs,
@@ -69,7 +70,7 @@ equivalent, signal-specific representations:
 
 Refer to the [OTAP basics](../../docs/otap_basics.md) documentation.
 
-The [OTAP data model](../../docs/otap_basics.md) contains diagrams of
+The [OTAP data model](../../docs/data_model.md) contains diagrams of
 the many N-to-1 relationships expressed within an OTAP request.
 
 ## Major components
@@ -95,9 +96,9 @@ Here are the key files to know about:
 ```
 crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 |-- attributes.rs:       Host, process/container IDs
-|-- context.rs:          CPU, NUMA, thread context 
-|-- control.rs:          NodeControlMsg, AckMsg, NackMsg, PipelineControlMsg
-|-- effect_handler.rs:   Component interfaces (network, clock, back-propagation)
+|-- context.rs:          CPU, NUMA, thread context
+|-- control.rs:          NodeControlMsg, AckMsg, NackMsg
+|-- effect_handler.rs:   Component interfaces (network, clock, ack/nack)
 |-- error.rs:            Structured errors
 |-- exporter.rs:         Pipeline component (output only)
 |-- message.rs:          The data and control plane messages
@@ -108,7 +109,9 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 |-- runtime_pipeline.rs: Builds the graph of component channels
 ```
 
-### OTAP
+### OTAP: OTel-Arrow Protocol pipline data
+
+[See crate README.](./crates/otap/README.md)
 
 The OTAP pipeline data type is defined here, therefore all of our
 built-in components are provided here as well.  The main entry point
@@ -127,12 +130,15 @@ crates/otap/lib.rs:      OTAP Dataflow pipeline factory
 |-- compression.rs:      OTLP and OTAP compression settings
 |-- encoder.rs:          Computes OTAP from OTLP view representations
 |-- metrics.rs           Metrics logic shared by several components
-|-- otap_grpc.rs         OTLP and OTAP shared gRPC support
 |-- pdata.rs             The OtapPdata type, effect handler extensions
+|-- otap_grpc/           OTLP and OTAP shared gRPC support
 |-- fixtures.rs          Test support
 |-- otap_mock.rs         Test support
 |-- testing/             Test support
 ```
+
+All gRPC services are implemented using
+[Tonic](https://github.com/hyperium/tonic).
 
 The major OTAP Dataflow components of `otap_df_otap` are listed next.
 
@@ -156,36 +162,43 @@ fail.
 
 A simple component that returns success. All requests succeed.
 
-### Fake Data Generator
+#### Fake Data Generator
 
 A simple component to produce synthetic data.
 
-### Batch processor
+#### Batch processor
 
 An batching processor that works directly with OTAP records. This is
-based on lower-level support in the `otal_arrow_rust` crate.
+[based on lower-level support in the `otal_arrow_rust`
+crate](../otel-arrow-rust/src/otap/batching.rs).
 
-### OTAP exporter
+#### OTAP exporter
 
 The OTAP streaming gRPC exporter. This corresponds with the
-`otelarrow` Collector-Contrib exporter component, this project's Phase
-1 deliverable based on Arrow IPC streams.
+[`otelarrowexporter` Collector-Contrib exporter component][EXPORTER]
+(i.e., this project's Phase 1 deliverable), based on Arrow IPC
+streams over gRPC streams.
 
-### OTAP receiver
+#### OTAP receiver
 
 The OTAP streaming gRPC receiver. This corresponds with the
-`otelarrow` Collector-Contrib receiver component, this project's Phase
-1 deliverable based on Arrow IPC streams.
+[`otelarrowreceiver` Collector-Contrib receiver component][RECEIVER],
+this project's Phase 1 deliverable based on Arrow IPC streams over
+gRPC streams.
 
-### OTLP exporter
+#### OTLP exporter
 
 The OTLP unary gRPC exporter. This corresponds with the `otlp`
 Collector exporter component, exports standard OTLP bytes.
 
-### OTAP receiver
+[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
+[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
+
+#### OTLP receiver
 
 The OTLP unary gRPC exporter. This corresponds with the `otlp`
-Collector receiver component, receives standard OTLP bytes.
+Collector receiver component, receives standard OTLP bytes using
+[a Tonic server](https://github.com/hyperium/tonic).
 
 #### Parquet exporter
 
@@ -247,7 +260,8 @@ A number of example configurations are listed in
 
 [See crate README.](./crates/channel/README.md)
 
-Defines the low-level queues used in the OTAP dataflow pipeline, `otap_df_channel::mpsc` and `otap_df_channel::mpmc`.
+Defines the low-level queues used in the OTAP dataflow pipeline,
+`otap_df_channel::mpsc` and `otap_df_channel::mpmc`.
 
 Defines a standard `SendError<T>` used to return failures throughout
 the codebase to enable recovering from `try_send()`.
@@ -277,6 +291,15 @@ we needed to ensure NUMA-awareness from the start. Moreover, this
 project is taking up a charter to investigate an OTel-Arrow first
 approach to telemetry, hence we are working with the experimental
 telemetry SDK here.
+
+### PData Views
+
+The Zero-copy machinery for:
+
+- interpreting OTLP bytes using views to build OTAP records
+- interpreting OTAP records using views to encode OTLP bytes
+
+This is closely tied with [OTel-Arrow Rust](../otel-arrow-rust/README.md).
 
 ## Development Setup
 
