@@ -122,8 +122,12 @@ by signal type.
 The PData type also facilitates datatype-aware aspects of interacting
 with the pipeline engine, including `ProducerEffectHandlerExtension`,
 for receivers and processors to subscribe to the `NodeControlMsg::Ack`
-and `NodeControlMsg::Nack` messages. Here are the key files to know
-that support the components in this crate:
+and `NodeControlMsg::Nack` messages, and
+`ConsumerEffectHandlerExtension` for processors and exporters to
+notify the next recipient in the chain of subscribers. 
+
+Here are the key files to know that support the components in this
+crate:
 
 ```text
 crates/otap/lib.rs:      OTAP Dataflow pipeline factory
