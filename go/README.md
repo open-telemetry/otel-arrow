@@ -14,7 +14,7 @@ primary representations:
 - OTAP stream: the OTel-Arrow batch of Arrow IPC stream records
 
 The intermediate representation between the OTLP records and OTAP
-stream forms, known is "OTAP records", exists here, however its design
+stream forms, known as "OTAP records", exists here, however its design
 was not emphasized. Refer to the
 [Otel-Arrow-Rust](../rust/otel-arrow-rust/README.md) reference
 implementation for more details about handling the OTAP records format
@@ -48,6 +48,6 @@ representation.
 
 The main Consumer entry point for converting from OTAP streams into
 OpenTelemetry Collector records is found in
-[./pkg/otel/arrow_record/producer.go](./pkg/otel/arrow_record/producer.go)
+[./pkg/otel/arrow_record/consumer.go](./pkg/otel/arrow_record/consumer.go)
 
 [OTELARROWRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md

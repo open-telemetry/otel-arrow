@@ -17,12 +17,12 @@ data.
 
 > [!NOTE] These Rust libraries are the main deliverable of Phase 2 of
 > the OTel-Arrow project, as defined in the [project
-> phases](../../docs/project-phases2.md).  The `df_engine` main
+> phases](../../docs/project-phases.md).  The `df_engine` main
 > program built through `cargo` in [`src/main.rs`](./src/main.rs) is
 > provided as a means to test and validate OTAP pipelines built using
 > the dataflow engine.
 >
-> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implement
+> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implements
 > low-level details of the conversion between OTAP and OTLP, will be
 > incorporated into this set of crates.
 

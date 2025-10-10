@@ -67,5 +67,5 @@ records representation.
   KQL phrases](./experimental/query_abstraction/README.md)
 - [Query engine: reference implementation for the abstraction
   layer](./experimental/query_engine/README.md)
-- [Parquet query examples: using OTel-Arrow data in Parquet
-  files](./parquet_query_examples/README.md)
+- [Parquet query examples: querying OTel-Arrow data in Parquet
+  files using DataFusion](./parquet_query_examples/README.md)
