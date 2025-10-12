@@ -718,7 +718,7 @@ mod tests {
                     "Should receive CollectTelemetry within timeout"
                 );
                 match telemetry_result.unwrap() {
-                    Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                    Ok(NodeControlMsg::CollectTelemetry) => {
                         // Success - received expected CollectTelemetry
                     }
                     Ok(other) => panic!("Expected CollectTelemetry, got {other:?}"),

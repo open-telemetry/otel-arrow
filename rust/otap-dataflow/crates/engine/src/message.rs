@@ -156,8 +156,9 @@ impl<T> Receiver<T> {
             Receiver::Shared(receiver) => receiver.try_recv(),
         }
     }
-    
+
     /// Checks if the channel is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         match self {
             Receiver::Local(receiver) => receiver.is_empty(),
@@ -224,14 +225,20 @@ impl<PData> MessageChannel<PData> {
             // Draining mode: Shutdown pending
             if let Some(dl) = self.shutting_down_deadline {
                 // If shutdown pending and no pdata left, return Shutdown immediately
-                if self.pdata_rx.as_ref().expect("pdata_rs must exist").is_empty() {
-                    let shutdown = self.pending_shutdown
+                if self
+                    .pdata_rx
+                    .as_ref()
+                    .expect("pdata_rs must exist")
+                    .is_empty()
+                {
+                    let shutdown = self
+                        .pending_shutdown
                         .take()
                         .expect("pending_shutdown must exist");
                     self.shutdown();
                     return Ok(Message::Control(shutdown));
                 }
-                
+
                 if sleep_until_deadline.is_none() {
                     // Create a sleep timer for the deadline
                     sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));

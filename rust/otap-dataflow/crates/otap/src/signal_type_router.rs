@@ -173,7 +173,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(ctrl) => {
-                if let NodeControlMsg::CollectTelemetry { .. } = ctrl {
+                if let NodeControlMsg::CollectTelemetry = ctrl {
                     if let Some(m) = self.metrics.as_mut() {
                         let _ = effect_handler.report_metrics(m);
                     }

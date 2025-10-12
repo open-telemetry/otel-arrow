@@ -136,8 +136,15 @@ pub struct ValidationPhase {
     metrics_collection_handle: JoinHandle<Result<(), otap_df_telemetry::error::Error>>,
 }
 
+impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with default configuration.
+    #[must_use]
     pub fn new() -> Self {
         let metrics_system = MetricsSystem::default();
         let config = ProcessorConfig::new("test_processor");

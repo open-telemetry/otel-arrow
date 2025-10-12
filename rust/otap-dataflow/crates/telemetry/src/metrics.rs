@@ -41,9 +41,9 @@ impl<M: MetricSetHandler> DerefMut for MetricSet<M> {
     }
 }
 
-impl<M: MetricSetHandler> Into<MetricSetSnapshot> for MetricSet<M> {
-    fn into(self) -> MetricSetSnapshot {
-        self.snapshot()
+impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
+    fn from(val: MetricSet<M>) -> Self {
+        val.snapshot()
     }
 }
 

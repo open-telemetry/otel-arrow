@@ -29,21 +29,25 @@ impl TerminalState {
     }
 
     /// Returns the deadline by which the node must terminate.
+    #[must_use]
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
     /// Returns a slice of the metric snapshots captured in this terminal state.
+    #[must_use]
     pub fn metrics(&self) -> &[MetricSetSnapshot] {
         &self.metrics
     }
 
     /// Consumes the terminal state and returns the contained metric snapshots.
+    #[must_use]
     pub fn into_metrics(self) -> Vec<MetricSetSnapshot> {
         self.metrics
     }
 
     /// Returns `true` when no metrics were captured.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.metrics.is_empty()
     }

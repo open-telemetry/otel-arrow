@@ -142,7 +142,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             let snapshot = self.metrics.snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
-                        Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                        Ok(NodeControlMsg::CollectTelemetry) => {
                             // Report current receiver metrics.
                             _ = effect_handler.report_metrics(&mut self.metrics);
                         },
@@ -171,7 +171,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 }
             }
         }
-        
+
         Ok(TerminalState::new(
             Instant::now().add(Duration::from_secs(1)),
             [self.metrics],

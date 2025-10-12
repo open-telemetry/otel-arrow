@@ -134,7 +134,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                        Ok(NodeControlMsg::CollectTelemetry) => {
                             _ = effect_handler.report_metrics(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
@@ -479,12 +479,9 @@ mod tests {
                 // wait for the scenario to finish running
                 sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(
-                    std::time::Instant::now(),
-                    "Test",
-                )
-                .await
-                .expect("Failed to send Shutdown");
+                ctx.send_shutdown(std::time::Instant::now(), "Test")
+                    .await
+                    .expect("Failed to send Shutdown");
             })
         }
     }

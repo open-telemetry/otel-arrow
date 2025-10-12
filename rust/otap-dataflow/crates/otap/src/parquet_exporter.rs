@@ -126,7 +126,7 @@ impl ParquetExporter {
     fn terminal_state(
         deadline: Instant,
         pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
-        io_metrics: Option<MetricSet<ParquetExporterMetrics>>
+        io_metrics: Option<MetricSet<ParquetExporterMetrics>>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
@@ -226,7 +226,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         }
                     }
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry) => {
                     if let Some(metrics) = self.pdata_metrics.as_mut() {
                         _ = effect_handler.report_metrics(metrics);
                     }
@@ -568,12 +568,7 @@ mod test {
                         .unwrap();
 
                     let deadline = Instant::now().add(Duration::from_millis(200));
-                    ctx.send_shutdown(
-                        deadline,
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {

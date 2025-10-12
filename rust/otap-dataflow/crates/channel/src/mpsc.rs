@@ -172,6 +172,7 @@ impl<T> Receiver<T> {
     }
 
     /// Checks if the channel is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         let state = self.channel.state.borrow();
         state.buffer.is_empty()

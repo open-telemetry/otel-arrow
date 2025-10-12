@@ -190,7 +190,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .output_message("Shutdown message received\n")
                             .await?;
                     }
-                    NodeControlMsg::CollectTelemetry { .. } => {
+                    NodeControlMsg::CollectTelemetry => {
                         _ = effect_handler.report_metrics(&mut self.metrics);
                     }
                     _ => {}

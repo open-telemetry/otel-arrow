@@ -23,7 +23,6 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::terminal_state::TerminalState;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -243,7 +242,12 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                processor.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut effect_handler).await?
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -257,7 +261,12 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                processor.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut effect_handler).await?
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
         }
         Ok(())
@@ -389,7 +398,6 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Add;
     use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
     use crate::message::Message;
@@ -401,6 +409,7 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
+    use std::ops::Add;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::{Duration, Instant};

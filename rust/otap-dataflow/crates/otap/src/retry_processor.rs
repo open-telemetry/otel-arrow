@@ -608,7 +608,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
-                NodeControlMsg::CollectTelemetry { .. } => {
+                NodeControlMsg::CollectTelemetry => {
                     if let Some(metrics) = self.metrics.as_mut() {
                         let _ = effect_handler.report_metrics(metrics);
                     }
