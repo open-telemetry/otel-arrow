@@ -17,13 +17,16 @@ use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::ops::Add;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -100,7 +103,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         mut effect_handler: shared::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
@@ -135,8 +138,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             ctrl_msg_result = async {
                 loop {
                     match ctrl_msg_recv.recv().await {
-                        Ok(NodeControlMsg::Shutdown {..}) => {
-                            return Ok(());
+                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            let snapshot = self.metrics.snapshot();
+                            return Ok(TerminalState::new(deadline, [snapshot]));
                         },
                         Ok(NodeControlMsg::CollectTelemetry { .. }) => {
                             // Report current receiver metrics.
@@ -167,8 +171,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 }
             }
         }
-
-        Ok(())
+        
+        Ok(TerminalState::new(
+            Instant::now().add(Duration::from_secs(1)),
+            [self.metrics],
+        ))
     }
 }
 
@@ -180,6 +187,7 @@ mod tests {
 
     use std::pin::Pin;
     use std::time::Duration;
+    use std::time::Instant;
 
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
@@ -330,7 +338,7 @@ mod tests {
                     }
                 );
 
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
 

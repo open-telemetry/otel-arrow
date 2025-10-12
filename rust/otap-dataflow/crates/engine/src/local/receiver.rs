@@ -37,6 +37,7 @@ use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, Timer
 use crate::error::{Error, ReceiverErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
@@ -91,7 +92,7 @@ pub trait Receiver<PData> {
         self: Box<Self>,
         ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A channel for receiving control messages (in a !Send environment).
@@ -106,7 +107,7 @@ impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
     pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
-        Self {rx}
+        Self { rx }
     }
 
     /// Asynchronously receives the next control message.

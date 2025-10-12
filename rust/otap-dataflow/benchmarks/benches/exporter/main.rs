@@ -52,7 +52,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::LocalSet;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -457,7 +457,7 @@ fn bench_exporter(c: &mut Criterion) {
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -516,7 +516,7 @@ fn bench_exporter(c: &mut Criterion) {
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -579,7 +579,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;

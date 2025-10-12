@@ -1089,8 +1089,8 @@ mod telemetry_tests {
 
                 // Trigger telemetry snapshot
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-                .await
-                .expect("collect");
+                    .await
+                    .expect("collect");
             })
             .validate(move |_| async move {
                 // Allow the collector to pull from the channel

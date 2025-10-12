@@ -21,6 +21,7 @@ use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
 use otap_df_telemetry::metrics::MetricSet;
 use prost::{EncodeError, Message};
@@ -102,7 +103,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         mut effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
         let registry = self
@@ -136,9 +137,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         Ok(NodeControlMsg::CollectTelemetry { .. }) => {
                             _ = effect_handler.report_metrics(&mut self.metrics);
                         }
-                        Ok(NodeControlMsg::Shutdown {..}) => {
-                            // ToDo: add proper deadline function
-                            break;
+                        Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
+                            return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -180,8 +180,6 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
             }
         }
-        //Exit event loop
-        Ok(())
     }
 }
 
@@ -481,9 +479,12 @@ mod tests {
                 // wait for the scenario to finish running
                 sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
-                    .await
-                    .expect("Failed to send Shutdown");
+                ctx.send_shutdown(
+                    std::time::Instant::now(),
+                    "Test",
+                )
+                .await
+                .expect("Failed to send Shutdown");
             })
         }
     }

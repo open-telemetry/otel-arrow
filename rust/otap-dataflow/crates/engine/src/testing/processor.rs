@@ -14,6 +14,8 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
+use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::registry::MetricsRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
@@ -21,8 +23,6 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::sleep;
-use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {

@@ -9,6 +9,7 @@ use crate::control::{
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
+use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -34,6 +35,12 @@ pub struct RuntimePipeline<PData: Debug> {
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
+}
+
+fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
+    for snapshot in terminal_state.into_metrics() {
+        let _ = metrics_reporter.try_report_snapshot(snapshot);
+    }
 }
 
 /// PipeNode contains runtime-specific info.
@@ -108,9 +115,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 exporter.control_sender(),
             );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            let metrics_reporter = metrics_reporter.clone();
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
             futures.push(local_tasks.spawn_local(async move {
-                exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+                exporter
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    })
             }));
         }
         for processor in self.processors {
@@ -134,19 +147,22 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 receiver.control_sender(),
             );
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            let metrics_reporter = metrics_reporter.clone();
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
             futures.push(local_tasks.spawn_local(async move {
-                receiver.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+                receiver
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    })
             }));
         }
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(
-                pipeline_ctrl_msg_rx,
-                control_senders
-            );
+            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
             manager.run().await
         }));
 

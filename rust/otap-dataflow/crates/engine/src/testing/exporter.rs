@@ -28,10 +28,9 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use otap_df_telemetry::metrics::MetricSetSnapshot;
 
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
@@ -111,7 +110,7 @@ impl<PData> TestContext<PData> {
     /// Returns an error if the message could not be sent.
     pub async fn send_shutdown(
         &self,
-        deadline: Duration,
+        deadline: Instant,
         reason: &str,
     ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
@@ -172,8 +171,6 @@ pub struct TestPhase<PData> {
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
-
-    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -242,9 +239,17 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let final_metrics_reporter = metrics_reporter.clone();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
-            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|terminal_state| {
+                    for snapshot in terminal_state.into_metrics() {
+                        let _ = final_metrics_reporter.try_report_snapshot(snapshot);
+                    }
+                })
         });
         TestPhase {
             rt: self.rt,
@@ -254,7 +259,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             pdata_sender: pdata_tx,
             run_exporter_handle,
             pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
-            metrics_receiver: metrics_rx
         }
     }
 }

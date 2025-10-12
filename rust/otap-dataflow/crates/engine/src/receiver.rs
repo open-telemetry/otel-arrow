@@ -16,6 +16,7 @@ use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
+use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -138,7 +139,7 @@ impl<PData> ReceiverWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ReceiverWrapper::Local {
@@ -299,6 +300,7 @@ mod tests {
     use crate::local::receiver as local;
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
+    use crate::terminal_state::TerminalState;
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
@@ -308,6 +310,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -340,7 +343,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -409,7 +412,7 @@ mod tests {
                 }
             }
 
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -419,7 +422,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -488,7 +491,7 @@ mod tests {
                 }
             }
 
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -533,7 +536,7 @@ mod tests {
                     .expect("Failed to send config");
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(200), "Test")
+                ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "Test")
                     .await
                     .expect("Failed to send Shutdown");
 

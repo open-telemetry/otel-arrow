@@ -22,16 +22,14 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use otap_df_telemetry::metrics::MetricSetSnapshot;
 
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {
     /// Sender for control messages
     control_sender: Sender<NodeControlMsg<PData>>,
-    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -82,7 +80,7 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(&self, deadline: Duration, reason: &str) -> Result<(), Error> {
+    pub async fn send_shutdown(&self, deadline: Instant, reason: &str) -> Result<(), Error> {
         self.control_sender
             .send(NodeControlMsg::Shutdown {
                 deadline,
@@ -271,17 +269,22 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let final_metrics_reporter = metrics_reporter.clone();
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
-            self.receiver
+            let terminal_state = self
+                .receiver
                 .start(pipeline_ctrl_msg_tx, metrics_reporter)
                 .await
                 .expect("Receiver event loop failed");
+
+            for snapshot in terminal_state.into_metrics() {
+                let _ = final_metrics_reporter.try_report_snapshot(snapshot);
+            }
         });
 
         let context = TestContext {
             control_sender: self.control_sender,
-            metrics_receiver: metrics_rx
         };
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;

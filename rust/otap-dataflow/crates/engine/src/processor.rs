@@ -384,6 +384,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Add;
     use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
     use crate::message::Message;
@@ -397,7 +398,7 @@ mod tests {
     use serde_json::Value;
     use std::pin::Pin;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A generic test processor that counts message events.
     /// Works with any type of processor !Send or Send.
@@ -501,7 +502,7 @@ mod tests {
 
                 // Process a Shutdown event.
                 ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
+                    Instant::now().add(Duration::from_millis(200)),
                     "no reason",
                 ))
                 .await

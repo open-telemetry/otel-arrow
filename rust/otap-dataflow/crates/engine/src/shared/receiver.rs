@@ -37,6 +37,7 @@ use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::{Error, ReceiverErrorKind, TypedError};
 use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
@@ -59,7 +60,7 @@ pub trait Receiver<PData> {
         self: Box<Self>,
         ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A channel for receiving control messages (in a Send environment).

@@ -24,7 +24,7 @@ use crate::parquet_exporter::schema::transform_to_known_schema;
 use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
@@ -45,7 +45,8 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_engine::terminal_state::TerminalState;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
@@ -121,6 +122,28 @@ impl ParquetExporter {
             io_metrics: Some(io_metrics),
         })
     }
+
+    fn terminal_state(
+        deadline: Instant,
+        pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
+        io_metrics: Option<MetricSet<ParquetExporterMetrics>>
+    ) -> TerminalState {
+        let mut snapshots = Vec::new();
+
+        if let Some(metrics) = &pdata_metrics {
+            if metrics.needs_flush() {
+                snapshots.push(metrics.snapshot());
+            }
+        }
+
+        if let Some(metrics) = &io_metrics {
+            if metrics.needs_flush() {
+                snapshots.push(metrics.snapshot());
+            }
+        }
+
+        TerminalState::new(deadline, snapshots)
+    }
 }
 
 #[async_trait(?Send)]
@@ -129,7 +152,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         mut effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
             let source_detail = format_error_sources(&e);
@@ -220,7 +243,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
-                    let mut timeout = Delay::new(deadline).fuse();
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
                     // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
@@ -237,7 +260,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             }),
-                        _ = flush_all => Ok(()),
+                        _ = flush_all => Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics)),
                     };
                 }
 
@@ -386,6 +409,7 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 #[cfg(test)]
 mod test {
     use crate::parquet_exporter::config::WriterOptions;
+    use std::ops::Add;
 
     use super::*;
 
@@ -425,7 +449,7 @@ mod test {
 
     fn logs_scenario(
         num_rows: usize,
-        shutdown_timeout: Duration,
+        shutdown_timeout: Instant,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -488,7 +512,7 @@ mod test {
                     let pdata1 = fixtures::create_single_logs_pdata_with_attrs(attrs1);
                     ctx.send_pdata(pdata1).await.unwrap();
 
-                    // this should generate a an attributes column with type Dict<u8, String>
+                    // this should generate an attributes column with type Dict<u8, String>
                     let pdata2 = fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
                         key: "attr1".to_string(),
                         value: Some(AnyValue {
@@ -543,9 +567,13 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
-                        .await
-                        .unwrap();
+                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    ctx.send_shutdown(
+                        deadline,
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -609,9 +637,12 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(200)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -721,7 +752,10 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(
+                num_rows,
+                Instant::now().add(Duration::from_secs(1)),
+            ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     assert!(exporter_result.is_ok());
@@ -804,7 +838,10 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(
+                num_rows,
+                Instant::now().add(Duration::from_secs(1)),
+            ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     assert!(exporter_result.is_ok());
@@ -864,7 +901,10 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn send_messages(
@@ -940,7 +980,7 @@ mod test {
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(1),
+                    deadline: Instant::now().add(Duration::from_secs(1)),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -1009,7 +1049,10 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn run_test(
@@ -1087,7 +1130,7 @@ mod test {
 
             ctrl_tx
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(10),
+                    deadline: Instant::now().add(Duration::from_millis(10)),
                     reason: "shutting down".into(),
                 })
                 .await
@@ -1152,7 +1195,10 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         let (_exporter_result, _ignored) = rt.block_on(async move {
@@ -1175,7 +1221,7 @@ mod test {
                 // Shutdown exporter to end the test
                 let _ = control_sender
                     .send(NodeControlMsg::Shutdown {
-                        deadline: Duration::from_millis(0),
+                        deadline: Instant::now(),
                         reason: "done".into(),
                     })
                     .await;
@@ -1222,9 +1268,12 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(200)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1287,9 +1336,12 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(Duration::from_millis(1000), "test completed")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(1000)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1377,13 +1429,15 @@ mod test {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn drive_test(
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             pdata_tx: Sender<OtapPdata>,
-            reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) {
             // Send minimal pdata to increment pdata metrics (consumed)
             let logs = Consumer::default()
@@ -1417,7 +1471,7 @@ mod test {
             // Then shutdown
             let _ = control_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(0),
+                    deadline: Instant::now(),
                     reason: "done".into(),
                 })
                 .await;
@@ -1430,7 +1484,7 @@ mod test {
 
             tokio::join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
-                drive_test(control_sender, pdata_tx, reporter.clone()),
+                drive_test(control_sender, pdata_tx),
             )
         }));
 
@@ -1505,9 +1559,12 @@ mod test {
                     ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
-                    ctx.send_shutdown(Duration::from_millis(1000), "test complete")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(1000)),
+                        "test complete",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {

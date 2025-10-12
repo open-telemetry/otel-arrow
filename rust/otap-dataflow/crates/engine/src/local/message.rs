@@ -66,4 +66,12 @@ impl<T> LocalReceiver<T> {
             LocalReceiver::MpmcReceiver(receiver) => receiver.try_recv(),
         }
     }
+    
+    /// Checks if the channel is empty.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            LocalReceiver::MpscReceiver(receiver) => receiver.is_empty(),
+            LocalReceiver::MpmcReceiver(receiver) => receiver.is_empty(),
+        }
+    }
 }

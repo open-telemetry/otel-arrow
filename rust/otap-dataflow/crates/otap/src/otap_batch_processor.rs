@@ -977,6 +977,7 @@ mod tests {
             .or_else(|| map.get(snake_case).copied())
             .unwrap_or(0)
     }
+
     use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
     use super::*;
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
@@ -986,6 +987,8 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use serde_json::json;
+    use std::ops::Add;
+    use std::time::Instant;
 
     // Test constants to avoid magic numbers/strings
     const TEST_SHUTDOWN_DEADLINE_MS: u64 = 50;
@@ -1065,19 +1068,19 @@ mod tests {
 
             // 4) Trigger telemetry collection (report + reset)
             ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-            .await
-            .expect("collect telemetry");
+                .await
+                .expect("collect telemetry");
 
             // Let collector accumulate snapshot and flush again to minimize timing races.
             ctx.sleep(Duration::from_millis(10)).await;
             ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-            .await
-            .expect("collect telemetry (2)");
+                .await
+                .expect("collect telemetry (2)");
             ctx.sleep(Duration::from_millis(10)).await;
             // 5) One more collection to ensure snapshots hit the collector
             ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-            .await
-            .expect("collect telemetry (3)");
+                .await
+                .expect("collect telemetry (3)");
             ctx.sleep(Duration::from_millis(30)).await;
         });
 
@@ -1243,7 +1246,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1303,7 +1306,7 @@ mod tests {
 
         validation.validate(|_vctx| async move {});
     }
-    
+
     #[test]
     fn test_immediate_flush_on_max_reached() {
         use crate::pdata::OtapPdata;
@@ -1336,7 +1339,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1434,7 +1437,7 @@ mod tests {
             assert_eq!(emitted.len(), 0, "no flush before shutdown");
 
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1493,7 +1496,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await

@@ -25,6 +25,7 @@ use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::terminal_state::TerminalState;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
     arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -115,7 +116,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
@@ -162,7 +163,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
-                            return Ok(());
+                            return Ok(TerminalState::default());
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -191,7 +192,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             }
         }
 
-        Ok(())
+        Ok(TerminalState::default())
     }
 }
 
@@ -218,6 +219,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
@@ -285,7 +287,7 @@ mod tests {
                     .expect("Failed to receive response after sending Trace Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
 

@@ -38,6 +38,7 @@ use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, Timer
 use crate::error::Error;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -86,7 +87,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.
