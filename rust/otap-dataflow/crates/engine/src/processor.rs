@@ -12,7 +12,7 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{MessageChannel, Receiver, Sender};
+use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -23,6 +23,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
+use crate::terminal_state::TerminalState;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -241,6 +242,8 @@ impl<PData> ProcessorWrapper<PData> {
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Collect final metrics before exiting
+                processor.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut effect_handler).await?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -253,6 +256,8 @@ impl<PData> ProcessorWrapper<PData> {
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Collect final metrics before exiting
+                processor.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut effect_handler).await?
             }
         }
         Ok(())

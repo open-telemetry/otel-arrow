@@ -703,7 +703,7 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         effect.info(LOG_MSG_SHUTTING_DOWN).await;
                         Ok(())
                     }
-                    NodeControlMsg::CollectTelemetry { .. } => {
+                    NodeControlMsg::CollectTelemetry => {
                         if let Some(metrics) = &mut self.metrics {
                             let _ = effect.report_metrics(metrics);
                         }

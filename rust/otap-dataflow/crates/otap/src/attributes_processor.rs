@@ -284,7 +284,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(control_msg) => match control_msg {
-                otap_df_engine::control::NodeControlMsg::CollectTelemetry { .. } => {
+                otap_df_engine::control::NodeControlMsg::CollectTelemetry => {
                     if let Some(metrics) = self.metrics.as_mut() {
                         let _ = effect_handler.report_metrics(metrics);
                     }
