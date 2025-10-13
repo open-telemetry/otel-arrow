@@ -35,10 +35,18 @@ otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
-clap = { version = "4.5.42", features = ["derive"] }
-mimalloc-rust = "0.2.1"
+clap.workspace = true
+mimalloc-rust.workspace = true
 
 [workspace.dependencies]
+mimalloc-rust = "0.2.1"
+clap = { version = "4.5.42", features = ["derive"] }
+arrayvec = "0.7.6"
+urn = "0.7"
+schemars = { version = "1.0.0" }
+data-encoding = "2.9.0"
+parking_lot = "0.12.4"
+
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
 ciborium = "0.2.2"
@@ -56,7 +64,7 @@ serde_json = { version = "1.0.142" }
 serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 tokio-util = { version = "0.7.16" }
-uuid = { version = "1.17.0", features = ["v4"] }
+uuid = { version = "1.17.0", features = ["v4", "v7"] }
 async-trait = "0.1.88"
 futures = "0.3.31"
 log = "0.4"
