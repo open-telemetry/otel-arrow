@@ -77,9 +77,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Maximum age for failed messages before cleanup (5 minutes)
-const MAX_FAILED_MESSAGE_AGE_SECS: u64 = 300;
-
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
 
@@ -235,21 +232,24 @@ impl RetryProcessorMetrics {
     }
 }
 
+type FlexibleDuration = serde_with::DurationSecondsWithFrac<f64, serde_with::formats::Flexible>;
+
 /// Configuration for the retry processor
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts before dropping a message
-    pub max_retries: usize,
-    /// Initial delay in milliseconds before the first retry
-    pub initial_retry_delay_ms: u64,
-    /// Maximum delay in milliseconds between retries
-    pub max_retry_delay_ms: u64,
+    /// Initial delay in seconds before the first retry
+    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    pub initial_interval: Duration,
+    /// Maximum delay in seconds between retries
+    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    pub max_interval: Duration,
+
+    /// Maximum delay in seconds between retries
+    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    pub max_elapsed_time: Duration,
+
     /// Multiplier applied to delay for exponential backoff
-    pub backoff_multiplier: f64,
-    /// Maximum number of messages that can be pending retry
-    pub max_pending_messages: usize,
-    /// Interval in seconds for cleanup of expired messages
-    pub cleanup_interval_secs: u64,
+    pub multiplier: f64,
 }
 
 impl Default for RetryConfig {
@@ -259,17 +259,8 @@ impl Default for RetryConfig {
             initial_retry_delay_ms: 1000,
             max_retry_delay_ms: 30000,
             backoff_multiplier: 2.0,
-            max_pending_messages: 10000,
-            cleanup_interval_secs: 60,
         }
     }
-}
-
-struct PendingMessage {
-    data: OtapPdata,
-    retry_count: usize,
-    next_retry_time: Instant,
-    last_error: String,
 }
 
 /// OTAP RetryProcessor
@@ -282,16 +273,10 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
 
 /// A processor that handles message retries with exponential backoff
 ///
-/// The RetryProcessor maintains a queue of messages that have failed processing
-/// and retries them according to the configured retry policy. It tracks each
-/// message with a unique ID and implements exponential backoff for retry delays.
-/// Register SignalTypeRouter as an OTAP processor factory
+/// This component only maintains state in the request context.
 pub struct RetryProcessor {
     config: RetryConfig,
-    pending_messages: HashMap<u64, PendingMessage>,
-    next_message_id: u64,
-    last_cleanup_time: Instant,
-    /// Optional metrics handle (present when constructed with a PipelineContext)
+    /// Metrics handle will be None in testing.
     metrics: Option<MetricSet<RetryProcessorMetrics>>,
 }
 
@@ -302,17 +287,14 @@ pub fn create_retry_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    // Deserialize the (currently empty) router configuration
     let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
             error: format!("Failed to parse retry configuration: {e}"),
         }
     })?;
 
-    // Create the router processor with metrics registered for this node
     let router = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config);
 
-    // Create NodeUserConfig and wrap as local processor
     let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
 
     Ok(ProcessorWrapper::local(
@@ -323,14 +305,10 @@ pub fn create_retry_processor(
     ))
 }
 
-/// RetryState is a placeholder for assumptions the retry_processor
-/// makes about Ack/Nack message identifiers. This is to satisfy
-/// internal testing, however we plan to use a stateless design where
-/// retry count and timestamp are stored in call data, not separate
-/// maps.
+/// RetryState is the count of retries
 #[derive(Debug)]
 struct RetryState {
-    id: u64,
+    retries: usize,
 }
 
 impl RetryState {
