@@ -608,9 +608,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
-                NodeControlMsg::CollectTelemetry => {
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
                     if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = effect_handler.report_metrics(metrics);
+                        let _ = metrics_reporter.report(metrics);
                     }
                     Ok(())
                 }
@@ -1176,7 +1178,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh =
-            make_effect_handler_with_metrics_reporter("retry_proc_telemetry", senders, reporter);
+            make_effect_handler_with_metrics_reporter("retry_proc_telemetry", senders, reporter.clone());
 
         // Enqueue a message (should inc msgs.enqueued) and send downstream
         let pdata = make_test_pdata();
@@ -1207,9 +1209,14 @@ mod tests {
         .unwrap();
 
         // Trigger telemetry snapshot (report + reset)
-        proc.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
-            .await
-            .unwrap();
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
 
         // Allow collector to pull the snapshot
         sleep(Duration::from_millis(50)).await;
@@ -1266,7 +1273,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
         let mut eh =
-            make_effect_handler_with_metrics_reporter("retry_queue_full", senders, reporter);
+            make_effect_handler_with_metrics_reporter("retry_queue_full", senders, reporter.clone());
 
         // 1st message enqueues fine
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1281,9 +1288,14 @@ mod tests {
         assert!(res.is_err(), "expected queue full error");
 
         // Report telemetry
-        proc.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
-            .await
-            .unwrap();
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
         sleep(Duration::from_millis(50)).await;
 
         let map = collect_retry_metrics_map(&registry);
@@ -1320,7 +1332,7 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = make_effect_handler_with_metrics_reporter("retry_exceeded", senders, reporter);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_exceeded", senders, reporter.clone());
 
         // Enqueue and send downstream
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1345,9 +1357,14 @@ mod tests {
         .unwrap();
 
         // Collect telemetry
-        proc.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
-            .await
-            .unwrap();
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
         sleep(Duration::from_millis(30)).await;
 
         let map = collect_retry_metrics_map(&registry);
@@ -1402,11 +1419,16 @@ mod tests {
         let (tx_out, _rx_out) = mpsc::Channel::new(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = make_effect_handler_with_metrics_reporter("retry_cleanup", senders, reporter);
+        let mut eh = make_effect_handler_with_metrics_reporter("retry_cleanup", senders, reporter.clone());
 
-        proc.process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
-            .await
-            .unwrap();
+        proc.process(
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }),
+            &mut eh,
+        )
+        .await
+        .unwrap();
         sleep(Duration::from_millis(30)).await;
 
         let map = collect_retry_metrics_map(&registry);

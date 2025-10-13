@@ -703,9 +703,11 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         effect.info(LOG_MSG_SHUTTING_DOWN).await;
                         Ok(())
                     }
-                    NodeControlMsg::CollectTelemetry => {
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => {
                         if let Some(metrics) = &mut self.metrics {
-                            let _ = effect.report_metrics(metrics);
+                            let _ = metrics_reporter.report(metrics);
                         }
                         Ok(())
                     }
@@ -1006,6 +1008,7 @@ mod tests {
 
         let test_rt = TestRuntime::new();
         let registry = test_rt.metrics_registry();
+        let reporter = test_rt.metrics_reporter();
 
         // Create a MetricSet for the batch processor using a PipelineContext bound to the registry
         let controller_ctx = ControllerContext::new(registry.clone());
@@ -1067,20 +1070,26 @@ mod tests {
                 .expect("timer tick");
 
             // 4) Trigger telemetry collection (report + reset)
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-                .await
-                .expect("collect telemetry");
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }))
+            .await
+            .expect("collect telemetry");
 
             // Let collector accumulate snapshot and flush again to minimize timing races.
             ctx.sleep(Duration::from_millis(10)).await;
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-                .await
-                .expect("collect telemetry (2)");
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }))
+            .await
+            .expect("collect telemetry (2)");
             ctx.sleep(Duration::from_millis(10)).await;
             // 5) One more collection to ensure snapshots hit the collector
-            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-                .await
-                .expect("collect telemetry (3)");
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            }))
+            .await
+            .expect("collect telemetry (3)");
             ctx.sleep(Duration::from_millis(30)).await;
         });
 

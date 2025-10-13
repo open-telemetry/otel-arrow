@@ -173,9 +173,12 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(ctrl) => {
-                if let NodeControlMsg::CollectTelemetry = ctrl {
+                if let NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } = ctrl
+                {
                     if let Some(m) = self.metrics.as_mut() {
-                        let _ = effect_handler.report_metrics(m);
+                        let _ = metrics_reporter.report(m);
                     }
                 }
                 Ok(())
@@ -456,7 +459,12 @@ mod tests {
 
                 // Flush metrics via CollectTelemetry
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
 
@@ -518,7 +526,12 @@ mod tests {
 
                 // Flush metrics
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -580,7 +593,12 @@ mod tests {
                 let _ = rx_out.recv().await.expect("no message on default port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -641,7 +659,12 @@ mod tests {
                 );
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -701,7 +724,12 @@ mod tests {
                 let _ = rx.recv().await.expect("no message on traces port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -749,7 +777,12 @@ mod tests {
                 assert!(res.is_err(), "expected failure on named traces port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -799,7 +832,12 @@ mod tests {
                 let _ = rx.recv().await.expect("no message on default port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -847,7 +885,12 @@ mod tests {
                 assert!(res.is_err(), "expected failure on default traces route");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -898,7 +941,12 @@ mod tests {
                 let _ = rx.recv().await.expect("no message on metrics port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -948,7 +996,12 @@ mod tests {
                 assert!(res.is_err(), "expected failure on named metrics port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1000,7 +1053,12 @@ mod tests {
                 let _ = rx.recv().await.expect("no message on default port");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1050,7 +1108,12 @@ mod tests {
                 assert!(res.is_err(), "expected failure on default metrics route");
 
                 router
-                    .process(Message::Control(NodeControlMsg::CollectTelemetry), &mut eh)
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter.clone(),
+                        }),
+                        &mut eh,
+                    )
                     .await
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;

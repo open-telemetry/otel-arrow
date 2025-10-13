@@ -98,7 +98,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        mut effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
@@ -155,8 +155,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry) => {
-                    _ = effect_handler.report_metrics(&mut self.pdata_metrics);
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {
                     // Capture signal type before moving pdata into try_from
@@ -536,6 +538,7 @@ mod tests {
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+            metrics_reporter: MetricsReporter
         ) -> Result<(), Error> {
             // pdata
             let req = ExportLogsServiceRequest::default();
@@ -599,7 +602,9 @@ mod tests {
 
             // check the metrics:
             control_sender
-                .send(NodeControlMsg::CollectTelemetry)
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: metrics_reporter.clone(),
+                })
                 .await
                 .unwrap();
             // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -674,7 +679,7 @@ mod tests {
 
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter),
+                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter.clone()),
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
@@ -684,7 +689,8 @@ mod tests {
                     pdata_tx,
                     control_sender,
                     req_receiver,
-                    metrics_rx
+                    metrics_rx,
+                    metrics_reporter
                 )
             )
         });

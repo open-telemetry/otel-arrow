@@ -106,7 +106,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        mut effect_handler: local::EffectHandler<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
@@ -197,11 +197,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     // handle control messages
                     Message::Control(NodeControlMsg::TimerTick { .. })
                     | Message::Control(NodeControlMsg::Config { .. }) => {}
-                    Message::Control(NodeControlMsg::CollectTelemetry) => {
-                        _ = effect_handler.report_metrics(&mut self.pdata_metrics);
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    }) => {
+                        _ = metrics_reporter.report(&mut self.pdata_metrics);
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                        dbg!("ControlMsg::Shutdown received in OTAPExporter");
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -211,6 +214,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     //send data
                     Message::PData(pdata) => {
+                        dbg!(&pdata);
                         // Capture signal type before moving pdata into try_from
                         let signal_type = pdata.signal_type();
 
@@ -606,6 +610,7 @@ mod tests {
                 .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
                     let _ = shutdown_signal.await;
+                    dbg!("shutdown complete");
                 })
                 .await
                 .expect("Test gRPC server has failed");
@@ -622,8 +627,7 @@ mod tests {
             "compression_method": "none"
         });
         // Create a proper pipeline context for the benchmark
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
@@ -807,6 +811,7 @@ mod tests {
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+            metrics_reporter: MetricsReporter
         ) {
             // send a request before while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -837,7 +842,9 @@ mod tests {
 
             // check the metrics:
             control_sender
-                .send(NodeControlMsg::CollectTelemetry)
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: metrics_reporter.clone(),
+                })
                 .await
                 .unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
@@ -896,8 +903,9 @@ mod tests {
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
+            let metrics_reporter_start_exporter = metrics_reporter.clone();
             let _fut = local_set.spawn_local(async move {
-                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter).await
+                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter_start_exporter).await
             });
             tokio::join!(
                 local_set,
@@ -908,7 +916,8 @@ mod tests {
                     pdata_tx,
                     control_sender,
                     req_receiver,
-                    metrics_rx
+                    metrics_rx,
+                    metrics_reporter
                 )
             )
         });

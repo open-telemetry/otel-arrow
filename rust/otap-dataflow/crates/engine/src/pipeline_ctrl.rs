@@ -13,6 +13,7 @@
 
 use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
@@ -166,6 +167,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     telemetry_timers: TimerSet,
     /// Delayed data in activation order.
     delayed_data: BinaryHeap<Delayed<PData>>,
+    /// Global metrics reporter.
+    metrics_reporter: MetricsReporter,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
@@ -174,6 +177,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
@@ -181,6 +185,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
             delayed_data: BinaryHeap::new(),
+            metrics_reporter,
         }
     }
 
@@ -255,8 +260,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     });
 
                     // Fire all due telemetry timers
+                    let metrics_reporter = self.metrics_reporter.clone();
                     self.telemetry_timers.fire_due(now, |node_id| {
-                        to_send.push((*node_id, NodeControlMsg::CollectTelemetry));
+                        to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
                     });
 
                     // Unstall delayed data.
@@ -369,7 +375,12 @@ mod tests {
             let _ = control_receivers.insert(node.index, receiver);
         }
 
-        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
+        // Create a dummy MetricsReporter for testing using MetricsSystem
+        let config = otap_df_telemetry::config::Config::default();
+        let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
+        let metrics_reporter = metrics_system.reporter();
+
+        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders, metrics_reporter);
         (manager, pipeline_tx, control_receivers, nodes)
     }
 
@@ -718,7 +729,7 @@ mod tests {
                     "Should receive CollectTelemetry within timeout"
                 );
                 match telemetry_result.unwrap() {
-                    Ok(NodeControlMsg::CollectTelemetry) => {
+                    Ok(NodeControlMsg::CollectTelemetry { .. }) => {
                         // Success - received expected CollectTelemetry
                     }
                     Ok(other) => panic!("Expected CollectTelemetry, got {other:?}"),
@@ -750,8 +761,15 @@ mod tests {
         local
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                // Create a dummy MetricsReporter for testing
+                let (metrics_tx, _metrics_rx) = flume::unbounded();
+                let metrics_reporter = MetricsReporter::new(metrics_tx);
                 // Create manager with empty control_senders map (no registered nodes)
-                let manager = PipelineCtrlMsgManager::<()>::new(pipeline_rx, ControlSenders::new());
+                let manager = PipelineCtrlMsgManager::<()>::new(
+                    pipeline_rx,
+                    ControlSenders::new(),
+                    metrics_reporter,
+                );
                 let duration = Duration::from_millis(50);
 
                 // Start the manager in the background

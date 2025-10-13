@@ -151,7 +151,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        mut effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
@@ -226,12 +226,14 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         }
                     }
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry) => {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
                     if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        _ = effect_handler.report_metrics(metrics);
+                        _ = metrics_reporter.report(metrics);
                     }
                     if let Some(metrics) = self.io_metrics.as_mut() {
-                        _ = effect_handler.report_metrics(metrics);
+                        _ = metrics_reporter.report(metrics);
                     }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
@@ -1433,6 +1435,7 @@ mod test {
         async fn drive_test(
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             pdata_tx: Sender<OtapPdata>,
+            reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) {
             // Send minimal pdata to increment pdata metrics (consumed)
             let logs = Consumer::default()
@@ -1456,7 +1459,9 @@ mod test {
 
             // Trigger telemetry collection
             control_sender
-                .send(NodeControlMsg::CollectTelemetry)
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter.clone(),
+                })
                 .await
                 .unwrap();
 
@@ -1479,7 +1484,7 @@ mod test {
 
             tokio::join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
-                drive_test(control_sender, pdata_tx),
+                drive_test(control_sender, pdata_tx, reporter.clone()),
             )
         }));
 

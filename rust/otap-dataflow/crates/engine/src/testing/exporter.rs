@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
+use otap_df_telemetry::MetricsSystem;
 
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
@@ -152,6 +153,8 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
+    metrics_system: MetricsSystem,
+
     _pd: PhantomData<PData>,
 }
 
@@ -190,6 +193,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
+        let metrics_system = MetricsSystem::default();
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
@@ -199,6 +203,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt,
             local_tasks,
             counter,
+            metrics_system,
             _pd: PhantomData,
         }
     }
@@ -206,6 +211,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the current exporter configuration.
     pub fn config(&self) -> &ExporterConfig {
         &self.config
+    }
+
+    /// Returns a handle to the metrics registry.
+    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+        self.metrics_system.registry()
+    }
+
+    /// Returns a metrics reporter for use in the processor runtime.
+    pub fn metrics_reporter(&self) -> MetricsReporter {
+        self.metrics_system.reporter()
     }
 
     /// Returns the message counter.
@@ -239,15 +254,15 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let final_metrics_reporter = metrics_reporter.clone();
+        let metrics_reporter_start = self.metrics_reporter();
+        let metrics_reporter_terminal = self.metrics_reporter();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
                 .await
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {
-                        let _ = final_metrics_reporter.try_report_snapshot(snapshot);
+                        let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
                     }
                 })
         });

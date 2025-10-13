@@ -22,6 +22,7 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
+    #[allow(dead_code)]  // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
 }
 
@@ -154,6 +155,7 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Reports the provided metrics to the engine.
+    #[allow(dead_code)]  // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
         &mut self,
         metrics: &mut MetricSet<M>,

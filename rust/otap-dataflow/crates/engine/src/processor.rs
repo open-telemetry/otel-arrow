@@ -227,7 +227,7 @@ impl<PData> ProcessorWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime(metrics_reporter).await?;
+        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -244,7 +244,7 @@ impl<PData> ProcessorWrapper<PData> {
                 // Collect final metrics before exiting
                 processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry),
+                        Message::Control(NodeControlMsg::CollectTelemetry {metrics_reporter}),
                         &mut effect_handler,
                     )
                     .await?
@@ -263,7 +263,7 @@ impl<PData> ProcessorWrapper<PData> {
                 // Collect final metrics before exiting
                 processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry),
+                        Message::Control(NodeControlMsg::CollectTelemetry {metrics_reporter}),
                         &mut effect_handler,
                     )
                     .await?

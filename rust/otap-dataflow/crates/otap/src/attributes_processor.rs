@@ -284,9 +284,11 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(control_msg) => match control_msg {
-                otap_df_engine::control::NodeControlMsg::CollectTelemetry => {
+                otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
                     if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = effect_handler.report_metrics(metrics);
+                        let _ = metrics_reporter.report(metrics);
                     }
                     Ok(())
                 }
@@ -1003,6 +1005,7 @@ mod telemetry_tests {
 
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let registry = rt.metrics_registry();
+        let metrics_reporter = rt.metrics_reporter();
 
         // Shared place to store the collector JoinHandle started inside the runtime
         // let collector_handle: Arc<
@@ -1088,9 +1091,11 @@ mod telemetry_tests {
                 ctx.process(Message::PData(pdata)).await.expect("pdata");
 
                 // Trigger telemetry snapshot
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry))
-                    .await
-                    .expect("collect");
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect");
             })
             .validate(move |_| async move {
                 // Allow the collector to pull from the channel

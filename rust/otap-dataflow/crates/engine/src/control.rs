@@ -11,6 +11,7 @@ use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
+use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -137,7 +138,10 @@ pub enum NodeControlMsg<PData> {
     ///
     /// This separates metrics collection from the generic TimerTick to allow
     /// fine-grained scheduling of telemetry without conflating it with other periodic tasks.
-    CollectTelemetry,
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
+    },
 
     /// Delayed data returning to the node which delayed it.
     DelayedData {
