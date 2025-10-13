@@ -39,6 +39,8 @@ clap = { version = "4.5.42", features = ["derive"] }
 mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
+portpicker = "0.1.1"
+
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
 ciborium = "0.2.2"
