@@ -2,11 +2,11 @@ module github.com/open-telemetry/otel-arrow/go
 
 go 1.24.0
 
-toolchain go1.24.5
+toolchain go1.25.3
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2
-	github.com/apache/arrow-go/v18 v18.2.0
+	github.com/apache/arrow-go/v18 v18.4.1
 	github.com/axiomhq/hyperloglog v0.2.5
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
@@ -15,13 +15,13 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.6.1+incompatible
 	github.com/stretchr/testify v1.11.1
-	go.opentelemetry.io/collector/pdata v1.42.0
-	go.opentelemetry.io/otel v1.37.0
-	go.opentelemetry.io/otel/metric v1.37.0
-	go.uber.org/mock v0.5.2
-	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
-	google.golang.org/grpc v1.75.1
-	google.golang.org/protobuf v1.36.9
+	go.opentelemetry.io/collector/pdata v1.43.0
+	go.opentelemetry.io/otel v1.38.0
+	go.opentelemetry.io/otel/metric v1.38.0
+	go.uber.org/mock v0.6.0
+	golang.org/x/exp d2f985daa21b
+	google.golang.org/grpc v1.76.0
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
