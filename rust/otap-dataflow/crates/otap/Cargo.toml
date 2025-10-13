@@ -45,7 +45,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
-otap-df-pdata-views = { path = "../pdata-views" }
+otap-df-pdata = { path = "../pdata" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 chrono = { version = "0.4", features = ["serde"] }

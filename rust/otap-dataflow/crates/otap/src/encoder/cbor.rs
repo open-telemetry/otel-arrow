@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
@@ -123,8 +123,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_pdata_views::otlp::proto::common::{ObjAny, ObjKeyValue};
-    use otap_df_pdata_views::otlp::proto::wrappers::Wraps;
+    use otap_df_pdata::views::otlp::proto::common::{ObjAny, ObjKeyValue};
+    use otap_df_pdata::views::otlp::proto::wrappers::Wraps;
     use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::{
         otlp::attributes::cbor::proto_encode_cbor_bytes,
