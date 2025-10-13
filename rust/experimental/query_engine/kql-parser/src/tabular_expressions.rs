@@ -10,9 +10,9 @@ use regex::Regex;
 
 use crate::{
     Rule,
-    aggregate_expressions::parse_aggregate_assignment_expression,
+    aggregate_expressions::parse_aggregate_expression,
     logical_expressions::parse_logical_expression,
-    scalar_expression::parse_scalar_expression,
+    scalar_expression::{parse_scalar_expression, try_resolve_identifier},
     scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
     shared_expressions::parse_source_assignment_expression,
 };
@@ -356,12 +356,32 @@ pub(crate) fn parse_summarize_expression(
     let mut aggregation_expressions: HashMap<Box<str>, AggregationExpression> = HashMap::new();
     let mut group_by_expressions: HashMap<Box<str>, ScalarExpression> = HashMap::new();
     let mut post_expressions = Vec::new();
+    let mut identifiers = HashSet::new();
+
+    fn validate_unique_identifier(
+        location: QueryLocation,
+        identifiers: &mut HashSet<Box<str>>,
+        identifier: &str,
+    ) -> Result<(), ParserError> {
+        if !identifiers.insert(identifier.into()) {
+            return Err(ParserError::QueryLanguageDiagnostic {
+                location,
+                diagnostic_id: "KS171",
+                message: format!("A column with the name '{identifier}' is already declared"),
+            });
+        }
+
+        Ok(())
+    }
 
     for summarize_rule in summarize_expression_rule.into_inner() {
         match summarize_rule.as_rule() {
-            Rule::aggregate_assignment_expression => {
-                let (key, aggregate) =
-                    parse_aggregate_assignment_expression(summarize_rule, scope)?;
+            Rule::aggregate_expression => {
+                let location = to_query_location(&summarize_rule);
+
+                let (key, aggregate) = parse_aggregate_expression(summarize_rule, scope)?;
+
+                validate_unique_identifier(location, &mut identifiers, key.as_ref())?;
 
                 aggregation_expressions.insert(key, aggregate);
             }
@@ -373,64 +393,54 @@ pub(crate) fn parse_summarize_expression(
 
                 match group_by_first_rule.as_rule() {
                     Rule::identifier_literal => {
-                        let identifier = group_by_first_rule.as_str().trim();
-
-                        validate_summary_identifier(
+                        let identifier = validate_summary_identifier(
                             scope,
+                            group_by_first_rule_location.clone(),
+                            &[group_by_first_rule.as_str().trim().into()],
+                        )?;
+
+                        validate_unique_identifier(
                             group_by_first_rule_location,
-                            identifier,
+                            &mut identifiers,
+                            identifier.as_ref(),
                         )?;
 
                         let scalar = parse_scalar_expression(group_by.next().unwrap(), scope)?;
 
                         group_by_expressions.insert(identifier.into(), scalar);
                     }
-                    Rule::accessor_expression => {
-                        let mut accessor =
-                            parse_accessor_expression(group_by_first_rule, scope, true)?;
+                    Rule::scalar_expression => {
+                        let scalar = parse_scalar_expression(group_by_first_rule, scope)?;
 
-                        // Note: The call here into try_resolve_static is to
-                        // make sure all eligible selectors on the accessor are
-                        // folded into static values.
-                        accessor
-                            .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
-                            .map_err(|e| ParserError::from(&e))?;
+                        match try_resolve_identifier(&scalar, scope)? {
+                            Some(identifier) => {
+                                let full_identifier = validate_summary_identifier(
+                                    scope,
+                                    group_by_first_rule_location.clone(),
+                                    &identifier,
+                                )?;
 
-                        match &accessor {
-                            ScalarExpression::Source(s) => {
-                                group_by_expressions.insert(
-                                    parse_group_by_accessor(
-                                        &group_by_first_rule_location,
-                                        s.get_value_accessor(),
-                                        scope,
-                                    )?,
-                                    accessor,
-                                );
-                            }
-                            ScalarExpression::Attached(a) => {
-                                group_by_expressions.insert(
-                                    parse_group_by_accessor(
-                                        &group_by_first_rule_location,
-                                        a.get_value_accessor(),
-                                        scope,
-                                    )?,
-                                    accessor,
-                                );
-                            }
-                            ScalarExpression::Variable(v) => {
-                                group_by_expressions.insert(
-                                    parse_group_by_accessor(
-                                        &group_by_first_rule_location,
-                                        v.get_value_accessor(),
-                                        scope,
-                                    )?,
-                                    accessor,
-                                );
+                                if full_identifier.is_empty()
+                                    || scope.is_attached_data_defined(&full_identifier)
+                                {
+                                    return Err(ParserError::SyntaxError(
+                                        query_location.clone(),
+                                        "Cannot refer to a root map directly in a group-by expression".into(),
+                                    ));
+                                }
+
+                                validate_unique_identifier(
+                                    group_by_first_rule_location,
+                                    &mut identifiers,
+                                    full_identifier.as_ref(),
+                                )?;
+
+                                group_by_expressions.insert(full_identifier.into(), scalar);
                             }
                             _ => {
                                 return Err(ParserError::SyntaxError(
                                     group_by_first_rule_location,
-                                    "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                                    "Could not determine the identifier for summary group-by expression. Try using assignment syntax instead (identifier = [expression]).".into(),
                                 ));
                             }
                         }
@@ -457,10 +467,10 @@ pub(crate) fn parse_summarize_expression(
     }
 
     if group_by_expressions.is_empty() && aggregation_expressions.is_empty() {
-        return Err(ParserError::SyntaxError(
+        Err(ParserError::SyntaxError(
             query_location,
             "Invalid summarize operator: missing both aggregates and group-by expressions".into(),
-        ));
+        ))
     } else {
         let mut summary = SummaryDataExpression::new(
             query_location,
@@ -474,55 +484,7 @@ pub(crate) fn parse_summarize_expression(
             }
         }
 
-        return Ok(DataExpression::Summary(summary));
-    }
-
-    fn parse_group_by_accessor(
-        query_location: &QueryLocation,
-        value_accessor: &ValueAccessor,
-        scope: &dyn ParserScope,
-    ) -> Result<Box<str>, ParserError> {
-        fn try_read_string(
-            scalar: &ScalarExpression,
-            value: &StaticScalarExpression,
-        ) -> Result<Box<str>, ParserError> {
-            match value.to_value() {
-                Value::String(s) => {
-                    Ok(s.get_value().into())
-                }
-                _ => {
-                    Err(ParserError::SyntaxError(
-                        scalar.get_query_location().clone(),
-                        "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
-                    ))
-                }
-            }
-        }
-
-        let selectors = value_accessor.get_selectors();
-        if selectors.is_empty() {
-            Err(ParserError::SyntaxError(
-                query_location.clone(),
-                "Cannot refer to a root map directly in a group-by expression".into(),
-            ))
-        } else {
-            let last = selectors.last().unwrap();
-            match scope.scalar_as_static(last) {
-                Some(v) => {
-                    let identifier = try_read_string(last, v)?;
-
-                    validate_summary_identifier(scope, v.get_query_location().clone(), &identifier)?;
-
-                    Ok(identifier)
-                }
-                None => {
-                    Err(ParserError::SyntaxError(
-                        last.get_query_location().clone(),
-                        "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
-                    ))
-                }
-            }
-        }
+        Ok(DataExpression::Summary(summary))
     }
 }
 
@@ -705,36 +667,41 @@ fn parse_identifier_or_pattern_literal(
 pub(crate) fn validate_summary_identifier(
     scope: &dyn ParserScope,
     location: QueryLocation,
-    identifier: &str,
-) -> Result<(), ParserError> {
+    identifier: &[Box<str>],
+) -> Result<String, ParserError> {
     if let Some(schema) = scope.get_summary_schema() {
-        if schema.get_schema_for_key(identifier).is_some() {
-            Ok(())
+        let full_identifier = identifier.join("_");
+
+        if schema
+            .get_schema_for_key(full_identifier.as_str())
+            .is_some()
+        {
+            Ok(full_identifier)
         } else if let Some((_, schema)) = schema.get_default_map() {
             if let Some(schema) = schema
-                && let None = schema.get_schema_for_key(identifier)
+                && let None = schema.get_schema_for_key(full_identifier.as_str())
             {
                 Err(ParserError::QueryLanguageDiagnostic {
                     location,
                     diagnostic_id: "KS109",
                     message: format!(
-                        "The name '{identifier}' does not refer to any known column, table, variable or function",
+                        "The name '{full_identifier}' does not refer to any known column, table, variable or function",
                     ),
                 })
             } else {
-                Ok(())
+                Ok(full_identifier)
             }
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
                 diagnostic_id: "KS109",
                 message: format!(
-                    "The name '{identifier}' does not refer to any known column, table, variable or function",
+                    "The name '{full_identifier}' does not refer to any known column, table, variable or function",
                 ),
             })
         }
     } else {
-        Ok(())
+        Ok(identifier.join("_"))
     }
 }
 
@@ -1075,6 +1042,7 @@ fn push_map_transformation_expression(
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeDelta;
     use pest::Parser;
 
     use crate::KqlPestParser;
@@ -2944,7 +2912,7 @@ mod tests {
             assert_eq!(DataExpression::Summary(expected), expression);
         };
 
-        let run_test_failure = |input: &str, expected: &str| {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_message: &str| {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
@@ -2970,7 +2938,13 @@ mod tests {
 
             let e = parse_summarize_expression(result.next().unwrap(), &state).unwrap_err();
 
-            assert!(matches!(e, ParserError::SyntaxError(_, msg) if msg == expected))
+            if let Some(expected_id) = expected_id {
+                assert!(
+                    matches!(e, ParserError::QueryLanguageDiagnostic{location: _, diagnostic_id: id, message: msg} if id == expected_id && msg == expected_message)
+                )
+            } else {
+                assert!(matches!(e, ParserError::SyntaxError(_, msg) if msg == expected_message))
+            }
         };
 
         run_test_success(
@@ -2984,6 +2958,81 @@ mod tests {
                         QueryLocation::new_fake(),
                         AggregationFunction::Count,
                         None,
+                    ),
+                )]),
+            ),
+        );
+
+        run_test_success(
+            "summarize count()",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "count".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+        );
+
+        run_test_success(
+            "summarize avg(some_attr)",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "avg_some_attr".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Average,
+                        Some(ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "some_attr",
+                                    ),
+                                )),
+                            ]),
+                        ))),
+                    ),
+                )]),
+            ),
+        );
+
+        run_test_success(
+            "summarize avg(strlen(a))",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "avg_len_a".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Average,
+                        Some(ScalarExpression::Length(LengthScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "a",
+                                    )),
+                                )]),
+                            )),
+                        ))),
                     ),
                 )]),
             ),
@@ -3143,7 +3192,7 @@ mod tests {
             SummaryDataExpression::new(
                 QueryLocation::new_fake(),
                 HashMap::from([(
-                    "const_str".into(),
+                    "const".into(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new_with_selectors(vec![
@@ -3153,15 +3202,11 @@ mod tests {
                                     "Attributes",
                                 ),
                             )),
-                            ScalarExpression::Static(StaticScalarExpression::Constant(
-                                CopyConstantScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    0,
-                                    StaticScalarExpression::String(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "const_str",
-                                    )),
-                                ),
+                            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::String,
+                                0,
+                                ValueAccessor::new(),
                             )),
                         ]),
                     )),
@@ -3175,7 +3220,7 @@ mod tests {
             SummaryDataExpression::new(
                 QueryLocation::new_fake(),
                 HashMap::from([(
-                    "else".into(),
+                    "something_else".into(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new_with_selectors(vec![
@@ -3203,7 +3248,7 @@ mod tests {
             SummaryDataExpression::new(
                 QueryLocation::new_fake(),
                 HashMap::from([(
-                    "service.name".into(),
+                    "resource_Attributes_service.name".into(),
                     ScalarExpression::Attached(AttachedScalarExpression::new(
                         QueryLocation::new_fake(),
                         StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
@@ -3227,29 +3272,130 @@ mod tests {
             ),
         );
 
+        run_test_success(
+            "summarize by Attributes['array'][0]",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "array_0".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "array"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                            )),
+                        ]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by const",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "const".into(),
+                    ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueType::String,
+                        0,
+                        ValueAccessor::new(),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by bin(TimeGenerated, 1m)",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "TimeGenerated".into(),
+                    ScalarExpression::Math(MathScalarExpression::Bin(
+                        BinaryMathematicalScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "Attributes",
+                                        ),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "TimeGenerated",
+                                        ),
+                                    )),
+                                ]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                                TimeSpanScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    TimeDelta::minutes(1),
+                                ),
+                            )),
+                        ),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
         run_test_failure(
             "summarize | extend v = 1",
+            None,
             "Invalid summarize operator: missing both aggregates and group-by expressions",
         );
 
         run_test_failure(
+            "summarize by source",
+            None,
+            "Cannot refer to a root map directly in a group-by expression",
+        );
+
+        run_test_failure(
             "summarize by resource",
+            None,
             "Cannot refer to a root map directly in a group-by expression",
         );
 
         run_test_failure(
             "summarize by Attributes[tostring(now())]",
-            "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+            None,
+            "Could not determine the identifier for summary group-by expression. Try using assignment syntax instead (identifier = [expression]).",
         );
 
         run_test_failure(
-            "summarize by Attributes['array'][0]",
-            "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+            "summarize Count = count(), Count = count()",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
         );
 
         run_test_failure(
-            "summarize by const",
-            "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+            "summarize Count = count() by Count = 1",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
+        );
+
+        run_test_failure(
+            "summarize by Count = 1, Count = 2",
+            Some("KS171"),
+            "A column with the name 'Count' is already declared",
         );
     }
 
