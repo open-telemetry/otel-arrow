@@ -155,7 +155,7 @@ queries:
           t.component_name,
           t.metric_name,
           t.core_id,
-          f.max_value - f.min_value AS total_increase,
+          f.max_value AS total_increase,
           AVG(t.rate) AS average_rate
         FROM trimmed_rates t
         JOIN full_range_aggregates f
