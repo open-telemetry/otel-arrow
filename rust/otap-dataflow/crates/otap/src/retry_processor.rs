@@ -1177,8 +1177,11 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh =
-            make_effect_handler_with_metrics_reporter("retry_proc_telemetry", senders, reporter.clone());
+        let mut eh = make_effect_handler_with_metrics_reporter(
+            "retry_proc_telemetry",
+            senders,
+            reporter.clone(),
+        );
 
         // Enqueue a message (should inc msgs.enqueued) and send downstream
         let pdata = make_test_pdata();
@@ -1272,8 +1275,11 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(2);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh =
-            make_effect_handler_with_metrics_reporter("retry_queue_full", senders, reporter.clone());
+        let mut eh = make_effect_handler_with_metrics_reporter(
+            "retry_queue_full",
+            senders,
+            reporter.clone(),
+        );
 
         // 1st message enqueues fine
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1332,7 +1338,8 @@ mod tests {
         let (tx_out, rx_out) = mpsc::Channel::new(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = make_effect_handler_with_metrics_reporter("retry_exceeded", senders, reporter.clone());
+        let mut eh =
+            make_effect_handler_with_metrics_reporter("retry_exceeded", senders, reporter.clone());
 
         // Enqueue and send downstream
         proc.process(Message::PData(make_test_pdata()), &mut eh)
@@ -1419,7 +1426,8 @@ mod tests {
         let (tx_out, _rx_out) = mpsc::Channel::new(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-        let mut eh = make_effect_handler_with_metrics_reporter("retry_cleanup", senders, reporter.clone());
+        let mut eh =
+            make_effect_handler_with_metrics_reporter("retry_cleanup", senders, reporter.clone());
 
         proc.process(
             Message::Control(NodeControlMsg::CollectTelemetry {

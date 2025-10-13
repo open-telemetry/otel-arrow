@@ -457,7 +457,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure(receiver));
@@ -538,7 +538,7 @@ mod tests {
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
-            metrics_reporter: MetricsReporter
+            metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             // pdata
             let req = ExportLogsServiceRequest::default();

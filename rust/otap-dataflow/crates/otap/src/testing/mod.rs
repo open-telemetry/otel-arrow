@@ -96,7 +96,7 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
     let test_runtime = TestRuntime::new();
     let exporter = create_exporter_from_factory(factory, config).unwrap();
 
-    test_runtime
+    _ = test_runtime
         .set_exporter(exporter)
         .run_test(|ctx| async move {
             ctx.send_pdata(create_test_pdata()).await.unwrap();
@@ -132,7 +132,7 @@ pub fn test_exporter_with_subscription(
 ) {
     let test_runtime = TestRuntime::new();
     let exporter = create_exporter_from_factory(factory, config).unwrap();
-    test_runtime
+    _ = test_runtime
         .set_exporter(exporter)
         .run_test(move |ctx| async move {
             let mut req_data = create_test_pdata();

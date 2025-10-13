@@ -637,7 +637,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure(receiver));
@@ -811,7 +811,7 @@ mod tests {
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
-            metrics_reporter: MetricsReporter
+            metrics_reporter: MetricsReporter,
         ) {
             // send a request before while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -905,7 +905,12 @@ mod tests {
             let local_set = tokio::task::LocalSet::new();
             let metrics_reporter_start_exporter = metrics_reporter.clone();
             let _fut = local_set.spawn_local(async move {
-                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter_start_exporter).await
+                start_exporter(
+                    exporter,
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter_start_exporter,
+                )
+                .await
             });
             tokio::join!(
                 local_set,

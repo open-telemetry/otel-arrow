@@ -496,7 +496,7 @@ mod test {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -600,7 +600,7 @@ mod test {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -649,7 +649,7 @@ mod test {
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 2).await;
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 2).await;
                 })
-            })
+            });
     }
 
     async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
@@ -747,7 +747,7 @@ mod test {
         );
 
         let num_rows = 100;
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(
                 num_rows,
@@ -833,7 +833,7 @@ mod test {
             test_runtime.config(),
         );
         let num_rows = 100;
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(
                 num_rows,
@@ -1257,7 +1257,7 @@ mod test {
             ))
             .unwrap();
         let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -1325,7 +1325,7 @@ mod test {
             ))
             .unwrap();
         let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -1552,7 +1552,7 @@ mod test {
             RecordBatch::try_new(schema, columns).unwrap(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -1572,6 +1572,6 @@ mod test {
                     assert!(exporter_result.is_ok());
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
                 })
-            })
+            });
     }
 }

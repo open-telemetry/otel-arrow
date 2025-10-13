@@ -379,7 +379,7 @@ mod tests {
         );
 
         // run the test
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
             .run_validation(validation_procedure());

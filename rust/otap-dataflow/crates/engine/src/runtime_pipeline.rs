@@ -162,7 +162,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders, metrics_reporter);
+            let manager = PipelineCtrlMsgManager::new(
+                pipeline_ctrl_msg_rx,
+                control_senders,
+                metrics_reporter,
+            );
             manager.run().await
         }));
 

@@ -578,7 +578,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario(port_rx))
             .run_validation(validation_procedure());
@@ -599,7 +599,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario(port_rx))
             .run_validation(validation_procedure());

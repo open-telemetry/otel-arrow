@@ -21,6 +21,7 @@ use otap_df_channel::error::RecvError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
@@ -167,6 +168,7 @@ pub struct ValidationPhase<PData> {
     local_tasks: LocalSet,
 
     counters: CtrlMsgCounters,
+    control_sender: Sender<NodeControlMsg<PData>>,
 
     pdata_receiver: Receiver<PData>,
 
@@ -180,6 +182,16 @@ pub struct ValidationPhase<PData> {
     #[allow(unused_variables)]
     #[allow(dead_code)]
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
+}
+
+/// Data and operations for the teardown phase of a receiver.
+pub struct TeardownPhase<PData, T> {
+    /// Runtime instance
+    rt: tokio::runtime::Runtime,
+    /// Test context available during teardown
+    context: TestContext<PData>,
+    /// Result produced during validation
+    validation_result: T,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -283,8 +295,9 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             }
         });
 
+        let control_sender_for_test = self.control_sender.clone();
         let context = TestContext {
-            control_sender: self.control_sender,
+            control_sender: control_sender_for_test,
         };
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;
@@ -293,6 +306,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
+            control_sender: self.control_sender,
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
@@ -314,28 +328,67 @@ impl<PData> ValidationPhase<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> T
+    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> TeardownPhase<PData, T>
     where
         F: FnOnce(NotSendValidateContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
+        let ValidationPhase {
+            rt,
+            local_tasks,
+            counters,
+            control_sender,
+            pdata_receiver,
+            run_receiver_handle,
+            run_test_handle,
+            pipeline_ctrl_msg_receiver: _,
+        } = self;
+
         let context = NotSendValidateContext {
-            pdata_receiver: self.pdata_receiver,
-            counters: self.counters,
+            pdata_receiver,
+            counters,
         };
 
         // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
+        rt.block_on(local_tasks);
 
-        self.rt
-            .block_on(self.run_receiver_handle)
+        rt.block_on(run_receiver_handle)
             .expect("Receiver task failed");
 
-        self.rt
-            .block_on(self.run_test_handle)
-            .expect("Test task failed");
+        rt.block_on(run_test_handle).expect("Test task failed");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
+        let validation_result = rt.block_on(future_fn(context));
+
+        TeardownPhase {
+            rt,
+            context: TestContext { control_sender },
+            validation_result,
+        }
+    }
+}
+
+impl<PData, T> TeardownPhase<PData, T> {
+    /// Runs the teardown phase using the provided closure and returns the validation result.
+    pub fn run_teardown<F, Fut>(self, f: F) -> T
+    where
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let TeardownPhase {
+            rt,
+            context,
+            validation_result,
+        } = self;
+
+        rt.block_on(f(context));
+
+        validation_result
+    }
+
+    /// Skips teardown, returning the validation result directly.
+    #[must_use]
+    pub fn finish(self) -> T {
+        self.validation_result
     }
 }

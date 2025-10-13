@@ -244,7 +244,7 @@ impl<PData> ProcessorWrapper<PData> {
                 // Collect final metrics before exiting
                 processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {metrics_reporter}),
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
                         &mut effect_handler,
                     )
                     .await?
@@ -263,7 +263,7 @@ impl<PData> ProcessorWrapper<PData> {
                 // Collect final metrics before exiting
                 processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {metrics_reporter}),
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
                         &mut effect_handler,
                     )
                     .await?

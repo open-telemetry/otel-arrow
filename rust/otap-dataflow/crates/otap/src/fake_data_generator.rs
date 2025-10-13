@@ -683,7 +683,7 @@ mod tests {
         );
 
         // run the test
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure(registry));
@@ -763,7 +763,7 @@ mod tests {
         );
 
         // run the test
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_message_rate());
@@ -839,7 +839,7 @@ mod tests {
         );
 
         // run the test
-        test_runtime
+        _ = test_runtime
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_max_signal());
