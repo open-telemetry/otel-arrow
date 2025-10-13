@@ -46,6 +46,9 @@ urn = "0.7"
 schemars = { version = "1.0.0" }
 data-encoding = "2.9.0"
 parking_lot = "0.12.4"
+trybuild = "1.0"
+axum = "0.8.4"
+tower = "0.5.2"
 
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
@@ -74,7 +77,7 @@ linkme = "0.3.33"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "2.0", features = ["full", "extra-traits"] }
 url = "2.5.7"
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
