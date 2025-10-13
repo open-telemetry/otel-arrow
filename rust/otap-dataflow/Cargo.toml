@@ -39,6 +39,15 @@ clap = { version = "4.5.42", features = ["derive"] }
 mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
+mimalloc = "0.1.46"
+fluke-hpack = "0.3.1"
+futures-channel = "0.3"
+local-sync = "0.1.1"
+async-unsync = "0.3.0"
+unsync = "0.1.2"
+portpicker = "0.1.1"
+tokio-stream = "0.1.17"
+
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
 ciborium = "0.2.2"
