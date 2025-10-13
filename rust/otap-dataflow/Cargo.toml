@@ -40,6 +40,17 @@ mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
 portpicker = "0.1.1"
+tower-service = "0.3"
+fluke-hpack = "0.3.1"
+tokio-stream = "0.1.17"
+async-stream = "0.3.6"
+humantime = "2.2.0"
+rand = "0.9.2"
+zip = "=4.2.0"
+
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
