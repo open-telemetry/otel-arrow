@@ -4,7 +4,7 @@ permissions:
 
 on:
     push:
-        branches: [ main ]
+        branches: [ main, enable_ci_benchmarks ]
     workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
