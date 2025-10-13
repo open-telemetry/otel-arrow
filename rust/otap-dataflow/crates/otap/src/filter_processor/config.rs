@@ -4,4 +4,11 @@
 //! Implementation of the configuration of the filter processor
 //! 
 
-pub struct Config 
+use super::filter_logs::LogFilter;
+
+pub struct Config {
+    // ToDo: add metrics and spans
+    logs: LogFilter,
+}
+
+
