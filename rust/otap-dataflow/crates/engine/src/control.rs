@@ -51,6 +51,12 @@ impl From<Context8u8> for u64 {
     }
 }
 
+impl From<Context8u8> for f64 {
+    fn from(v: Context8u8) -> f64 {
+        bytemuck::cast(v.0)
+    }
+}
+
 /// Standard context values hold two caller-specified fields.  The
 /// size is arbitrary, but shouldn't be larger than needed by
 /// callers. For example: retry count, sequence and generation

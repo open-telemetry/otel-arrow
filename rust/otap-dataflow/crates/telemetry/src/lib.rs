@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
+pub mod testing;
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
