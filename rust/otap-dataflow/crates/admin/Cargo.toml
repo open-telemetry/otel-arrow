@@ -20,9 +20,9 @@ otap-df-engine = { path = "../engine" }
 
 thiserror = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+tokio = { workspace = true }
 chrono = { workspace = true }
 tokio-util = { workspace = true }
-axum = { version = "0.8.4" }
-tower = "0.5.2"
+axum = { workspace = true }
+tower = { workspace = true }
 

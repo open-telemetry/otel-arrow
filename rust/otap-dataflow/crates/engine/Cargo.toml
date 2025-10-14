@@ -35,9 +35,6 @@ bitflags = { workspace = true }
 bytemuck = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
-
-# Deps for generating a unique per-process identifier
-uuid = { workspace = true, features = ["v7"] }
+uuid = { workspace = true }
 once_cell = { workspace = true }
-# Base32 encoding
-data-encoding = "2.9.0"
+data-encoding = { workspace = true }
