@@ -160,6 +160,15 @@ impl Context {
         }
         None
     }
+
+    /// Determine whether the context is may request return payload.
+    #[must_use]
+    pub fn may_return_payload(&self) -> bool {
+        self.stack
+            .last()
+            .map(|f| f.interests & Interests::RETURN_DATA != Interests::empty())
+            .unwrap_or(false)
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -1084,6 +1093,7 @@ mod test {
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
+        assert!(ack_msg.accepted.context.may_return_payload());
 
         // Payload should be dropped
         assert_eq!(ack_msg.accepted.num_items(), 0);
@@ -1114,6 +1124,7 @@ mod test {
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
+        assert!(!ack_msg.accepted.context.may_return_payload());
 
         // Payload should be preserved
         assert_eq!(ack_msg.accepted.num_items(), 1);

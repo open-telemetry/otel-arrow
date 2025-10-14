@@ -5,7 +5,7 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{Context, OtapPayload, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
@@ -331,6 +331,10 @@ where
         })?;
 
     let bytes = proto_buffer.as_ref().to_vec();
+    if !context.may_return_payload() {
+        // drop before the export, payload not requested
+        let _drop = otap_batch.take_payload();
+    }
     let saved_payload: OtapPayload = otap_batch.into();
 
     // Export and handle result with Ack/Nack
@@ -355,7 +359,11 @@ where
     S: crate::otap_grpc::otlp::client::ServiceDescriptor,
     Resp: prost::Message + Default + Send + 'static,
 {
-    let saved_payload = save_payload_fn(&bytes);
+    let saved_payload = if context.may_return_payload() {
+        save_payload_fn(&bytes)
+    } else {
+        save_payload_fn(&[])
+    };
 
     let result = client.export(bytes).await;
     handle_export_result(result, context, saved_payload, effect_handler).await
