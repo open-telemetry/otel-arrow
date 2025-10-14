@@ -175,6 +175,13 @@ impl<T> Receiver<T> {
     pub async fn recv(&self) -> Result<T, RecvError> {
         RecvFuture { receiver: self }.await
     }
+
+    /// Checks if the channel is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        let state = self.channel.state.borrow();
+        state.buffer.is_empty()
+    }
 }
 
 struct SendFuture<T> {

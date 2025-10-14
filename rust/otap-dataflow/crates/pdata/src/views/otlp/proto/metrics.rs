@@ -11,17 +11,20 @@ use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
     summary_data_point::ValueAtQuantile,
 };
 
-use crate::otlp::proto::common::{
-    KeyValueIter, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
-};
-use crate::otlp::proto::resource::ObjResource;
-use crate::otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps};
-use crate::views::common::{SpanId, Str, TraceId};
-use crate::views::metrics::{
-    BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
-    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
-    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
-    ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
+use crate::views::{
+    common::{SpanId, Str, TraceId},
+    metrics::{
+        BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
+        ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView,
+        HistogramDataPointView, HistogramView, MetricView, MetricsView, NumberDataPointView,
+        ResourceMetricsView, ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value,
+        ValueAtQuantileView,
+    },
+    otlp::proto::common::{
+        KeyValueIter, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
+    },
+    otlp::proto::resource::ObjResource,
+    otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */

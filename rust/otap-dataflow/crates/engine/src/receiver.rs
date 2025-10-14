@@ -16,10 +16,12 @@ use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
+use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -136,16 +138,20 @@ impl<PData> ReceiverWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-    ) -> Result<(), Error> {
-        match self {
-            ReceiverWrapper::Local {
-                node_id,
-                receiver,
-                control_receiver,
-                pdata_senders,
-                user_config,
-                ..
-            } => {
+        metrics_reporter: MetricsReporter,
+    ) -> Result<TerminalState, Error> {
+        match (self, metrics_reporter) {
+            (
+                ReceiverWrapper::Local {
+                    node_id,
+                    receiver,
+                    control_receiver,
+                    pdata_senders,
+                    user_config,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
                         receiver: node_id.clone(),
@@ -163,17 +169,21 @@ impl<PData> ReceiverWrapper<PData> {
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
+                    metrics_reporter,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
-            ReceiverWrapper::Shared {
-                node_id,
-                receiver,
-                control_receiver,
-                pdata_senders,
-                user_config,
-                ..
-            } => {
+            (
+                ReceiverWrapper::Shared {
+                    node_id,
+                    receiver,
+                    control_receiver,
+                    pdata_senders,
+                    user_config,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
                         receiver: node_id.clone(),
@@ -191,6 +201,7 @@ impl<PData> ReceiverWrapper<PData> {
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
+                    metrics_reporter,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -289,6 +300,7 @@ mod tests {
     use crate::local::receiver as local;
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
+    use crate::terminal_state::TerminalState;
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
@@ -298,6 +310,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -330,7 +343,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -399,7 +412,7 @@ mod tests {
                 }
             }
 
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -409,7 +422,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -478,7 +491,7 @@ mod tests {
                 }
             }
 
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -523,7 +536,7 @@ mod tests {
                     .expect("Failed to send config");
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(200), "Test")
+                ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "Test")
                     .await
                     .expect("Failed to send Shutdown");
 
