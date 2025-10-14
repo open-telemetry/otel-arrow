@@ -301,7 +301,7 @@ async fn handle_export_result<T>(
 }
 
 /// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
-/// and handling Ack/Nack delivery. Returns true on success, false on failure.
+/// and handling Ack/Nack delivery.
 async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
     mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
     context: Context,
@@ -339,7 +339,6 @@ where
 }
 
 /// Generic function for exporting OTLP bytes via gRPC and handling Ack/Nack delivery.
-/// Returns true on success, false on failure.
 async fn handle_otlp_export<T2, Resp, S>(
     bytes: Vec<u8>,
     context: Context,
