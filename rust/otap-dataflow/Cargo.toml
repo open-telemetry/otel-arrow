@@ -35,11 +35,11 @@ otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
-clap = { version = "4.5.42", features = ["derive"] }
-mimalloc-rust = "0.2.1"
+clap.workspace = true
+mimalloc-rust.workspace = true
 
 [workspace.dependencies]
-mimalloc = "0.1.46"
+
 fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 local-sync = "0.1.1"
@@ -47,6 +47,27 @@ async-unsync = "0.3.0"
 unsync = "0.1.2"
 portpicker = "0.1.1"
 tokio-stream = "0.1.17"
+
+tower-service = "0.3"
+async-stream = "0.3.6"
+humantime = "2.2.0"
+rand = "0.9.2"
+zip = "=4.2.0"
+
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+
+mimalloc-rust = "0.2.1"
+clap = { version = "4.5.42", features = ["derive"] }
+arrayvec = "0.7.6"
+urn = "0.7"
+schemars = { version = "1.0.0" }
+data-encoding = "2.9.0"
+parking_lot = "0.12.4"
+trybuild = "1.0"
+axum = "0.8.4"
+tower = "0.5.2"
 
 arrow = "56.1"
 arrow-ipc = { version = "56.1", features=["zstd"] }
@@ -65,7 +86,7 @@ serde_json = { version = "1.0.142" }
 serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 tokio-util = { version = "0.7.16" }
-uuid = { version = "1.17.0", features = ["v4"] }
+uuid = { version = "1.17.0", features = ["v4", "v7"] }
 async-trait = "0.1.88"
 futures = "0.3.31"
 log = "0.4"
@@ -75,7 +96,7 @@ linkme = "0.3.33"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "2.0", features = ["full", "extra-traits"] }
 url = "2.5.7"
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}

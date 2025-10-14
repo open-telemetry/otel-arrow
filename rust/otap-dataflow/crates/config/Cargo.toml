@@ -17,7 +17,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-miette = {workspace = true}
-urn = "0.7"
-
-schemars = { version="1.0.0" }
+miette = { workspace = true }
+urn = { workspace = true }
+schemars = { workspace = true }
