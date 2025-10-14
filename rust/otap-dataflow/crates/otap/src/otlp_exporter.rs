@@ -177,7 +177,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await
                             {
-                                Ok(true) => self.pdata_metrics.logs_exported.inc(),
+                                Ok(()) => self.pdata_metrics.logs_exported.inc(),
                                 _ => self.pdata_metrics.logs_failed.inc(),
                             }
                         }
@@ -192,7 +192,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await
                             {
-                                Ok(true) => self.pdata_metrics.metrics_exported.inc(),
+                                Ok(()) => self.pdata_metrics.metrics_exported.inc(),
                                 _ => self.pdata_metrics.metrics_failed.inc(),
                             }
                         }
@@ -207,7 +207,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await
                             {
-                                Ok(true) => self.pdata_metrics.traces_exported.inc(),
+                                Ok(()) => self.pdata_metrics.traces_exported.inc(),
                                 _ => self.pdata_metrics.traces_failed.inc(),
                             }
                         }
@@ -223,10 +223,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     )
                                     .await
                                     {
-                                        Ok(true) => self.pdata_metrics.logs_exported.inc(),
+                                        Ok(()) => self.pdata_metrics.logs_exported.inc(),
                                         _ => self.pdata_metrics.logs_failed.inc(),
                                     }
-                                    Ok::<(), Error>(())
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                                     match handle_otlp_export(
@@ -238,10 +237,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     )
                                     .await
                                     {
-                                        Ok(true) => self.pdata_metrics.metrics_exported.inc(),
+                                        Ok(()) => self.pdata_metrics.metrics_exported.inc(),
                                         _ => self.pdata_metrics.metrics_failed.inc(),
                                     }
-                                    Ok::<(), Error>(())
                                 }
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
                                     match handle_otlp_export(
@@ -253,10 +251,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     )
                                     .await
                                     {
-                                        Ok(true) => self.pdata_metrics.traces_exported.inc(),
+                                        Ok(()) => self.pdata_metrics.traces_exported.inc(),
                                         _ => self.pdata_metrics.traces_failed.inc(),
                                     }
-                                    Ok::<(), Error>(())
                                 }
                             };
                         }
@@ -277,13 +274,13 @@ async fn handle_export_result<T>(
     context: Context,
     saved_payload: OtapPayload,
     effect_handler: &EffectHandler<OtapPdata>,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     match result {
         Ok(_) => {
             effect_handler
                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                 .await?;
-            Ok(true)
+            Ok(())
         }
         Err(e) => {
             let error_msg = e.to_string();
@@ -293,7 +290,13 @@ async fn handle_export_result<T>(
                     OtapPdata::new(context, saved_payload),
                 ))
                 .await?;
-            Ok(false)
+            let source_detail = format_error_sources(&e);
+            Err(Error::ExporterError {
+                exporter: effect_handler.exporter_id(),
+                kind: ExporterErrorKind::Transport,
+                error: error_msg,
+                source_detail,
+            })
         }
     }
 }
@@ -307,7 +310,7 @@ async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
     encoder: &mut Enc,
     client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
     effect_handler: &EffectHandler<OtapPdata>,
-) -> Result<bool, Error>
+) -> Result<(), Error>
 where
     T2: tonic::client::GrpcService<tonic::body::Body>,
     T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -344,7 +347,7 @@ async fn handle_otlp_export<T2, Resp, S>(
     client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
     effect_handler: &EffectHandler<OtapPdata>,
     save_payload_fn: impl FnOnce(&[u8]) -> OtapPayload,
-) -> Result<bool, Error>
+) -> Result<(), Error>
 where
     T2: tonic::client::GrpcService<tonic::body::Body>,
     T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -354,10 +357,8 @@ where
     S: crate::otap_grpc::otlp::client::ServiceDescriptor,
     Resp: prost::Message + Default + Send + 'static,
 {
-    // Save payload for potential Nack
     let saved_payload = save_payload_fn(&bytes);
 
-    // Export and handle result with Ack/Nack
     let result = client.export(bytes).await;
     handle_export_result(result, context, saved_payload, effect_handler).await
 }
