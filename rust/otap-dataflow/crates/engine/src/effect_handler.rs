@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
 /// Common implementation of all effect handlers.
@@ -254,6 +254,20 @@ impl<PData> EffectHandlerCore<PData> {
         } else {
             Ok(())
         }
+    }
+
+    /// Delay a message.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), Error> {
+        self.send_pipeline_ctrl_msg(PipelineControlMsg::DelayData {
+            node_id: self.node_id().index,
+            when,
+            data,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::PipelineControlMsgError {
+            error: e.to_string(),
+        })
     }
 }
 

@@ -40,7 +40,7 @@ use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -214,6 +214,11 @@ impl<PData> EffectHandler<PData> {
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         self.core.route_nack(nack, cxf).await
+    }
+
+    /// Delay data.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), Error> {
+        self.core.delay_data(when, data).await
     }
 
     // More methods will be added in the future as needed.
