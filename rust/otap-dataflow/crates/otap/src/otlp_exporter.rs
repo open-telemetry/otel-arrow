@@ -457,7 +457,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure(receiver));

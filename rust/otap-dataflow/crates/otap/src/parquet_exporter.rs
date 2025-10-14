@@ -496,7 +496,7 @@ mod test {
             test_runtime.config(),
         );
 
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -600,7 +600,7 @@ mod test {
             test_runtime.config(),
         );
 
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -747,7 +747,7 @@ mod test {
         );
 
         let num_rows = 100;
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(
                 num_rows,
@@ -833,7 +833,7 @@ mod test {
             test_runtime.config(),
         );
         let num_rows = 100;
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(
                 num_rows,
@@ -1257,7 +1257,7 @@ mod test {
             ))
             .unwrap();
         let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -1325,7 +1325,7 @@ mod test {
             ))
             .unwrap();
         let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
@@ -1552,7 +1552,7 @@ mod test {
             RecordBatch::try_new(schema, columns).unwrap(),
         );
 
-        _ = test_runtime
+        test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {

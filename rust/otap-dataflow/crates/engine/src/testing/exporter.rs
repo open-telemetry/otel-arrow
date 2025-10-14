@@ -189,16 +189,6 @@ pub struct ValidationPhase<PData> {
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 }
 
-/// Data and operations for the teardown phase of an exporter.
-pub struct TeardownPhase<PData, T> {
-    /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Test context available during teardown
-    context: TestContext<PData>,
-    /// Result produced during validation
-    validation_result: T,
-}
-
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
@@ -338,7 +328,7 @@ impl<PData> ValidationPhase<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> TeardownPhase<PData, T>
+    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> T
     where
         F: FnOnce(TestContext<PData>, Result<(), Error>) -> Fut,
         Fut: Future<Output = T>,
@@ -357,41 +347,8 @@ impl<PData> ValidationPhase<PData> {
             .block_on(run_exporter_handle)
             .expect("failed to join exporter task handle");
 
-        let teardown_context = context.clone();
-
         // Then run the validation future with the test context
-        let validation_result = rt.block_on(future_fn(context, result));
-
-        TeardownPhase {
-            rt,
-            context: teardown_context,
-            validation_result,
-        }
-    }
-}
-
-impl<PData, T> TeardownPhase<PData, T> {
-    /// Runs the teardown phase using the provided closure and returns the validation result.
-    pub fn run_teardown<F, Fut>(self, f: F) -> T
-    where
-        F: FnOnce(TestContext<PData>) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let TeardownPhase {
-            rt,
-            context,
-            validation_result,
-        } = self;
-
-        rt.block_on(f(context));
-
-        validation_result
-    }
-
-    /// Skips teardown, returning the validation result directly.
-    #[must_use]
-    pub fn finish(self) -> T {
-        self.validation_result
+        rt.block_on(future_fn(context, result))
     }
 }
 

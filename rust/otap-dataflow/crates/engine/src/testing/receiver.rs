@@ -168,7 +168,6 @@ pub struct ValidationPhase<PData> {
     local_tasks: LocalSet,
 
     counters: CtrlMsgCounters,
-    control_sender: Sender<NodeControlMsg<PData>>,
 
     pdata_receiver: Receiver<PData>,
 
@@ -182,16 +181,6 @@ pub struct ValidationPhase<PData> {
     #[allow(unused_variables)]
     #[allow(dead_code)]
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
-}
-
-/// Data and operations for the teardown phase of a receiver.
-pub struct TeardownPhase<PData, T> {
-    /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Test context available during teardown
-    context: TestContext<PData>,
-    /// Result produced during validation
-    validation_result: T,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -306,7 +295,6 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
-            control_sender: self.control_sender,
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
@@ -328,7 +316,7 @@ impl<PData> ValidationPhase<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> TeardownPhase<PData, T>
+    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> T
     where
         F: FnOnce(NotSendValidateContext<PData>) -> Fut,
         Fut: Future<Output = T>,
@@ -337,7 +325,6 @@ impl<PData> ValidationPhase<PData> {
             rt,
             local_tasks,
             counters,
-            control_sender,
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
@@ -358,37 +345,6 @@ impl<PData> ValidationPhase<PData> {
         rt.block_on(run_test_handle).expect("Test task failed");
 
         // Then run the validation future with the test context
-        let validation_result = rt.block_on(future_fn(context));
-
-        TeardownPhase {
-            rt,
-            context: TestContext { control_sender },
-            validation_result,
-        }
-    }
-}
-
-impl<PData, T> TeardownPhase<PData, T> {
-    /// Runs the teardown phase using the provided closure and returns the validation result.
-    pub fn run_teardown<F, Fut>(self, f: F) -> T
-    where
-        F: FnOnce(TestContext<PData>) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let TeardownPhase {
-            rt,
-            context,
-            validation_result,
-        } = self;
-
-        rt.block_on(f(context));
-
-        validation_result
-    }
-
-    /// Skips teardown, returning the validation result directly.
-    #[must_use]
-    pub fn finish(self) -> T {
-        self.validation_result
+        rt.block_on(future_fn(context))
     }
 }

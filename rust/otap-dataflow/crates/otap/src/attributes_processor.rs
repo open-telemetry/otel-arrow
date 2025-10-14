@@ -1007,11 +1007,6 @@ mod telemetry_tests {
         let registry = rt.metrics_registry();
         let metrics_reporter = rt.metrics_reporter();
 
-        // Shared place to store the collector JoinHandle started inside the runtime
-        // let collector_handle: Arc<
-        //     Mutex<Option<tokio::task::JoinHandle<Result<(), otap_df_telemetry::error::Error>>>>,
-        // > = Arc::new(Mutex::new(None));
-
         // 2) Pipeline context sharing the same registry handle
         let controller = ControllerContext::new(rt.metrics_registry().clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);

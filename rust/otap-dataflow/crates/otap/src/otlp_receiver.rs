@@ -434,7 +434,7 @@ mod tests {
             test_runtime.config(),
         );
 
-        _ = test_runtime
+        test_runtime
             .set_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
             .run_validation(validation_procedure());

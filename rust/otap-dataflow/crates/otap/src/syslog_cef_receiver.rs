@@ -904,7 +904,7 @@ mod tests {
         );
 
         // run the test
-        _ = test_runtime
+        test_runtime
             .set_receiver(receiver)
             .run_test(udp_scenario(listening_addr))
             .run_validation(udp_validation_procedure());
@@ -931,7 +931,7 @@ mod tests {
         );
 
         // run the test
-        _ = test_runtime
+        test_runtime
             .set_receiver(receiver_wrapper)
             .run_test(tcp_scenario(listening_addr))
             .run_validation(tcp_validation_procedure());
@@ -958,7 +958,7 @@ mod tests {
         );
 
         // run the test
-        _ = test_runtime
+        test_runtime
             .set_receiver(receiver_wrapper)
             .run_test(tcp_incomplete_scenario(listening_addr))
             .run_validation(tcp_incomplete_validation_procedure());
