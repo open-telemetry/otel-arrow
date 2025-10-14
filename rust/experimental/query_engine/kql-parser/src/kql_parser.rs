@@ -26,7 +26,7 @@ pub(crate) fn map_kql_errors(error: ParserError) -> ParserError {
     match error {
         ParserError::KeyNotFound { location, key } => ParserError::QueryLanguageDiagnostic {
             location,
-            diagnostic_id: "KS109",
+            diagnostic_id: "KS142",
             message: format!(
                 "The name '{key}' does not refer to any known column, table, variable or function"
             ),

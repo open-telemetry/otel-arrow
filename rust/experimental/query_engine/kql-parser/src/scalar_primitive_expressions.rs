@@ -673,7 +673,7 @@ pub(crate) fn parse_accessor_expression(
                     } else {
                         return Err(ParserError::QueryLanguageDiagnostic {
                             location: root_accessor_identity.get_query_location().clone(),
-                            diagnostic_id: "KS109",
+                            diagnostic_id: "KS142",
                             message: format!(
                                 "The name '{}' does not refer to any known column, table, variable or function",
                                 root_accessor_identity.get_value()
@@ -1722,7 +1722,7 @@ mod tests {
 
         run_test_failure(
             "unknown_key",
-            "KS109",
+            "KS142",
             "The name 'unknown_key' does not refer to any known column, table, variable or function",
         );
     }
@@ -2276,13 +2276,13 @@ mod tests {
 
         run_test_failure(
             "map.unknown",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
 
         run_test_failure(
             "map.map_value_with_schema.unknown",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
 
@@ -2294,7 +2294,7 @@ mod tests {
 
         run_test_failure(
             "source.field",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'field' does not refer to any known column, table, variable or function",
         );
     }
@@ -2427,7 +2427,7 @@ mod tests {
 
         run_test_failure(
             "unknown",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }

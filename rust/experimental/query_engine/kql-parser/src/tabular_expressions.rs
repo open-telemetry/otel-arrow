@@ -636,7 +636,7 @@ fn parse_identifier_or_pattern_literal(
             {
                 Err(ParserError::QueryLanguageDiagnostic {
                     location,
-                    diagnostic_id: "KS109",
+                    diagnostic_id: "KS142",
                     message: format!(
                         "The name '{value}' does not refer to any known column, table, variable or function",
                     ),
@@ -656,7 +656,7 @@ fn parse_identifier_or_pattern_literal(
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
-                diagnostic_id: "KS109",
+                diagnostic_id: "KS142",
                 message: format!(
                     "The name '{value}' does not refer to any known column, table, variable or function",
                 ),
@@ -688,7 +688,7 @@ pub(crate) fn validate_summary_identifier(
             {
                 Err(ParserError::QueryLanguageDiagnostic {
                     location,
-                    diagnostic_id: "KS109",
+                    diagnostic_id: "KS142",
                     message: format!(
                         "The name '{full_identifier}' does not refer to any known column, table, variable or function",
                     ),
@@ -701,7 +701,7 @@ pub(crate) fn validate_summary_identifier(
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
-                diagnostic_id: "KS109",
+                diagnostic_id: "KS142",
                 message: format!(
                     "The name '{full_identifier}' does not refer to any known column, table, variable or function",
                 ),
@@ -1129,7 +1129,7 @@ mod tests {
 
         run_test_failure(
             "unknown",
-            "KS109",
+            "KS142",
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }
@@ -1266,7 +1266,7 @@ mod tests {
 
         run_test_failure(
             "unknown",
-            "KS109",
+            "KS142",
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }
@@ -2426,7 +2426,7 @@ mod tests {
 
         run_test_failure(
             "project-keep attributes['unknown']",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }
@@ -2846,7 +2846,7 @@ mod tests {
 
         run_test_failure(
             "project-away attributes['unknown']",
-            Some("KS109"),
+            Some("KS142"),
             "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }
@@ -3749,7 +3749,7 @@ mod tests {
         );
         run_test_failure(
             "summarize Count = count()",
-            "KS109",
+            "KS142",
             "The name 'Count' does not refer to any known column, table, variable or function",
         );
 
@@ -3774,7 +3774,7 @@ mod tests {
         );
         run_test_failure(
             "summarize by key2",
-            "KS109",
+            "KS142",
             "The name 'key2' does not refer to any known column, table, variable or function",
         );
 
@@ -3799,7 +3799,7 @@ mod tests {
         );
         run_test_failure(
             "summarize by key2 = source_field",
-            "KS109",
+            "KS142",
             "The name 'key2' does not refer to any known column, table, variable or function",
         );
 
@@ -3837,7 +3837,7 @@ mod tests {
         );
         run_test_failure(
             "summarize key1 = count() | extend key2 = 1234",
-            "KS109",
+            "KS142",
             "The name 'key2' does not refer to any known column, table, variable or function",
         );
     }
