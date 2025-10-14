@@ -303,9 +303,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let mut context = self.create_context();
         let ctx_test = context.clone();
-        self.rt.block_on(async move {
-            f(ctx_test).await;
-        });
+        _ = self.local_tasks.spawn_local(f(ctx_test));
 
         context.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
 

@@ -204,7 +204,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                        dbg!("ControlMsg::Shutdown received in OTAPExporter");
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -214,7 +213,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     //send data
                     Message::PData(pdata) => {
-                        dbg!(&pdata);
                         // Capture signal type before moving pdata into try_from
                         let signal_type = pdata.signal_type();
 
@@ -513,6 +511,8 @@ mod tests {
                     .await
                     .expect("Failed to send trace message");
 
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
                 // Send shutdown
                 ctx.send_shutdown(
                     Instant::now().add(Duration::from_millis(200)),
@@ -610,7 +610,6 @@ mod tests {
                 .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
                     let _ = shutdown_signal.await;
-                    dbg!("shutdown complete");
                 })
                 .await
                 .expect("Test gRPC server has failed");

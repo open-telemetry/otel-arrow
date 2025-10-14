@@ -104,7 +104,6 @@ impl ArrowLogsService for ArrowLogsServiceMock {
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
 
-                dbg!(&status_result);
                 _ = tx
                     .send(Ok(BatchStatus {
                         batch_id,
@@ -151,7 +150,6 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
-                dbg!(&status_result);
                 _ = tx
                     .send(Ok(BatchStatus {
                         batch_id,
@@ -198,7 +196,6 @@ impl ArrowTracesService for ArrowTracesServiceMock {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
                 };
-                dbg!(&status_result);
                 _ = tx
                     .send(Ok(BatchStatus {
                         batch_id,
