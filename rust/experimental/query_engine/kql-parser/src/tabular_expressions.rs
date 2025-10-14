@@ -1061,6 +1061,122 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_identifier_or_pattern_literal_with_schema() {
+        let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let expression = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("int_key", ParserMapKeySchema::Integer),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let error = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "int_value",
+            Some(IdentifierOrPattern::Identifier(
+                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+            )),
+        );
+
+        run_test_failure(
+            "unknown",
+            "KS109",
+            "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_identifier_or_pattern_literal_with_schema_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer)
+                            .set_allow_undefined_keys(),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let expression = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "int_value",
+            Some(IdentifierOrPattern::Identifier(
+                StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+            )),
+        );
+
+        run_test_success(
+            "unknown",
+            Some(IdentifierOrPattern::Identifier(
+                StringScalarExpression::new(QueryLocation::new_fake(), "unknown"),
+            )),
+        );
+    }
+
+    #[test]
     fn test_parse_identifier_or_pattern_literal_with_default_map_schema() {
         let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
             let state = ParserState::new_with_options(
