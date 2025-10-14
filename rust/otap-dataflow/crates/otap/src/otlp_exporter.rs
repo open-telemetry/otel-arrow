@@ -20,6 +20,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
@@ -94,7 +95,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
                 "Exporting OTLP traffic to endpoint: {}",
@@ -146,9 +147,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     _ = timer_cancel_handle.cancel().await;
-                    break;
+                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
@@ -266,8 +267,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -389,10 +388,12 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
+    use std::time::Instant;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -502,7 +503,7 @@ mod tests {
                     .expect("Failed to send metric message");
 
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(200), "test complete")
+                ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                     .await
                     .expect("Failed to send Shutdown");
             })
@@ -692,8 +693,12 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn drive_test(
@@ -706,6 +711,8 @@ mod tests {
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut pipeline_ctrl_msg_rx: otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
+            metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+            metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             // pdata
             let req = ExportLogsServiceRequest::default();
@@ -795,15 +802,13 @@ mod tests {
                 .expect("Expected Ack after reconnect");
 
             // check the metrics:
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
             control_sender
                 .send(NodeControlMsg::CollectTelemetry {
                     metrics_reporter: metrics_reporter.clone(),
                 })
                 .await
                 .unwrap();
-            // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
+            let metrics = metrics_receiver.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
             assert_eq!(logs_exported_count, 2);
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
@@ -811,7 +816,7 @@ mod tests {
 
             control_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(10),
+                    deadline: Instant::now() + Duration::from_millis(10),
                     reason: "shutting down".into(),
                 })
                 .await
@@ -870,9 +875,11 @@ mod tests {
             .await;
         });
 
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter.clone()),
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
@@ -882,7 +889,9 @@ mod tests {
                     pdata_tx,
                     control_sender,
                     pipeline_ctrl_msg_rx,
-                    req_receiver
+                    req_receiver,
+                    metrics_rx,
+                    metrics_reporter
                 )
             )
         });

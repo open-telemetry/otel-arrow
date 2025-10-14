@@ -17,6 +17,8 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use prost::Message;
 use serde_json::Value;
+use std::ops::Add;
+use std::time::Instant;
 
 /// TestCallData helps test the CallData type.
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -98,9 +100,12 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
         .set_exporter(exporter)
         .run_test(|ctx| async move {
             ctx.send_pdata(create_test_pdata()).await.unwrap();
-            ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
-                .await
-                .unwrap();
+            ctx.send_shutdown(
+                Instant::now().add(std::time::Duration::from_secs(1)),
+                "test shutdown",
+            )
+            .await
+            .unwrap();
         })
         .run_validation(|mut ctx, result| async move {
             result.expect("success");
@@ -133,7 +138,7 @@ pub fn test_exporter_with_subscription(
             let req_data = create_test_pdata()
 		.test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
             ctx.send_pdata(req_data).await.unwrap();
-            ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
+            ctx.send_shutdown(Instant::now().add(std::time::Duration::from_secs(1)), "test shutdown")
                 .await
                 .unwrap();
         })

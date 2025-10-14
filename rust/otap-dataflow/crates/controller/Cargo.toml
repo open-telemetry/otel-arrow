@@ -25,5 +25,5 @@ otap-df-admin = { path = "../admin" }
 thiserror = { workspace = true }
 miette = { workspace = true }
 core_affinity = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true }
 tokio-util = { workspace = true }

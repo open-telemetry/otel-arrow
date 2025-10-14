@@ -12,7 +12,7 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{MessageChannel, Receiver, Sender};
+use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -20,6 +20,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -150,7 +151,10 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Prepare the processor runtime components without starting the processing loop.
     /// This allows external control over the message processing loop.
-    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error> {
+    pub async fn prepare_runtime(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -171,8 +175,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?,
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    local::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = local::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -198,8 +206,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    shared::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = shared::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -213,8 +225,9 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime().await?;
+        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -228,6 +241,13 @@ impl<PData> ProcessorWrapper<PData> {
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Collect final metrics before exiting
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -240,6 +260,13 @@ impl<PData> ProcessorWrapper<PData> {
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Collect final metrics before exiting
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
         }
         Ok(())
@@ -382,9 +409,10 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
+    use std::ops::Add;
     use std::pin::Pin;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A generic test processor that counts message events.
     /// Works with any type of processor !Send or Send.
@@ -488,7 +516,7 @@ mod tests {
 
                 // Process a Shutdown event.
                 ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
+                    Instant::now().add(Duration::from_millis(200)),
                     "no reason",
                 ))
                 .await
