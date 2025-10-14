@@ -311,9 +311,9 @@ result_tables:
   - name: metadata_filtered
     description: Information about the test suite and report.
   - name: send_receive_rates_by_core
-    description: '**Total counts are broken pending https://github.com/open-telemetry/otel-arrow/issues/1139** #Core Specific increase and average rate of various send / receive metrics'
+    description: Core Specific increase and average rate of various send / receive metrics
   - name: aggregate_send_receive_rates
-    description: '**Total counts are broken pending https://github.com/open-telemetry/otel-arrow/issues/1139** #Cumulative increase and average rate of various send / receive metrics'
+    description: Cumulative increase and average rate of various send / receive metrics
   - name: component_resource_metrics
     description: CPU and Memory metrics for the components in the Test Suite during the test.
   - name: log_loss
