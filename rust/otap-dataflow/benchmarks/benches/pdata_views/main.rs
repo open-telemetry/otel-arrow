@@ -4,8 +4,8 @@
 //! Benchmarks for implementations of pdata view implementations
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
+use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,

@@ -29,15 +29,17 @@ use otel_arrow_rust::{
     schema::{SpanId, TraceId},
 };
 
-use crate::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
-use crate::otlp::bytes::decode::{
-    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-    from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
-    to_nonzero_range,
-};
-use crate::otlp::bytes::resource::RawResource;
-use crate::views::trace::{
-    EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
+use crate::views::{
+    otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue},
+    otlp::bytes::decode::{
+        FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+        from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
+        to_nonzero_range,
+    },
+    otlp::bytes::resource::RawResource,
+    trace::{
+        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
+    },
 };
 
 /// Implementation of [`TracesView`] backed by protobuf serialized `TracesData` message
