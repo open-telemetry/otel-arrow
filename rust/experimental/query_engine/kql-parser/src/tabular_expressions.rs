@@ -629,9 +629,10 @@ fn parse_identifier_or_pattern_literal(
             Ok(Some(IdentifierOrPattern::Identifier(
                 StringScalarExpression::new(location, &value),
             )))
-        } else if let Some((key, schema)) = schema.get_default_map() {
-            if let Some(schema) = schema
-                && let None = schema.get_schema_for_key(&value)
+        } else if let Some((default_map_key, default_map_schema)) = schema.get_default_map() {
+            if let Some(default_map_schema) = default_map_schema
+                && let None = default_map_schema.get_schema_for_key(&value)
+                && !default_map_schema.get_allow_undefined_keys()
             {
                 Err(ParserError::QueryLanguageDiagnostic {
                     location,
@@ -642,12 +643,16 @@ fn parse_identifier_or_pattern_literal(
                 })
             } else {
                 Ok(Some(IdentifierOrPattern::Map {
-                    name: StringScalarExpression::new(location.clone(), key),
+                    name: StringScalarExpression::new(location.clone(), default_map_key),
                     key: ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(location, &value),
                     )),
                 }))
             }
+        } else if schema.get_allow_undefined_keys() {
+            Ok(Some(IdentifierOrPattern::Identifier(
+                StringScalarExpression::new(location, &value),
+            )))
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
@@ -691,6 +696,8 @@ pub(crate) fn validate_summary_identifier(
             } else {
                 Ok(full_identifier)
             }
+        } else if schema.get_allow_undefined_keys() {
+            Ok(full_identifier)
         } else {
             Err(ParserError::QueryLanguageDiagnostic {
                 location,
@@ -897,26 +904,28 @@ fn push_map_transformation_expression(
                 let default_source_map = schema.get_default_map();
                 let mut default_source_map_matched_regex = false;
 
-                // Note: If we have schema we can apply the regex patterns ahead
-                // of time.
-                foreach_source_schema_key(schema, |k| {
-                    for p in &reduction.patterns {
-                        if p.get_value().is_match(k) {
-                            if let Some((default_source_map_key, _)) = default_source_map
-                                && k == default_source_map_key
-                            {
-                                default_source_map_matched_regex = true;
-                                if retain {
-                                    continue;
+                if !schema.get_allow_undefined_keys() {
+                    // Note: If we have schema we can apply the regex patterns ahead
+                    // of time.
+                    foreach_source_schema_key(schema, |k| {
+                        for p in &reduction.patterns {
+                            if p.get_value().is_match(k) {
+                                if let Some((default_source_map_key, _)) = default_source_map
+                                    && k == default_source_map_key
+                                {
+                                    default_source_map_matched_regex = true;
+                                    if retain {
+                                        continue;
+                                    }
                                 }
+                                reduction
+                                    .keys
+                                    .push(StringScalarExpression::new(query_location.clone(), k));
+                                break;
                             }
-                            reduction
-                                .keys
-                                .push(StringScalarExpression::new(query_location.clone(), k));
-                            break;
                         }
-                    }
-                });
+                    });
+                }
 
                 if let Some((default_source_map_key, default_source_map_schema)) =
                     default_source_map
@@ -927,7 +936,9 @@ fn push_map_transformation_expression(
                     // default_source_map_key we can skip this because the
                     // whole map will be removed.
                     if retain || !default_source_map_matched_regex {
-                        if let Some(schema) = default_source_map_schema {
+                        if let Some(schema) = default_source_map_schema
+                            && !schema.get_allow_undefined_keys()
+                        {
                             //Note: If we have schema we can run the regex ahead of time.
                             foreach_source_schema_key(schema, |k| {
                                 for p in &reduction.patterns {
@@ -1050,7 +1061,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_identifier_or_pattern_literal() {
+    fn test_parse_identifier_or_pattern_literal_with_default_map_schema() {
         let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
             let state = ParserState::new_with_options(
                 input,
@@ -1141,6 +1152,64 @@ mod tests {
             "unknown",
             "KS109",
             "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_identifier_or_pattern_literal_with_default_map_schema_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: Option<IdentifierOrPattern>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .set_allow_undefined_keys(),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result =
+                KqlPestParser::parse(Rule::identifier_or_pattern_literal, input).unwrap();
+
+            let expression = parse_identifier_or_pattern_literal(
+                &state,
+                QueryLocation::new_fake(),
+                result.next().unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "int_value",
+            Some(IdentifierOrPattern::Map {
+                name: StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                key: ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "int_value"),
+                )),
+            }),
+        );
+
+        run_test_success(
+            "unknown",
+            Some(IdentifierOrPattern::Map {
+                name: StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                key: ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "unknown"),
+                )),
+            }),
         );
     }
 
@@ -2165,7 +2234,7 @@ mod tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, expected: &str| {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
             let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
@@ -2194,8 +2263,20 @@ mod tests {
 
             let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
 
-            if let ParserError::SyntaxError(_, msg) = error {
-                assert_eq!(expected, msg);
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
             } else {
                 panic!("Expected SyntaxError");
             }
@@ -2229,7 +2310,8 @@ mod tests {
 
         run_test_failure(
             "project-keep attributes['unknown']",
-            "The name 'unknown' does not refer to any known key on the target map",
+            Some("KS109"),
+            "The name 'unknown' does not refer to any known column, table, variable or function",
         );
     }
 
@@ -2572,7 +2654,7 @@ mod tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, expected: &str| {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
             let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
@@ -2601,8 +2683,20 @@ mod tests {
 
             let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
 
-            if let ParserError::SyntaxError(_, msg) = error {
-                assert_eq!(expected, msg);
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
             } else {
                 panic!("Expected SyntaxError");
             }
@@ -2636,7 +2730,96 @@ mod tests {
 
         run_test_failure(
             "project-away attributes['unknown']",
-            "The name 'unknown' does not refer to any known key on the target map",
+            Some("KS109"),
+            "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_away_expression_with_schema_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition(
+                                "attributes",
+                                ParserMapKeySchema::Map(Some(
+                                    ParserMapSchema::new()
+                                        .with_key_definition(
+                                            "int_value",
+                                            ParserMapKeySchema::Integer,
+                                        )
+                                        .with_key_definition(
+                                            "double_value",
+                                            ParserMapKeySchema::Double,
+                                        )
+                                        .set_allow_undefined_keys(),
+                                )),
+                            ),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        // Note: In this case the regex is not pre-applied because we don't know
+        // the full schema due to allow_undefined_keys being enabled.
+        run_test_success(
+            "project-away int*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^int.*").unwrap(),
+                                ),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
+        );
+
+        run_test_success(
+            "project-away attributes['unknown']",
+            vec![TransformExpression::RemoveMapKeys(
+                RemoveMapKeysTransformExpression::Remove(MapKeyListExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                        )]),
+                    )),
+                    vec![ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "unknown"),
+                    ))],
+                )),
+            )],
         );
     }
 
@@ -3540,6 +3723,66 @@ mod tests {
             "summarize key1 = count() | extend key2 = 1234",
             "KS109",
             "The name 'key2' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_summarize_expression_with_schema_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: SummaryDataExpression| {
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_summary_map_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("key1", ParserMapKeySchema::Any)
+                        .set_allow_undefined_keys(),
+                ),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let expression = parse_summarize_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(DataExpression::Summary(expected), expression);
+        };
+
+        run_test_success(
+            "summarize by key1",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by key_unknown",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key_unknown".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key_unknown",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
         );
     }
 
