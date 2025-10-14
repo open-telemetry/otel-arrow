@@ -40,6 +40,9 @@ use crate::message::Message;
 use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -104,8 +107,9 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id);
+        let core = EffectHandlerCore::new(node_id, metrics_reporter);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
@@ -226,6 +230,15 @@ impl<PData> EffectHandler<PData> {
         self.core.route_nack(nack, cxf).await
     }
 
+    /// Reports metrics collected by the processor.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
+    }
+
     // More methods will be added in the future as needed.
 }
 
@@ -253,7 +266,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
         eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
@@ -271,7 +285,8 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -286,7 +301,13 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, Some("a".into()));
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("a".into()),
+            metrics_reporter,
+        );
 
         eh.send_message(11).await.unwrap();
 
@@ -307,7 +328,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -334,7 +356,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

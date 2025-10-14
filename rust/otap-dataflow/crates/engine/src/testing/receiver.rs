@@ -18,10 +18,12 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
+use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
@@ -79,7 +81,7 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(&self, deadline: Duration, reason: &str) -> Result<(), Error> {
+    pub async fn send_shutdown(&self, deadline: Instant, reason: &str) -> Result<(), Error> {
         self.control_sender
             .send(NodeControlMsg::Shutdown {
                 deadline,
@@ -268,15 +270,23 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let final_metrics_reporter = metrics_reporter.clone();
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
-            self.receiver
-                .start(pipeline_ctrl_msg_tx)
+            let terminal_state = self
+                .receiver
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
                 .await
                 .expect("Receiver event loop failed");
+
+            for snapshot in terminal_state.into_metrics() {
+                let _ = final_metrics_reporter.try_report_snapshot(snapshot);
+            }
         });
 
+        let control_sender_for_test = self.control_sender.clone();
         let context = TestContext {
-            control_sender: self.control_sender,
+            control_sender: control_sender_for_test,
         };
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;
@@ -311,23 +321,30 @@ impl<PData> ValidationPhase<PData> {
         F: FnOnce(NotSendValidateContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
+        let ValidationPhase {
+            rt,
+            local_tasks,
+            counters,
+            pdata_receiver,
+            run_receiver_handle,
+            run_test_handle,
+            pipeline_ctrl_msg_receiver: _,
+        } = self;
+
         let context = NotSendValidateContext {
-            pdata_receiver: self.pdata_receiver,
-            counters: self.counters,
+            pdata_receiver,
+            counters,
         };
 
         // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
+        rt.block_on(local_tasks);
 
-        self.rt
-            .block_on(self.run_receiver_handle)
+        rt.block_on(run_receiver_handle)
             .expect("Receiver task failed");
 
-        self.rt
-            .block_on(self.run_test_handle)
-            .expect("Test task failed");
+        rt.block_on(run_test_handle).expect("Test task failed");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
+        rt.block_on(future_fn(context))
     }
 }
