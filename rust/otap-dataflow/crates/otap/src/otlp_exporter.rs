@@ -607,7 +607,6 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            // let metrics = metrics_rx.recv_timeout(Duration::from_secs(10)).unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
             assert_eq!(logs_exported_count, 2);

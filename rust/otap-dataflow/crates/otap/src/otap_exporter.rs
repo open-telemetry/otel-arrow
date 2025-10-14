@@ -511,7 +511,7 @@ mod tests {
                     .await
                     .expect("Failed to send trace message");
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
 
                 // Send shutdown
                 ctx.send_shutdown(
