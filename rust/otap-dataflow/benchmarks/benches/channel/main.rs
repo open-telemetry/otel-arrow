@@ -11,12 +11,13 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
-use mimalloc::MiMalloc;
 use std::rc::Rc;
 use tokio::task::LocalSet;
 
+use mimalloc_rust::GlobalMiMalloc;
+
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 const MSG_COUNT: usize = 100_000;
 const CHANNEL_SIZE: usize = 256;

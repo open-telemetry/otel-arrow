@@ -39,6 +39,25 @@ clap.workspace = true
 mimalloc-rust.workspace = true
 
 [workspace.dependencies]
+
+fluke-hpack = "0.3.1"
+futures-channel = "0.3"
+local-sync = "0.1.1"
+async-unsync = "0.3.0"
+unsync = "0.1.2"
+portpicker = "0.1.1"
+tokio-stream = "0.1.17"
+
+tower-service = "0.3"
+async-stream = "0.3.6"
+humantime = "2.2.0"
+rand = "0.9.2"
+zip = "=4.2.0"
+
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+
 mimalloc-rust = "0.2.1"
 clap = { version = "4.5.42", features = ["derive"] }
 arrayvec = "0.7.6"

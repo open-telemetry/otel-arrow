@@ -20,10 +20,10 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 
-use mimalloc::MiMalloc;
+use mimalloc_rust::GlobalMiMalloc;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 struct LogsDataGenParams {
     num_resources: usize,
