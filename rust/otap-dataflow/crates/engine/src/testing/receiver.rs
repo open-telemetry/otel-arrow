@@ -74,12 +74,11 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_shutdown(&self, deadline: Instant, reason: &str) -> Result<(), Error> {
-        self.control_sender
-            .send_control_msg(NodeControlMsg::Shutdown {
-                deadline,
-                reason: reason.to_owned(),
-            })
-            .await
+        self.send_control_msg(NodeControlMsg::Shutdown {
+            deadline,
+            reason: reason.to_owned(),
+        })
+        .await
     }
 
     /// Sleeps for the specified duration.
@@ -340,12 +339,13 @@ impl<PData> ValidationPhase<PData> {
             run_receiver_handle,
             run_test_handle,
             pipeline_ctrl_msg_receiver: _,
+            control_sender,
         } = self;
 
         let context = NotSendValidateContext {
-            pdata_receiver: self.pdata_receiver,
-            counters: self.counters,
-            control_sender: self.control_sender,
+            pdata_receiver,
+            counters,
+            control_sender,
         };
 
         // First run all the spawned tasks to completion

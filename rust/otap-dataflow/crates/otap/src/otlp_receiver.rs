@@ -213,10 +213,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 mod tests {
     use super::*;
 
-    use std::pin::Pin;
-    use std::time::Duration;
-    use std::time::Instant;
-
     use crate::pdata::OtlpProtoBytes;
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
@@ -247,7 +243,7 @@ mod tests {
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use std::pin::Pin;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
@@ -593,7 +589,7 @@ mod tests {
                 assert!(status.message().contains("Test nack reason"));
                 assert!(status.message().contains("Pipeline processing failed"));
 
-                ctx.send_shutdown(Duration::from_millis(0), "Test complete")
+                ctx.send_shutdown(Instant::now(), "Test complete")
                     .await
                     .expect("Failed to send shutdown");
             }) as Pin<Box<dyn Future<Output = ()>>>
