@@ -13,6 +13,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
@@ -116,7 +117,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         match self.config.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
@@ -360,7 +361,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
         }
-        Ok(())
+        Ok(TerminalState::default())
     }
 }
 
@@ -379,6 +380,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
@@ -413,7 +415,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(150)).await;
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })
@@ -458,7 +460,7 @@ mod tests {
                 drop(stream);
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })
@@ -507,7 +509,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })

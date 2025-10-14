@@ -119,6 +119,33 @@ approach** for most components.
 implementations that must interact with libraries requiring `Send` traits, such
 as OTLP Receivers based on Tonic GRPC services.
 
+## Graceful Shutdown Sequence
+
+The pipeline engine supports graceful shutdown of pipelines and their nodes.
+When a shutdown is initiated, the engine sends a shutdown control message to
+each receiver in the pipeline. Each receiver is then responsible for handling
+its own shutdown process, which may include:
+
+- Stopping the acceptance of new incoming connections or messages.
+- Waiting for in-flight Ack/Nack messages to be processed by downstream nodes,
+  while observing the shutdown deadline specified in the control message.
+- Cleaning up resources and performing any necessary finalization tasks.
+- Exiting the `start` method with a `TerminalState` optionally containing the
+  latest collected metrics.
+
+When stopping (i.e. at the end of the `start` method), receivers and their
+effect handlers drop the senders of their channels. This triggers the draining
+of the channels by the downstream nodes that consume them. Once a channel is
+fully drained, it returns a shutdown message, causing the corresponding node to
+stop. This process repeats progressively downstream until it reaches the
+exporters, ensuring that all telemetry data and metrics are properly flushed
+before the pipeline fully terminates.
+
+![Graceful Shutdown Sequence](assets/graceful-shutdown.svg)
+
+This shutdown process ensures that ongoing telemetry data processing is
+completed while avoiding data loss and maintaining observability integrity.
+
 ## Testability
 
 All node types, as well as the pipeline engine itself, are designed for isolated

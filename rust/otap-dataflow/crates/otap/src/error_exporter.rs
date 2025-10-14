@@ -14,6 +14,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -75,7 +76,7 @@ impl Exporter<OtapPdata> for ErrorExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
@@ -90,7 +91,7 @@ impl Exporter<OtapPdata> for ErrorExporter {
             }
         }
 
-        Ok(())
+        Ok(TerminalState::default())
     }
 }
 
