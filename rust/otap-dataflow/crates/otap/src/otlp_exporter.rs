@@ -268,7 +268,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
 }
 
 /// Helper function to handle export result and send Ack/Nack accordingly.
-/// Returns true on success, false on failure.
 async fn handle_export_result<T>(
     result: Result<T, tonic::Status>,
     context: Context,
