@@ -48,22 +48,23 @@ otap-df-config = { path = "../config" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
-chrono = { version = "0.4", features = ["serde"] }
-tower-service = "0.3"
-fluke-hpack = "0.3.1"
-serde = {version="1", features=["derive"]}
-tokio-stream = "0.1.17"
-async-stream = "0.3.6"
-humantime = "2.2.0"
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-rand = "0.9.2"
-zip = "=4.2.0"
+
+chrono.workspace = true
+tower-service.workspace = true
+fluke-hpack.workspace = true
+serde.workspace = true
+tokio-stream.workspace = true
+async-stream.workspace = true
+humantime.workspace = true
+weaver_semconv.workspace = true
+weaver_resolved_schema.workspace = true
+weaver_resolver.workspace = true
+rand.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
-portpicker = "0.1.1"
-pretty_assertions = "1.4.1"
+portpicker.workspace = true
+pretty_assertions.workspace = true
 tempfile.workspace = true
 url.workspace = true
 tokio-util.workspace = true
