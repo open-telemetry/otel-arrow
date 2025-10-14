@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1760457138319,
+  "lastUpdate": 1760465375196,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "129437996+c1ly@users.noreply.github.com",
-            "name": "c1ly",
-            "username": "c1ly"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "dda2744fbc51455397ddb786b0cbb5ea4d4b1d57",
-          "message": "[otap-dataflow] Register the syslog ref receiver (#1057)\n\nMoved the syslog receiver inside the otap-df-otap crate and registered\nit to the receiver factory\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-09-03T19:23:01Z",
-          "tree_id": "35cf4612b9b2fd679fda35649cd0484477286f99",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/dda2744fbc51455397ddb786b0cbb5ea4d4b1d57"
-        },
-        "date": 1756927905331,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 735000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22050000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22050000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.55,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.47,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 126.04,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 143.4,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 735833.3333333334,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22075000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22075000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.69,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.72,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 169.74,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 196.19,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 191.33,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6074fd8f219dfbc59219ae49a0015368eb29eb4",
+          "message": "Improve graceful shutdown mechanism to ensure full metrics flushing and orderly pipeline termination (#1273)\n\n**Note: Many files were modified in this PR, but most of the changes are\nsignature updates.**\n\nThis PR refines the graceful shutdown process of the pipeline engine to\nmake node termination deterministic and data-safe (in particular for the\nmetrics).\n\nThe following diagram describes the process.\n<img width=\"1148\" height=\"735\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/fa2cb359-766e-4ba0-85ec-16c195c1f483\"\n/>\n\nOther changes:\n- The deadline field in the Shutdown control message now represents an\nactual deadline instead of a duration.\n- Local channels now expose an `is_empty` method, consistent with other\nchannel implementations.\n- Simplified some unit tests.\n- Improved TestRuntime to make `otap_exporter` testing more robust.\n\t\nCloses: #1139\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2025-10-14T18:00:59Z",
+          "tree_id": "390965036e096950a66a21af819c5a7752c58f4e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f6074fd8f219dfbc59219ae49a0015368eb29eb4"
+        },
+        "date": 1760465372278,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 717666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21530000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21530000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.54,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.58,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 125.83,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 147.42,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 734166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22025000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22025000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.55,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 171.58,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 204,
             "unit": "MiB"
           }
         ]
