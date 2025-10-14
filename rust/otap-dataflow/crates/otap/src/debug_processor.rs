@@ -532,8 +532,10 @@ mod tests {
     use std::fs::{File, remove_file};
     use std::future::Future;
     use std::io::{BufReader, read_to_string};
+    use std::ops::Add;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::time::Duration;
 
     /// Validation closure that checks the outputted data
@@ -580,7 +582,7 @@ mod tests {
 
                 // Process a Shutdown event.
                 ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
+                    Instant::now().add(Duration::from_millis(200)),
                     "no reason",
                 ))
                 .await
@@ -755,7 +757,7 @@ mod tests {
 
                 // Process a Shutdown event.
                 ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
+                    Instant::now().add(Duration::from_millis(200)),
                     "no reason",
                 ))
                 .await

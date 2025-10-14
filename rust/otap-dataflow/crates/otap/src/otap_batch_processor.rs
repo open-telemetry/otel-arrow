@@ -979,6 +979,7 @@ mod tests {
             .or_else(|| map.get(snake_case).copied())
             .unwrap_or(0)
     }
+
     use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
     use super::*;
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
@@ -986,9 +987,10 @@ mod tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
-    use otap_df_telemetry::MetricsSystem;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use serde_json::json;
+    use std::ops::Add;
+    use std::time::Instant;
 
     // Test constants to avoid magic numbers/strings
     const TEST_SHUTDOWN_DEADLINE_MS: u64 = 50;
@@ -1004,10 +1006,9 @@ mod tests {
         use serde_json::json;
         use std::time::Duration;
 
-        // Metrics system: provides registry + reporter + collection loop
-        let ms = MetricsSystem::default();
-        let registry = ms.registry();
-        let reporter = ms.reporter();
+        let test_rt = TestRuntime::new();
+        let registry = test_rt.metrics_registry();
+        let reporter = test_rt.metrics_reporter();
 
         // Create a MetricSet for the batch processor using a PipelineContext bound to the registry
         let controller_ctx = ControllerContext::new(registry.clone());
@@ -1036,13 +1037,9 @@ mod tests {
         .expect("proc from config with metrics");
 
         // Start test runtime and concurrently run metrics collection loop
-        let test_rt = TestRuntime::new();
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            // Spawn metrics collection loop (detached)
-            let _bg = tokio::spawn(ms.run_collection_loop());
-
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
             // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
@@ -1258,7 +1255,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1351,7 +1348,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1449,7 +1446,7 @@ mod tests {
             assert_eq!(emitted.len(), 0, "no flush before shutdown");
 
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await
@@ -1508,7 +1505,7 @@ mod tests {
             use otap_df_engine::control::NodeControlMsg;
             use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS),
+                deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
             }))
             .await

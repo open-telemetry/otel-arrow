@@ -9,13 +9,15 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 };
 use otel_arrow_rust::schema::{SpanId, TraceId};
 
-use crate::otlp::proto::common::{
-    KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
+use crate::views::{
+    common::Str,
+    logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
+    otlp::proto::common::{
+        KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
+    },
+    otlp::proto::resource::ObjResource,
+    otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
-use crate::otlp::proto::resource::ObjResource;
-use crate::otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps};
-use crate::views::common::Str;
-use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 

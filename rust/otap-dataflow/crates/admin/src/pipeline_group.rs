@@ -24,6 +24,7 @@ use otap_df_state::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
@@ -62,8 +63,10 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
         .ctrl_msg_senders
         .iter()
         .filter_map(|sender| {
+            // ToDo configurable shutdown timeout
+            let deadline = Instant::now() + Duration::from_secs(10);
             sender
-                .try_send_shutdown("admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
+                .try_send_shutdown(deadline, "admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
                 .err()
         })
         .map(|e| e.to_string())

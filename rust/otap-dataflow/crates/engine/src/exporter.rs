@@ -17,9 +17,11 @@ use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
@@ -35,8 +37,6 @@ pub enum ExporterWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
-        /// The effect handler instance for the exporter.
-        effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -52,8 +52,6 @@ pub enum ExporterWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
-        /// The effect handler instance for the exporter.
-        effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -92,9 +90,8 @@ impl<PData> ExporterWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
-            node_id: node_id.clone(),
+            node_id,
             user_config,
-            effect_handler: local::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
@@ -117,9 +114,8 @@ impl<PData> ExporterWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
-            node_id: node_id.clone(),
+            node_id,
             user_config,
-            effect_handler: shared::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
@@ -131,15 +127,20 @@ impl<PData> ExporterWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-    ) -> Result<(), Error> {
-        match self {
-            ExporterWrapper::Local {
-                mut effect_handler,
-                exporter,
-                control_receiver,
-                pdata_receiver,
-                ..
-            } => {
+        metrics_reporter: MetricsReporter,
+    ) -> Result<TerminalState, Error> {
+        match (self, metrics_reporter) {
+            (
+                ExporterWrapper::Local {
+                    node_id,
+                    exporter,
+                    control_receiver,
+                    pdata_receiver,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
+                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -159,13 +160,17 @@ impl<PData> ExporterWrapper<PData> {
                     message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
-            ExporterWrapper::Shared {
-                mut effect_handler,
-                exporter,
-                control_receiver,
-                pdata_receiver,
-                ..
-            } => {
+            (
+                ExporterWrapper::Shared {
+                    node_id,
+                    exporter,
+                    control_receiver,
+                    pdata_receiver,
+                    ..
+                },
+                metrics_reporter,
+            ) => {
+                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -264,6 +269,7 @@ mod tests {
     use crate::message;
     use crate::message::Message;
     use crate::shared::exporter as shared;
+    use crate::terminal_state::TerminalState;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
@@ -273,8 +279,9 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
+    use std::ops::Add;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tokio::time::sleep;
 
     /// A test exporter that counts message events.
@@ -297,7 +304,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -324,7 +331,7 @@ mod tests {
                     }
                 }
             }
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -334,7 +341,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error> {
+        ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -361,7 +368,7 @@ mod tests {
                     }
                 }
             }
-            Ok(())
+            Ok(TerminalState::default())
         }
     }
 
@@ -390,9 +397,12 @@ mod tests {
                     .expect("Failed to send data message");
 
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(200), "test complete")
-                    .await
-                    .expect("Failed to send Shutdown");
+                ctx.send_shutdown(
+                    Instant::now().add(Duration::from_millis(200)),
+                    "test complete",
+                )
+                .await
+                .expect("Failed to send Shutdown");
             })
         }
     }
@@ -500,7 +510,7 @@ mod tests {
         // Send shutdown with a deadline
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: Duration::from_millis(100), // 100ms deadline
+                deadline: Instant::now().add(Duration::from_millis(100)), // 100ms deadline
                 reason: "Test Shutdown".to_string(),
             })
             .await
@@ -566,7 +576,7 @@ mod tests {
         // Send shutdown with a long deadline
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: Duration::from_secs(5), // Long deadline
+                deadline: Instant::now().add(Duration::from_secs(5)), // Long deadline
                 reason: "Test Shutdown PData Closes".to_string(),
             })
             .await
@@ -604,7 +614,7 @@ mod tests {
         pdata_tx.send_async("pdata1".to_string()).await.unwrap();
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: Duration::from_secs(0), // Immediate deadline
+                deadline: Instant::now(), // Immediate deadline
                 reason: "Immediate Shutdown".to_string(),
             })
             .await
@@ -629,7 +639,7 @@ mod tests {
 
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: Duration::from_secs(0),
+                deadline: Instant::now(),
                 reason: "ignore_followups".into(),
             })
             .await
@@ -665,7 +675,7 @@ mod tests {
 
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: Duration::from_secs(0),
+                deadline: Instant::now(),
                 reason: "now".into(),
             })
             .await

@@ -21,13 +21,15 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
@@ -109,7 +111,7 @@ impl<PData> TestContext<PData> {
     /// Returns an error if the message could not be sent.
     pub async fn send_shutdown(
         &self,
-        deadline: Duration,
+        deadline: Instant,
         reason: &str,
     ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
@@ -151,6 +153,8 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
+    metrics_system: MetricsSystem,
+
     _pd: PhantomData<PData>,
 }
 
@@ -189,6 +193,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
+        let metrics_system = MetricsSystem::default();
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
@@ -198,6 +203,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt,
             local_tasks,
             counter,
+            metrics_system,
             _pd: PhantomData,
         }
     }
@@ -205,6 +211,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the current exporter configuration.
     pub fn config(&self) -> &ExporterConfig {
         &self.config
+    }
+
+    /// Returns a handle to the metrics registry.
+    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+        self.metrics_system.registry()
+    }
+
+    /// Returns a metrics reporter for use in the processor runtime.
+    pub fn metrics_reporter(&self) -> MetricsReporter {
+        self.metrics_system.reporter()
     }
 
     /// Returns the message counter.
@@ -238,9 +254,18 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let run_exporter_handle = self
-            .local_tasks
-            .spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await });
+        let metrics_reporter_start = self.metrics_reporter();
+        let metrics_reporter_terminal = self.metrics_reporter();
+        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
+                .await
+                .map(|terminal_state| {
+                    for snapshot in terminal_state.into_metrics() {
+                        let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
+                    }
+                })
+        });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -268,9 +293,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let mut context = self.create_context();
         let ctx_test = context.clone();
-        self.rt.block_on(async move {
-            f(ctx_test).await;
-        });
+        _ = self.local_tasks.spawn_local(f(ctx_test));
 
         context.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
 
@@ -305,22 +328,27 @@ impl<PData> ValidationPhase<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
+    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> T
     where
         F: FnOnce(TestContext<PData>, Result<(), Error>) -> Fut,
         Fut: Future<Output = T>,
     {
-        // First run all the spawned tasks to completion
-        let local_tasks = std::mem::take(&mut self.local_tasks);
-        self.rt.block_on(local_tasks);
+        let ValidationPhase {
+            rt,
+            local_tasks,
+            context,
+            run_exporter_handle,
+        } = self;
 
-        let result = self
-            .rt
-            .block_on(self.run_exporter_handle)
+        // First run all the spawned tasks to completion
+        rt.block_on(local_tasks);
+
+        let result = rt
+            .block_on(run_exporter_handle)
             .expect("failed to join exporter task handle");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(self.context, result))
+        rt.block_on(future_fn(context, result))
     }
 }
 

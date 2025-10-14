@@ -7,12 +7,12 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
-use crate::otlp::bytes::decode::{
+use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
+use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
     read_varint, to_nonzero_range,
 };
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 use otel_arrow_rust::proto::consts::field_num::common::{
     ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
     ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, ARRAY_VALUE_VALUES,

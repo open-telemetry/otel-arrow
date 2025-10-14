@@ -75,7 +75,7 @@ impl ParserScope for ParserState {
         name == "source"
             || self.is_attached_data_defined(name)
             || self.is_variable_defined(name)
-            || self.get_constant(name).is_some()
+            || self.get_constant_id(name).is_some()
     }
 
     fn is_attached_data_defined(&self, name: &str) -> bool {
@@ -86,8 +86,15 @@ impl ParserScope for ParserState {
         self.variable_names.contains(name) || self.global_variable_names.contains(name)
     }
 
-    fn get_constant(&self, name: &str) -> Option<(usize, ValueType)> {
+    fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)> {
         self.constants.get(name).cloned()
+    }
+
+    fn get_constant_name(&self, id: usize) -> Option<&str> {
+        self.constants
+            .iter()
+            .find(|(_, v)| v.0 == id)
+            .map(|(k, _)| k.as_ref())
     }
 
     fn push_variable_name(&mut self, name: &str) {
@@ -134,7 +141,7 @@ impl ParserScope for ParserStateScope<'_> {
         name == "source"
             || self.is_attached_data_defined(name)
             || self.is_variable_defined(name)
-            || self.get_constant(name).is_some()
+            || self.get_constant_id(name).is_some()
     }
 
     fn is_attached_data_defined(&self, name: &str) -> bool {
@@ -145,8 +152,15 @@ impl ParserScope for ParserStateScope<'_> {
         self.variable_names.contains(name) || self.global_variable_names.contains(name)
     }
 
-    fn get_constant(&self, name: &str) -> Option<(usize, ValueType)> {
+    fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)> {
         self.constants.get(name).cloned()
+    }
+
+    fn get_constant_name(&self, id: usize) -> Option<&str> {
+        self.constants
+            .iter()
+            .find(|(_, v)| v.0 == id)
+            .map(|(k, _)| k.as_ref())
     }
 
     fn push_variable_name(&mut self, name: &str) {
@@ -187,7 +201,9 @@ pub trait ParserScope {
 
     fn is_variable_defined(&self, name: &str) -> bool;
 
-    fn get_constant(&self, name: &str) -> Option<(usize, ValueType)>;
+    fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)>;
+
+    fn get_constant_name(&self, id: usize) -> Option<&str>;
 
     fn push_variable_name(&mut self, name: &str);
 
@@ -200,20 +216,5 @@ pub trait ParserScope {
         scalar
             .try_resolve_value_type(&self.get_pipeline().get_resolution_scope())
             .map_err(|e| ParserError::from(&e))
-    }
-
-    fn scalar_as_static<'a>(
-        &'a self,
-        scalar: &'a ScalarExpression,
-    ) -> Option<&'a StaticScalarExpression> {
-        match scalar {
-            ScalarExpression::Static(v) => Some(v),
-            ScalarExpression::Constant(v) => Some(
-                self.get_pipeline()
-                    .get_constant(v.get_constant_id())
-                    .expect("Constant not found"),
-            ),
-            _ => None,
-        }
     }
 }
