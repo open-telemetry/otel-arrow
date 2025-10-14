@@ -7,7 +7,6 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
-use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
 use otap_df_engine::{
     config::ExporterConfig,
@@ -71,8 +70,10 @@ use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+use mimalloc_rust::GlobalMiMalloc;
+
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;

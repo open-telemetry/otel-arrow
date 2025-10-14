@@ -11,8 +11,8 @@ rust-version.workspace = true
 [dependencies]
 tokio.workspace = true
 serde_json.workspace = true
-mimalloc = "0.1.47"
-otap-df-otap = { path="../crates/otap"}
+mimalloc-rust.workspace = true
+otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -20,23 +20,23 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 
-mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
 otel-arrow-rust = { path = "../../otel-arrow-rust"}
-fluke-hpack = "0.3.1"
-futures-channel = "0.3"
-futures = "0.3.31"
-flume = "0.11.1"
-core_affinity = "0.8.3"
-local-sync = "0.1.1"
-async-unsync = "0.3.0"
-unsync = "0.1.2"
-portpicker = "0.1.1"
-tokio-stream = "0.1.17"
+
+fluke-hpack.workspace = true
+futures-channel.workspace = true
+futures.workspace = true
+flume.workspace = true
+core_affinity.workspace = true
+local-sync.workspace = true
+async-unsync.workspace = true
+unsync.workspace = true
+portpicker.workspace = true
+tokio-stream.workspace = true
 
 [lints]
 workspace = true
