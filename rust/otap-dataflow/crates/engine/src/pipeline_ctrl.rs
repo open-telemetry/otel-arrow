@@ -209,9 +209,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineControlMsg::Shutdown { reason } => {
+                        PipelineControlMsg::Shutdown { deadline, reason } => {
                             // ToDo don't ignore the returned errors
-                            _ = self.control_senders.shutdown_receivers(reason).await;
+                            _ = self.control_senders.shutdown_receivers(deadline, reason).await;
                             break;
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
@@ -440,6 +440,7 @@ mod tests {
                 // Clean shutdown
                 let _ = pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await;
@@ -494,6 +495,7 @@ mod tests {
                 // Clean shutdown
                 let _ = pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await;
@@ -590,7 +592,10 @@ mod tests {
             assert!(node2_received, "Node2 should have received TimerTick");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "".to_owned()
+            }).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -651,7 +656,10 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
+                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned()
+                }).await;
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -675,6 +683,7 @@ mod tests {
                 // Send shutdown message
                 pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await
@@ -730,6 +739,7 @@ mod tests {
                 // Clean shutdown
                 let _ = pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await;
@@ -779,6 +789,7 @@ mod tests {
                 // Manager should still be responsive for shutdown
                 let _ = pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await;
@@ -916,7 +927,10 @@ mod tests {
             assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {reason: "".to_owned()}).await;
+            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "".to_owned()
+            }).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -1099,6 +1113,7 @@ mod tests {
 
                 let _ = pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
                     .await;

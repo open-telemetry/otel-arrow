@@ -24,6 +24,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::Producer;
 use otel_arrow_rust::encode::producer::ProducerOptions;
@@ -106,7 +107,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
                 "Exporting OTLP traffic to endpoint: {}",
@@ -202,13 +203,13 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         _ = metrics_reporter.report(&mut self.pdata_metrics);
                     }
                     // shutdown the exporter
-                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                    Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
                         _ = traces_handle.await;
                         _ = timer_cancel_handle.cancel().await;
-                        break;
+                        return Ok(TerminalState::new(deadline, [self.pdata_metrics]))
                     }
                     //send data
                     Message::PData(pdata) => {
@@ -249,7 +250,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
             }
         }
-        Ok(())
     }
 }
 
@@ -464,6 +464,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use otel_arrow_rust::otap::OtapArrowRecords;
@@ -474,7 +475,9 @@ mod tests {
     };
     use serde_json::json;
     use std::net::SocketAddr;
+    use std::ops::Add;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -508,10 +511,15 @@ mod tests {
                     .await
                     .expect("Failed to send trace message");
 
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(200), "test complete")
-                    .await
-                    .expect("Failed to send Shutdown");
+                ctx.send_shutdown(
+                    Instant::now().add(Duration::from_millis(200)),
+                    "test complete",
+                )
+                .await
+                .expect("Failed to send Shutdown");
             })
         }
     }
@@ -618,8 +626,7 @@ mod tests {
             "compression_method": "none"
         });
         // Create a proper pipeline context for the benchmark
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
@@ -789,8 +796,9 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
             Ok(())
         }
 
@@ -801,6 +809,8 @@ mod tests {
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
+            metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+            metrics_reporter: MetricsReporter,
         ) {
             // send a request before while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -830,14 +840,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             // check the metrics:
-            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
             control_sender
                 .send(NodeControlMsg::CollectTelemetry {
                     metrics_reporter: metrics_reporter.clone(),
                 })
                 .await
                 .unwrap();
-            let metrics = metrics_rx.recv_async().await.unwrap();
+            let metrics = metrics_receiver.recv_async().await.unwrap();
             let logs_exported_count = metrics.get_metrics()[4]; // logs exported
             assert_eq!(logs_exported_count, 1);
             let logs_failed_count = metrics.get_metrics()[5]; // logs failed
@@ -845,7 +854,7 @@ mod tests {
 
             control_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(10),
+                    deadline: Instant::now().add(Duration::from_millis(10)),
                     reason: "shutting down".into(),
                 })
                 .await
@@ -889,11 +898,19 @@ mod tests {
             )
             .await;
         });
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
-            let _fut = local_set
-                .spawn_local(async move { start_exporter(exporter, pipeline_ctrl_msg_tx).await });
+            let metrics_reporter_start_exporter = metrics_reporter.clone();
+            let _fut = local_set.spawn_local(async move {
+                start_exporter(
+                    exporter,
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter_start_exporter,
+                )
+                .await
+            });
             tokio::join!(
                 local_set,
                 drive_test(
@@ -902,7 +919,9 @@ mod tests {
                     server_shutdown_sender,
                     pdata_tx,
                     control_sender,
-                    req_receiver
+                    req_receiver,
+                    metrics_rx,
+                    metrics_reporter
                 )
             )
         });
