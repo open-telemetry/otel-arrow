@@ -63,6 +63,7 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
         .ctrl_msg_senders
         .iter()
         .filter_map(|sender| {
+            // ToDo configurable shutdown timeout
             let deadline = Instant::now() + Duration::from_secs(10);
             sender
                 .try_send_shutdown(deadline, "admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
