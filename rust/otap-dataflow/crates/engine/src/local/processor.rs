@@ -227,7 +227,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), Error> {
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.delay_data(when, data).await
     }
 

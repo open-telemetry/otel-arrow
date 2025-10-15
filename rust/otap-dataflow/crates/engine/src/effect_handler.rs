@@ -257,7 +257,7 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Delay a message.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), Error> {
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.send_pipeline_ctrl_msg(PipelineControlMsg::DelayData {
             node_id: self.node_id().index,
             when,
@@ -265,8 +265,11 @@ impl<PData> EffectHandlerCore<PData> {
         })
         .await
         .map(|_| ())
-        .map_err(|e| Error::PipelineControlMsgError {
-            error: e.to_string(),
+        .map_err(|e| -> PData {
+            match e.inner() {
+                PipelineControlMsg::DelayData { data, .. } => *data,
+                _ => unreachable!(),
+            }
         })
     }
 }

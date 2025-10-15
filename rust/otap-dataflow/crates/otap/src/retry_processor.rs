@@ -338,7 +338,7 @@ impl RetryProcessor {
         let next_retry_time_i = now_i + Duration::from_secs_f64(delay_secs);
 
         if rstate.deadline <= systemtime_f64(next_retry_time_s) {
-            // Deadline expired: forward NACK upstream. Not permanent.
+            // Deadline expired: forward NACK upstream.
             nack.reason = format!("final retry: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
             self.metrics.add_consumed_failure(signal, items as u64);
@@ -353,15 +353,15 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        // Enter a delay, we'll continue in the
-        // DelayedData branch next.
+        // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
             Ok(_) => Ok(()),
-            Err(err) => {
-                let reason = format!("delay unavailable: {}", err.to_string());
-                effect_handler.notify_nack(NackMsg::new(reason, ).await?;
+            Err(refused) => {
+                effect_handler
+                    .notify_nack(NackMsg::new("cannot delay", refused))
+                    .await?;
                 self.metrics.add_consumed_failure(signal, items as u64);
-                return Ok(());
+                Ok(())
             }
         }
     }
@@ -369,11 +369,16 @@ impl RetryProcessor {
     async fn handle_delayed(
         &mut self,
         _when: Instant,
-        _data: Box<OtapPdata>,
-        _effect_handler: &mut EffectHandler<OtapPdata>,
+        data: Box<OtapPdata>,
+        effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // TODO
+        let signal = data.signal_type();
+        let items = data.num_items();
+
         self.metrics.add_retry_attempts(signal, items as u64);
+
+        let _ = effect_handler.send_message(*data).await?;
+
         Ok(())
     }
 }
