@@ -64,6 +64,7 @@ impl Default for ParserOptions {
 pub struct ParserMapSchema {
     keys: HashMap<Box<str>, ParserMapKeySchema>,
     default_map_key: Option<Box<str>>,
+    allow_undefined_keys: bool,
 }
 
 impl ParserMapSchema {
@@ -71,6 +72,7 @@ impl ParserMapSchema {
         Self {
             keys: HashMap::new(),
             default_map_key: None,
+            allow_undefined_keys: false,
         }
     }
 
@@ -84,6 +86,9 @@ impl ParserMapSchema {
     }
 
     pub fn set_default_map_key(mut self, name: &str) -> ParserMapSchema {
+        if self.allow_undefined_keys {
+            panic!("Default map cannot be specified when undefined keys is enabled");
+        }
         let definition = self
             .keys
             .entry(name.into())
@@ -92,6 +97,14 @@ impl ParserMapSchema {
             panic!("Map key was already defined for '{name}' as something other than a map");
         }
         self.default_map_key = Some(name.into());
+        self
+    }
+
+    pub fn set_allow_undefined_keys(mut self) -> ParserMapSchema {
+        if self.default_map_key.is_some() {
+            panic!("Undefined keys cannot be enabled when default map is specified");
+        }
+        self.allow_undefined_keys = true;
         self
     }
 
@@ -115,6 +128,10 @@ impl ParserMapSchema {
         } else {
             None
         }
+    }
+
+    pub fn get_allow_undefined_keys(&self) -> bool {
+        self.allow_undefined_keys
     }
 
     pub fn try_resolve_value_type(
@@ -171,13 +188,13 @@ impl ParserMapSchema {
                                 return Ok(key_schema.get_value_type());
                             }
                             None => {
-                                return Err(ParserError::SyntaxError(
-                                    r.get_query_location().clone(),
-                                    format!(
-                                        "The name '{}' does not refer to any known key on the target map",
-                                        key
-                                    ),
-                                ));
+                                if self.allow_undefined_keys {
+                                    return Ok(None);
+                                }
+                                return Err(ParserError::KeyNotFound {
+                                    location: r.get_query_location().clone(),
+                                    key: key.into(),
+                                });
                             }
                         }
                     }
