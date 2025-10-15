@@ -84,6 +84,26 @@ impl<PData> TestContext<PData> {
     pub async fn sleep(&self, duration: Duration) {
         sleep(duration).await;
     }
+
+    /// Sets the pipeline control message sender on the effect handler.
+    /// This is needed for processors that send ACK/NACK messages upstream.
+    ///
+    /// # Note
+    /// This is primarily used in testing scenarios where the processor needs to
+    /// send control messages but isn't connected to a full pipeline.
+    pub fn set_pipeline_ctrl_sender(
+        &mut self,
+        pipeline_ctrl_sender: crate::control::PipelineCtrlMsgSender<PData>,
+    ) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+            }
+        }
+    }
 }
 
 impl ValidateContext {

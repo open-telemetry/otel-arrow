@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
-pub const RETRY_PROCESSOR_URN: &str = "urn:otap:processor:retry_processor";
+pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
 
 /// Configuration for the retry processor. Modeled on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
@@ -348,7 +348,7 @@ impl RetryProcessor {
         // Updated RetryState back onto context for retry attempt
         let mut rereq = nack.refused;
         effect_handler.subscribe_to(
-            Interests::NACKS | Interests::ACKS,
+            Interests::NACKS | Interests::ACKS | Interests::RETURN_DATA,
             rstate.into(),
             &mut rereq,
         );
@@ -414,7 +414,7 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::PData(mut data) => {
                 let deadline = now_f64() + self.config.max_elapsed_time.as_secs_f64();
                 effect_handler.subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
+                    Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
                     RetryState::new(deadline).into(),
                     &mut data,
                 );
@@ -505,3 +505,8 @@ mod test {
         );
     }
 }
+
+// Comprehensive tests using the common test harness
+#[cfg(test)]
+#[path = "retry_processor_test.rs"]
+mod retry_processor_test;
