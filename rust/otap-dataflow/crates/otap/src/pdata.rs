@@ -1083,6 +1083,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(!pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 
@@ -1093,7 +1094,6 @@ mod test {
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
-        assert!(ack_msg.accepted.context.may_return_payload());
 
         // Payload should be dropped
         assert_eq!(ack_msg.accepted.num_items(), 0);
@@ -1114,6 +1114,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 
@@ -1124,7 +1125,6 @@ mod test {
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
-        assert!(!ack_msg.accepted.context.may_return_payload());
 
         // Payload should be preserved
         assert_eq!(ack_msg.accepted.num_items(), 1);
@@ -1141,6 +1141,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(!pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error".to_string(), pdata);
         let result = Context::next_nack(nack);
@@ -1170,6 +1171,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error", pdata);
 
@@ -1201,6 +1203,7 @@ mod test {
             .test_subscribe_to(Interests::ACKS, CallData::default(), 2)
             .test_subscribe_to(Interests::NACKS, CallData::default(), 3)
             .test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+        assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 
