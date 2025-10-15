@@ -92,7 +92,7 @@ fn parser_map_schema_from_json(
             }
         },
         "options": {
-            allow_undefined_keys: true // default if not specified is false
+            "allow_undefined_keys": true // default if not specified is false
         }
     }
     */
