@@ -314,7 +314,7 @@ impl RetryProcessor {
 
         let rstate_res: Result<RetryState, _> = nack.calldata.clone().try_into();
 
-        // If for any reason we cannot or will not retry:
+        // Check the basics: we should have data
         if nack.refused.is_empty() || rstate_res.is_err() {
             nack.reason = format!("retry internal error: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
@@ -353,6 +353,8 @@ impl RetryProcessor {
             &mut rereq,
         );
 
+        self.metrics.add_retry_attempts(signal, items as u64);
+
         // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
             Ok(_) => Ok(()),
@@ -372,14 +374,32 @@ impl RetryProcessor {
         data: Box<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        self.send_or_nack(*data, effect_handler).await
+    }
+
+    async fn send_or_nack(
+        &mut self,
+        data: OtapPdata,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let signal = data.signal_type();
-        let items = data.num_items();
-
-        self.metrics.add_retry_attempts(signal, items as u64);
-
-        let _ = effect_handler.send_message(*data).await?;
-
-        Ok(())
+        let items = data.num_items() as u64;
+        match effect_handler.send_message(data).await {
+            Ok(()) => {
+                // Request control flows downstream.
+                Ok(())
+            }
+            Err(TypedError::ChannelSendError(sent)) => {
+                let reason = sent.to_string();
+                let data = sent.inner();
+                let _ = effect_handler
+                    .notify_nack(NackMsg::new(reason, data))
+                    .await?;
+                self.metrics.add_consumed_failure(signal, items);
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -392,30 +412,13 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
-                let signal = data.signal_type();
-                let items = data.num_items() as u64;
                 let deadline = now_f64() + self.config.max_elapsed_time.as_secs_f64();
                 effect_handler.subscribe_to(
                     Interests::ACKS | Interests::NACKS,
                     RetryState::new(deadline).into(),
                     &mut data,
                 );
-                match effect_handler.send_message(data).await {
-                    Ok(()) => {
-                        // Request control flows downstream.
-                        Ok(())
-                    }
-                    Err(TypedError::ChannelSendError(sent)) => {
-                        let reason = sent.to_string();
-                        let data = sent.inner();
-                        let _ = effect_handler
-                            .notify_nack(NackMsg::new(reason, data))
-                            .await?;
-                        self.metrics.add_consumed_failure(signal, items);
-                        Ok(())
-                    }
-                    Err(e) => Err(e.into()),
-                }
+                self.send_or_nack(data, effect_handler).await
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
