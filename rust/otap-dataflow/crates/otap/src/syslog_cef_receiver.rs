@@ -177,7 +177,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let metrics = Rc::clone(&self.metrics);
 
                                     // Spawn a task to handle the connection.
-                                    // TODO: Use the JoinHandle for graceful shutdown when wiring stop signals.
+                                    // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
                                         let mut reader = BufReader::new(socket);
                                         let mut line_bytes = Vec::new();
