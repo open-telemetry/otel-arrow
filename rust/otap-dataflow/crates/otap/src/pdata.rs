@@ -85,8 +85,8 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
-use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
@@ -443,9 +443,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes);
-                use otap_df_pdata_views::views::logs::{
-                    LogsDataView, ResourceLogsView, ScopeLogsView,
-                };
+                use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
                 logs_data_view
                     .resources()
                     .map(|rl| {
@@ -457,9 +455,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes);
-                use otap_df_pdata_views::views::trace::{
-                    ResourceSpansView, ScopeSpansView, TracesView,
-                };
+                use otap_df_pdata::views::trace::{ResourceSpansView, ScopeSpansView, TracesView};
                 traces_data_view
                     .resources()
                     .map(|rs| rs.scopes().map(|ss| ss.spans().count()).sum::<usize>())

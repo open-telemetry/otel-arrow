@@ -157,8 +157,8 @@ pub enum NodeControlMsg<PData> {
     ///
     /// A deadline of zero duration indicates an immediate shutdown.
     Shutdown {
-        /// Deadline for shutdown (in seconds).
-        deadline: Duration,
+        /// Deadline for shutdown.
+        deadline: Instant,
         /// Human-readable reason for the shutdown.
         reason: String,
     },
@@ -224,6 +224,9 @@ pub enum PipelineControlMsg<PData> {
     },
     /// Requests shutdown of the pipeline.
     Shutdown {
+        /// Deadline for shutdown.
+        deadline: Instant,
+
         /// Human-readable reason for the shutdown.
         reason: String,
     },
@@ -261,8 +264,8 @@ pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PDat
 
 /// Trait for sending admin commands without depending on the pipeline data type.
 pub trait PipelineAdminSender: Send + Sync {
-    /// Attempts to send a shutdown request to the pipeline.
-    fn try_send_shutdown(&self, reason: String) -> Result<(), Error>;
+    /// Attempts to send a shutdown request to the pipeline with the provided deadline.
+    fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error>;
 }
 
 /// Creates a shared node request channel for communication from nodes to the pipeline engine.
@@ -386,9 +389,11 @@ impl<PData> ControlSenders<PData> {
     /// if any sends failed.
     pub async fn shutdown_receivers(
         &self,
+        deadline: Instant,
         reason: String,
     ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
-        self.shutdown_nodes(Some(NodeType::Receiver), reason).await
+        self.shutdown_nodes(Some(NodeType::Receiver), deadline, reason)
+            .await
     }
 
     /// Broadcast a shutdown control message to all nodes in the pipeline. This is usually not the
@@ -400,9 +405,10 @@ impl<PData> ControlSenders<PData> {
     /// if any sends failed.
     pub async fn shutdown_all(
         &self,
+        deadline: Instant,
         reason: String,
     ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
-        self.shutdown_nodes(None, reason).await
+        self.shutdown_nodes(None, deadline, reason).await
     }
 
     /// Internal helper method to broadcast shutdown messages to nodes.
@@ -418,6 +424,7 @@ impl<PData> ControlSenders<PData> {
     async fn shutdown_nodes(
         &self,
         node_type_filter: Option<NodeType>,
+        deadline: Instant,
         reason: String,
     ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
         let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
@@ -431,7 +438,7 @@ impl<PData> ControlSenders<PData> {
             }
 
             let shutdown_msg = NodeControlMsg::Shutdown {
-                deadline: Default::default(),
+                deadline,
                 reason: reason.clone(),
             };
 
@@ -455,8 +462,8 @@ impl<PData> PipelineAdminSender for SharedSender<PipelineControlMsg<PData>>
 where
     PData: Send + Sync + 'static,
 {
-    fn try_send_shutdown(&self, reason: String) -> Result<(), Error> {
-        let shutdown_msg = PipelineControlMsg::Shutdown { reason };
+    fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error> {
+        let shutdown_msg = PipelineControlMsg::Shutdown { deadline, reason };
 
         self.try_send(shutdown_msg)
             .map_err(|e| Error::PipelineControlMsgError {

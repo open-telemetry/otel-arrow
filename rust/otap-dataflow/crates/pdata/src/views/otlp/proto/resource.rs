@@ -4,8 +4,10 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp resources.proto.
 
-use crate::otlp::proto::common::{KeyValueIter, ObjKeyValue};
-use crate::views::resource::ResourceView;
+use crate::views::{
+    otlp::proto::common::{KeyValueIter, ObjKeyValue},
+    resource::ResourceView,
+};
 
 use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
 

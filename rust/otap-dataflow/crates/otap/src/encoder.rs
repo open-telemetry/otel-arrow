@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata_views::views::{
+use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
@@ -977,8 +977,8 @@ mod test {
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
 
-    use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-    use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
     use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::otlp::attributes::AttributeValueType;
     use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;

@@ -59,6 +59,15 @@ impl MetricsReporter {
         }
     }
 
+    /// Report an already materialized snapshot.
+    pub fn try_report_snapshot(&self, snapshot: MetricSetSnapshot) -> Result<(), Error> {
+        match self.metrics_sender.try_send(snapshot) {
+            Ok(_) => Ok(()),
+            Err(flume::TrySendError::Full(_)) => Ok(()),
+            Err(flume::TrySendError::Disconnected(_)) => Err(Error::MetricsChannelClosed),
+        }
+    }
+
     /// Send a raw metrics snapshot directly to the collector.
     /// This method is primarily for testing purposes.
     #[cfg(test)]

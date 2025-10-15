@@ -8,7 +8,7 @@ use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{scalar_expression::parse_scalar_expression, *};
 
 pub(crate) fn parse_type_unary_expressions(
     type_unary_expressions_rule: Pair<Rule>,
@@ -449,7 +449,9 @@ pub(crate) fn parse_accessor_expression(
             Rule::scalar_expression => {
                 let mut scalar = parse_scalar_expression(pair, scope)?;
 
-                let value_type = scope.try_resolve_value_type(&mut scalar)?;
+                let value_type = scope
+                    .try_resolve_value_type(&mut scalar)
+                    .map_err(map_kql_errors)?;
 
                 if negate_location.is_some() {
                     if let Some(t) = value_type
@@ -510,7 +512,8 @@ pub(crate) fn parse_accessor_expression(
             Some(ValueType::Map)
         } else if let Some(schema) = scope.get_source_schema() {
             schema
-                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())?
+                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())
+                .map_err(map_kql_errors)?
         } else {
             None
         };
@@ -566,10 +569,12 @@ pub(crate) fn parse_accessor_expression(
                         match key {
                             ParserMapKeySchema::Map(inner_schema) => {
                                 if let Some(schema) = inner_schema {
-                                    resolved_value_type = schema.try_resolve_value_type(
-                                        value_accessor.get_selectors_mut(),
-                                        &scope.get_pipeline().get_resolution_scope(),
-                                    )?;
+                                    resolved_value_type = schema
+                                        .try_resolve_value_type(
+                                            value_accessor.get_selectors_mut(),
+                                            &scope.get_pipeline().get_resolution_scope(),
+                                        )
+                                        .map_err(map_kql_errors)?;
                                 }
                             }
                             ParserMapKeySchema::Array | ParserMapKeySchema::Any => {
@@ -644,10 +649,12 @@ pub(crate) fn parse_accessor_expression(
                         }
 
                         if let Some(schema) = default_map_schema {
-                            resolved_value_type = schema.try_resolve_value_type(
-                                value_accessor.get_selectors_mut(),
-                                &scope.get_pipeline().get_resolution_scope(),
-                            )?;
+                            resolved_value_type = schema
+                                .try_resolve_value_type(
+                                    value_accessor.get_selectors_mut(),
+                                    &scope.get_pipeline().get_resolution_scope(),
+                                )
+                                .map_err(map_kql_errors)?;
                         }
 
                         value_accessor.insert_selector(
@@ -656,10 +663,17 @@ pub(crate) fn parse_accessor_expression(
                                 StringScalarExpression::new(root_location, default_map_key),
                             )),
                         );
+                    } else if schema.get_allow_undefined_keys() {
+                        value_accessor.insert_selector(
+                            0,
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                root_accessor_identity,
+                            )),
+                        );
                     } else {
                         return Err(ParserError::QueryLanguageDiagnostic {
                             location: root_accessor_identity.get_query_location().clone(),
-                            diagnostic_id: "KS109",
+                            diagnostic_id: "KS142",
                             message: format!(
                                 "The name '{}' does not refer to any known column, table, variable or function",
                                 root_accessor_identity.get_value()
@@ -1708,7 +1722,7 @@ mod tests {
 
         run_test_failure(
             "unknown_key",
-            "KS109",
+            "KS142",
             "The name 'unknown_key' does not refer to any known column, table, variable or function",
         );
     }
@@ -2016,7 +2030,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_accessor_expression_with_map_schema() {
+    fn test_parse_accessor_expression_with_default_map_schema() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
@@ -2262,14 +2276,14 @@ mod tests {
 
         run_test_failure(
             "map.unknown",
-            None,
-            "The name 'unknown' does not refer to any known key on the target map",
+            Some("KS142"),
+            "The name 'unknown' does not refer to any known column, table, variable or function",
         );
 
         run_test_failure(
             "map.map_value_with_schema.unknown",
-            None,
-            "The name 'unknown' does not refer to any known key on the target map",
+            Some("KS142"),
+            "The name 'unknown' does not refer to any known column, table, variable or function",
         );
 
         run_test_failure(
@@ -2280,8 +2294,190 @@ mod tests {
 
         run_test_failure(
             "source.field",
-            None,
-            "The name 'field' does not refer to any known key on the target map",
+            Some("KS142"),
+            "The name 'field' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_with_default_map_schema_and_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .set_default_map_key("map")
+                        .with_key_definition(
+                            "map",
+                            ParserMapKeySchema::Map(Some(
+                                ParserMapSchema::new()
+                                    .with_key_definition("double_value", ParserMapKeySchema::Double)
+                                    .set_allow_undefined_keys(),
+                            )),
+                        ),
+                ),
+            );
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &state, false).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "double_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "double_value"),
+                    )),
+                ]),
+                Some(ValueType::Double),
+            )),
+        );
+
+        run_test_success(
+            "unknown",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "map"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "unknown"),
+                    )),
+                ]),
+                None,
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_with_schema() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                ),
+            );
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &state, false).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                ),
+            );
+
+            let error =
+                parse_accessor_expression(result.next().unwrap(), &state, true).unwrap_err();
+
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "int_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "int_value",
+                    )),
+                )]),
+                Some(ValueType::Integer),
+            )),
+        );
+
+        run_test_failure(
+            "unknown",
+            Some("KS142"),
+            "The name 'unknown' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_with_schema_allow_undefined_keys() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_source_map_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("int_value", ParserMapKeySchema::Integer)
+                        .set_allow_undefined_keys(),
+                ),
+            );
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &state, false).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "int_value",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "int_value",
+                    )),
+                )]),
+                Some(ValueType::Integer),
+            )),
+        );
+
+        run_test_success(
+            "unknown",
+            ScalarExpression::Source(SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "unknown",
+                    )),
+                )]),
+                None,
+            )),
         );
     }
 }

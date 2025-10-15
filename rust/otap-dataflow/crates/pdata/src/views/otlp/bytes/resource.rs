@@ -6,7 +6,7 @@
 
 use std::{cell::Cell, num::NonZeroUsize};
 
-use crate::{
+use crate::views::{
     otlp::bytes::{
         common::{KeyValueIter, RawKeyValue},
         decode::{
@@ -14,7 +14,7 @@ use crate::{
             from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
         },
     },
-    views::resource::ResourceView,
+    resource::ResourceView,
 };
 use otel_arrow_rust::proto::consts::{
     field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
