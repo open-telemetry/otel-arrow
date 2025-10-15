@@ -614,6 +614,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema_and_allow_undefined_keys() {
+        let run_test_success = |query: &str| {
+            parse_kql_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer)
+                            .set_allow_undefined_keys(),
+                    ),
+                ),
+            )
+            .unwrap();
+        };
+
+        run_test_success("source | extend int_value = 1234");
+        run_test_success("source | extend Custom = 1234");
+
+        run_test_success("source | summarize by int_value");
+        run_test_success("source | summarize by unknown");
+    }
+
+    #[test]
     fn test_parse_kql_query_into_pipeline_with_attributes_schema_error() {
         let e = parse_kql_query_into_pipeline(
             "",
