@@ -64,7 +64,7 @@ impl BridgeOptions {
 fn parser_map_schema_from_json(
     map_schema_value: &serde_json::Value,
 ) -> Result<ParserMapSchema, String> {
-    /* Expected JSON structure looks like this:
+    /* Expected JSON structure looks like this...
     {
         "key1": "Any",
         "key2": "Double",
@@ -78,10 +78,31 @@ fn parser_map_schema_from_json(
     }
     */
 
-    if let serde_json::Value::Object(o) = map_schema_value {
+    /* ...or like this (allows options to also be specified):
+    {
+        "schema": {
+            "key1": "Any",
+            "key2": "Double",
+            "key3": "Map",
+            "key4": {
+                "type": "Map",
+                "schema": {
+                    "sub-key1": "Integer"
+                }
+            }
+        },
+        "options": {
+            allow_undefined_keys: true // default if not specified is false
+        }
+    }
+    */
+
+    fn parse_schema(
+        schema: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ParserMapSchema, String> {
         let mut map = ParserMapSchema::new();
 
-        for (key, value) in o {
+        for (key, value) in schema {
             match value {
                 serde_json::Value::String(s) => match ParserMapKeySchema::try_from(s.as_str()) {
                     Ok(s) => map = map.with_key_definition(key.as_str(), s),
@@ -126,6 +147,30 @@ fn parser_map_schema_from_json(
         }
 
         Ok(map)
+    }
+
+    if let serde_json::Value::Object(o) = map_schema_value {
+        if o.keys().len() == 2 && o.contains_key("schema") && o.contains_key("options") {
+            if let Some(serde_json::Value::Object(schema)) = o.get("schema") {
+                let mut schema = parse_schema(schema)?;
+
+                if let Some(serde_json::Value::Object(options)) = o.get("options") {
+                    if let Some(serde_json::Value::Bool(b)) = options.get("allow_undefined_keys")
+                        && *b
+                    {
+                        schema = schema.set_allow_undefined_keys();
+                    }
+                } else {
+                    return Err("Options was not a map".into());
+                }
+
+                Ok(schema)
+            } else {
+                Err("Schema was not a map".into())
+            }
+        } else {
+            parse_schema(o)
+        }
     } else {
         Err(format!("Expected a map found: {map_schema_value:?}"))
     }
@@ -219,6 +264,33 @@ mod tests {
                             ),
                     )),
                 ),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_bridge_options_from_json_with_allow_undefined_keys() {
+        let run_test = |json: &str, expected: BridgeOptions| {
+            let actual = BridgeOptions::from_json(json).unwrap();
+
+            assert_eq!(expected, actual);
+        };
+
+        run_test(
+            r#"{
+                "attributes_schema": {
+                    "schema": {
+                        "double_key": "Double"
+                    },
+                    "options": {
+                        "allow_undefined_keys": true
+                    }
+                }
+            }"#,
+            BridgeOptions::new().with_attributes_schema(
+                ParserMapSchema::new()
+                    .with_key_definition("double_key", ParserMapKeySchema::Double)
+                    .set_allow_undefined_keys(),
             ),
         );
     }
