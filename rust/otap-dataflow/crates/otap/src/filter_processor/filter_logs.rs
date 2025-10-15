@@ -62,16 +62,12 @@ pub enum LogMatchType {
     Regexp
 }
 
+// ToDo if no filter is set then the filter must allow everything through, boolean array should be initialized to all true
+
 impl LogFilter {
-	pub fn filer_logs(&self, logs_payload: OtapArrowRecord) -> Result<OtapArrowRecords, Error>{
-		let (include_resource_attr_filter, include_log_record_filter, include_log_attr_filter) = self.include.create_filters(logs_payload)?;
-		let (mut exclude_resource_attr_filter, mut exclude_log_record_filter, mut exclude_log_attr_filter) = self.exclude.create_filters(logs_payload)?;
-
-		// reverse the exclude filter
-		exclude_resource_attr_filter = arrow::compute::not(&exclude_resource_attr_filter).map_err()?;
-		exclude_log_record_filter = arrow::compute::not(&exclude_log_record_filter).map_err()?;
-		exclude_log_attr_filter = arrow::compute::not(&exclude_log_attr_filter).map_err()?;
-
+	pub fn filter(&self, logs_payload: OtapArrowRecord) -> Result<OtapArrowRecords, Error>{
+		let (include_resource_attr_filter, include_log_record_filter, include_log_attr_filter) = self.include.create_filters(logs_payload, false)?;
+		let (exclude_resource_attr_filter, exclude_log_record_filter, exclude_log_attr_filter) = self.exclude.create_filters(logs_payload, true)?;
 
 		// combine the include and exclude filters
 		let resource_attr_filter = arrow::compute::or_kleene(&include_resource_attr_filter, &exclude_resource_attr_filter).map_err()?;
@@ -82,16 +78,96 @@ impl LogFilter {
 		let log_records = logs_payload.get(ArrowPayLoadType::Logs)?;
 		let log_attrs = logs_payload.get(ArrowPayLoadType::LogAttrs)?;
 
+
+        // HERE WE CLEAN UP THE TABLE WE EXTRACT THE IDS OF RECORDS WE ARE REMOVING AND MAKE SURE TO SYNC THESE REMOVALS WITH THE OTHER TABLES
+
+        // we start with the resource_attr we get the id of the resource_attr that are being removed and use that to update the log_records filter
+        // we want to remove the log_records the matching parent_id as the resource_attr that have been removed
+
+
+        // create filters that we will use to get the rows that are getting removed
+        // use these filters to get the ids of rows that are getting removed from the resource_attr
+        let id_resource_attr_filter = arrow::compute::not(&resource_attr_filter).map_err()?;
+        let resource_id_column = resource_attrs.column_by_name("parent_id").map_err()?;
+        // we have a have a array contain all the parent_ids that will be removed
+
+        // get ids that we being kept
+        let resource_ids_filtered = arrow::compute::filter(&resource_id_column, resource_attr_filter).map_err()?;
+        // get ids being removed
+        let resource_ids_removed = arrow::compute::filter(&resource_id_column, id_resource_attr_filter).map_err()?;
+
+        // update the log_records_filter to remove records that contain the parent_ids we found above
+        let log_record_resource_id_column = log_records.column_by_name("resource_id").map_err()?;
+        // init booleanarray here
+        let log_record_resouce_id_filter;
+
+
+        // TODO: we remove overlapping ids to only get the unique ids that are being removed, 
+        //we can move this logic to the get...filter functions to make sure the ids all stick together 
+        //that is parent_id with 0 should not both get removed or kept should be xor. In the get...filter functions
+        // after we get a filter that extracts all the attributes we should get the ids and use that to build our final filter
+        let resource_ids = resource_ids_removed - resource_ids_filtered;
+
+        // build filter
+        for id in resource_ids {
+            let id_scaler = UInt16Array::new_scaler(id).map_err()?;
+            let id_filter = arrow::compute::kernels::eq(&log_record_resource_id_column, &id_scaler);
+            log_record_resource_id_filter = arrow::compute::or_kleene(&log_record_resource_id_filter, &id_filter);
+        }
+        // inverse because these are the ids we want to remove
+        log_record_resource_id_filter = arrow::compute::not(&log_record_resource_id_filter);
+
+        // combine filter with log record so now it will remove the log_records that shouldn't belong
+        log_record_filter = arrow::compute::and(&log_record_filter, &log_record_resource_id_filter);
+
+        // NOW WE CLEAN UP LOG_ATTR AND SCOPE_ATTR
+
+        // invert filter to get all the removed rows
+        let id_log_records_filter = arrow::compute::not(&log_record_filter).map_err()?;
+
+        let log_record_id_column = log_records.column_by_name("id").map_err()?;
+
+        // these are the ids we need to remove from the log_attr table
+        let ids = arrow::compute::filter(&log_record_id_column, &id_log_records_filter);
+        let log_attr_id_column = log_attr.column_by_name("parent_id");
+        let log_attr_parent_id_filter;
+        for id in ids() {
+            let id_scaler = UInt16Array::new_scaler(id).map_err()?;
+            let id_filter = arrow::compute::kernels::eq(&log_attr_id_column, &id_scaler).map_err()?;
+            log_attr_parent_id_filter = arrow::compute::or_kleene(&log_attr_parent_id_filter, &id_filter).map_err()?;
+        }
+        log_attr_parent_id_filter = arrow::compute::not(&log_attr_parent_id_filter);
+        log_attr_filter = arrow::compute::and(&log_attr_filter, &log_attr_parent_id_filter);
+
+
+
+        let log_record_scope_id_column = log_records.column_by_name("scope_id").map_err()?;
+
+        // here we need to also get the inverse and get the set difference to deal with overlapping scope_ids that are removed and kept
+        let scope_ids = arrow::compute::filter(&log_record_scope_id_column, &id_log_records_filter);
+
+        let scope_attr = logs_payload.get(ArrowPayLoadType::ScopeAttrs);
+        let scope_attr_id_column = scope_attr.column_by_name("parent_id");
+        let scope_attr_filter;
+        for id in scope_ids() {
+            let id_scaler = UInt16Array::new_scaler(id).map_err()?;
+            let id_filter = arrow::compute::kernels::eq(&scope_attr_id_column, &id_scaler).map_err()?;
+            scope_attr_filter = arrow::compute::or_kleene(&scope_attr_filter, &id_filter).map_err()?;
+        }
+        scope_attr_filter = arrow::compute::not(&scope_attr_filter).map_err()?;
+
+
         // apply filters to the logs
-		let filtered_resource_attrs = arrow::compute::filter_record_batch().map_err()?;
-		let filtered_log_records = arrow::compute::filter_record_batch().map_err()?;
-		let filtered_log_attrs = arrow::compute::filter_record_batch().map_err()?;
+		let filtered_resource_attrs = arrow::compute::filter_record_batch(resource_attrs, &resource_attr_filter).map_err()?;
+		let filtered_log_records = arrow::compute::filter_record_batch(log_record, &log_record_filter).map_err()?;
+		let filtered_log_attrs = arrow::compute::filter_record_batch(log_attrs, &log_attr_filter).map_err()?;
+        let filtered_scope_attrs = arrow::compute::filter_record_batch(scope_attrs, &scope_attr_filter).map_err()?;
 
         logs_payload.set(ArrowPayLoadType::ResourceAttrs, filtered_resource_attrs)?;
         logs_payload.set(ArrowPayLoadType::Logs, filtered_log_records)?;
-        logs_payload.set(ArrowPayLoadType::LogAttrs, filtered_log_attrs);
+        logs_payload.set(ArrowPayLoadType::LogAttrs, filtered_log_attrs)?;
+        logs_payload.set(ArrowPayLoadType::ScopeAttrs, filtered_scope_attrs)?;
 
-		// ToDo: clean up the logs tables use id to remove 
 
 		Ok(logs_payload)
 	}
@@ -118,7 +194,7 @@ impl LogMatchProperties {
     const SEVERITY_NUMBER: &str = "severity_number";
     const SEVERITY_TEXT: &str = "severity_text";
 
-    // todo need to extend the filter creation to support regex match type
+    // TODO need to extend the filter creation to support regex match type
 	fn get_resource_attr_filter(&self, logs_payload: &OtapArrowRecord) -> Result<BooleanArray, Error> {
 		// get resource_attrs record batch
 		let resource_attrs = logs_payload.get(ArrowPayLoadType::ResourceAttrs).map_err()?;
@@ -281,10 +357,25 @@ impl LogMatchProperties {
 		Ok(filter)
 	}
 
-	pub fn create_filters(&self, logs_payload: &OtapArrowRecord) -> Result<(BooleanArray, BooleanArray, BooleanArray), Error> {
-		resource_attr_filter = self.get_log_record_filter(logs_payload)?;
-		log_record_filter = self.get_log_record_filter(logs_payload)?;
-		log_attr_filter = self.get_log_attr_filter(logs_payload)?;
-		Ok((resource_attr_filter, log_record_filter, log_attr_filter))
+    // fn build_boolean_array(&self, column, )
+
+	pub fn create_filters(&self, logs_payload: &OtapArrowRecord, invert: bool) -> Result<(BooleanArray, BooleanArray, BooleanArray), Error> {
+       let (mut resource_attr_filter, mut log_record_filter, mut log_attr_filter) =  match self.match_type {
+            LogMatchType::Strict => {
+                (self.get_log_record_filter(logs_payload)?, self.get_log_record_filter(logs_payload)?, self.get_log_attr_filter(logs_payload)?)
+            },
+            LogMatchType::Regexp => {
+                // todo replace these functions with regexp filter function
+                (self.get_log_record_filter(logs_payload)?, self.get_log_record_filter(logs_payload)?, self.get_log_attr_filter(logs_payload)?)
+            }
+        };
+
+        if invert {
+            resource_attr_filter = arrow::compute::not(&esource_attr_filter).map_err()?;
+            log_record_filter = arrow::compute::not(&log_record_filter).map_err()?;
+            log_attr_filter = arrow::compute::not(&log_attr_filter).map_err()?;
+        }
+
+        Ok((resource_attr_filter, log_record_filter, log_attr_filter))
 	}
 }

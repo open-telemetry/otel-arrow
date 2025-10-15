@@ -39,7 +39,7 @@ clap = { version = "4.5.42", features = ["derive"] }
 mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
-arrow = "56.1"
+arrow = { version = "56.1", features=["prettyprint"] }
 arrow-ipc = { version = "56.1", features=["zstd"] }
 ciborium = "0.2.2"
 futures-timer = "3.0"

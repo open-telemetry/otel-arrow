@@ -545,6 +545,12 @@ mod tests {
         resource::v1::Resource,
     };
 
+    use arrow::compute::filter_record_batch;
+    use arrow::array::StringArray;
+    use arrow::array::Int64Array;
+    use crate::pdata::OtapPayload;
+
+
     fn build_logs_with_attrs(
         res_attrs: Vec<KeyValue>,
         scope_attrs: Vec<KeyValue>,
@@ -571,6 +577,52 @@ mod tests {
         ])
     }
 
+
+    #[test]
+    fn test_create_otap_batch() {
+
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("a", AnyValue::new_string("rv"))],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+                KeyValue::new("c", AnyValue::new_int(120)),
+                KeyValue::new("d", AnyValue::new_int(120)),
+            ],
+        );
+        let mut bytes = vec![];
+        input.encode(&mut bytes).unwrap();
+        let pdata = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes));
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        println!("{:?}", log_attrs);
+        println!("{:?}", log_attrs.schema());
+
+        let table = arrow::util::pretty::pretty_format_batches_with_schema(log_attrs.schema(), &[log_attrs.clone()]).unwrap();
+        println!("{table}");
+        let attr_mask = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("str").unwrap(), &StringArray::new_scalar("keep")).unwrap();
+        let attr_mask_4 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("key").unwrap(), &StringArray::new_scalar("b")).unwrap();
+
+        let attr_mask_2 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("key").unwrap(), &StringArray::new_scalar("d")).unwrap();
+        let attr_msk_3 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("int").unwrap(), &Int64Array::new_scalar(120)).unwrap();
+
+        let combined_attr_mask = arrow::compute::and(&attr_mask_2, &attr_msk_3).unwrap();
+        let combined_attr_mask_2 = arrow::compute::and(&attr_mask_4, &attr_mask).unwrap();
+        let combined_attr_mask = arrow::compute::or_kleene(&combined_attr_mask, &combined_attr_mask_2).expect("failed to or");
+
+        let new_attrs = filter_record_batch(log_attrs, &combined_attr_mask).expect("failed to filter");
+        arrow::util::pretty::print_batches(&[new_attrs.clone()]).unwrap();
+
+        let id_column = log_attrs.column_by_name("parent_id").unwrap();
+        let extracted_ids = arrow::compute::filter(id_column, &combined_attr_mask).unwrap();
+
+
+        arrow::util::pretty::print_columns("parent_id", &[extracted_ids.clone()]).unwrap();
+
+
+    }
     #[test]
     fn test_config_from_json_parses_actions_and_apply_to_default() {
         let cfg = json!({
