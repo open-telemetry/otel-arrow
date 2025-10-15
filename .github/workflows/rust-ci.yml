@@ -41,7 +41,7 @@ jobs:
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@e7ef886cf8f69c25ecef6bbc2858a42e273496ec # v2.62.28
+        uses: taiki-e/install-action@f13d8e15c52b25c79b608d399cc802adc73d83da # v2.62.30
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
