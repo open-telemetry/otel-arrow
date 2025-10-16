@@ -38,11 +38,6 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Sets the pipeline control message sender for this effect handler.
-    /// This is used by processors to send ACK/NACK messages upstream.
-    ///
-    /// # Note
-    /// This is public to support testing scenarios where components need to be
-    /// configured manually without going through the full pipeline setup.
     pub fn set_pipeline_ctrl_msg_sender(
         &mut self,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,

@@ -35,7 +35,7 @@ fn test_retry_processor_full_flow_with_retries() {
 
     // Configure with very short intervals for fast testing
     let config = json!({
-        "initial_interval": 0.05,    // 50ms initial delay
+        "initial_interval": 0.05,     // 50ms initial delay
         "max_interval": 0.15,         // 150ms max delay
         "max_elapsed_time": 0.3,      // 300ms total timeout
         "multiplier": 2.0,            // Double each retry
@@ -56,7 +56,7 @@ fn test_retry_processor_full_flow_with_retries() {
 
     phase
         .run_test(|mut ctx| async move {
-            // Set up pipeline control channel to capture ACK/NACK messages sent upstream
+            // Set up test pipeline control channel
             let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
             ctx.set_pipeline_ctrl_sender(pipeline_tx);
 
@@ -87,29 +87,22 @@ fn test_retry_processor_full_flow_with_retries() {
                 ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
 
                 // The processor should schedule a delayed retry via DelayData
-                if let Ok(msg) = pipeline_rx.recv().await {
-                    match msg {
-                        PipelineControlMsg::DelayData { when, data, .. } => {
-                            retry_count += 1;
-                            // Deliver immediately (0 delay for test)
-                            ctx.process(Message::Control(NodeControlMsg::DelayedData {
-                                when,
-                                data,
-                            }))
+                match pipeline_rx.recv().await {
+                    Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
+                        retry_count += 1;
+                        // Deliver immediately (0 delay for test)
+                        ctx.process(Message::Control(NodeControlMsg::DelayedData { when, data }))
                             .await
                             .unwrap();
 
-                            // The retry was sent downstream
-                            let mut retry_output = ctx.drain_pdata().await;
-                            assert_eq!(retry_output.len(), 1);
-                            current_data = retry_output.remove(0);
-                        }
-                        other => {
-                            panic!("unexpected pipeline control message: {:?}", other);
-                        }
+                        // The retry was sent downstream
+                        let mut retry_output = ctx.drain_pdata().await;
+                        assert_eq!(retry_output.len(), 1);
+                        current_data = retry_output.remove(0);
                     }
-                } else {
-                    panic!("expected DelayData message from retry processor");
+                    other => {
+                        panic!("unexpected pipeline control message: {:?}", other);
+                    }
                 }
             }
 
