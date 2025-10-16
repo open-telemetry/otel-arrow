@@ -545,11 +545,13 @@ mod tests {
         resource::v1::Resource,
     };
 
-    use arrow::compute::filter_record_batch;
-    use arrow::array::StringArray;
-    use arrow::array::Int64Array;
     use crate::pdata::OtapPayload;
-
+    use arrow::array::Int64Array;
+    use arrow::array::StructArray;
+    use arrow::array::UInt16Array;
+    use arrow::array::StringArray;
+    use arrow::compute::filter_record_batch;
+    use std::collections::HashSet;
 
     fn build_logs_with_attrs(
         res_attrs: Vec<KeyValue>,
@@ -577,10 +579,8 @@ mod tests {
         ])
     }
 
-
     #[test]
     fn test_create_otap_batch() {
-
         let input = build_logs_with_attrs(
             vec![KeyValue::new("a", AnyValue::new_string("rv"))],
             vec![KeyValue::new("a", AnyValue::new_string("sv"))],
@@ -597,30 +597,66 @@ mod tests {
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
 
         let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let log_records = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        println!("{:?}", log_records.schema());
+        arrow::util::pretty::print_batches(&[log_records.clone()]).unwrap();
         println!("{:?}", log_attrs);
         println!("{:?}", log_attrs.schema());
 
-        let table = arrow::util::pretty::pretty_format_batches_with_schema(log_attrs.schema(), &[log_attrs.clone()]).unwrap();
+        let table = arrow::util::pretty::pretty_format_batches_with_schema(
+            log_attrs.schema(),
+            &[log_attrs.clone()],
+        )
+        .unwrap();
         println!("{table}");
-        let attr_mask = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("str").unwrap(), &StringArray::new_scalar("keep")).unwrap();
-        let attr_mask_4 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("key").unwrap(), &StringArray::new_scalar("b")).unwrap();
+        let attr_mask = arrow::compute::kernels::cmp::eq(
+            log_attrs.column_by_name("str").unwrap(),
+            &StringArray::new_scalar("keep"),
+        )
+        .unwrap();
+        let attr_mask_4 = arrow::compute::kernels::cmp::eq(
+            log_attrs.column_by_name("key").unwrap(),
+            &StringArray::new_scalar("b"),
+        )
+        .unwrap();
 
-        let attr_mask_2 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("key").unwrap(), &StringArray::new_scalar("d")).unwrap();
-        let attr_msk_3 = arrow::compute::kernels::cmp::eq(log_attrs.column_by_name("int").unwrap(), &Int64Array::new_scalar(120)).unwrap();
+        let attr_mask_2 = arrow::compute::kernels::cmp::eq(
+            log_attrs.column_by_name("key").unwrap(),
+            &StringArray::new_scalar("d"),
+        )
+        .unwrap();
+        let attr_msk_3 = arrow::compute::kernels::cmp::eq(
+            log_attrs.column_by_name("int").unwrap(),
+            &Int64Array::new_scalar(120),
+        )
+        .unwrap();
 
         let combined_attr_mask = arrow::compute::and(&attr_mask_2, &attr_msk_3).unwrap();
         let combined_attr_mask_2 = arrow::compute::and(&attr_mask_4, &attr_mask).unwrap();
-        let combined_attr_mask = arrow::compute::or_kleene(&combined_attr_mask, &combined_attr_mask_2).expect("failed to or");
+        let combined_attr_mask =
+            arrow::compute::or_kleene(&combined_attr_mask, &combined_attr_mask_2)
+                .expect("failed to or");
 
-        let new_attrs = filter_record_batch(log_attrs, &combined_attr_mask).expect("failed to filter");
+        let new_attrs =
+            filter_record_batch(log_attrs, &combined_attr_mask).expect("failed to filter");
         arrow::util::pretty::print_batches(&[new_attrs.clone()]).unwrap();
 
         let id_column = log_attrs.column_by_name("parent_id").unwrap();
         let extracted_ids = arrow::compute::filter(id_column, &combined_attr_mask).unwrap();
+        let extracted_id = extracted_ids.as_any().downcast_ref::<UInt16Array>().unwrap();
+        let hashset: HashSet<u16> = extracted_id.iter().flatten().collect();
+        for id in hashset {
+            println!("{id}");
+        }
 
-
-        arrow::util::pretty::print_columns("parent_id", &[extracted_ids.clone()]).unwrap();
-
+        let log_records = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let resource_struct_array = log_records.column_by_name("resource").unwrap();
+        arrow::util::pretty::print_columns("resource", &[resource_struct_array.clone()]).unwrap();
+        let resource_struct_array = resource_struct_array
+            .as_any()
+            .downcast_ref::<StructArray>().expect("failed to downcast");
+        println!("{:?}", resource_struct_array);
+        //let resource_ids: Vec<u16> = resource_struct_array.fields().iter().map(|resource_struct|resource_struct[0]).collect();
 
     }
     #[test]

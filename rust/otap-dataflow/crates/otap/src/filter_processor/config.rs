@@ -4,11 +4,25 @@
 //! Implementation of the configuration of the filter processor
 //! 
 
-use super::filter_logs::LogFilter;
+use otel_arrow_rust::filter::LogFilter;
+use serde::Deserialize;
 
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     // ToDo: add metrics and spans
     logs: LogFilter,
 }
 
 
+impl Config {
+	pub fn new(logs: LogFilter) -> Self {
+		Self{
+			logs
+		}
+	}
+
+	#[must_use]
+	pub fn log_filters(&self) -> LogFilter {
+		self.logs
+	}
+}

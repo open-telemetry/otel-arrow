@@ -1,13 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTLP Debug processor node
+//! Implementation of the OTAP Filter processor node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
-
+use self::config::Config;
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
     pdata::OtapPdata
@@ -28,6 +29,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use serde_json::Value;
 use std::sync::Arc;
 
+mod config;
 /// The URN for the filter processor
 pub const FILTER_PROCESSOR_URN: &str = "urn:otel:filter:processor";
 
@@ -36,7 +38,55 @@ pub struct FilterProcessor {
     config: Config,
 }
 
-// ToDo: some telemetry to collect -> number of filtered data is removed datapoints
+/// Factory function to create an FilterProcessor.
+///
+/// See the module documentation for configuration examples
+pub fn create_filter_processor(
+    pipeline_ctx: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    Ok(ProcessorWrapper::local(
+        FilterProcessor::from_config(pipeline_ctx, &node_config.config)?,
+        node,
+        node_config,
+        processor_config,
+    ))
+}
+
+/// Register FilterProcessor as an OTAP processor factory
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
+pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
+    otap_df_engine::ProcessorFactory {
+        name: FILTER_PROCESSOR_URN,
+        create: |pipeline_ctx: PipelineContext,
+                 node: NodeId,
+                 node_config: Arc<NodeUserConfig>,
+                 proc_cfg: &ProcessorConfig| {
+            create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    };
+
+impl FilterProcessor {
+    /// Creates a new FilterProcessor
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn new(config: Config, _pipeline_ctx: PipelineContext) -> Self {
+        FilterProcessor { config }
+    }
+
+    /// Creates a new FilterProcessor from a configuration object
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        let config: Config =
+            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
+        Ok(FilterProcessor { config })
+    }
+}
+
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
@@ -48,22 +98,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
         match msg {
             Message::Control(control) => {
-                match control {
-                    NodeControlMsg::TimerTick {} => {
-                        debug_output.output_message("Timer tick received\n").await?;
-                    }
-                    NodeControlMsg::Config { .. } => {
-                        debug_output
-                            .output_message("Config message received\n")
-                            .await?;
-                    }
-                    NodeControlMsg::Shutdown { .. } => {
-                        debug_output
-                            .output_message("Shutdown message received\n")
-                            .await?;
-                    }
-                    _ => {}
-                }
+                // ToDo: add internal telemetry that will be sent out here
                 Ok(())
             }
             Message::PData(pdata) => {
@@ -75,14 +110,16 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
                 let filtered_arrow_records = match pdata.signal_type() {
                     SignalType::Metrics => {
-                        // ToDo: Add support for traces
+                        // ToDo: Add support for metrics
+                        return Ok(());
                     },
                     SignalType::Logs => {
                         // ToDo: Add support for logs
-                        self.config.logs.filter(arrow_records)?
+                        self.config.log_filters.filter(arrow_records)?
                     },
                     SignalType::Traces => {
                         // ToDo: Add support for traces
+                        return Ok(());
                     }
                 };
                 effect_handler.send_message(OtapPdata::new(context, arrow_records.into())).await()?;
@@ -123,13 +160,36 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use tokio::time::Duration;
+    use otel_arrow_rust::filter::{LogFilter, KeyValue as KeyValueFilter, AnyValue as AnyValueFilter};
+    use otel_arrow_rust::filter::filter_logs::{LogMatchProperties, LogMatchType, LogServerityNumberMatchProperties};
 
     /// Validation closure that checks the outputted data
     fn validation_procedure(
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+        |mut ctx| {
             Box::pin(async move {
                 // read in the logs and verify that we received the correct 
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+
+                    match received_signal.signal_type() {
+                        SignalType::Metrics(metric) => {
+                            
+                        }
+                        SignalType::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        SignalType::Logs(log) => {
+                            
+                        }
+                    }
+                }
             })
         }
     }
@@ -138,28 +198,13 @@ mod tests {
     fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("Processor failed on TimerTick");
-                assert!(ctx.drain_pdata().await.is_empty());
-
-                // Process a Config event.
-                ctx.process(Message::config_ctrl_msg(Value::Null))
-                    .await
-                    .expect("Processor failed on Config");
-                assert!(ctx.drain_pdata().await.is_empty());
-
-                // Process a Shutdown event.
-                ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
-                    "no reason",
-                ))
-                .await
-                .expect("Processor failed on Shutdown");
-                assert!(ctx.drain_pdata().await.is_empty());
+                // send log message
 
                 let logs_data = LogsData::new(vec![
-                    ResourceLogs::build(Resource::default())
+                    ResourceLogs::build(Resource::build(vec![KeyValue::new(
+                            "version",
+                            AnyValue::new_string("2.0"),
+                        )]))
                         .scope_logs(vec![
                             ScopeLogs::build(
                                 InstrumentationScope::build("library")
@@ -168,7 +213,6 @@ mod tests {
                             )
                             .log_records(vec![
                                 LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                                    .observed_time_unix_nano(3_000_000_000u64)
                                     .attributes(vec![KeyValue::new(
                                         "log_attr1",
                                         AnyValue::new_string("log_val_1"),
@@ -193,164 +237,36 @@ mod tests {
                     .expect("failed to process");
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1);
-
-                let metrics_data = MetricsData::new(vec![
-                    ResourceMetrics::build(Resource::default())
-                        .scope_metrics(vec![
-                            ScopeMetrics::build(
-                                InstrumentationScope::build("library")
-                                    .version("scopev1")
-                                    .finish(),
-                            )
-                            .metrics(vec![
-                                Metric::build_gauge(
-                                    "gauge name",
-                                    Gauge::new(vec![
-                                        NumberDataPoint::build_double(123u64, std::f64::consts::PI)
-                                            .attributes(vec![KeyValue::new(
-                                                "gauge_attr1",
-                                                AnyValue::new_string("gauge_val"),
-                                            )])
-                                            .start_time_unix_nano(456u64)
-                                            .exemplars(vec![
-                                                Exemplar::build_int(678u64, 234i64)
-                                                    .filtered_attributes(vec![KeyValue::new(
-                                                        "exemplar_attr",
-                                                        AnyValue::new_string("exemplar_val"),
-                                                    )])
-                                                    .finish(),
-                                            ])
-                                            .flags(1u32)
-                                            .finish(),
-                                    ]),
-                                )
-                                .description("here's a description")
-                                .unit("a unit")
-                                .metadata(vec![KeyValue::new(
-                                    "metric_attr",
-                                    AnyValue::new_string("metric_val"),
-                                )])
-                                .finish(),
-                            ])
-                            .finish(),
-                        ])
-                        .finish(),
-                ]);
-                bytes = vec![];
-                metrics_data
-                    .encode(&mut bytes)
-                    .expect("failed to encode log data into bytes");
-                let otlp_metrics_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
-                ctx.process(Message::PData(otlp_metrics_bytes))
-                    .await
-                    .expect("failed to process");
-                let msgs = ctx.drain_pdata().await;
-                assert_eq!(msgs.len(), 1);
-
-                let traces_data = TracesData::new(vec![
-                    ResourceSpans::build(Resource::default())
-                        .scope_spans(vec![
-                            ScopeSpans::build(
-                                InstrumentationScope::build("library")
-                                    .version("scopev1")
-                                    .finish(),
-                            )
-                            .spans(vec![
-                                Span::build(
-                                    Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()),
-                                    Vec::from("7271ee06d7e5925f".as_bytes()),
-                                    "span_name_1",
-                                    999u64,
-                                )
-                                .trace_state("some_state")
-                                .end_time_unix_nano(1999u64)
-                                .parent_span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                                .dropped_attributes_count(7u32)
-                                .dropped_events_count(11u32)
-                                .dropped_links_count(29u32)
-                                .kind(SpanKind::Consumer)
-                                .status(Status::new("something happened", StatusCode::Error))
-                                .events(vec![
-                                    Event::build("an_event", 456u64)
-                                        .attributes(vec![KeyValue::new(
-                                            "event_attr1",
-                                            AnyValue::new_string("hi"),
-                                        )])
-                                        .dropped_attributes_count(12345u32)
-                                        .finish(),
-                                ])
-                                .links(vec![
-                                    Link::build(
-                                        vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
-                                        vec![0, 0, 0, 0, 1, 1, 1, 1],
-                                    )
-                                    .trace_state("some link state")
-                                    .dropped_attributes_count(567u32)
-                                    .flags(7u32)
-                                    .attributes(vec![KeyValue::new(
-                                        "link_attr1",
-                                        AnyValue::new_string("hello"),
-                                    )])
-                                    .finish(),
-                                ])
-                                .finish(),
-                            ])
-                            .finish(),
-                        ])
-                        .finish(),
-                ]);
-
-                bytes = vec![];
-                traces_data
-                    .encode(&mut bytes)
-                    .expect("failed to encode log data into bytes");
-                let otlp_traces_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
-                ctx.process(Message::PData(otlp_traces_bytes))
-                    .await
-                    .expect("failed to process");
-                let msgs = ctx.drain_pdata().await;
-                assert_eq!(msgs.len(), 1);
-
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("Processor failed on TimerTick");
-                assert!(ctx.drain_pdata().await.is_empty());
-
-                // Process a Config event.
-                ctx.process(Message::config_ctrl_msg(Value::Null))
-                    .await
-                    .expect("Processor failed on Config");
-                assert!(ctx.drain_pdata().await.is_empty());
-
-                // Process a Shutdown event.
-                ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
-                    "no reason",
-                ))
-                .await
-                .expect("Processor failed on Shutdown");
-                assert!(ctx.drain_pdata().await.is_empty());
             })
         }
     }
 
 
     #[test]
-    fn test_filter_processor_logs() {
+    fn test_filter_processor_logs_strict() {
         let test_runtime = TestRuntime::new();
-        let log_filter = LogFilter::new();
+        
+        let include_resource_attributes = vec![]
+        let include_record_attributes = vec![KeyValueFilter::new("log_attr1".to_string(), AnyValueFilter::String("log_val_1".to_string()))];
+        let include_severity_texts = vec![]:
+        let include_bodies = vec!["log_bodies"];
+
+        let exclude_resource_attributes = vec![];
+        let exclude_record_attributes = vec![];
+        let exclude_bodies = vec![];
+
+
+        let include = LogMatchProperties::new(LogMatchType::Strict, include_resource_attributes, include_record_attributes, );
+        let exclude = LogMatchProperties::new();
+        
+        let log_filter = LogFilter::new(include, exclude, vec![]);
         let config = Config::new(
             log_filter,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),

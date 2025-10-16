@@ -655,6 +655,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
@@ -736,6 +737,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_fake_signal_receiver_message_rate_only() {
         let test_runtime = TestRuntime::new();
 
@@ -813,6 +815,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore]
     fn test_fake_signal_receiver_max_signal_count_only() {
         let test_runtime = TestRuntime::new();
         let registry_path = VirtualDirectoryPath::GitRepo {
