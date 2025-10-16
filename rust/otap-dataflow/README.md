@@ -296,14 +296,19 @@ project is taking up a charter to investigate an OTel-Arrow first
 approach to telemetry, hence we are working with the experimental
 telemetry SDK here.
 
-### PData Views
+### PData
 
-The Zero-copy machinery for:
+[See crate README.](./crates/pdata/README.md)
+
+TODO(#1218) The OTel-Arrow-Rust crates are moving here. The
+`otap_df_otap::pdata` types including `OtapPdata` are moving here.
+
+This is the future location for [OTel-Arrow Rust](../otel-arrow-rust/README.md).
+
+The `views` sub-module contains zero-copy machinery for:
 
 - interpreting OTLP bytes using views to build OTAP records
 - interpreting OTAP records using views to encode OTLP bytes
-
-This is closely tied with [OTel-Arrow Rust](../otel-arrow-rust/README.md).
 
 ## Development Setup
 

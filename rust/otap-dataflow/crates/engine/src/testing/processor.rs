@@ -14,11 +14,14 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
+use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::Duration;
-use tokio::task::LocalSet;
+use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
@@ -130,6 +133,8 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
+    metrics_system: MetricsSystem,
+
     _pd: PhantomData<PData>,
 }
 
@@ -140,6 +145,7 @@ pub struct TestPhase<PData> {
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
     output_receiver: Option<Receiver<PData>>,
+    metrics_system: MetricsSystem,
 }
 
 /// Data and operations for the validation phase of a processor.
@@ -147,12 +153,20 @@ pub struct ValidationPhase {
     rt: tokio::runtime::Runtime,
     local_tasks: LocalSet,
     counters: CtrlMsgCounters,
+    metrics_collection_handle: JoinHandle<Result<(), otap_df_telemetry::error::Error>>,
+}
+
+impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
-    /// Creates a new test runtime with channels of the specified capacity.
+    /// Creates a new test runtime with default configuration.
     #[must_use]
     pub fn new() -> Self {
+        let metrics_system = MetricsSystem::default();
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
 
@@ -161,6 +175,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
+            metrics_system,
             _pd: PhantomData,
         }
     }
@@ -168,6 +183,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the current receiver configuration.
     pub fn config(&self) -> &ProcessorConfig {
         &self.config
+    }
+
+    /// Returns a handle to the metrics registry.
+    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+        self.metrics_system.registry()
+    }
+
+    /// Returns a metrics reporter for use in the processor runtime.
+    pub fn metrics_reporter(&self) -> MetricsReporter {
+        self.metrics_system.reporter()
     }
 
     /// Returns the message counter.
@@ -221,13 +246,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             processor,
             counters: self.counter,
             output_receiver: Some(pdata_receiver),
+            metrics_system: self.metrics_system,
         }
-    }
-}
-
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -238,11 +258,15 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
+        let metrics_reporter = self.metrics_system.reporter();
+        // Spawn metrics collection loop
+        let metrics_collection_handle = self.rt.spawn(self.metrics_system.run_collection_loop());
+
         // The entire scenario is run to completion before the validation phase
         self.rt.block_on(async move {
             let runtime = self
                 .processor
-                .prepare_runtime()
+                .prepare_runtime(metrics_reporter)
                 .await
                 .expect("Failed to prepare runtime");
             let mut context = TestContext::new(runtime);
@@ -255,6 +279,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
+            metrics_collection_handle,
         }
     }
 }
@@ -285,6 +310,9 @@ impl ValidationPhase {
         self.rt.block_on(self.local_tasks);
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
+        let result = self.rt.block_on(future_fn(context));
+        // Finally, ensure the metrics collection loop is properly shut down
+        self.metrics_collection_handle.abort();
+        result
     }
 }

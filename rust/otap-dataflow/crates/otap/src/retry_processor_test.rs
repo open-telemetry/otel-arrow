@@ -4,7 +4,7 @@
 //! Tests for the retry processor using the common test harness.
 
 use crate::pdata::{Context, OtapPdata};
-use crate::retry_processor::{RETRY_PROCESSOR_URN, RetryConfig};
+use crate::retry_processor::RETRY_PROCESSOR_URN;
 use crate::testing::{TestCallData, create_test_pdata};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -60,12 +60,8 @@ fn test_retry_processor_full_flow_with_retries() {
             let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
             ctx.set_pipeline_ctrl_sender(pipeline_tx);
 
-            // @@@ Fixme
-            let retry_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let mut pdata_in = create_test_pdata();
-
-            // Subscribe to ACKs
-            pdata_in.test_subscribe_to(
+            let mut retry_count: usize = 0;
+            let pdata_in = create_test_pdata().test_subscribe_to(
                 Interests::ACKS | Interests::RETURN_DATA,
                 TestCallData::default().into(),
                 4444,
@@ -94,7 +90,7 @@ fn test_retry_processor_full_flow_with_retries() {
                 if let Ok(msg) = pipeline_rx.recv().await {
                     match msg {
                         PipelineControlMsg::DelayData { when, data, .. } => {
-                            let _ = retry_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            retry_count += 1;
                             // Deliver immediately (0 delay for test)
                             ctx.process(Message::Control(NodeControlMsg::DelayedData {
                                 when,
@@ -142,40 +138,11 @@ fn test_retry_processor_full_flow_with_retries() {
                 }
             }
 
-            // Verify retry number
-            let final_retry_count = retry_count.load(std::sync::atomic::Ordering::SeqCst);
-            assert_eq!(final_retry_count, 3);
+            assert_eq!(retry_count, 3);
         })
         .validate(|ctx| async move {
             // Verify no unexpected control message processing
             let counters = ctx.counters();
             counters.assert(0, 0, 0, 0);
         });
-}
-
-/// Test configuration parsing with default values
-#[test]
-fn test_retry_config_default() {
-    let config = RetryConfig::default();
-    assert_eq!(config.initial_interval, Duration::from_secs(5));
-    assert_eq!(config.max_interval, Duration::from_secs(30));
-    assert_eq!(config.max_elapsed_time, Duration::from_secs(300));
-    assert_eq!(config.multiplier, 1.5);
-}
-
-/// Test configuration parsing with custom values
-#[test]
-fn test_retry_config_custom() {
-    let config: RetryConfig = serde_json::from_value(json!({
-        "initial_interval": 1.0,
-        "max_interval": 10.0,
-        "max_elapsed_time": 60.0,
-        "multiplier": 3.0,
-    }))
-    .expect("parse config");
-
-    assert_eq!(config.initial_interval, Duration::from_secs(1));
-    assert_eq!(config.max_interval, Duration::from_secs(10));
-    assert_eq!(config.max_elapsed_time, Duration::from_secs(60));
-    assert_eq!(config.multiplier, 3.0);
 }

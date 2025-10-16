@@ -34,11 +34,13 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ExporterFactory, distributed_slice};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_rust::otap::OtapArrowRecords;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
@@ -100,6 +102,20 @@ impl PerfExporter {
             })?,
         ))
     }
+
+    fn terminal_state(&self, deadline: Instant) -> TerminalState {
+        let mut snapshots = Vec::new();
+
+        if self.metrics.needs_flush() {
+            snapshots.push(self.metrics.snapshot());
+        }
+
+        if self.pdata_metrics.needs_flush() {
+            snapshots.push(self.pdata_metrics.snapshot());
+        }
+
+        TerminalState::new(deadline, snapshots)
+    }
 }
 
 #[async_trait(?Send)]
@@ -108,7 +124,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
 
@@ -131,9 +147,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     _ = timer_cancel_handle.cancel().await;
-                    break;
+                    return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(pdata) => {
                     // Capture signal type before moving pdata into try_from
@@ -218,7 +234,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 }
             }
         }
-        Ok(())
     }
 }
 
@@ -262,7 +277,9 @@ mod tests {
     use otel_arrow_rust::Consumer;
     use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use std::future::Future;
+    use std::ops::Add;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::time::{Duration, sleep};
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
@@ -331,9 +348,12 @@ mod tests {
                 _ = sleep(Duration::from_millis(5000));
 
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(200), "test complete")
-                    .await
-                    .expect("Failed to send Shutdown");
+                ctx.send_shutdown(
+                    Instant::now().add(Duration::from_millis(200)),
+                    "test complete",
+                )
+                .await
+                .expect("Failed to send Shutdown");
             })
         }
     }

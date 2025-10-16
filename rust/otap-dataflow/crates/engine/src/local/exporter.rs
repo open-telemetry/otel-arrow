@@ -38,7 +38,11 @@ use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, Timer
 use crate::error::Error;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -83,7 +87,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.
@@ -94,11 +98,12 @@ pub struct EffectHandler<PData> {
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
+    /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
+    /// reporter.
     #[must_use]
-    pub fn new(node_id: NodeId) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id),
+            core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
         }
     }
@@ -150,6 +155,15 @@ impl<PData> EffectHandler<PData> {
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         self.core.route_nack(nack, cxf).await
+    }
+
+    /// Reports metrics collected by the exporter.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.

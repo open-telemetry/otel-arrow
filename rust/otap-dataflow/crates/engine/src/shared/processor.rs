@@ -39,6 +39,9 @@ use crate::node::NodeId;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -103,8 +106,9 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id);
+        let core = EffectHandlerCore::new(node_id, metrics_reporter);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
@@ -219,6 +223,15 @@ impl<PData> EffectHandler<PData> {
     /// Delay data.
     pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.delay_data(when, data).await
+    }
+
+    /// Reports metrics collected by the processor.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.

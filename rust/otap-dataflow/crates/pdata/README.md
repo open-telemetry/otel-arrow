@@ -1,8 +1,12 @@
-# pdata-views
+# pdata
 
-`pdata-views` is a Rust crate within the `otap-dataflow` project. It provides
-view abstractions and utilities for working with OTLP pdata (protocol data)
-structures, enabling efficient data access in OpenTelemetry Arrow pipelines.
+PData refers generally to the pipeline data type used within an
+OpenTelemetry pipeline.  This package is the location of our core
+utilities for converting between several representations.
+
+The `otap_df_pdata::views` provides view abstractions and utilities
+for working with OTLP pdata (protocol data) structures, enabling
+efficient data access in OpenTelemetry Arrow pipelines.
 
 ## Key Features
 

@@ -444,7 +444,8 @@ mod tests {
                 let (tx_logs, rx_logs) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), LocalSender::MpscSender(tx_logs));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 // Send a logs pdata -> should route to named port
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
@@ -516,7 +517,8 @@ mod tests {
                 drop(rx_logs); // close to trigger SendError::Closed
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), LocalSender::MpscSender(tx_logs));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
@@ -578,7 +580,8 @@ mod tests {
                 let (tx_out, rx_out) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
@@ -645,7 +648,8 @@ mod tests {
                 drop(rx_out);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx_out));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 let res = router.process(Message::PData(pdata), &mut eh).await;
@@ -708,7 +712,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -763,7 +768,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -814,7 +820,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -869,7 +876,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -921,7 +929,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -978,7 +987,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -1031,7 +1041,8 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -1088,7 +1099,8 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), LocalSender::MpscSender(tx));
-                let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None);
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());

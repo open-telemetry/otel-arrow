@@ -8,11 +8,11 @@ use otel_arrow_rust::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
 
-use crate::{
-    otlp::proto::wrappers::{GenericObj, Wraps},
-    views::common::{
+use crate::views::{
+    common::{
         AnyValueView, AttributeView, InstrumentationScopeView, SpanId, Str, TraceId, ValueType,
     },
+    otlp::proto::wrappers::{GenericObj, Wraps},
 };
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
