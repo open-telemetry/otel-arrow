@@ -4,19 +4,17 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::otlp::client::{
-    LogsServiceClient, MetricsServiceClient, OtlpServiceClient, ServiceDescriptor,
-    TraceServiceClient,
-};
-use crate::pdata::{OtapPayload, OtapPdata, OtlpProtoBytes};
+use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
+use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -24,7 +22,6 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
@@ -32,7 +29,6 @@ use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::client::GrpcService;
 use tonic::transport::Channel;
 
 /// The URN for the OTLP exporter
@@ -164,69 +160,99 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
-                    // TODO(#1098): Note context is dropped.
-                    let (_context, payload) = pdata.into_parts();
+                    // Keep context for Ack/Nack delivery
+                    let (context, payload) = pdata.into_parts();
                     self.pdata_metrics.inc_consumed(signal_type);
 
                     match (signal_type, payload) {
                         // use optimized direct encoding OTAP -> OTLP bytes directly
-                        (SignalType::Logs, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            match handle_otap_pdata(
-                                &mut otap_batch,
+                        (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match handle_otap_export(
+                                otap_batch,
+                                context,
                                 &mut proto_buffer,
                                 &mut logs_encoder,
                                 &mut logs_client,
+                                &effect_handler,
                             )
                             .await
                             {
-                                Ok(_) => self.pdata_metrics.logs_exported.inc(),
-                                Err(_) => self.pdata_metrics.logs_failed.inc(),
+                                Ok(()) => self.pdata_metrics.logs_exported.inc(),
+                                _ => self.pdata_metrics.logs_failed.inc(),
                             }
                         }
-                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            match handle_otap_pdata(
-                                &mut otap_batch,
+                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match handle_otap_export(
+                                otap_batch,
+                                context,
                                 &mut proto_buffer,
                                 &mut metrics_encoder,
                                 &mut metrics_client,
+                                &effect_handler,
                             )
                             .await
                             {
-                                Ok(_) => self.pdata_metrics.metrics_exported.inc(),
-                                Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                                Ok(()) => self.pdata_metrics.metrics_exported.inc(),
+                                _ => self.pdata_metrics.metrics_failed.inc(),
                             }
                         }
-                        (SignalType::Traces, OtapPayload::OtapArrowRecords(mut otap_batch)) => {
-                            match handle_otap_pdata(
-                                &mut otap_batch,
+                        (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match handle_otap_export(
+                                otap_batch,
+                                context,
                                 &mut proto_buffer,
                                 &mut traces_encoder,
                                 &mut trace_client,
+                                &effect_handler,
                             )
                             .await
                             {
-                                Ok(_) => self.pdata_metrics.metrics_exported.inc(),
-                                Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                                Ok(()) => self.pdata_metrics.traces_exported.inc(),
+                                _ => self.pdata_metrics.traces_failed.inc(),
                             }
                         }
                         (_, OtapPayload::OtlpBytes(service_req)) => {
                             _ = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                    match logs_client.export(bytes).await {
-                                        Ok(_) => self.pdata_metrics.logs_exported.inc(),
-                                        Err(_) => self.pdata_metrics.logs_failed.inc(),
+                                    match handle_otlp_export(
+                                        bytes,
+                                        context,
+                                        &mut logs_client,
+                                        &effect_handler,
+                                        |b| OtlpProtoBytes::ExportLogsRequest(b.to_vec()).into(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => self.pdata_metrics.logs_exported.inc(),
+                                        _ => self.pdata_metrics.logs_failed.inc(),
                                     }
                                 }
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    match metrics_client.export(bytes).await {
-                                        Ok(_) => self.pdata_metrics.metrics_exported.inc(),
-                                        Err(_) => self.pdata_metrics.metrics_failed.inc(),
+                                    match handle_otlp_export(
+                                        bytes,
+                                        context,
+                                        &mut metrics_client,
+                                        &effect_handler,
+                                        |b| OtlpProtoBytes::ExportMetricsRequest(b.to_vec()).into(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => self.pdata_metrics.metrics_exported.inc(),
+                                        _ => self.pdata_metrics.metrics_failed.inc(),
                                     }
                                 }
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                    match trace_client.export(bytes).await {
-                                        Ok(_) => self.pdata_metrics.traces_exported.inc(),
-                                        Err(_) => self.pdata_metrics.traces_failed.inc(),
+                                    match handle_otlp_export(
+                                        bytes,
+                                        context,
+                                        &mut trace_client,
+                                        &effect_handler,
+                                        |b| OtlpProtoBytes::ExportTracesRequest(b.to_vec()).into(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => self.pdata_metrics.traces_exported.inc(),
+                                        _ => self.pdata_metrics.traces_failed.inc(),
                                     }
                                 }
                             };
@@ -241,44 +267,106 @@ impl Exporter<OtapPdata> for OTLPExporter {
     }
 }
 
-// generic function for converting OTAP records to proto buf and exporting it using the passed
-// grpc service client
-async fn handle_otap_pdata<Enc: ProtoBytesEncoder, T2, Resp, S>(
-    otap_batch: &mut OtapArrowRecords,
+/// Helper function to handle export result and send Ack/Nack accordingly.
+async fn handle_export_result<T>(
+    result: Result<T, tonic::Status>,
+    context: Context,
+    saved_payload: OtapPayload,
+    effect_handler: &EffectHandler<OtapPdata>,
+) -> Result<(), Error> {
+    match result {
+        Ok(_) => {
+            effect_handler
+                .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
+                .await?;
+            Ok(())
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            effect_handler
+                .notify_nack(NackMsg::new(
+                    &error_msg,
+                    OtapPdata::new(context, saved_payload),
+                ))
+                .await?;
+            let source_detail = format_error_sources(&e);
+            Err(Error::ExporterError {
+                exporter: effect_handler.exporter_id(),
+                kind: ExporterErrorKind::Transport,
+                error: error_msg,
+                source_detail,
+            })
+        }
+    }
+}
+
+/// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
+/// and handling Ack/Nack delivery.
+async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
+    mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
+    context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
-    client: &mut OtlpServiceClient<T2, Resp, S>,
+    client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
+    effect_handler: &EffectHandler<OtapPdata>,
 ) -> Result<(), Error>
 where
-    T2: GrpcService<tonic::body::Body>,
+    T2: tonic::client::GrpcService<tonic::body::Body>,
     T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     T2::ResponseBody: Send + 'static,
     <T2::ResponseBody as tonic::transport::Body>::Error:
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
-    S: ServiceDescriptor,
+    S: crate::otap_grpc::otlp::client::ServiceDescriptor,
     Resp: prost::Message + Default + Send + 'static,
 {
-    // convert OTAP records to protobuf
+    // Encode OTAP records to protobuf
     proto_buffer.clear();
     encoder
-        .encode(otap_batch, proto_buffer)
-        .map_err(|e| Error::InternalError {
-            message: e.to_string(),
+        .encode(&mut otap_batch, proto_buffer)
+        .map_err(|e| Error::ExporterError {
+            exporter: effect_handler.exporter_id(),
+            kind: ExporterErrorKind::Other,
+            error: format!("encoding error: {}", e),
+            source_detail: "".to_string(),
         })?;
 
-    // TODO we should try to change the client interfaces to accept a slice
-    // of bytes to avoid the copy here
     let bytes = proto_buffer.as_ref().to_vec();
+    if !context.may_return_payload() {
+        // drop before the export, payload not requested
+        let _drop = otap_batch.take_payload();
+    }
+    let saved_payload: OtapPayload = otap_batch.into();
 
-    // send the export request
-    _ = client
-        .export(bytes)
-        .await
-        .map_err(|e| Error::InternalError {
-            message: e.to_string(),
-        })?;
+    // Export and handle result with Ack/Nack
+    let result = client.export(bytes).await;
+    handle_export_result(result, context, saved_payload, effect_handler).await
+}
 
-    Ok(())
+/// Generic function for exporting OTLP bytes via gRPC and handling Ack/Nack delivery.
+async fn handle_otlp_export<T2, Resp, S>(
+    bytes: Vec<u8>,
+    context: Context,
+    client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
+    effect_handler: &EffectHandler<OtapPdata>,
+    save_payload_fn: impl FnOnce(&[u8]) -> OtapPayload,
+) -> Result<(), Error>
+where
+    T2: tonic::client::GrpcService<tonic::body::Body>,
+    T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T2::ResponseBody: Send + 'static,
+    <T2::ResponseBody as tonic::transport::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+    S: crate::otap_grpc::otlp::client::ServiceDescriptor,
+    Resp: prost::Message + Default + Send + 'static,
+{
+    let saved_payload = if context.may_return_payload() {
+        save_payload_fn(&bytes)
+    } else {
+        save_payload_fn(&[])
+    };
+
+    let result = client.export(bytes).await;
+    handle_export_result(result, context, saved_payload, effect_handler).await
 }
 
 #[cfg(test)]
@@ -292,7 +380,9 @@ mod tests {
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
+    use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
     use otap_df_engine::error::Error;
@@ -317,6 +407,59 @@ mod tests {
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
+    /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
+    async fn wait_for_ack_or_nack(
+        pipeline_ctrl_rx: &mut otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
+        expect_ack: bool,
+        expected_node_id: usize,
+        context: &str,
+    ) -> Result<(), String> {
+        let result = timeout(Duration::from_secs(1), async {
+            loop {
+                match pipeline_ctrl_rx.recv().await {
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck {
+                        node_id, ..
+                    }) => {
+                        if !expect_ack {
+                            return Err(format!("Got Ack but expected Nack {}", context));
+                        }
+                        if node_id != expected_node_id {
+                            return Err(format!(
+                                "Expected node_id {} but got {} {}",
+                                expected_node_id, node_id, context
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack {
+                        node_id,
+                        ..
+                    }) => {
+                        if expect_ack {
+                            return Err(format!("Got Nack but expected Ack {}", context));
+                        }
+                        if node_id != expected_node_id {
+                            return Err(format!(
+                                "Expected node_id {} but got {} {}",
+                                expected_node_id, node_id, context
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    Ok(_) => continue, // Skip non-Ack/Nack messages
+                    Err(_) => return Err(format!("Channel closed {}", context)),
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(format!("Timeout waiting for Ack/Nack {}", context)),
+        }
+    }
+
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
     fn scenario()
@@ -327,29 +470,44 @@ mod tests {
                 let req = ExportLogsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtapPdata::new_default(
-                    OtlpProtoBytes::ExportLogsRequest(req_bytes).into(),
-                ))
-                .await
-                .expect("Failed to send log message");
+                let logs_pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(req_bytes).into())
+                        .test_subscribe_to(
+                            Interests::ACKS | Interests::NACKS,
+                            TestCallData::default().into(),
+                            123,
+                        );
+                ctx.send_pdata(logs_pdata)
+                    .await
+                    .expect("Failed to send log message");
 
                 let req = ExportMetricsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtapPdata::new_default(
-                    OtlpProtoBytes::ExportMetricsRequest(req_bytes).into(),
-                ))
-                .await
-                .expect("Failed to send metric message");
+                let metrics_pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(req_bytes).into())
+                        .test_subscribe_to(
+                            Interests::ACKS | Interests::NACKS,
+                            TestCallData::default().into(),
+                            123,
+                        );
+                ctx.send_pdata(metrics_pdata)
+                    .await
+                    .expect("Failed to send metric message");
 
                 let req = ExportTraceServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtapPdata::new_default(
-                    OtlpProtoBytes::ExportTracesRequest(req_bytes).into(),
-                ))
-                .await
-                .expect("Failed to send metric message");
+                let traces_pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(req_bytes).into())
+                        .test_subscribe_to(
+                            Interests::ACKS | Interests::NACKS,
+                            TestCallData::default().into(),
+                            123,
+                        );
+                ctx.send_pdata(traces_pdata)
+                    .await
+                    .expect("Failed to send metric message");
 
                 // Send shutdown
                 ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
@@ -460,7 +618,29 @@ mod tests {
         test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
-            .run_validation(validation_procedure(receiver));
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // Validate that we received 3 Acks
+                    let mut ack_count = 0;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+
+                    // Validate that we received 3 Acks with correct node_id
+                    for i in 0..3 {
+                        wait_for_ack_or_nack(
+                            &mut pipeline_ctrl_rx,
+                            true,
+                            123,
+                            &format!("for export #{}", i + 1),
+                        )
+                        .await
+                        .expect("Failed to receive Ack");
+                        ack_count += 1;
+                    }
+
+                    assert_eq!(ack_count, 3, "Expected 3 Acks for 3 successful exports");
+                    validation_procedure(receiver)(ctx, result).await;
+                })
+            });
 
         _ = shutdown_sender.send("Shutdown");
     }
@@ -503,7 +683,7 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -536,6 +716,7 @@ mod tests {
             server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            mut pipeline_ctrl_msg_rx: otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
             metrics_reporter: MetricsReporter,
@@ -546,15 +727,19 @@ mod tests {
             req.encode(&mut req_bytes).unwrap();
 
             // send a request while the server isn't running and check how we handle it
-            pdata_tx
-                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
-                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
-                )))
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
+            // Wait for NACK since server is down
+            wait_for_ack_or_nack(&mut pipeline_ctrl_msg_rx, false, 123, "when server is down")
                 .await
-                .unwrap();
-            // TODO when ACK/NACK handling is added, we should wait on the control channel here
-            // to ensure that we receive a NACK
-            tokio::time::sleep(Duration::from_millis(5)).await;
+                .expect("Expected Nack when server down");
 
             // wait a bit before starting the server. This will ensure the exporter no-longer exits
             // when start is called if the endpoint can't be reached
@@ -563,42 +748,65 @@ mod tests {
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send a pdata
-            pdata_tx
-                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
-                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
-                )))
-                .await
-                .unwrap();
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
             // ensure server got request
             _ = req_receiver.recv().await.unwrap();
+            // Wait for ACK since server is up
+            wait_for_ack_or_nack(&mut pipeline_ctrl_msg_rx, true, 123, "when server is up")
+                .await
+                .expect("Expected Ack when server up");
 
             // stop the server
             server_shutdown_signal1.send(true).unwrap();
             _ = server_shutdown_ack_receiver.recv().await.unwrap();
 
             // send a request while the server isn't running and check that we still handle it correctly
-            pdata_tx
-                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
-                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
-                )))
-                .await
-                .unwrap();
-            // TODO instead of awaiting here, when ACK/NACK is added we should wait on the control
-            // channel to ensure that we receive a NACK
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
+            // Wait for NACK since server is down again
+            wait_for_ack_or_nack(
+                &mut pipeline_ctrl_msg_rx,
+                false,
+                123,
+                "when server is down again",
+            )
+            .await
+            .expect("Expected Nack when server down again");
 
             // restart the server
             server_startup_sender.send(true).await.unwrap();
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send another pdata. This ensures the client can reconnect after it was shut down
-            pdata_tx
-                .send(OtapPdata::new_default(OtapPayload::OtlpBytes(
-                    OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
-                )))
-                .await
-                .unwrap();
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
             _ = req_receiver.recv().await.unwrap();
+            // Wait for ACK after reconnect
+            wait_for_ack_or_nack(&mut pipeline_ctrl_msg_rx, true, 123, "after reconnect")
+                .await
+                .expect("Expected Ack after reconnect");
 
             // check the metrics:
             control_sender
@@ -687,6 +895,7 @@ mod tests {
                     shutdown_sender2,
                     pdata_tx,
                     control_sender,
+                    pipeline_ctrl_msg_rx,
                     req_receiver,
                     metrics_rx,
                     metrics_reporter
