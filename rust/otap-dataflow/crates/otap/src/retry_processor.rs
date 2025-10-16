@@ -303,9 +303,10 @@ impl RetryProcessor {
     async fn handle_ack(
         &mut self,
         ack: AckMsg<OtapPdata>,
-        _effect_handler: &mut EffectHandler<OtapPdata>,
+        effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let _rstate: RetryState = ack.calldata.try_into()?;
+        // Forward the ACK upstream to complete the request chain
+        effect_handler.notify_ack(ack).await?;
         // @@@ METRICS
         Ok(())
     }
