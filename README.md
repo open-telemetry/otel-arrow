@@ -250,6 +250,7 @@ repository](https://github.com/open-telemetry/community/blob/main/community-memb
 ### Approvers
 
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#approver).
