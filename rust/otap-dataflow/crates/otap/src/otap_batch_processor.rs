@@ -171,22 +171,9 @@ async fn log_batching_failed(
 }
 
 impl OtapBatchProcessor {
-    /// Construct a processor wrapper from a JSON configuration object and processor runtime config.
-    /// The JSON should mirror the Go collector batchprocessor shape. Missing fields fall back to
-    /// crate defaults. Invalid numeric values (e.g., zero) are normalized to minimal valid values.
-    pub fn from_config(
-        node: NodeId,
-        cfg: &Value,
-        proc_cfg: &ProcessorConfig,
-    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-        let handle = otap_df_telemetry::registry::MetricsRegistryHandle::default();
-        let metrics: MetricSet<OtapBatchProcessorMetrics> = handle.register(());
-        Self::from_config_with_metrics(node, cfg, proc_cfg, metrics)
-    }
-
     /// Construct a processor wrapper from a JSON configuration object and processor runtime config,
     /// with optional metrics for internal telemetry. Functional behavior is unchanged.
-    pub fn from_config_with_metrics(
+    pub fn from_config(
         node: NodeId,
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
@@ -197,6 +184,11 @@ impl OtapBatchProcessor {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
+        // Basic validation/normalization
+        // Allow send_batch_size = 0 to mean: ignore size threshold (send immediately),
+        // subject only to send_batch_max_size when non-zero (Go parity).
+        // Keep send_batch_max_size = 0 as unlimited (no upper bound).
+        // Validate: when both are non-zero, max must be >= size.
         if config.send_batch_max_size != 0 {
             if let Some(s) = config.send_batch_size {
                 if s != 0 && config.send_batch_max_size < s {
@@ -557,12 +549,7 @@ pub fn create_otap_batch_processor(
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = pipeline_ctx.register_metrics::<OtapBatchProcessorMetrics>();
-    OtapBatchProcessor::from_config_with_metrics(
-        node,
-        &node_config.config,
-        processor_config,
-        metrics,
-    )
+    OtapBatchProcessor::from_config(node, &node_config.config, processor_config, metrics)
 }
 
 #[async_trait(?Send)]
@@ -775,11 +762,9 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 
 #[cfg(test)]
 mod test_helpers {
+    use super::*;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::common::v1::InstrumentationScope;
-
-    // Test helper constants to avoid magic strings in scope names
-    const TEST_SCOPE_NAME: &str = "lib";
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
@@ -792,11 +777,12 @@ mod test_helpers {
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
     };
 
+    // Test helper constants to avoid magic strings in scope names
     pub(super) fn one_trace_record() -> OtapArrowRecords {
         let traces = TracesData::new(vec![
             ResourceSpans::build(Resource::default())
                 .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                    ScopeSpans::build(InstrumentationScope::new("lib"))
                         .spans(vec![
                             Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
                                 .status(Status::new("ok", StatusCode::Ok))
@@ -814,7 +800,7 @@ mod test_helpers {
         let md = MetricsData::new(vec![
             ResourceMetrics::build(Resource::default())
                 .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                    ScopeMetrics::build(InstrumentationScope::new("lib"))
                         .metrics(vec![
                             Metric::build_gauge(
                                 "g",
@@ -836,13 +822,27 @@ mod test_helpers {
         let logs_data = LogsData::new(vec![
             ResourceLogs::build(Resource::default())
                 .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new(TEST_SCOPE_NAME))
+                    ScopeLogs::build(InstrumentationScope::new("lib"))
                         .log_records(logs)
                         .finish(),
                 ])
                 .finish(),
         ]);
         crate::encoder::encode_logs_otap_batch(&logs_data).expect("encode logs")
+    }
+
+    /// Construct a processor wrapper from a JSON configuration object and processor runtime config.
+    /// The JSON should mirror the Go collector batchprocessor shape. Missing fields fall back to
+    /// crate defaults. Invalid numeric values (e.g., zero) are normalized to minimal valid values.
+    pub fn from_config(
+        node: NodeId,
+        cfg: &Value,
+        proc_cfg: &ProcessorConfig,
+    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+        let handle = otap_df_telemetry::registry::MetricsRegistryHandle::default();
+        let metrics: MetricSet<OtapBatchProcessorMetrics> =
+            handle.register(otap_df_telemetry::testing::EmptyAttributes());
+        OtapBatchProcessor::from_config(node, cfg, proc_cfg, metrics)
     }
 }
 
@@ -908,13 +908,8 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_telemetry_test");
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config_with_metrics(
-            node,
-            &cfg,
-            &processor_config,
-            metrics_set,
-        )
-        .expect("proc from config with metrics");
+        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config, metrics_set)
+            .expect("proc from config with metrics");
 
         // Start test runtime and concurrently run metrics collection loop
         let phase = test_rt.set_processor(proc);
@@ -1031,7 +1026,7 @@ mod tests {
         let cfg = json!({"send_batch_size": 1000, "timeout": "100ms"});
         let processor_config = ProcessorConfig::new("otap_batch_test");
         let node = test_node(processor_config.name.clone());
-        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
+        let result = test_helpers::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1045,7 +1040,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test2");
         let node = test_node(processor_config.name.clone());
-        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
+        let result = test_helpers::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1057,7 +1052,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test3");
         let node = test_node(processor_config.name.clone());
-        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
+        let result = test_helpers::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1072,7 +1067,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test_card");
         let node = test_node(processor_config.name.clone());
-        let res = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
+        let res = test_helpers::from_config(node, &cfg, &processor_config);
         assert!(res.is_ok());
         // Ensure deserialization keeps the value
         let mut parsed: Config = serde_json::from_value(cfg).unwrap();
@@ -1085,7 +1080,7 @@ mod tests {
         });
         let proc_cfg = ProcessorConfig::new("norm");
         let node = test_node(proc_cfg.name.clone());
-        let wrapper_res = OtapBatchProcessor::from_config(node, &cfg2, &proc_cfg);
+        let wrapper_res = test_helpers::from_config(node, &cfg2, &proc_cfg);
         assert!(wrapper_res.is_ok());
     }
 
@@ -1103,8 +1098,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_max1");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1166,8 +1161,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_timer_flush");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1210,8 +1205,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_max2");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1251,7 +1246,7 @@ mod tests {
         });
         let proc_cfg = ProcessorConfig::new("norm-max");
         let node = test_node(proc_cfg.name.clone());
-        let res = OtapBatchProcessor::from_config(node.clone(), &cfg, &proc_cfg);
+        let res = test_helpers::from_config(node.clone(), &cfg, &proc_cfg);
         assert!(res.is_ok());
 
         // Missing max -> defaults to unlimited (0)
@@ -1259,7 +1254,7 @@ mod tests {
             "send_batch_size": 9,
             "timeout": "200ms"
         });
-        let res2 = OtapBatchProcessor::from_config(node, &cfg2, &proc_cfg);
+        let res2 = test_helpers::from_config(node, &cfg2, &proc_cfg);
         assert!(res2.is_ok());
     }
 
@@ -1277,8 +1272,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_drop_non_convertible");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1313,8 +1308,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_drop_on_shutdown");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1352,8 +1347,8 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_no_split_guard");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1487,8 +1482,8 @@ mod timer_flush_behavior_tests {
         let processor_config = ProcessorConfig::new("otap_timer_no_remainder");
         let test_rt = TestRuntime::new();
         let node = otap_df_engine::testing::test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
-            .expect("proc from config");
+        let proc =
+            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 

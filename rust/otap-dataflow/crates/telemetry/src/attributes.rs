@@ -121,21 +121,6 @@ pub trait AttributeSetHandler {
     }
 }
 
-static EMPTY_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
-    name: "empty_metrics",
-    fields: &[],
-};
-
-impl AttributeSetHandler for () {
-    fn descriptor(&self) -> &'static AttributesDescriptor {
-        &EMPTY_ATTRIBUTES_DESCRIPTOR
-    }
-
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &[]
-    }
-}
-
 /// Represents a single attribute value that can be of different types.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AttributeValue {

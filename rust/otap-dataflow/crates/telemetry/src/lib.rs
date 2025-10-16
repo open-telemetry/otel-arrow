@@ -38,6 +38,10 @@ pub mod registry;
 pub mod reporter;
 pub mod semconv;
 
+// Note! I can't get #[cfg(test)] to work here!
+// #[cfg(test)]
+pub mod testing;
+
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
     /// The metrics registry that holds all registered metrics (data + metadata).
