@@ -160,6 +160,13 @@ impl Context {
         }
         None
     }
+
+    /// Peek at the calldata of the topmost subscription frame without removing it.
+    /// This is useful for inspecting state (like retry count) without consuming the frame.
+    #[must_use]
+    pub fn peek_top_calldata(pdata: &OtapPdata) -> Option<CallData> {
+        pdata.context.stack.last().map(|frame| frame.calldata.clone())
+    }
 }
 
 /// Per-node interests, context, and identity.

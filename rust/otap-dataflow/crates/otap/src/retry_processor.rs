@@ -12,7 +12,7 @@
 //! - Backoff multiplier
 //! ```
 
-use crate::pdata::OtapPdata;
+use crate::pdata::{Context, OtapPdata};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -43,31 +43,38 @@ pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
 /// Configuration for the retry processor. Modeled on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RetryConfig {
-    /// Initial delay in seconds before the first retry
+    /// Initial retry interval in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     pub initial_interval: Duration,
 
-    /// Maximum delay in seconds between retries
+    /// Maximum retry interval in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     pub max_interval: Duration,
 
-    /// Maximum delay in seconds between retries
+    /// Maximum elapsed time in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     pub max_elapsed_time: Duration,
 
-    /// Multiplier applied to delay for exponential backoff
+    /// Multiplier for the retry interval.
     pub multiplier: f64,
+
+    /// Optional alternative output port name for retries (after first attempt).
+    /// If specified, retry attempts (retry >= 1) will be sent to this port instead of the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_destination: Option<String>,
 }
 
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            initial_interval: Duration::new(5, 0),
-            max_interval: Duration::new(30, 0),
-            max_elapsed_time: Duration::new(300, 0),
+            initial_interval: Duration::from_secs(5),
+            max_interval: Duration::from_secs(30),
+            max_elapsed_time: Duration::from_secs(300),
             multiplier: 1.5,
+            retry_destination: None,
         }
     }
 }
@@ -243,10 +250,13 @@ fn now_f64() -> f64 {
     systemtime_f64(SystemTime::now())
 }
 
-/// RetryState is the count of retries
-#[derive(Debug)]
+/// State tracking for retry attempts
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RetryState {
+    /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
     retries: u64,
+
+    /// Deadline for the retry operation.
     deadline: f64,
 }
 
@@ -374,7 +384,23 @@ impl RetryProcessor {
         data: Box<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        self.send_or_nack(*data, effect_handler).await
+        // Check if this is a retry attempt and if we should use an alternative port
+        // Extract retry state from the context to determine routing
+        let retry_count = Context::peek_top_calldata(&data)
+            .and_then(|calldata| TryInto::<RetryState>::try_into(calldata).ok())
+            .map(|state| state.retries)
+            .unwrap_or(0);
+        
+        let data = *data;
+        
+        // If retry_destination is configured and this is a retry attempt (not first try), use alternative port
+        if let Some(retry_port) = &self.config.retry_destination {
+            if retry_count >= 1 {
+                return self.send_or_nack_to_port(data, retry_port.clone(), effect_handler).await;
+            }
+        }
+        
+        self.send_or_nack(data, effect_handler).await
     }
 
     async fn send_or_nack(
@@ -385,6 +411,33 @@ impl RetryProcessor {
         let signal = data.signal_type();
         let items = data.num_items() as u64;
         match effect_handler.send_message(data).await {
+            Ok(()) => {
+                // Request control flows downstream.
+                Ok(())
+            }
+            Err(TypedError::ChannelSendError(sent)) => {
+                let reason = sent.to_string();
+                let data = sent.inner();
+                let _ = effect_handler
+                    .notify_nack(NackMsg::new(reason, data))
+                    .await?;
+                self.metrics.add_consumed_failure(signal, items);
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn send_or_nack_to_port(
+        &mut self,
+        data: OtapPdata,
+        port_name: String,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let signal = data.signal_type();
+        let items = data.num_items() as u64;
+        let port: std::borrow::Cow<'static, str> = port_name.into();
+        match effect_handler.send_message_to(port, data).await {
             Ok(()) => {
                 // Request control flows downstream.
                 Ok(())
@@ -501,6 +554,7 @@ mod test {
                 max_interval: Duration::new(1, 750000000),
                 max_elapsed_time: Duration::new(9, 900000000),
                 multiplier: 1.999,
+                retry_destination: None,
             }
         );
     }
