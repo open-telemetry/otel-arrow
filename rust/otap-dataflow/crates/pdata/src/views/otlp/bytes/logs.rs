@@ -18,14 +18,16 @@ use otel_arrow_rust::proto::consts::field_num::logs::{
 use otel_arrow_rust::proto::consts::wire_types;
 use otel_arrow_rust::schema::{SpanId, TraceId};
 
-use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
-use crate::otlp::bytes::decode::{
+use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use crate::views::otlp::bytes::common::{
+    KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue,
+};
+use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
     to_nonzero_range,
 };
-use crate::otlp::bytes::resource::RawResource;
-use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use crate::views::otlp::bytes::resource::RawResource;
 
 /// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
 pub struct RawLogsData<'a> {

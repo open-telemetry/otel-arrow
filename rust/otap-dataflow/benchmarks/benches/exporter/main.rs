@@ -7,7 +7,6 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
-use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
 use otap_df_engine::{
     config::ExporterConfig,
@@ -64,15 +63,17 @@ use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_ch
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::MetricsSystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+use mimalloc_rust::GlobalMiMalloc;
+
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;
@@ -418,7 +419,9 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -444,9 +447,9 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
@@ -457,7 +460,7 @@ fn bench_exporter(c: &mut Criterion) {
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -476,7 +479,9 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -503,9 +508,9 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
@@ -516,7 +521,7 @@ fn bench_exporter(c: &mut Criterion) {
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -540,7 +545,9 @@ fn bench_exporter(c: &mut Criterion) {
                         "grpc_endpoint": grpc_endpoint,
                     });
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -567,9 +574,9 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
@@ -579,7 +586,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;

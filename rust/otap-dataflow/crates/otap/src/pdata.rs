@@ -85,8 +85,8 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
-use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
@@ -159,6 +159,15 @@ impl Context {
             }
         }
         None
+    }
+
+    /// Determine whether the context is may request return payload.
+    #[must_use]
+    pub fn may_return_payload(&self) -> bool {
+        self.stack
+            .last()
+            .map(|f| f.interests & Interests::RETURN_DATA != Interests::empty())
+            .unwrap_or(false)
     }
 }
 
@@ -307,10 +316,18 @@ impl OtapPdata {
         self.payload.num_items()
     }
 
-    /// Enable testing Ack/Nack without an effect handler.
+    /// Enable testing Ack/Nack without an effect handler. Consumes,
+    /// modifies and returns self.
     #[cfg(test)]
-    pub fn test_subscribe_to(&mut self, interests: Interests, calldata: CallData, node_id: usize) {
-        self.context.subscribe_to(interests, calldata, node_id)
+    #[must_use]
+    pub fn test_subscribe_to(
+        mut self,
+        interests: Interests,
+        calldata: CallData,
+        node_id: usize,
+    ) -> Self {
+        self.context.subscribe_to(interests, calldata, node_id);
+        self
     }
 }
 
@@ -443,9 +460,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes);
-                use otap_df_pdata_views::views::logs::{
-                    LogsDataView, ResourceLogsView, ScopeLogsView,
-                };
+                use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
                 logs_data_view
                     .resources()
                     .map(|rl| {
@@ -457,9 +472,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes);
-                use otap_df_pdata_views::views::trace::{
-                    ResourceSpansView, ScopeSpansView, TracesView,
-                };
+                use otap_df_pdata::views::trace::{ResourceSpansView, ScopeSpansView, TracesView};
                 traces_data_view
                     .resources()
                     .map(|rs| rs.scopes().map(|ss| ss.spans().count()).sum::<usize>())
@@ -1063,13 +1076,14 @@ mod test {
 
     #[test]
     fn test_context_next_ack_drops_payload_without_return_data() {
-        let (test_data, mut pdata) = create_test();
+        let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(!pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 
@@ -1089,10 +1103,10 @@ mod test {
 
     #[test]
     fn test_context_next_ack_preserves_payload_with_return_data() {
-        let (test_data, mut pdata) = create_test();
+        let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        pdata.test_subscribe_to(
+        let pdata = pdata.test_subscribe_to(
             Interests::ACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -1100,6 +1114,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 
@@ -1119,13 +1134,14 @@ mod test {
 
     #[test]
     fn test_context_next_nack_drops_payload_without_return_data() {
-        let (test_data, mut pdata) = create_test();
+        let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
+        let pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(!pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error".to_string(), pdata);
         let result = Context::next_nack(nack);
@@ -1144,10 +1160,10 @@ mod test {
 
     #[test]
     fn test_context_next_nack_preserves_payload_with_return_data() {
-        let (test_data, mut pdata) = create_test();
+        let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        pdata.test_subscribe_to(
+        let pdata = pdata.test_subscribe_to(
             Interests::NACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -1155,6 +1171,7 @@ mod test {
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
+        assert!(pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error", pdata);
 
@@ -1174,17 +1191,19 @@ mod test {
 
     #[test]
     fn test_context_next_ack_nack() {
-        let (test_data, mut pdata) = create_test();
+        let (test_data, pdata) = create_test();
 
         // Subscribe multiple frames. RETURN_DATA propagates automatically.
-        pdata.test_subscribe_to(
-            Interests::NACKS | Interests::RETURN_DATA,
-            test_data.clone().into(),
-            1,
-        );
-        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 2);
-        pdata.test_subscribe_to(Interests::NACKS, CallData::default(), 3);
-        pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+        let pdata = pdata
+            .test_subscribe_to(
+                Interests::NACKS | Interests::RETURN_DATA,
+                test_data.clone().into(),
+                1,
+            )
+            .test_subscribe_to(Interests::ACKS, CallData::default(), 2)
+            .test_subscribe_to(Interests::NACKS, CallData::default(), 3)
+            .test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+        assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
 

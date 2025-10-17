@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-pdata-views"
+name = "otap-df-pdata"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

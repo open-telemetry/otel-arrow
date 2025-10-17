@@ -17,6 +17,8 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use prost::Message;
 use serde_json::Value;
+use std::ops::Add;
+use std::time::Instant;
 
 /// TestCallData helps test the CallData type.
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -98,9 +100,12 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
         .set_exporter(exporter)
         .run_test(|ctx| async move {
             ctx.send_pdata(create_test_pdata()).await.unwrap();
-            ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
-                .await
-                .unwrap();
+            ctx.send_shutdown(
+                Instant::now().add(std::time::Duration::from_secs(1)),
+                "test shutdown",
+            )
+            .await
+            .unwrap();
         })
         .run_validation(|mut ctx, result| async move {
             result.expect("success");
@@ -130,11 +135,10 @@ pub fn test_exporter_with_subscription(
     test_runtime
         .set_exporter(exporter)
         .run_test(move |ctx| async move {
-            let mut req_data = create_test_pdata();
-
-            req_data.test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
+            let req_data = create_test_pdata()
+                .test_subscribe_to(subscribe_interests, TestCallData::default().into(), 654321);
             ctx.send_pdata(req_data).await.unwrap();
-            ctx.send_shutdown(std::time::Duration::from_secs(1), "test shutdown")
+            ctx.send_shutdown(Instant::now().add(std::time::Duration::from_secs(1)), "test shutdown")
                 .await
                 .unwrap();
         })
@@ -154,13 +158,13 @@ pub fn test_exporter_with_subscription(
                 Ok(other) => (
                     Interests::empty(),
                     CallData::default(),
-		    None,
+                    None,
                     format!("other message {other:?}"),
                 ),
                 Err(err) => (
-		    Interests::empty(),
+                    Interests::empty(),
                     CallData::default(),
-		    None,
+                    None,
                     format!("error {err:?}"),
                 ),
             };
@@ -169,17 +173,17 @@ pub fn test_exporter_with_subscription(
             if !trigger.is_empty() {
                 let got: TestCallData = calldata.try_into().unwrap();
                 assert_eq!(TestCallData::default(), got);
-		assert_eq!(
-		    reason,
-		    if trigger == Interests::NACKS { "THIS specific error" } else { "success" },
-		);
+                assert_eq!(
+                    reason,
+                    if trigger == Interests::NACKS { "THIS specific error" } else { "success" },
+                );
 
-		assert_eq!(reqdata.expect("has payload").num_items(),
-			   if (subscribe_interests & Interests::RETURN_DATA).is_empty() {
-			       0
-			   } else {
-			       1
-			   });
+                assert_eq!(reqdata.expect("has payload").num_items(),
+                           if (subscribe_interests & Interests::RETURN_DATA).is_empty() {
+                               0
+                           } else {
+                               1
+                           });
 
             } else {
                 assert!(

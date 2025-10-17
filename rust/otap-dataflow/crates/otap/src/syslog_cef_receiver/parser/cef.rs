@@ -350,7 +350,7 @@ impl<'a> CefExtensionsIter<'a> {
 
     /// Collect all extensions into a Vec, allocating only when necessary
     #[cfg(test)]
-    fn collect_all(mut self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub(super) fn collect_all(mut self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut result = Vec::new();
         while let Some((key, value)) = self.next_extension() {
             result.push((key.to_vec(), value.to_vec()));
