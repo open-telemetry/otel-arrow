@@ -139,238 +139,238 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                 loop {
                     tokio::select! {
-                                            biased; // Prioritize control messages over data
+                        biased; // Prioritize control messages over data
 
-                                            // Process incoming control messages.
-                                            ctrl_msg = ctrl_chan.recv() => {
-                                                match ctrl_msg {
-                                                    Ok(NodeControlMsg::Shutdown {..}) => {
-                                                        // ToDo: Add proper deadline function
-                                                        let _ = timer_cancel_handle.cancel().await;
-                                                        break;
-                                                    }
-                                                    Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                                        if let Some(rc) = self.metrics.as_ref() {
-                                                            let mut m = rc.borrow_mut();
-                                                            let _ = metrics_reporter.report(&mut m);
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        return Err(Error::ChannelRecvError(e));
-                                                    }
-                                                    _ => {
-                                                        // ToDo: Handle other control messages if needed
-                                                    }
-                                                }
-                                            }
+                        // Process incoming control messages.
+                        ctrl_msg = ctrl_chan.recv() => {
+                            match ctrl_msg {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
+                                    // ToDo: Add proper deadline function
+                                    let _ = timer_cancel_handle.cancel().await;
+                                    break;
+                                }
+                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                    if let Some(rc) = self.metrics.as_ref() {
+                                        let mut m = rc.borrow_mut();
+                                        let _ = metrics_reporter.report(&mut m);
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(Error::ChannelRecvError(e));
+                                }
+                                _ => {
+                                    // ToDo: Handle other control messages if needed
+                                }
+                            }
+                        }
 
-                                            // Process incoming TCP connections.
-                                            accept_result = listener.accept() => {
-                                                match accept_result {
-                                                    Ok((socket, _peer_addr)) => {
-                                                        // Track active connections
-                                                        if let Some(rc) = self.metrics.as_ref() {
-                                                            rc.borrow_mut().tcp_connections_active.inc();
-                                                        }
+                        // Process incoming TCP connections.
+                        accept_result = listener.accept() => {
+                            match accept_result {
+                                Ok((socket, _peer_addr)) => {
+                                    // Track active connections
+                                    if let Some(rc) = self.metrics.as_ref() {
+                                        rc.borrow_mut().tcp_connections_active.inc();
+                                    }
 
-                                                        // Clone the effect handler so the spawned task can send messages.
-                                                        let effect_handler = effect_handler.clone();
-                                                        let metrics = self.metrics.clone();
+                                    // Clone the effect handler so the spawned task can send messages.
+                                    let effect_handler = effect_handler.clone();
+                                    let metrics = self.metrics.clone();
 
-                                                        // Spawn a task to handle the connection.
-                                                        // ToDo should this be abstracted and exposed a method in the effect handler?
-                                                        _ = tokio::task::spawn_local(async move {
-                                                            let mut reader = BufReader::new(socket);
-                                                            let mut line_bytes = Vec::new();
+                                    // Spawn a task to handle the connection.
+                                    // ToDo should this be abstracted and exposed a method in the effect handler?
+                                    _ = tokio::task::spawn_local(async move {
+                                        let mut reader = BufReader::new(socket);
+                                        let mut line_bytes = Vec::new();
 
-                                                            let mut arrow_records_builder = ArrowRecordsBuilder::new();
+                                        let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                            let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                                                            let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                                        let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
+                                        let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
 
-                                                            loop {
-                                                                tokio::select! {
-                                                                    biased; // Prioritize incoming data over timeout
+                                        loop {
+                                            tokio::select! {
+                                                biased; // Prioritize incoming data over timeout
 
-                                                                    // Handle incoming data
-                                                                    read_result = reader.read_until(b'\n', &mut line_bytes) => {
-                                                                        // ToDo: Need to handle malicious input
-                                                                        // This could lead to memory exhaustion if there is no newline in the input.
-                                                                        match read_result {
-                                                                            Ok(0) => {
-                                                                                // EOF reached - connection closed
-                                                                                // Check if there's an incomplete line to process
-                                                                                if !line_bytes.is_empty() {
-                                                                                    // Remove trailing newline if present
-                                                                                    let message_bytes = if line_bytes.last() == Some(&b'\n') {
-                                                                                        &line_bytes[..line_bytes.len()-1]
-                                                                                    } else {
-                                                                                        &line_bytes[..]
-                                                                                    };
+                                                // Handle incoming data
+                                                read_result = reader.read_until(b'\n', &mut line_bytes) => {
+                                                    // ToDo: Need to handle malicious input
+                                                    // This could lead to memory exhaustion if there is no newline in the input.
+                                                    match read_result {
+                                                        Ok(0) => {
+                                                            // EOF reached - connection closed
+                                                            // Check if there's an incomplete line to process
+                                                            if !line_bytes.is_empty() {
+                                                                // Remove trailing newline if present
+                                                                let message_bytes = if line_bytes.last() == Some(&b'\n') {
+                                                                    &line_bytes[..line_bytes.len()-1]
+                                                                } else {
+                                                                    &line_bytes[..]
+                                                                };
 
-                                                                                    // Count total received at socket level before parsing
-                                                                                    if let Some(rc) = metrics.as_ref() {
-                                                                                        rc.borrow_mut().received_logs_total.inc();
-                                                                                    }
+                                                                // Count total received at socket level before parsing
+                                                                if let Some(rc) = metrics.as_ref() {
+                                                                    rc.borrow_mut().received_logs_total.inc();
+                                                                }
 
-                                                                                    match parser::parse(message_bytes) {
-                                                                                        Ok(parsed_message) => {
-                                                                                            arrow_records_builder.append_syslog(parsed_message);
-                                                                                        }
-                                                                                        Err(_e) => {
-                                                                                            // parse error => count one failed item
-                                                                                            if let Some(rc) = metrics.as_ref() {
-                                                                                                rc.borrow_mut().received_logs_failure.inc();
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                }
-
-                                                                                // Send any remaining records before closing
-                                                                                if arrow_records_builder.len() > 0 {
-                                                                                    let items = u64::from(arrow_records_builder.len());
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                                    let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-
-                                                                                    if let Some(rc) = metrics.as_ref() {
-                                                                                        let mut m = rc.borrow_mut();
-                                                                                        match &res {
-                                                                                            Ok(_) => m.received_logs_success.add(items),
-                                                                                            Err(_) => m.received_logs_refused.add(items),
-                                                                                        }
-                                                                                    }
-                                                                                }
-
-                                                                                // Decrement active connections on EOF
-                                                                                if let Some(rc) = metrics.as_ref() {
-                                                                                    rc.borrow_mut().tcp_connections_active.dec();
-                                                                                }
-                                                                                break;
-                                                                            }
-                                                                            Ok(_) => {
-                                                                                let is_complete_line = line_bytes.last() == Some(&b'\n');
-                                                                                if !is_complete_line {
-                                                                                    // ToDo: Handle incomplete lines
-                                                                                    // Do we process the incomplete line with partial data or discard it?
-                                                                                    // Handle incomplete line (log, emit metrics, etc.)
-                                                                                }
-
-                                                                                // Strip the newline character for parsing
-                                                                                let message_to_parse = if is_complete_line {
-                                                                                    &line_bytes[..line_bytes.len()-1]
-                                                                                } else {
-                                                                                    &line_bytes[..]
-                                                                                };
-
-                                                                                // Count total received at socket level before parsing
-                                                                                if let Some(rc) = metrics.as_ref() {
-                                                                                    rc.borrow_mut().received_logs_total.inc();
-                                                                                }
-
-                                                                                match parser::parse(message_to_parse) {
-                                                                                    Ok(parsed) => {
-                                                                                        arrow_records_builder.append_syslog(parsed);
-                                                                                    }
-                                                                                    Err(_e) => {
-                                                                                        // parsing error counts as one failed item
-                                                                                        if let Some(rc) = metrics.as_ref() {
-                                                                                            rc.borrow_mut().received_logs_failure.inc();
-                                                                                        }
-                                                                                        // Skip this message
-                                                                                        line_bytes.clear();
-                                                                                        continue;
-                                                                                    }
-                                                                                };
-
-                                                                                // Clear the bytes for the next iteration
-                                                                                line_bytes.clear();
-
-                                                                                if arrow_records_builder.len() >= MAX_BATCH_SIZE {
-                                                                                    // Build the Arrow records and send them
-                                                                                    let items = u64::from(arrow_records_builder.len());
-
-                                                                                    // Build the Arrow records to send them
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                                                    // Reset the builder for the next batch
-                                                                                    arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                                                    // Reset the timer since we already built an arrow record batch due to size constraint
-                                                                                    interval.reset();
-
-                                                                                    let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                                                    if let Some(rc) = metrics.as_ref() {
-                                                                                        let mut m = rc.borrow_mut();
-                                                                                        match &res {
-                                                                                            Ok(_) => m.received_logs_success.add(items),
-                                                                                            Err(_) => m.received_logs_refused.add(items),
-                                                                                        }
-                                                                                    }
-                                                                                    if res.is_err() { return; }
-                                                                                }
-                                                                            }
-                                                                            Err(_e) => {
-                                                                                // Send any remaining records before closing due to error
-                                                                                if arrow_records_builder.len() > 0 {
-                                                                                    let items = u64::from(arrow_records_builder.len());
-                                                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                                    let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-
-                                                                                    if let Some(rc) = metrics.as_ref() {
-                                                                                        let mut m = rc.borrow_mut();
-                                                                                        match &res {
-                                                                                            Ok(_) => m.received_logs_success.add(items),
-                                                                                            Err(_) => m.received_logs_refused.add(items),
-                                                                                        }
-                                                                                    }
-                                                                                }
-
-                                                                                // Decrement active connections on read error
-                                                                                if let Some(rc) = metrics.as_ref() {
-                                                                                    rc.borrow_mut().tcp_connections_active.dec();
-                                                                                }
-                                                                                break; // ToDo: Handle read error properly
-                                                                            }
+                                                                match parser::parse(message_bytes) {
+                                                                    Ok(parsed_message) => {
+                                                                        arrow_records_builder.append_syslog(parsed_message);
+                                                                    }
+                                                                    Err(_e) => {
+                                                                        // parse error => count one failed item
+                                                                        if let Some(rc) = metrics.as_ref() {
+                                                                            rc.borrow_mut().received_logs_failure.inc();
                                                                         }
                                                                     }
-
-                                                                    // Handle timeout - send any accumulated records
-                                                                    _ = interval.tick() => {
-                                                                        if arrow_records_builder.len() > 0 {
-                                                                            // Build the Arrow records and send them
-                                                                            let items = u64::from(arrow_records_builder.len());
-                                                                            let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-
-                                                                            // Reset the builder for the next batch
-                                                                            arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                                            let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                                            if let Some(rc) = metrics.as_ref() {
-                                                                                let mut m = rc.borrow_mut();
-                                                                                match &res {
-                                                                                    Ok(_) => m.received_logs_success.add(items),
-                                                                                    Err(_) => m.received_logs_refused.add(items),
-                                                                                }
-                                                                            }
-                                                                            if res.is_err() { return; }
-                                                                        }
-                                                                    },
                                                                 }
                                                             }
-                                                        });
-                                                    }
-                                                    Err(e) => {
-                                                        let source_detail = format_error_sources(&e);
-                                                        return Err(Error::ReceiverError {
-                                                            receiver: effect_handler.receiver_id(),
-                                                            kind: ReceiverErrorKind::Transport,
-                                                            error: e.to_string(),
-                                                            source_detail,
-                                                        });
+
+                                                            // Send any remaining records before closing
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let items = u64::from(arrow_records_builder.len());
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+
+                                                                if let Some(rc) = metrics.as_ref() {
+                                                                    let mut m = rc.borrow_mut();
+                                                                    match &res {
+                                                                        Ok(_) => m.received_logs_success.add(items),
+                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Decrement active connections on EOF
+                                                            if let Some(rc) = metrics.as_ref() {
+                                                                rc.borrow_mut().tcp_connections_active.dec();
+                                                            }
+                                                            break;
+                                                        }
+                                                        Ok(_) => {
+                                                            let is_complete_line = line_bytes.last() == Some(&b'\n');
+                                                            if !is_complete_line {
+                                                                // ToDo: Handle incomplete lines
+                                                                // Do we process the incomplete line with partial data or discard it?
+                                                                // Handle incomplete line (log, emit metrics, etc.)
+                                                            }
+
+                                                            // Strip the newline character for parsing
+                                                            let message_to_parse = if is_complete_line {
+                                                                &line_bytes[..line_bytes.len()-1]
+                                                            } else {
+                                                                &line_bytes[..]
+                                                            };
+
+                                                            // Count total received at socket level before parsing
+                                                            if let Some(rc) = metrics.as_ref() {
+                                                                rc.borrow_mut().received_logs_total.inc();
+                                                            }
+
+                                                            match parser::parse(message_to_parse) {
+                                                                Ok(parsed) => {
+                                                                    arrow_records_builder.append_syslog(parsed);
+                                                                }
+                                                                Err(_e) => {
+                                                                    // parsing error counts as one failed item
+                                                                    if let Some(rc) = metrics.as_ref() {
+                                                                        rc.borrow_mut().received_logs_failure.inc();
+                                                                    }
+                                                                    // Skip this message
+                                                                    line_bytes.clear();
+                                                                    continue;
+                                                                }
+                                                            };
+
+                                                            // Clear the bytes for the next iteration
+                                                            line_bytes.clear();
+
+                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                                                // Build the Arrow records and send them
+                                                                let items = u64::from(arrow_records_builder.len());
+
+                                                                // Build the Arrow records to send them
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                                                // Reset the builder for the next batch
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                                // Reset the timer since we already built an arrow record batch due to size constraint
+                                                                interval.reset();
+
+                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                if let Some(rc) = metrics.as_ref() {
+                                                                    let mut m = rc.borrow_mut();
+                                                                    match &res {
+                                                                        Ok(_) => m.received_logs_success.add(items),
+                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                    }
+                                                                }
+                                                                if res.is_err() { return; }
+                                                            }
+                                                        }
+                                                        Err(_e) => {
+                                                            // Send any remaining records before closing due to error
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let items = u64::from(arrow_records_builder.len());
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+
+                                                                if let Some(rc) = metrics.as_ref() {
+                                                                    let mut m = rc.borrow_mut();
+                                                                    match &res {
+                                                                        Ok(_) => m.received_logs_success.add(items),
+                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Decrement active connections on read error
+                                                            if let Some(rc) = metrics.as_ref() {
+                                                                rc.borrow_mut().tcp_connections_active.dec();
+                                                            }
+                                                            break; // ToDo: Handle read error properly
+                                                        }
                                                     }
                                                 }
+
+                                                // Handle timeout - send any accumulated records
+                                                _ = interval.tick() => {
+                                                    if arrow_records_builder.len() > 0 {
+                                                        // Build the Arrow records and send them
+                                                        let items = u64::from(arrow_records_builder.len());
+                                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+
+                                                        // Reset the builder for the next batch
+                                                        arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                        if let Some(rc) = metrics.as_ref() {
+                                                            let mut m = rc.borrow_mut();
+                                                            match &res {
+                                                                Ok(_) => m.received_logs_success.add(items),
+                                                                Err(_) => m.received_logs_refused.add(items),
+                                                            }
+                                                        }
+                                                        if res.is_err() { return; }
+                                                    }
+                                                },
                                             }
                                         }
+                                    });
+                                }
+                                Err(e) => {
+                                    let source_detail = format_error_sources(&e);
+                                    return Err(Error::ReceiverError {
+                                        receiver: effect_handler.receiver_id(),
+                                        kind: ReceiverErrorKind::Transport,
+                                        error: e.to_string(),
+                                        source_detail,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
