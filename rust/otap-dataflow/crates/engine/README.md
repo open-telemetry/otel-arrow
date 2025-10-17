@@ -258,9 +258,9 @@ tells the engine to route a Nack message. The engine never deals
 directly in forming the `AckMsg` and `NackMsg` types, as they contain
 call data "popped" from the caller subscription state. Therefore, the
 `notify_ack` and `notify_nack` extension methods construct the next
-Ack or Nack message using a "transfer" function passed to
-`otap_df_engine::effect_handler::EffectHandlerCore` (e.g., with the
-signature `FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>`).
+Ack or Nack message using functions that pop subscription frames,
+identify the next subscriber by node ID, place their call data in the
+Ack or Nack, and route the control message.
 
 ### Handling Ack and Nack messages
 
