@@ -3,7 +3,7 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::otlp::server::{
-    LogsServiceServer, MetricsServiceServer, SharedState, TraceServiceServer,
+    LogsServiceServer, MetricsServiceServer, RouteResponse, SharedState, TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
 
@@ -58,6 +58,13 @@ pub struct OTLPReceiver {
     metrics: MetricSet<OtlpReceiverMetrics>,
 }
 
+/// State shared between gRPC server task and the effect handler.
+struct SharedStates {
+    logs: SharedState,
+    metrics: SharedState,
+    traces: SharedState,
+}
+
 /// Declares the OTLP receiver as a shared receiver factory
 ///
 #[allow(unsafe_code)]
@@ -92,44 +99,68 @@ impl OTLPReceiver {
         // Register OTLP receiver metrics for this node.
         let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
 
-        Ok(OTLPReceiver { config, metrics })
+        Ok(Self { config, metrics })
+    }
+
+    fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
+        let calldata = ack.calldata;
+        let resp = Ok(());
+        match ack.accepted.signal_type() {
+            SignalType::Logs => states.logs.route_response(calldata, resp),
+            SignalType::Metrics => states.metrics.route_response(calldata, resp),
+            SignalType::Traces => states.traces.route_response(calldata, resp),
+        }
+    }
+
+    fn route_nack_response(
+        &self,
+        states: &SharedStates,
+        mut nack: NackMsg<OtapPdata>,
+    ) -> RouteResponse {
+        let calldata = std::mem::take(&mut nack.calldata);
+        let sigtype = nack.refused.signal_type();
+        let resp = Err(nack);
+        match sigtype {
+            SignalType::Logs => states.logs.route_response(calldata, resp),
+            SignalType::Metrics => states.metrics.route_response(calldata, resp),
+            SignalType::Traces => states.traces.route_response(calldata, resp),
+        }
+    }
+
+    fn handle_acknack_response(&mut self, resp: RouteResponse) {
+        match resp {
+            RouteResponse::Sent => self.metrics.acks_sent.inc(),
+            RouteResponse::Expired => self.metrics.nacks_sent.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_expired.inc(),
+        }
     }
 }
 
-/// OTLP receiver metrics moved into the node module.
+/// OTLP receiver metrics.
+//
+// TODO: The following were unused, would have to be implemented in
+// a different location:
+//
+// /// Number of bytes received.
+// #[metric(unit = "By")]
+// pub bytes_received: Counter<u64>,
+// /// Number of messages received.
+// #[metric(unit = "{msg}")]
+// pub messages_received: Counter<u64>,
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
-    /// Number of bytes received.
-    #[metric(unit = "By")]
-    pub bytes_received: Counter<u64>,
-    /// Number of messages received.
-    #[metric(unit = "{msg}")]
-    pub messages_received: Counter<u64>,
-}
+    /// Number of acks sent.
+    #[metric(unit = "{acks}")]
+    pub acks_sent: Counter<u64>,
 
-struct SharedStates {
-    logs: SharedState,
-    metrics: SharedState,
-    traces: SharedState,
-}
+    /// Number of nacks sent.
+    #[metric(unit = "{nacks}")]
+    pub nacks_sent: Counter<u64>,
 
-impl SharedStates {
-    fn route_ack_response(&self, ack: AckMsg<OtapPdata>) {
-        match ack.accepted.signal_type() {
-            SignalType::Logs => self.logs.route_ack_response(ack),
-            SignalType::Metrics => self.metrics.route_ack_response(ack),
-            SignalType::Traces => self.traces.route_ack_response(ack),
-        }
-    }
-
-    fn route_nack_response(&self, nack: NackMsg<OtapPdata>) {
-        match nack.refused.signal_type() {
-            SignalType::Logs => self.logs.route_nack_response(nack),
-            SignalType::Metrics => self.metrics.route_nack_response(nack),
-            SignalType::Traces => self.traces.route_nack_response(nack),
-        }
-    }
+    /// Number of invalid/expired acks/nacks.
+    #[metric(unit = "{ack_or_nack}")]
+    pub acks_nacks_expired: Counter<u64>,
 }
 
 #[async_trait]
@@ -193,10 +224,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
                             // Route Ack to the appropriate correlation slot
-                            states.route_ack_response(ack);
+                            self.handle_acknack_response(self.route_ack_response(&states, ack));
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            states.route_nack_response(nack);
+                            self.handle_acknack_response(self.route_nack_response(&states, nack));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));

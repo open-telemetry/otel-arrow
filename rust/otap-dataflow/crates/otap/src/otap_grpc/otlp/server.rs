@@ -18,7 +18,8 @@ use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRes
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_engine::control::{AckMsg, CallData, NackMsg};
+use otap_df_config::experimental::SignalType;
+use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use prost::Message;
@@ -39,65 +40,59 @@ impl SharedState {
     fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
-
-    /// Route an Ack response back to the appropriate slot
-    pub fn route_ack_response(&self, ack: AckMsg<OtapPdata>) {
-        route_response(self, ack.calldata, Ok(()));
-    }
-
-    /// Route a Nack response back to the appropriate slot
-    pub fn route_nack_response(&self, mut nack: NackMsg<OtapPdata>) {
-        let calldata = std::mem::take(&mut nack.calldata);
-        route_response(self, calldata, Err(nack));
-    }
 }
 
-/// Internal helper to route responses to slots
-fn route_response(state: &SharedState, calldata: CallData, result: Result<(), NackMsg<OtapPdata>>) {
-    // Decode slot key from calldata
-    let key: SlotKey = match calldata.try_into() {
-        Ok(data) => data,
-        Err(_) => {
-            // Invalid calldata format
-            return;
+/// The outcome from RouteResponse
+pub enum RouteResponse {
+    /// The Ack/Nack was sent.
+    Sent,
+    /// The Ack/Nack may have timed out.
+    Expired,
+    /// The Ack/Nack had invalid call data.
+    Invalid,
+}
+
+impl SharedState {
+    /// Internal helper to route responses to slots
+    pub fn route_response(
+        &self,
+        calldata: CallData,
+        result: Result<(), NackMsg<OtapPdata>>,
+    ) -> RouteResponse {
+        // Decode slot key from calldata
+        let key: SlotKey = match calldata.try_into() {
+            Ok(data) => data,
+            Err(_) => return RouteResponse::Invalid,
+        };
+
+        // Try to take the channel from the slot under the mutex.
+        let chan = self
+            .0
+            .lock()
+            .map(|mut state| state.take(key))
+            .ok()
+            .flatten();
+
+        // Try to send.
+        if chan
+            .map(|sender| sender.send(result).ok())
+            .flatten()
+            .is_some()
+        {
+            RouteResponse::Sent
+        } else {
+            RouteResponse::Expired
         }
-    };
-
-    // Try to take the channel from the slot under the mutex.
-    let chan = state
-        .0
-        .lock()
-        .map(|mut state| state.take(key))
-        .ok()
-        .flatten();
-
-    // Try to send.
-    if chan
-        .map(|sender| sender.send(result).ok())
-        .flatten()
-        .is_some()
-    {
-        // Sent
-    } else {
-        // Timeout (or otherwise invalid)
     }
-}
-
-/// identifier
-#[derive(Clone)]
-enum Signal {
-    Logs,
-    Metrics,
-    Traces,
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 struct OtlpBytesCodec {
-    signal: Signal,
+    signal: SignalType,
 }
 
 impl OtlpBytesCodec {
-    fn new(signal: Signal) -> Self {
+    fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -120,11 +115,11 @@ impl Codec for OtlpBytesCodec {
 
 /// Tonic codec `Encoder` implementation that encodes protobuf serialized otlp service responses
 struct OtlpResponseEncoder {
-    signal: Signal,
+    signal: SignalType,
 }
 
 impl OtlpResponseEncoder {
-    fn new(signal: Signal) -> Self {
+    fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -135,19 +130,19 @@ impl Encoder for OtlpResponseEncoder {
 
     fn encode(&mut self, _item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
         match self.signal {
-            Signal::Logs => {
+            SignalType::Logs => {
                 let response = ExportLogsServiceResponse {
                     partial_success: None,
                 };
                 response.encode(dst)
             }
-            Signal::Metrics => {
+            SignalType::Metrics => {
                 let response = ExportMetricsServiceResponse {
                     partial_success: None,
                 };
                 response.encode(dst)
             }
-            Signal::Traces => {
+            SignalType::Traces => {
                 let response = ExportTraceServiceResponse {
                     partial_success: None,
                 };
@@ -160,11 +155,11 @@ impl Encoder for OtlpResponseEncoder {
 
 /// Tonic codec `Decoder` implementation that decodes OtapBatch from protobuf request bytes
 struct OtapBatchDecoder {
-    signal: Signal,
+    signal: SignalType,
 }
 
 impl OtapBatchDecoder {
-    fn new(signal: Signal) -> Self {
+    fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -177,9 +172,9 @@ impl Decoder for OtapBatchDecoder {
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
         let result = match self.signal {
-            Signal::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
-            Signal::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
-            Signal::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
         };
         src.advance(buf.len());
         Ok(Some(OtapPdata::new_todo_context(result.into())))
@@ -271,7 +266,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 /// handle the grpc service request
 async fn handle_service_request(
     req: Request<Body>,
-    signal: Signal,
+    signal: SignalType,
     effect_handler: EffectHandler<OtapPdata>,
     state: SharedState,
     accept_compression_encodings: EnabledCompressionEncodings,
@@ -356,7 +351,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
                 Box::pin(async move {
                     let res = handle_service_request(
                         req,
-                        Signal::Logs,
+                        SignalType::Logs,
                         effect_handler,
                         state,
                         accept_compression_encodings,
@@ -436,7 +431,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
                 Box::pin(async move {
                     let res = handle_service_request(
                         req,
-                        Signal::Metrics,
+                        SignalType::Metrics,
                         effect_handler,
                         state,
                         accept_compression_encodings,
@@ -516,7 +511,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
                 Box::pin(async move {
                     let res = handle_service_request(
                         req,
-                        Signal::Traces,
+                        SignalType::Traces,
                         effect_handler,
                         state,
                         accept_compression_encodings,
