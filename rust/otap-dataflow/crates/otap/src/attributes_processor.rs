@@ -285,11 +285,6 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        // Start periodic telemetry collection
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         match msg {
             Message::Control(control_msg) => match control_msg {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
