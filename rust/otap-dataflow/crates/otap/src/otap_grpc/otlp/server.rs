@@ -61,18 +61,22 @@ fn route_response(
         }
     };
 
-    // Try to get the channel from the slot
-    if let Ok(mut state) = state.lock() {
-        if let Some(sender) = state.get_if_current(slot_key) {
-            match sender.send(result) {
-                Ok(()) => {
-                    // Sent
-                }
-                Err(_) => {
-                    // E.g., channel closed
-                }
-            }
-        }
+    // Try to get the channel from the slot under the mutex.
+    let chan = state
+        .lock()
+        .map(|mut state| state.get_if_current(slot_key))
+        .ok()
+        .flatten();
+
+    // Try to send.
+    if chan
+        .map(|sender| sender.send(result).ok())
+        .flatten()
+        .is_some()
+    {
+        // Sent
+    } else {
+        // Timeout (or otherwise invalid)
     }
 }
 
@@ -194,6 +198,21 @@ impl OtapBatchService {
     }
 }
 
+/// Guard mechanism for cancelling a slot when Tonic timeout
+/// drops the future.
+struct SlotGuard {
+    slot_key: SlotKey,
+    state: SharedCorrelationState,
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cancel(self.slot_key);
+        }
+    }
+}
+
 impl UnaryService<OtapPdata> for OtapBatchService {
     type Response = ();
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
@@ -204,42 +223,28 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         let effect_handler = self.effect_handler.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // Allocate slot with closure that creates the channel only if slot is available
-            let (slot_key, rx) = {
-                let mut state = state.lock().expect("lock acquired");
-                match state.allocate_slot(|| oneshot::channel()) {
-                    Some((key, rx)) => (key, rx),
-                    None => {
-                        return Err(Status::resource_exhausted("Too many concurrent requests"));
-                    }
+            // Try to allocate a slot (under the mutex) for calldata.
+            let (slot_key, rx) = match state
+                .lock()
+                .map(|mut state| state.allocate_slot(|| oneshot::channel()))
+            {
+                Err(_) => return Err(Status::internal("Mutex poisoned")),
+                Ok(None) => {
+                    return Err(Status::resource_exhausted("Too many concurrent requests"));
                 }
+                Ok(Some(pair)) => pair,
             };
 
-            // Create guard to clean up slot if this future is cancelled/dropped
-            struct SlotGuard {
-                slot_key: SlotKey,
-                state: SharedCorrelationState,
-            }
-
-            impl Drop for SlotGuard {
-                fn drop(&mut self) {
-                    if let Ok(mut state) = self.state.lock() {
-                        state.cancel(self.slot_key);
-                    }
-                }
-            }
-
-            let _guard = SlotGuard {
-                slot_key,
-                state: state.clone(),
-            };
-
+            // Enter the subscription. Slot key becomes calldata.
             effect_handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
                 slot_key.into(),
                 &mut otap_batch,
             );
 
+            let _cancel_guard = SlotGuard { slot_key, state };
+
+            // Send and wait for Ack/Nack
             match effect_handler.send_message(otap_batch).await {
                 Ok(_) => match rx.await {
                     Ok(Ok(())) => Ok(tonic::Response::new(())),
