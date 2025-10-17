@@ -301,7 +301,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                                     let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                                     if let Some(rc) = metrics.as_ref() {
                                                                                         let mut m = rc.borrow_mut();
-                    match &res {
+                                                                                        match &res {
                                                                                             Ok(_) => m.received_logs_success.add(items),
                                                                                             Err(_) => m.received_logs_refused.add(items),
                                                                                         }
