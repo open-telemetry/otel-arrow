@@ -4,7 +4,7 @@
 //! Implementation of the configuration of the filter processor
 //! 
 
-use otel_arrow_rust::filter::LogFilter;
+use otel_arrow_rust::otap::filter::LogFilter;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -22,7 +22,7 @@ impl Config {
 	}
 
 	#[must_use]
-	pub fn log_filters(&self) -> LogFilter {
-		self.logs
+	pub fn log_filters(&self) -> &LogFilter {
+		&self.logs
 	}
 }

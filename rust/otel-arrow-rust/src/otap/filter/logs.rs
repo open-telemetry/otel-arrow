@@ -4,6 +4,7 @@
 //!
 //!
 
+use crate::arrays::get_required_array;
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
 use crate::otap::filter::{AnyValue, KeyValue};
@@ -41,7 +42,7 @@ pub struct LogMatchProperties {
 }
 
 /// LogSeverityNumberMatchProperties specifies the requirements needed to match on the log severity field
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LogServerityNumberMatchProperties {
     // Min is the minimum severity needed for the log record to match.
     // This corresponds to the short names specified here:
@@ -54,7 +55,7 @@ pub struct LogServerityNumberMatchProperties {
 }
 
 /// LogMatchType describes how we should match the String values provided
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum LogMatchType {
     /// match on the string values exactly how they are defined
     Strict,
@@ -89,7 +90,7 @@ impl LogMatchProperties {
         invert: bool,
     ) -> Result<(BooleanArray, BooleanArray, BooleanArray)> {
         let (mut resource_attr_filter, mut log_record_filter, mut log_attr_filter) = (
-            self.get_log_record_filter(logs_payload)?,
+            self.get_resource_attr_filter(logs_payload)?,
             self.get_log_record_filter(logs_payload)?,
             self.get_log_attr_filter(logs_payload)?,
         );
@@ -106,15 +107,13 @@ impl LogMatchProperties {
 
     fn get_resource_attr_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         // get resource_attrs record batch
-        let resource_attrs = logs_payload.get(ArrowPayloadType::ResourceAttrs).context(error::LogRecordNotFoundSnafu)?;
+        let resource_attrs = logs_payload
+            .get(ArrowPayloadType::ResourceAttrs)
+            .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = resource_attrs.num_rows();
 
         let mut attributes_filter = BooleanArray::new_null(num_rows);
-        let key_column = resource_attrs
-            .column_by_name(consts::ATTRIBUTE_KEY)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::ATTRIBUTE_KEY,
-            })?;
+        let key_column = get_required_array(resource_attrs, consts::ATTRIBUTE_KEY)?;
         // generate the filter for this record_batch
         for attribute in &self.resource_attributes {
             let key_scalar = StringArray::new_scalar(attribute.key.clone());
@@ -124,12 +123,7 @@ impl LogMatchProperties {
             let value_filter = match &attribute.value {
                 AnyValue::String(value) => {
                     // get string column
-                    let string_column = resource_attrs
-                        .column_by_name(consts::ATTRIBUTE_STR)
-                        .context(error::ColumnNotFoundSnafu {
-                            name: consts::ATTRIBUTE_STR,
-                        })?;
-
+                    let string_column = get_required_array(resource_attrs, consts::ATTRIBUTE_STR)?;
                     match self.match_type {
                         LogMatchType::Regexp => {
                             let string_column = string_column
@@ -199,11 +193,7 @@ impl LogMatchProperties {
 
         // ToDo optimize the logic below where we build the final filter based on the ids
         // now we get ids of resource_attrs
-        let parent_id_column = resource_attrs.column_by_name(consts::PARENT_ID).context(
-            error::ColumnNotFoundSnafu {
-                name: consts::PARENT_ID,
-            },
-        )?;
+        let parent_id_column = get_required_array(resource_attrs, consts::PARENT_ID)?;
         // the ids should show up self.resource_attr.len() times otherwise they don't have all the required attributes
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
             .expect("columns should have equal length");
@@ -225,7 +215,7 @@ impl LogMatchProperties {
 
         // build filter around the ids
         let mut filter = BooleanArray::new_null(num_rows);
-        for (id, _ ) in ids_counted {
+        for (id, _) in ids_counted {
             let id_scalar = UInt16Array::new_scalar(id);
             let id_filter = arrow::compute::kernels::cmp::eq(&parent_id_column, &id_scalar)
                 .expect("columns should have equal length");
@@ -237,7 +227,9 @@ impl LogMatchProperties {
     }
 
     fn get_log_record_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
-        let log_records = logs_payload.get(ArrowPayloadType::Logs).context(error::LogRecordNotFoundSnafu)?;
+        let log_records = logs_payload
+            .get(ArrowPayloadType::Logs)
+            .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = log_records.num_rows();
         // create filter for severity texts
         let severity_texts_column = log_records.column_by_name(consts::SEVERITY_TEXT).context(
@@ -263,11 +255,7 @@ impl LogMatchProperties {
             let body_filter = match body {
                 AnyValue::String(value) => {
                     // get string column
-                    let string_column = log_records.column_by_name(consts::BODY_STR).context(
-                        error::ColumnNotFoundSnafu {
-                            name: consts::ATTRIBUTE_STR,
-                        },
-                    )?;
+                    let string_column = get_required_array(log_records, consts::BODY_STR)?;
                     match self.match_type {
                         LogMatchType::Regexp => {
                             let string_column = string_column
@@ -338,12 +326,8 @@ impl LogMatchProperties {
             .expect("boolean arrays should have equal length");
 
         // if the severity_number field is defined then we create the severity_number filter
-        if let Some(severity_number_properties) = self.severity_number {
-            let severity_number_column = log_records
-                .column_by_name(consts::SEVERITY_NUMBER)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::SEVERITY_NUMBER,
-                })?;
+        if let Some(severity_number_properties) = &self.severity_number {
+            let severity_number_column = get_required_array(log_records, consts::SEVERITY_NUMBER)?;
 
             // TODO make min a string that contains the severity number type and map to the int instead
             let min_severity_number = severity_number_properties.min;
@@ -362,7 +346,8 @@ impl LogMatchProperties {
                 severity_numbers_filter = arrow::compute::or_kleene(
                     &severity_numbers_filter,
                     &unknown_severity_number_filter,
-                ).expect("boolean arrays should have equal length");
+                )
+                .expect("boolean arrays should have equal length");
             }
             // combine severity number filter to the log record filter
             filter = arrow::compute::and(&filter, &severity_numbers_filter)
@@ -374,16 +359,14 @@ impl LogMatchProperties {
 
     fn get_log_attr_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         // get log_attrs record batch
-        let log_attrs = logs_payload.get(ArrowPayloadType::LogAttrs).context(error::LogRecordNotFoundSnafu)?;
+        let log_attrs = logs_payload
+            .get(ArrowPayloadType::LogAttrs)
+            .context(error::LogRecordNotFoundSnafu)?;
 
         let num_rows = log_attrs.num_rows();
         let mut attributes_filter = BooleanArray::new_null(num_rows);
 
-        let key_column = log_attrs.column_by_name(consts::ATTRIBUTE_KEY).context(
-            error::ColumnNotFoundSnafu {
-                name: consts::ATTRIBUTE_KEY,
-            },
-        )?;
+        let key_column = get_required_array(log_attrs, consts::ATTRIBUTE_KEY)?;
 
         // generate the filter for this record_batch
         for attribute in &self.record_attributes {
@@ -393,11 +376,7 @@ impl LogMatchProperties {
             let value_filter = match &attribute.value {
                 AnyValue::String(value) => {
                     // get string column
-                    let string_column = log_attrs.column_by_name(consts::ATTRIBUTE_STR).context(
-                        error::ColumnNotFoundSnafu {
-                            name: consts::ATTRIBUTE_STR,
-                        },
-                    )?;
+                    let string_column = get_required_array(log_attrs, consts::ATTRIBUTE_STR)?;
 
                     match self.match_type {
                         LogMatchType::Regexp => {
@@ -469,15 +448,14 @@ impl LogMatchProperties {
         }
 
         // now we get ids of
-        let parent_id_column =
-            log_attrs
-                .column_by_name(consts::PARENT_ID)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::PARENT_ID,
-                })?;
+        let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
 
-        let ids = arrow::compute::filter(&parent_id_column, &attributes_filter).expect("columns should have equal length");
-        let ids = ids.as_any().downcast_ref::<UInt16Array>().expect("array can be downcast into UInt16Array");
+        let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
+            .expect("columns should have equal length");
+        let ids = ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("array can be downcast into UInt16Array");
         let ids: HashSet<u16> = ids.iter().flatten().collect();
         // build filter around the ids
         let mut filter = BooleanArray::new_null(num_rows);
