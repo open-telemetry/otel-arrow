@@ -11,7 +11,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use crate::accessory::slots::{Config as SlotsConfig, SlotKey, State as SlotsState};
+use crate::accessory::slots::{Config as SlotsConfig, Key as SlotKey, State as SlotsState};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -53,7 +53,7 @@ fn route_response(
     result: Result<(), NackMsg<OtapPdata>>,
 ) {
     // Decode slot key from calldata
-    let slot_key: SlotKey = match calldata.try_into() {
+    let key: SlotKey = match calldata.try_into() {
         Ok(data) => data,
         Err(_) => {
             // Invalid calldata format
@@ -62,11 +62,7 @@ fn route_response(
     };
 
     // Try to get the channel from the slot under the mutex.
-    let chan = state
-        .lock()
-        .map(|mut state| state.get_if_current(slot_key))
-        .ok()
-        .flatten();
+    let chan = state.lock().map(|mut state| state.get(key)).ok().flatten();
 
     // Try to send.
     if chan
@@ -201,14 +197,14 @@ impl OtapBatchService {
 /// Guard mechanism for cancelling a slot when Tonic timeout
 /// drops the future.
 struct SlotGuard {
-    slot_key: SlotKey,
+    key: SlotKey,
     state: SharedCorrelationState,
 }
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
-            state.cancel(self.slot_key);
+            state.cancel(self.key);
         }
     }
 }
@@ -224,9 +220,9 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         let state = self.state.clone();
         Box::pin(async move {
             // Try to allocate a slot (under the mutex) for calldata.
-            let (slot_key, rx) = match state
+            let (key, rx) = match state
                 .lock()
-                .map(|mut state| state.allocate_slot(|| oneshot::channel()))
+                .map(|mut state| state.allocate(|| oneshot::channel()))
             {
                 Err(_) => return Err(Status::internal("Mutex poisoned")),
                 Ok(None) => {
@@ -238,11 +234,11 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             // Enter the subscription. Slot key becomes calldata.
             effect_handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
-                slot_key.into(),
+                key.into(),
                 &mut otap_batch,
             );
 
-            let _cancel_guard = SlotGuard { slot_key, state };
+            let _cancel_guard = SlotGuard { key, state };
 
             // Send and wait for Ack/Nack
             match effect_handler.send_message(otap_batch).await {
