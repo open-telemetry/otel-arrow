@@ -23,6 +23,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -238,6 +239,12 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+
+                // Start periodic telemetry collection
+                let _ = effect_handler
+                    .start_periodic_telemetry(Duration::from_secs(1))
+                    .await?;
+
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
