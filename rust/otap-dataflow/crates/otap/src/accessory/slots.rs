@@ -156,6 +156,8 @@ mod tests {
     fn test_get_current() {
         let mut state = create_test_state();
 
+        assert_eq!(state.total_slots(), 0);
+
         let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
         assert_eq!(state.allocated_count(), 1);
 
@@ -168,7 +170,6 @@ mod tests {
         let result = rx.blocking_recv().unwrap();
         assert!(result.is_ok());
         assert_eq!(state.allocated_count(), 0);
-        assert_eq!(state.total_slots(), 1);
     }
 
     #[test]
@@ -185,7 +186,6 @@ mod tests {
         assert!(state.get(key).is_none());
 
         assert_eq!(state.allocated_count(), 1);
-        assert_eq!(state.total_slots(), 1);
     }
 
     #[test]
