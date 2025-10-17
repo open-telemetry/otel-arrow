@@ -9,13 +9,6 @@ use otap_df_engine::control::CallData;
 use otap_df_engine::error::Error;
 use slotmap::{Key as SlotKey, KeyData, SlotMap, new_key_type};
 
-/// Configuration for the slot-based correlation server
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Maximum number of concurrent in-flight requests allowed
-    pub max_slots: usize,
-}
-
 new_key_type! {
     /// Slot identifier used for calldata.
     pub struct Key;
@@ -47,17 +40,17 @@ pub struct State<UData> {
     /// Implemented by slotmap.
     slots: SlotMap<Key, UData>,
 
-    /// Configuration
-    config: Config,
+    /// Maximum size configuration.
+    max_size: usize,
 }
 
 impl<UData> State<UData> {
     /// Create new server state with the given configuration
     #[must_use]
-    pub fn new(config: Config) -> Self {
+    pub fn new(max_size: usize) -> Self {
         Self {
             slots: SlotMap::with_key(),
-            config,
+            max_size,
         }
     }
 
@@ -74,7 +67,7 @@ impl<UData> State<UData> {
     where
         F: FnOnce() -> (UData, R),
     {
-        if self.slots.len() >= self.config.max_slots {
+        if self.slots.len() >= self.max_size {
             return None;
         }
 
@@ -95,24 +88,6 @@ impl<UData> State<UData> {
     pub fn cancel(&mut self, key: Key) {
         let _ = self.take(key);
     }
-
-    /// Get the number of currently allocated slots
-    #[must_use]
-    pub fn allocated_count(&self) -> usize {
-        self.slots.len()
-    }
-
-    /// Get the total number of slots (allocated + free)
-    #[must_use]
-    pub fn total_slots(&self) -> usize {
-        self.slots.capacity()
-    }
-
-    /// Get the maximum number of slots allowed
-    #[must_use]
-    pub fn max_slots(&self) -> usize {
-        self.config.max_slots
-    }
 }
 
 #[cfg(test)]
@@ -123,7 +98,7 @@ mod tests {
     type TestUData = oneshot::Sender<Result<(), String>>;
 
     fn create_test_state() -> State<TestUData> {
-        State::new(Config { max_slots: 3 })
+        State::new(3)
     }
 
     #[test]
@@ -134,32 +109,32 @@ mod tests {
         let (key2, _) = state.allocate(|| oneshot::channel()).unwrap();
         let (key3, _) = state.allocate(|| oneshot::channel()).unwrap();
 
-        assert_eq!(state.allocated_count(), 3);
-        assert_eq!(state.total_slots(), 3);
+        assert_eq!(state.slots.len(), 3);
+        assert_eq!(state.slots.capacity(), 3);
 
         let result = state.allocate(|| oneshot::channel());
 
         assert!(result.is_none(), "beyond capacity");
-        assert_eq!(state.allocated_count(), 3);
+        assert_eq!(state.slots.len(), 3);
 
         state.cancel(key1);
-        assert_eq!(state.allocated_count(), 2);
-        assert_eq!(state.total_slots(), 3);
+        assert_eq!(state.slots.len(), 2);
+        assert_eq!(state.slots.capacity(), 3);
 
         state.cancel(key2);
         state.cancel(key3);
-        assert_eq!(state.allocated_count(), 0);
-        assert_eq!(state.total_slots(), 3);
+        assert_eq!(state.slots.len(), 0);
+        assert_eq!(state.slots.capacity(), 3);
     }
 
     #[test]
     fn test_take_current() {
         let mut state = create_test_state();
 
-        assert_eq!(state.total_slots(), 0);
+        assert_eq!(state.slots.capacity(), 0);
 
         let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
-        assert_eq!(state.allocated_count(), 1);
+        assert_eq!(state.slots.len(), 1);
 
         state
             .take(key)
@@ -169,7 +144,7 @@ mod tests {
 
         let result = rx.blocking_recv().unwrap();
         assert!(result.is_ok());
-        assert_eq!(state.allocated_count(), 0);
+        assert_eq!(state.slots.len(), 0);
     }
 
     #[test]
@@ -185,7 +160,7 @@ mod tests {
         // Try to take old generation
         assert!(state.take(key).is_none());
 
-        assert_eq!(state.allocated_count(), 1);
+        assert_eq!(state.slots.len(), 1);
     }
 
     #[test]
@@ -193,13 +168,13 @@ mod tests {
         let mut state = create_test_state();
 
         let (key, _) = state.allocate(|| oneshot::channel()).unwrap();
-        assert_eq!(state.allocated_count(), 1);
+        assert_eq!(state.slots.len(), 1);
 
         state.cancel(key);
-        assert_eq!(state.allocated_count(), 0);
+        assert_eq!(state.slots.len(), 0);
 
         state.cancel(key);
-        assert_eq!(state.allocated_count(), 0);
+        assert_eq!(state.slots.len(), 0);
     }
 
     #[test]
@@ -211,7 +186,7 @@ mod tests {
         let (key3, _) = state.allocate(|| oneshot::channel()).unwrap();
 
         state.cancel(key2);
-        assert_eq!(state.allocated_count(), 2);
+        assert_eq!(state.slots.len(), 2);
 
         let (key4, _) = state.allocate(|| oneshot::channel()).unwrap();
 
@@ -219,16 +194,16 @@ mod tests {
         state.cancel(key3);
         state.cancel(key4);
 
-        assert_eq!(state.allocated_count(), 0);
-        assert_eq!(state.total_slots(), 3);
+        assert_eq!(state.slots.len(), 0);
+        assert_eq!(state.slots.capacity(), 3);
 
         let (key5, _) = state.allocate(|| oneshot::channel()).unwrap();
 
-        assert_eq!(state.allocated_count(), 1);
-        assert_eq!(state.total_slots(), 3);
+        assert_eq!(state.slots.len(), 1);
+        assert_eq!(state.slots.capacity(), 3);
 
         state.cancel(key5);
 
-        assert_eq!(state.allocated_count(), 0);
+        assert_eq!(state.slots.len(), 0);
     }
 }

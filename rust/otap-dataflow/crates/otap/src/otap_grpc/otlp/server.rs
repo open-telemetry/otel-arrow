@@ -11,7 +11,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use crate::accessory::slots::{Config as SlotsConfig, Key as SlotKey, State as SlotsState};
+use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -31,27 +31,29 @@ use tonic::codec::{
 };
 use tonic::server::{Grpc, NamedService, UnaryService};
 
-/// Shared state for correlating requests with responses using slots
-pub type SharedCorrelationState =
-    Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>;
+/// Shared state for binding requests with responses.
+#[derive(Clone)]
+pub struct SharedState(Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>);
 
-/// Route an Ack response back to the appropriate correlation slot
-pub fn route_ack_response(state: &SharedCorrelationState, ack: AckMsg<OtapPdata>) {
-    route_response(state, ack.calldata, Ok(()));
-}
+impl SharedState {
+    fn new(max_size: usize) -> Self {
+        Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
+    }
 
-/// Route a Nack response back to the appropriate correlation slot
-pub fn route_nack_response(state: &SharedCorrelationState, mut nack: NackMsg<OtapPdata>) {
-    let calldata = std::mem::take(&mut nack.calldata);
-    route_response(state, calldata, Err(nack));
+    /// Route an Ack response back to the appropriate slot
+    pub fn route_ack_response(&self, ack: AckMsg<OtapPdata>) {
+        route_response(self, ack.calldata, Ok(()));
+    }
+
+    /// Route a Nack response back to the appropriate slot
+    pub fn route_nack_response(&self, mut nack: NackMsg<OtapPdata>) {
+        let calldata = std::mem::take(&mut nack.calldata);
+        route_response(self, calldata, Err(nack));
+    }
 }
 
 /// Internal helper to route responses to slots
-fn route_response(
-    state: &SharedCorrelationState,
-    calldata: CallData,
-    result: Result<(), NackMsg<OtapPdata>>,
-) {
+fn route_response(state: &SharedState, calldata: CallData, result: Result<(), NackMsg<OtapPdata>>) {
     // Decode slot key from calldata
     let key: SlotKey = match calldata.try_into() {
         Ok(data) => data,
@@ -62,7 +64,12 @@ fn route_response(
     };
 
     // Try to take the channel from the slot under the mutex.
-    let chan = state.lock().map(|mut state| state.take(key)).ok().flatten();
+    let chan = state
+        .0
+        .lock()
+        .map(|mut state| state.take(key))
+        .ok()
+        .flatten();
 
     // Try to send.
     if chan
@@ -182,11 +189,11 @@ impl Decoder for OtapBatchDecoder {
 /// implementation of tonic service that handles the decoded request (the OtapBatch).
 struct OtapBatchService {
     effect_handler: EffectHandler<OtapPdata>,
-    state: SharedCorrelationState,
+    state: SharedState,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: SharedCorrelationState) -> Self {
+    fn new(effect_handler: EffectHandler<OtapPdata>, state: SharedState) -> Self {
         Self {
             effect_handler,
             state,
@@ -198,12 +205,12 @@ impl OtapBatchService {
 /// drops the future.
 struct SlotGuard {
     key: SlotKey,
-    state: SharedCorrelationState,
+    state: SharedState,
 }
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.state.0.lock() {
             state.cancel(self.key);
         }
     }
@@ -221,6 +228,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         Box::pin(async move {
             // Try to allocate a slot (under the mutex) for calldata.
             let (key, rx) = match state
+                .0
                 .lock()
                 .map(|mut state| state.allocate(|| oneshot::channel()))
             {
@@ -265,7 +273,7 @@ async fn handle_service_request(
     req: Request<Body>,
     signal: Signal,
     effect_handler: EffectHandler<OtapPdata>,
-    state: SharedCorrelationState,
+    state: SharedState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 ) -> Response<Body> {
@@ -295,7 +303,7 @@ fn unimplemented_resp() -> Response<Body> {
 #[derive(Clone)]
 pub struct LogsServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
-    state: SharedCorrelationState,
+    state: SharedState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -303,20 +311,18 @@ pub struct LogsServiceServer {
 impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
-        let config = SlotsConfig { max_slots };
-        let state = Arc::new(Mutex::new(SlotsState::new(config)));
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_size: usize) -> Self {
         Self {
             effect_handler,
-            state,
+            state: SharedState::new(max_size),
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
     }
 
-    /// Get the correlation state for routing responses
+    /// Get the shared state for routing responses
     #[must_use]
-    pub fn state(&self) -> SharedCorrelationState {
+    pub fn state(&self) -> SharedState {
         self.state.clone()
     }
 
@@ -377,7 +383,7 @@ impl NamedService for LogsServiceServer {
 #[derive(Clone)]
 pub struct MetricsServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
-    state: SharedCorrelationState,
+    state: SharedState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -385,20 +391,18 @@ pub struct MetricsServiceServer {
 impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
-        let config = SlotsConfig { max_slots };
-        let state = Arc::new(Mutex::new(SlotsState::new(config)));
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_size: usize) -> Self {
         Self {
             effect_handler,
-            state,
+            state: SharedState::new(max_size),
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
     }
 
-    /// Get the correlation state for routing responses
+    /// Get the shared state for routing responses
     #[must_use]
-    pub fn state(&self) -> SharedCorrelationState {
+    pub fn state(&self) -> SharedState {
         self.state.clone()
     }
 
@@ -459,7 +463,7 @@ impl NamedService for MetricsServiceServer {
 #[derive(Clone)]
 pub struct TraceServiceServer {
     effect_handler: EffectHandler<OtapPdata>,
-    state: SharedCorrelationState,
+    state: SharedState,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -467,20 +471,18 @@ pub struct TraceServiceServer {
 impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_slots: usize) -> Self {
-        let config = SlotsConfig { max_slots };
-        let state = Arc::new(Mutex::new(SlotsState::new(config)));
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, max_size: usize) -> Self {
         Self {
             effect_handler,
-            state,
+            state: SharedState::new(max_size),
             accept_compression_encodings: Default::default(),
             send_compression_encodings: Default::default(),
         }
     }
 
-    /// Get the correlation state for routing responses
+    /// Get the shared state for routing responses
     #[must_use]
-    pub fn state(&self) -> SharedCorrelationState {
+    pub fn state(&self) -> SharedState {
         self.state.clone()
     }
 

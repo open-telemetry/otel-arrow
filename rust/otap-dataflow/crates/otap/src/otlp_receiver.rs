@@ -3,19 +3,19 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::otlp::server::{
-    LogsServiceServer, MetricsServiceServer, TraceServiceServer, route_ack_response,
-    route_nack_response,
+    LogsServiceServer, MetricsServiceServer, SharedState, TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
 
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -42,12 +42,13 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
-    /// Maximum number of concurrent in-flight requests (default: 1000)
-    #[serde(default = "default_max_slots")]
-    max_slots: usize,
+
+    /// Maximum number of concurrent (in-flight) requests (default: 1000)
+    #[serde(default = "default_max_concurrent_requests")]
+    max_concurrent_requests: usize,
 }
 
-fn default_max_slots() -> usize {
+fn default_max_concurrent_requests() -> usize {
     1000
 }
 
@@ -107,6 +108,30 @@ pub struct OtlpReceiverMetrics {
     pub messages_received: Counter<u64>,
 }
 
+struct SharedStates {
+    logs: SharedState,
+    metrics: SharedState,
+    traces: SharedState,
+}
+
+impl SharedStates {
+    fn route_ack_response(&self, ack: AckMsg<OtapPdata>) {
+        match ack.accepted.signal_type() {
+            SignalType::Logs => self.logs.route_ack_response(ack),
+            SignalType::Metrics => self.metrics.route_ack_response(ack),
+            SignalType::Traces => self.traces.route_ack_response(ack),
+        }
+    }
+
+    fn route_nack_response(&self, nack: NackMsg<OtapPdata>) {
+        match nack.refused.signal_type() {
+            SignalType::Logs => self.logs.route_nack_response(nack),
+            SignalType::Metrics => self.metrics.route_nack_response(nack),
+            SignalType::Traces => self.traces.route_nack_response(nack),
+        }
+    }
+}
+
 #[async_trait]
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
@@ -118,36 +143,38 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_service_server =
-            LogsServiceServer::new(effect_handler.clone(), self.config.max_slots);
-        let mut metrics_service_server =
-            MetricsServiceServer::new(effect_handler.clone(), self.config.max_slots);
-        let mut trace_service_server =
-            TraceServiceServer::new(effect_handler.clone(), self.config.max_slots);
+        let mut logs_server =
+            LogsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+        let mut metrics_server =
+            MetricsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+        let mut traces_server =
+            TraceServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
 
-        // Store correlation states for response routing
-        let logs_correlation_state = logs_service_server.state();
-        let metrics_correlation_state = metrics_service_server.state();
-        let trace_correlation_state = trace_service_server.state();
+        // Store signal-specific response-routing states.
+        let states = SharedStates {
+            logs: logs_server.state(),
+            metrics: metrics_server.state(),
+            traces: traces_server.state(),
+        };
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
 
-            logs_service_server = logs_service_server
+            logs_server = logs_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
-            metrics_service_server = metrics_service_server
+            metrics_server = metrics_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
-            trace_service_server = trace_service_server
+            traces_server = traces_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
         }
 
         let server = Server::builder()
-            .add_service(logs_service_server)
-            .add_service(metrics_service_server)
-            .add_service(trace_service_server);
+            .add_service(logs_server)
+            .add_service(metrics_server)
+            .add_service(traces_server);
 
         tokio::select! {
             biased;
@@ -166,15 +193,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
                             // Route Ack to the appropriate correlation slot
-                            route_ack_response(&logs_correlation_state, ack.clone());
-                            route_ack_response(&metrics_correlation_state, ack.clone());
-                            route_ack_response(&trace_correlation_state, ack);
+                            states.route_ack_response(ack);
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            // Route Nack to the appropriate correlation slot
-                            route_nack_response(&logs_correlation_state, nack.clone());
-                            route_nack_response(&metrics_correlation_state, nack.clone());
-                            route_nack_response(&trace_correlation_state, nack);
+                            states.route_nack_response(nack);
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -325,27 +347,28 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
-        let config_with_max_slots = json!({
+        let config_with_max_concurrent_requests = json!({
             "listening_addr": "127.0.0.1:4317",
-            "max_slots": 5000
+            "max_concurrent_requests": 5000
         });
         let receiver =
-            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_slots).unwrap();
-        assert_eq!(receiver.config.max_slots, 5000);
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
+                .unwrap();
+        assert_eq!(receiver.config.max_concurrent_requests, 5000);
 
         let config_default = json!({
             "listening_addr": "127.0.0.1:4317"
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
-        assert_eq!(receiver.config.max_slots, 1000);
+        assert_eq!(receiver.config.max_concurrent_requests, 1000);
 
         let config_full = json!({
             "listening_addr": "127.0.0.1:4317",
             "compression_method": "gzip",
-            "max_slots": 2500
+            "max_concurrent_requests": 2500
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
-        assert_eq!(receiver.config.max_slots, 2500);
+        assert_eq!(receiver.config.max_concurrent_requests, 2500);
     }
 
     fn scenario(
@@ -528,7 +551,7 @@ mod tests {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
-                    max_slots: 1000,
+                    max_concurrent_requests: 1000,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -564,7 +587,7 @@ mod tests {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
-                    max_slots: 1000,
+                    max_concurrent_requests: 1000,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
