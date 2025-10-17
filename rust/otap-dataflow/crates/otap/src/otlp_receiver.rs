@@ -48,7 +48,7 @@ pub struct Config {
     max_concurrent_requests: usize,
 }
 
-fn default_max_concurrent_requests() -> usize {
+const fn default_max_concurrent_requests() -> usize {
     1000
 }
 
