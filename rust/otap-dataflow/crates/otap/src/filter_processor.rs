@@ -144,7 +144,6 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 mod tests {
     use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
     use crate::pdata::{OtapPdata, OtlpProtoBytes};
-    use otap_df_config::experimental::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -169,63 +168,7 @@ mod tests {
 
     /// Validation closure that checks the outputted data
     fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
-        |mut _ctx| {
-            Box::pin(async move {
-
-                // TODO: add validation step read in the signal
-                // check that the read in signal matches the expected
-//                 let expected_logs_data = LogsData::new(vec![
-//     ResourceLogs::build(Resource::build(vec![
-//         KeyValue::new("version", AnyValue::new_string("2.0")),
-//         KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
-//         KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
-//         KeyValue::new("service.instance.number", AnyValue::new_int(42)),
-//         KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
-//         KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-//         KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
-//         KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
-//         KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
-//         KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
-//         KeyValue::new("process.pid", AnyValue::new_int(12345)),
-//         KeyValue::new("team", AnyValue::new_string("payments")),
-//         KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
-//     ]))
-//     .scope_logs(vec![
-//         ScopeLogs::build(
-//             InstrumentationScope::build("library")
-//                 .version("scopev1")
-//                 .finish(),
-//         )
-//         .log_records(vec![
-//             LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "ERROR")
-//                 .attributes(vec![
-//                     KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
-//                     KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
-//                     KeyValue::new("exception.stacktrace", AnyValue::new_string("...stack...")),
-//                     KeyValue::new("peer.address", AnyValue::new_string("10.42.0.7:5432")),
-//                     KeyValue::new("peer.port", AnyValue::new_int(5432)),
-//                     KeyValue::new("peer.tls", AnyValue::new_bool(true)),
-//                     KeyValue::new("bytes_sent", AnyValue::new_int(0)),
-//                     KeyValue::new("jitter", AnyValue::new_double(0.003)),
-//                 ])
-//                 .body(AnyValue::new_string("failed to write to socket"))
-//                 .finish(),
-//         ])
-//         .finish(),
-//     ])
-//     .finish(),
-// ]);
-
-                // while let Ok(received_signal) = ctx.recv().await {
-                //     let signal_type = received_signal.signal_type();
-                //     match signal_type {
-                //         SignalType::Metrics => {}
-                //         SignalType::Traces => {}
-                //         SignalType::Logs => {}
-                //     }
-                // }
-            })
-        }
+        |mut _ctx| Box::pin(async move {})
     }
 
     /// Test closure that simulates a typical processor scenario.
@@ -233,9 +176,149 @@ mod tests {
         move |mut ctx| {
             Box::pin(async move {
                 // send log message
-
                 let logs_data = LogsData::new(vec![
-                                // ResourceLogs for prod/checkout-service
+    // ResourceLogs for prod/checkout-service
+    ResourceLogs::build(Resource::build(vec![
+        KeyValue::new("version", AnyValue::new_string("2.0")),
+        KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
+        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+        KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
+        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+        KeyValue::new("process.pid", AnyValue::new_int(12345)),
+        KeyValue::new("team", AnyValue::new_string("payments")),
+        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+    ]))
+    .scope_logs(vec![
+        ScopeLogs::build(
+            InstrumentationScope::build("library")
+                .version("scopev1")
+                .finish(),
+        )
+        .log_records(vec![
+            // WARN: passes include; will be removed by exclude via severity_texts/body
+            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                .attributes(vec![
+                    KeyValue::new("component", AnyValue::new_string("rest")),
+                    KeyValue::new("http.method", AnyValue::new_string("POST")),
+                    KeyValue::new("http.route", AnyValue::new_string("/api/checkout")),
+                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
+                    KeyValue::new("retryable", AnyValue::new_bool(false)),
+                    KeyValue::new("backoff_ms", AnyValue::new_int(0)),
+                    KeyValue::new("throttle_factor", AnyValue::new_double(0.0)),
+                ])
+                .severity_text("WARN")
+                .body(AnyValue::new_string("checkout started"))
+                .finish(),
+
+            // ERROR: passes include; not removed by exclude
+            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                .attributes(vec![
+                    KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
+                    KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
+                    KeyValue::new("exception.stacktrace", AnyValue::new_string("...stack...")),
+                    KeyValue::new("peer.address", AnyValue::new_string("10.42.0.7:5432")),
+                    KeyValue::new("peer.port", AnyValue::new_int(5432)),
+                    KeyValue::new("peer.tls", AnyValue::new_bool(true)),
+                    KeyValue::new("bytes_sent", AnyValue::new_int(0)),
+                    KeyValue::new("jitter", AnyValue::new_double(0.003)),
+                ])
+                .severity_text("ERROR")
+                .body(AnyValue::new_string("failed to write to socket"))
+                .finish(),
+
+            // WARN: component=db; fails exclude (component=db)
+            LogRecord::build(2_600_000_000u64, SeverityNumber::Warn, "event")
+                .attributes(vec![
+                    KeyValue::new("component", AnyValue::new_string("db")),
+                    KeyValue::new("query", AnyValue::new_string("UPDATE inventory SET count = count - 1 WHERE sku='ABC123'")),
+                    KeyValue::new("rows_affected", AnyValue::new_int(1)),
+                    KeyValue::new("success", AnyValue::new_bool(true)),
+                ])
+                .severity_text("WARN")
+                .body(AnyValue::new_string("inventory updated"))
+                .finish(),
+        ])
+        .finish(),
+    ])
+    .finish(),
+
+    // ResourceLogs for staging/inventory-service (excluded by both filters)
+    ResourceLogs::build(Resource::build(vec![
+        KeyValue::new("version", AnyValue::new_string("2.0")),
+        KeyValue::new("service.name", AnyValue::new_string("inventory-service")),
+        KeyValue::new("service.version", AnyValue::new_string("0.9.1")),
+        KeyValue::new("service.instance.number", AnyValue::new_int(7)),
+        KeyValue::new("deployment.environment", AnyValue::new_string("staging")),
+        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+        KeyValue::new("host.cpu_cores", AnyValue::new_int(4)),
+        KeyValue::new("host.uptime_sec", AnyValue::new_int(12_345)),
+        KeyValue::new("sampling.rate", AnyValue::new_double(0.10)),
+        KeyValue::new("debug.enabled", AnyValue::new_bool(true)),
+        KeyValue::new("process.pid", AnyValue::new_int(22222)),
+        KeyValue::new("team", AnyValue::new_string("inventory")),
+    ]))
+    .scope_logs(vec![
+        ScopeLogs::build(
+            InstrumentationScope::build("library")
+                .version("scopev2")
+                .finish(),
+        )
+        .log_records(vec![
+            LogRecord::build(3_000_000_000u64, SeverityNumber::Warn, "event")
+                .attributes(vec![
+                    KeyValue::new("component", AnyValue::new_string("rest")),
+                    KeyValue::new("http.route", AnyValue::new_string("/api/internal/cache_warm")),
+                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
+                    KeyValue::new("success", AnyValue::new_bool(true)),
+                ])
+                .severity_text("WARN")
+                .body(AnyValue::new_string("warmup complete"))
+                .finish(),
+
+            LogRecord::build(3_100_000_000u64, SeverityNumber::Info, "event")
+                .attributes(vec![
+                    KeyValue::new("event.domain", AnyValue::new_string("ops")),
+                    KeyValue::new("message", AnyValue::new_string("heartbeat")),
+                    KeyValue::new("uptime_sec", AnyValue::new_int(100)),
+                ])
+                .severity_text("INFO")
+                .body(AnyValue::new_string("heartbeat"))
+                .finish(),
+        ])
+        .finish(),
+    ])
+    .finish(),
+]);
+
+                //convert logsdata to otappdata
+                let mut bytes = vec![];
+                logs_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_logs_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(otlp_logs_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                let received_logs_data = &msgs[0];
+                let (_, payload) = received_logs_data.clone().into_parts();
+                let otlp_bytes: OtlpProtoBytes = payload
+                    .try_into()
+                    .expect("failed to convert to OtlpProtoBytes");
+                let received_logs_data = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                        .expect("failed to decode logs into logsdata"),
+                    _ => panic!("expected logs type"),
+                };
+
+                let expected_logs_data = LogsData::new(vec![
                     ResourceLogs::build(Resource::build(vec![
                         KeyValue::new("version", AnyValue::new_string("2.0")),
                         KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
@@ -258,27 +341,24 @@ mod tests {
                                 .finish(),
                         )
                         .log_records(vec![
-                            // WARN: included by severity, then excluded (retryable/body)
-                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
-                                .attributes(vec![
-                                    KeyValue::new("http.method", AnyValue::new_string("POST")),
-                                    KeyValue::new("http.route", AnyValue::new_string("/api/checkout")),
-                                    KeyValue::new("http.status_code", AnyValue::new_int(429)),
-                                    KeyValue::new("retryable", AnyValue::new_bool(true)),
-                                    KeyValue::new("backoff_ms", AnyValue::new_int(200)),
-                                    KeyValue::new("throttle_factor", AnyValue::new_double(1.5)),
-                                ])
-                                .severity_text("WARN")
-                                .body(AnyValue::new_string("rate limited"))
-                                .finish(),
-
-                            // ERROR: included (prod, severity >= WARN), not excluded
                             LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
                                 .attributes(vec![
-                                    KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
-                                    KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
-                                    KeyValue::new("exception.stacktrace", AnyValue::new_string("...stack...")),
-                                    KeyValue::new("peer.address", AnyValue::new_string("10.42.0.7:5432")),
+                                    KeyValue::new(
+                                        "exception.type",
+                                        AnyValue::new_string("io::Error"),
+                                    ),
+                                    KeyValue::new(
+                                        "exception.message",
+                                        AnyValue::new_string("connection reset by peer"),
+                                    ),
+                                    KeyValue::new(
+                                        "exception.stacktrace",
+                                        AnyValue::new_string("...stack..."),
+                                    ),
+                                    KeyValue::new(
+                                        "peer.address",
+                                        AnyValue::new_string("10.42.0.7:5432"),
+                                    ),
                                     KeyValue::new("peer.port", AnyValue::new_int(5432)),
                                     KeyValue::new("peer.tls", AnyValue::new_bool(true)),
                                     KeyValue::new("bytes_sent", AnyValue::new_int(0)),
@@ -287,83 +367,12 @@ mod tests {
                                 .severity_text("ERROR")
                                 .body(AnyValue::new_string("failed to write to socket"))
                                 .finish(),
-
-                            // WARN: included by severity, then excluded (component=db)
-                            LogRecord::build(2_600_000_000u64, SeverityNumber::Warn, "event")
-                                .attributes(vec![
-                                    KeyValue::new("component", AnyValue::new_string("db")),
-                                    KeyValue::new("query", AnyValue::new_string("UPDATE inventory SET count = count - 1 WHERE sku='ABC123'")),
-                                    KeyValue::new("rows_affected", AnyValue::new_int(1)),
-                                    KeyValue::new("success", AnyValue::new_bool(true)),
-                                ])
-                                .severity_text("WARN")
-                                .body(AnyValue::new_string("inventory updated"))
-                                .finish(),
-                        ])
-                        .finish(),
-                    ])
-                    .finish(),
-
-                    // ResourceLogs for staging/inventory-service (will not pass include)
-                    ResourceLogs::build(Resource::build(vec![
-                        KeyValue::new("version", AnyValue::new_string("2.0")),
-                        KeyValue::new("service.name", AnyValue::new_string("inventory-service")),
-                        KeyValue::new("service.version", AnyValue::new_string("0.9.1")),
-                        KeyValue::new("service.instance.number", AnyValue::new_int(7)),
-                        KeyValue::new("deployment.environment", AnyValue::new_string("staging")),
-                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-                        KeyValue::new("host.cpu_cores", AnyValue::new_int(4)),
-                        KeyValue::new("host.uptime_sec", AnyValue::new_int(12_345)),
-                        KeyValue::new("sampling.rate", AnyValue::new_double(0.10)),
-                        KeyValue::new("debug.enabled", AnyValue::new_bool(true)),
-                        KeyValue::new("process.pid", AnyValue::new_int(22222)),
-                        KeyValue::new("team", AnyValue::new_string("inventory")),
-                    ]))
-                    .scope_logs(vec![
-                        ScopeLogs::build(
-                            InstrumentationScope::build("library")
-                                .version("scopev2")
-                                .finish(),
-                        )
-                        .log_records(vec![
-                            LogRecord::build(3_000_000_000u64, SeverityNumber::Warn, "event")
-                                .attributes(vec![
-                                    KeyValue::new("component", AnyValue::new_string("rest")),
-                                    KeyValue::new("http.route", AnyValue::new_string("/api/internal/cache_warm")),
-                                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
-                                    KeyValue::new("success", AnyValue::new_bool(true)),
-                                ])
-                                .severity_text("WARN")
-                                .body(AnyValue::new_string("warmup complete"))
-                                .finish(),
-
-                            LogRecord::build(3_100_000_000u64, SeverityNumber::Info, "event")
-                                .attributes(vec![
-                                    KeyValue::new("event.domain", AnyValue::new_string("ops")),
-                                    KeyValue::new("message", AnyValue::new_string("heartbeat")),
-                                    KeyValue::new("uptime_sec", AnyValue::new_int(100)),
-                                ])
-                                .severity_text("INFO")
-                                .body(AnyValue::new_string("heartbeat"))
-                                .finish(),
                         ])
                         .finish(),
                     ])
                     .finish(),
                 ]);
-
-                //convert logsdata to otappdata
-                let mut bytes = vec![];
-                logs_data
-                    .encode(&mut bytes)
-                    .expect("failed to encode log data into bytes");
-                let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                ctx.process(Message::PData(otlp_logs_bytes))
-                    .await
-                    .expect("failed to process");
-                let msgs = ctx.drain_pdata().await;
-                assert_eq!(msgs.len(), 1);
+                assert_eq!(received_logs_data, expected_logs_data);
             })
         }
     }
@@ -379,9 +388,12 @@ mod tests {
                 AnyValueFilter::String("prod".to_string()),
             )],
             Vec::new(),                                              // record_attributes
-            Vec::new(),                                              // severity_texts
+            vec!["WARN".to_string(), "ERROR".to_string()],           // test severity_texts
             Some(LogServerityNumberMatchProperties::new(13, false)), // WARN and above
-            Vec::new(),                                              // bodies
+            vec![
+                AnyValueFilter::String("checkout started".to_string()),
+                AnyValueFilter::String("failed to write to socket".to_string()),
+            ], // test bodies
         );
 
         let exclude_props = LogMatchProperties::new(
@@ -391,17 +403,15 @@ mod tests {
                 AnyValueFilter::String("staging".to_string()),
             )],
             vec![
-                KeyValueFilter::new(
-                    "component".to_string(),
-                    AnyValueFilter::String("db".to_string()),
-                ),
+                KeyValueFilter::new("component".to_string(), AnyValueFilter::String("db".to_string())),
                 KeyValueFilter::new("retryable".to_string(), AnyValueFilter::Boolean(true)),
             ],
-            vec!["DEBUG".to_string()],
+            vec!["WARN".to_string()], // exclude WARN by severity_texts
             None,
-            vec![AnyValueFilter::String("rate limited".to_string())],
+            vec![
+                AnyValueFilter::String("checkout started".to_string()), // exclude by body
+            ],
         );
-
         let log_filter = LogFilter::new(
             include_props,
             exclude_props,

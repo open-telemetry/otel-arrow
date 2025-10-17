@@ -178,6 +178,26 @@ pub fn get_required_array<'a>(
         .context(error::ColumnNotFoundSnafu { name: column_name })
 }
 
+/// Get reference to a struct array that the caller requires to be in the record batch.
+/// If the column is not in the record batch, returns `ColumnNotFound` error
+/// if the column is not a struct array, returns `ColumnDataTypeMismatch` error
+pub fn get_required_struct_array<'a>(
+    record_batch: &'a RecordBatch,
+    column_name: &str,
+) -> error::Result<&'a StructArray> {
+    let struct_arr = record_batch
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })?;
+    struct_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: column_name,
+            actual: struct_arr.data_type().clone(),
+            expect: DataType::Struct(Fields::empty()),
+        })
+}
+
 /// Get reference to array that the caller requires to be in the struct array
 /// If the column is not in the struct array, returns `ColumnNotFound` error
 pub fn get_required_array_from_struct_array<'a>(

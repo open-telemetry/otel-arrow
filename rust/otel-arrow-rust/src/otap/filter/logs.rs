@@ -5,10 +5,12 @@
 //! as a BooleanArray for the Logs, ResourceAttr, and LogsAttr OTAP Record Batches
 //!
 
-use crate::arrays::get_required_array;
+use crate::arrays::{
+    get_required_array, get_required_array_from_struct_array, get_required_struct_array,
+};
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
-use crate::otap::filter::{AnyValue, KeyValue};
+use crate::otap::filter::{AnyValue, KeyValue, nulls_to_false};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::array::{BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array};
@@ -113,6 +115,9 @@ impl LogMatchProperties {
             .get(ArrowPayloadType::ResourceAttrs)
             .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = resource_attrs.num_rows();
+        if self.resource_attributes.is_empty() {
+            return Ok(vec![true; num_rows].into());
+        }
 
         let mut attributes_filter = BooleanArray::new_null(num_rows);
         let key_column = get_required_array(resource_attrs, consts::ATTRIBUTE_KEY)?;
@@ -186,10 +191,9 @@ impl LogMatchProperties {
                 }
             };
             // build filter that checks for both matching key and value filter
-            let attribute_filter = arrow::compute::and(&key_filter, &value_filter)
+            let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
                 .expect("boolean arrays should have equal length");
-            // combine with rest of filters
-            attributes_filter = arrow::compute::and(&attributes_filter, &attribute_filter)
+            attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
                 .expect("boolean arrays should have equal length");
         }
 
@@ -224,8 +228,7 @@ impl LogMatchProperties {
             filter = arrow::compute::or_kleene(&filter, &id_filter)
                 .expect("boolean arrays should have equal length");
         }
-
-        Ok(filter)
+        Ok(nulls_to_false(&filter))
     }
 
     fn get_log_record_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
@@ -241,93 +244,102 @@ impl LogMatchProperties {
                 return Ok(vec![false; num_rows].into());
             }
         };
-
-        let mut severity_texts_filter = BooleanArray::new_null(num_rows);
-        for severity_text in &self.severity_texts {
-            let severity_text_scalar = StringArray::new_scalar(severity_text);
-            let severity_text_filter =
-                arrow::compute::kernels::cmp::eq(&severity_texts_column, &severity_text_scalar)
-                    .expect("columns should have equal length");
-            severity_texts_filter =
-                arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
-                    .expect("boolean arrays should have equal length");
+        let mut filter: BooleanArray = vec![true; num_rows].into();
+        if !&self.severity_texts.is_empty() {
+            let mut severity_texts_filter = BooleanArray::new_null(num_rows);
+            for severity_text in &self.severity_texts {
+                let severity_text_scalar = StringArray::new_scalar(severity_text);
+                let severity_text_filter =
+                    arrow::compute::kernels::cmp::eq(&severity_texts_column, &severity_text_scalar)
+                        .expect("columns should have equal length");
+                severity_texts_filter =
+                    arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
+                        .expect("boolean arrays should have equal length");
+            }
+            filter = arrow::compute::and_kleene(&filter, &severity_texts_filter)
+                .expect("booleary arrays should have equal length");
         }
 
-        // create filter for log bodies
-        let mut bodies_filter = BooleanArray::new_null(num_rows);
-        for body in &self.bodies {
-            let body_filter = match body {
-                AnyValue::String(value) => {
-                    // get string column
-                    let string_column = get_required_array(log_records, consts::BODY_STR)?;
-                    match self.match_type {
-                        LogMatchType::Regexp => {
-                            let string_column = string_column
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .expect("array can be downcast to StringArray");
+        if !&self.bodies.is_empty() {
+            // create filter for log bodies
+            let mut bodies_filter = BooleanArray::new_null(num_rows);
+            let bodies_column = get_required_struct_array(log_records, consts::BODY)?;
+            for body in &self.bodies {
+                let body_filter = match body {
+                    AnyValue::String(value) => {
+                        // get string column
+                        let string_column = get_required_array_from_struct_array(
+                            bodies_column,
+                            consts::ATTRIBUTE_STR,
+                        )?;
+                        match self.match_type {
+                            LogMatchType::Regexp => {
+                                let string_column = string_column
+                                    .as_any()
+                                    .downcast_ref::<StringArray>()
+                                    .expect("array can be downcast to StringArray");
 
-                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
-                                .expect("columns should have equal length")
-                        }
-                        LogMatchType::Strict => {
-                            let value_scalar = StringArray::new_scalar(value);
-                            arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
-                                .expect("columns should have equal length")
-                        }
-                    }
-                }
-                AnyValue::Int(value) => {
-                    let int_column = log_records.column_by_name(consts::BODY_INT);
-                    match int_column {
-                        Some(column) => {
-                            let value_scalar = Int64Array::new_scalar(*value);
-                            arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                .expect("columns should have equal length")
-                        }
-                        None => {
-                            continue;
+                                arrow::compute::regexp_is_match_scalar(string_column, value, None)
+                                    .expect("columns should have equal length")
+                            }
+                            LogMatchType::Strict => {
+                                let value_scalar = StringArray::new_scalar(value);
+                                arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
+                                    .expect("columns should have equal length")
+                            }
                         }
                     }
-                }
-                AnyValue::Double(value) => {
-                    let double_column = log_records.column_by_name(consts::BODY_DOUBLE);
-                    match double_column {
-                        Some(column) => {
-                            let value_scalar = Float64Array::new_scalar(*value);
-                            arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                .expect("columns should have equal length")
-                        }
-                        None => {
-                            continue;
-                        }
-                    }
-                }
-                AnyValue::Boolean(value) => {
-                    let bool_column = log_records.column_by_name(consts::BODY_BOOL);
-                    match bool_column {
-                        Some(column) => {
-                            let value_scalar = BooleanArray::new_scalar(*value);
-                            arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                .expect("columns should have equal length")
-                        }
-                        None => {
-                            continue;
+                    AnyValue::Int(value) => {
+                        let int_column = bodies_column.column_by_name(consts::ATTRIBUTE_INT);
+                        match int_column {
+                            Some(column) => {
+                                let value_scalar = Int64Array::new_scalar(*value);
+                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                                    .expect("columns should have equal length")
+                            }
+                            None => {
+                                continue;
+                            }
                         }
                     }
-                }
-                _ => {
-                    // ToDo add keyvalue, array, and bytes
-                    continue;
-                }
-            };
-            bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
+                    AnyValue::Double(value) => {
+                        let double_column = bodies_column.column_by_name(consts::ATTRIBUTE_DOUBLE);
+                        match double_column {
+                            Some(column) => {
+                                let value_scalar = Float64Array::new_scalar(*value);
+                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                                    .expect("columns should have equal length")
+                            }
+                            None => {
+                                continue;
+                            }
+                        }
+                    }
+                    AnyValue::Boolean(value) => {
+                        let bool_column = bodies_column.column_by_name(consts::ATTRIBUTE_BOOL);
+                        match bool_column {
+                            Some(column) => {
+                                let value_scalar = BooleanArray::new_scalar(*value);
+                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                                    .expect("columns should have equal length")
+                            }
+                            None => {
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {
+                        // ToDo add keyvalue, array, and bytes
+                        continue;
+                    }
+                };
+                bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
+                    .expect("boolean arrays should have equal length");
+                // combine the filters
+            }
+            filter = arrow::compute::and_kleene(&filter, &bodies_filter)
                 .expect("boolean arrays should have equal length");
         }
-
-        // combine the filters
-        let mut filter = arrow::compute::and(&bodies_filter, &severity_texts_filter)
-            .expect("boolean arrays should have equal length");
 
         // if the severity_number field is defined then we create the severity_number filter
         if let Some(severity_number_properties) = &self.severity_number {
@@ -359,11 +371,10 @@ impl LogMatchProperties {
                 .expect("boolean arrays should have equal length");
             }
             // combine severity number filter to the log record filter
-            filter = arrow::compute::and(&filter, &severity_numbers_filter)
+            filter = arrow::compute::and_kleene(&filter, &severity_numbers_filter)
                 .expect("boolean arrays should have equal length");
         }
-
-        Ok(filter)
+        Ok(nulls_to_false(&filter))
     }
 
     fn get_log_attr_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
@@ -373,6 +384,10 @@ impl LogMatchProperties {
             .context(error::LogRecordNotFoundSnafu)?;
 
         let num_rows = log_attrs.num_rows();
+        // if there is nothing to filter we return all true
+        if self.record_attributes.is_empty() {
+            return Ok(vec![true; num_rows].into());
+        }
         let mut attributes_filter = BooleanArray::new_null(num_rows);
 
         let key_column = get_required_array(log_attrs, consts::ATTRIBUTE_KEY)?;
@@ -449,7 +464,7 @@ impl LogMatchProperties {
                 }
             };
             // build filter that checks for both matching key and value filter
-            let attribute_filter = arrow::compute::and(&key_filter, &value_filter)
+            let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
                 .expect("boolean arrays should have equal length");
             // combine with rest of filters
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
@@ -475,8 +490,7 @@ impl LogMatchProperties {
             filter = arrow::compute::or_kleene(&filter, &id_filter)
                 .expect("boolean arrays should have equal length");
         }
-
-        Ok(filter)
+        Ok(nulls_to_false(&filter))
     }
 }
 
@@ -490,3 +504,4 @@ impl LogServerityNumberMatchProperties {
         }
     }
 }
+

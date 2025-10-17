@@ -86,17 +86,18 @@ impl LogFilter {
         let (exclude_resource_attr_filter, exclude_log_record_filter, exclude_log_attr_filter) =
             self.exclude.create_filters(&logs_payload, true)?;
 
+
         // combine the include and exclude filters
         let resource_attr_filter =
-            arrow::compute::and(&include_resource_attr_filter, &exclude_resource_attr_filter)
+            arrow::compute::and_kleene(&include_resource_attr_filter, &exclude_resource_attr_filter)
                 .expect("boolean arrays should have equal length");
         let log_record_filter =
-            arrow::compute::and(&include_log_record_filter, &exclude_log_record_filter)
+            arrow::compute::and_kleene(&include_log_record_filter, &exclude_log_record_filter)
                 .expect("boolean arrays should have equal length");
         let log_attr_filter =
-            arrow::compute::and(&include_log_attr_filter, &exclude_log_attr_filter)
+            arrow::compute::and_kleene(&include_log_attr_filter, &exclude_log_attr_filter)
                 .expect("boolean arrays should have equal length");
-
+        
         let (resource_attr_filter, scope_attr_filter, log_record_filter, log_attr_filter) = self
             .sync_up_filters(
                 &logs_payload,
@@ -115,9 +116,6 @@ impl LogFilter {
         let log_attrs = logs_payload
             .get(ArrowPayloadType::LogAttrs)
             .context(error::LogRecordNotFoundSnafu)?;
-        let scope_attrs = logs_payload
-            .get(ArrowPayloadType::ScopeAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
 
         // apply filters to the logs
         let filtered_resource_attrs =
@@ -128,14 +126,23 @@ impl LogFilter {
                 .expect("columns should have equal length");
         let filtered_log_attrs = arrow::compute::filter_record_batch(log_attrs, &log_attr_filter)
             .expect("columns should have equal length");
-        let filtered_scope_attrs =
-            arrow::compute::filter_record_batch(scope_attrs, &scope_attr_filter)
-                .expect("columns should have equal length");
 
         logs_payload.set(ArrowPayloadType::ResourceAttrs, filtered_resource_attrs);
         logs_payload.set(ArrowPayloadType::Logs, filtered_log_records);
         logs_payload.set(ArrowPayloadType::LogAttrs, filtered_log_attrs);
-        logs_payload.set(ArrowPayloadType::ScopeAttrs, filtered_scope_attrs);
+
+        match scope_attr_filter {
+            Some(filter) => {
+                let scope_attrs = logs_payload
+                    .get(ArrowPayloadType::ScopeAttrs)
+                    .context(error::LogRecordNotFoundSnafu)?;
+                let filtered_scope_attrs =
+                    arrow::compute::filter_record_batch(scope_attrs, &filter)
+                        .expect("columns should have equal length");
+                logs_payload.set(ArrowPayloadType::ScopeAttrs, filtered_scope_attrs);
+            }
+            None => {}
+        }
 
         Ok(logs_payload)
     }
@@ -146,7 +153,12 @@ impl LogFilter {
         mut resource_attr_filter: BooleanArray,
         mut log_record_filter: BooleanArray,
         mut log_attr_filter: BooleanArray,
-    ) -> Result<(BooleanArray, BooleanArray, BooleanArray, BooleanArray)> {
+    ) -> Result<(
+        BooleanArray,
+        Option<BooleanArray>,
+        BooleanArray,
+        BooleanArray,
+    )> {
         // get the record batches we are going to filter
         let resource_attrs = logs_payload
             .get(ArrowPayloadType::ResourceAttrs)
@@ -157,14 +169,11 @@ impl LogFilter {
         let log_attrs = logs_payload
             .get(ArrowPayloadType::LogAttrs)
             .context(error::LogRecordNotFoundSnafu)?;
-        let scope_attrs = logs_payload
-            .get(ArrowPayloadType::ScopeAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        let scope_attrs = logs_payload.get(ArrowPayloadType::ScopeAttrs);
 
         // get the id columns from each record batch
         let resource_attr_parent_ids_column =
             get_required_array(resource_attrs, consts::PARENT_ID)?;
-        let scope_attr_parent_ids_column = get_required_array(scope_attrs, consts::PARENT_ID)?;
         let log_attr_parent_ids_column = get_required_array(log_attrs, consts::PARENT_ID)?;
         let log_record_ids_column = get_required_array(log_records, consts::ID)?;
         let log_record_resource_ids_column =
@@ -188,7 +197,7 @@ impl LogFilter {
             arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
 
         // get set of ids that are being removed from resource_attr
-        let resource_attr_parent_ids_removed = self.get_removed_ids(
+        let resource_attr_parent_ids_removed = self.get_ids(
             resource_attr_parent_ids_column,
             &inverse_resource_attr_filter,
             consts::PARENT_ID,
@@ -197,60 +206,70 @@ impl LogFilter {
         let log_record_resource_ids_filter = self.build_id_filter(
             log_record_resource_ids_column,
             resource_attr_parent_ids_removed,
+            true
         );
         // update the log_record_filter
         log_record_filter =
-            arrow::compute::and(&log_record_filter, &log_record_resource_ids_filter)
+            arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
                 .expect("boolean arrays should have equal length");
 
         // repeat with ids from log_attrs
         let inverse_log_attr_filter =
             arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
-        let log_attr_parent_ids_removed = self.get_removed_ids(
+        let log_attr_parent_ids_removed = self.get_ids(
             log_attr_parent_ids_column,
             &inverse_log_attr_filter,
             consts::PARENT_ID,
         )?;
         let log_record_ids_filter =
-            self.build_id_filter(log_record_ids_column, log_attr_parent_ids_removed);
-        log_record_filter = arrow::compute::and(&log_record_filter, &log_record_ids_filter)
+            self.build_id_filter(log_record_ids_column, log_attr_parent_ids_removed, true);
+        log_record_filter = arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
             .expect("boolean arrays should have equal length");
 
         // now using the updated log_record_filter we need to update the rest of the filers
         let inverse_log_record_filter =
             arrow::compute::not(&log_record_filter).expect("not doesn't fail");
-        let log_record_ids_removed = self.get_removed_ids(
+        let log_record_ids_removed = self.get_ids(
             log_record_ids_column,
             &inverse_log_record_filter,
             consts::ID,
         )?;
         let log_attr_parent_ids_filter =
-            self.build_id_filter(log_attr_parent_ids_column, log_record_ids_removed);
-        log_attr_filter = arrow::compute::and(&log_attr_filter, &log_attr_parent_ids_filter)
+            self.build_id_filter(log_attr_parent_ids_column, log_record_ids_removed, true);
+        log_attr_filter = arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
             .expect("boolean arrays should have equal length");
 
         // part 4: clean up resource attrs
 
-        let log_record_resource_ids_removed = self.get_removed_ids(
+        let log_record_resource_ids_kept = self.get_ids(
             log_record_resource_ids_column,
-            &inverse_log_record_filter,
+            &log_record_filter,
             consts::ID,
         )?;
         let resource_attr_parent_ids_filter = self.build_id_filter(
             resource_attr_parent_ids_column,
-            log_record_resource_ids_removed,
+            log_record_resource_ids_kept,
+            false
         );
-        resource_attr_filter =
-            arrow::compute::and(&resource_attr_filter, &resource_attr_parent_ids_filter)
-                .expect("boolean arrays should have equal length");
 
-        let log_record_scope_ids_removed = self.get_removed_ids(
-            log_record_scope_ids_column,
-            &inverse_log_record_filter,
-            consts::ID,
-        )?;
         let scope_attr_filter =
-            self.build_id_filter(scope_attr_parent_ids_column, log_record_scope_ids_removed);
+            match scope_attrs {
+                Some(scope_attrs_record_batch) => {
+                    let scope_attr_parent_ids_column =
+                        get_required_array(scope_attrs_record_batch, consts::PARENT_ID)?;
+                    let log_record_scope_ids_kept = self.get_ids(
+                        log_record_scope_ids_column,
+                        &log_record_filter,
+                        consts::ID,
+                    )?;
+                    Some(self.build_id_filter(
+                        scope_attr_parent_ids_column,
+                        log_record_scope_ids_kept,
+                        false
+                    ))
+                }
+                None => None,
+            };
 
         Ok((
             resource_attr_filter,
@@ -260,7 +279,7 @@ impl LogFilter {
         ))
     }
 
-    fn get_removed_ids(
+    fn get_ids(
         &self,
         id_column: &Arc<dyn Array>,
         filter: &BooleanArray,
@@ -285,19 +304,27 @@ impl LogFilter {
     fn build_id_filter(
         &self,
         id_column: &Arc<dyn Array>,
-        ids_to_remove: HashSet<u16>,
+        id_set: HashSet<u16>,
+        match_id: bool
     ) -> BooleanArray {
         let mut combined_id_filter = BooleanArray::new_null(id_column.len());
-        for id in ids_to_remove {
+        for id in id_set {
             let id_scalar = UInt16Array::new_scalar(id);
-            let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
-                .expect("columns should have equal length");
+            let id_filter = if match_id {
+                arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
+                .expect("columns should have equal length")
+            } else {
+                arrow::compute::kernels::cmp::neq(id_column, &id_scalar).expect("columns should have equal length")
+            };
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
                 .expect("boolean arrays should have equal length");
         }
+        combined_id_filter = nulls_to_false(&combined_id_filter);
         // inverse because these are the ids we want to remove
         arrow::compute::not(&combined_id_filter).expect("not doesn't fail")
     }
+
+
 }
 
 impl KeyValue {
@@ -306,4 +333,13 @@ impl KeyValue {
     pub fn new(key: String, value: AnyValue) -> Self {
         Self { key, value }
     }
+}
+
+/// Finds all nulls and converts them to false values
+/// null values affect the filter computation as when 
+/// we perform the not operation nothing happens to 
+/// the null values
+pub fn nulls_to_false(a: &BooleanArray) -> BooleanArray{
+ let valid = arrow::compute::is_not_null(a).expect("is_not_null doesn't error"); // BooleanArray with no nulls
+ arrow::compute::and_kleene(a, &valid).expect("boolean arrays should have equal length") // nulls become false; trues stay true
 }
