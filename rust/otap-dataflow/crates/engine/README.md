@@ -154,7 +154,7 @@ desired.
 The `CallData` type is a small, fixed-size field used to carry
 user-defined data in the caller subscription state. From the engine's
 perspective, `<PData>` is opaque, making the subscription state not
-visible. This has two important implications for the API And calling
+visible. This has two important implications for the API and calling
 convention.
 
 1. The engine propagates the `PData` type backwards in the pipeline in
