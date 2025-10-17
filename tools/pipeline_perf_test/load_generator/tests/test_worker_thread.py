@@ -28,6 +28,7 @@ def test_worker_thread_sends_logs(mock_stub_class, mock_channel):
         "batch_size": 3,
         "threads": 1,
         "target_rate": None,
+        "message_body": None,
     }
 
     # Start the thread and stop it shortly after
@@ -42,7 +43,7 @@ def test_worker_thread_sends_logs(mock_stub_class, mock_channel):
 
     # Verify Export was called
     assert mock_stub.Export.called
-    assert generator.metrics["sent"] >= 3
+    assert generator.metrics["logs_produced"] >= 3
     assert generator.metrics["bytes_sent"] > 0
     assert generator.metrics["failed"] == 0
 
@@ -64,6 +65,7 @@ def test_worker_thread_handles_export_failure(mock_stub_class, mock_channel):
         "batch_size": 2,
         "threads": 1,
         "target_rate": None,
+        "message_body": None,
     }
 
     generator.stop_event.clear()
@@ -98,6 +100,7 @@ def test_worker_thread_rate_limiting_and_late_batches(mock_stub_class, mock_chan
         "batch_size": 2,
         "threads": 1,
         "target_rate": 10,  # 10 logs/sec => batch every 0.2s
+        "message_body": None,
     }
 
     generator.stop_event.clear()
@@ -112,4 +115,4 @@ def test_worker_thread_rate_limiting_and_late_batches(mock_stub_class, mock_chan
     # Because slow_export takes longer than allowed interval,
     # late_batches should increase
     assert generator.metrics["late_batches"] > 0
-    assert generator.metrics["sent"] >= 2
+    assert generator.metrics["logs_produced"] >= 2

@@ -13,7 +13,7 @@ def test_create_log_record_structure():
     num_attributes = 3
     attribute_value_size = 20
 
-    record = generator.create_log_record(
+    record = generator.create_otlp_log_record(
         body_size=body_size,
         num_attributes=num_attributes,
         attribute_value_size=attribute_value_size,
