@@ -181,7 +181,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let mut traces_server =
             TraceServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
 
-        // Store signal-specific response-routing states.
         let states = SharedStates {
             logs: logs_server.state(),
             metrics: metrics_server.state(),
