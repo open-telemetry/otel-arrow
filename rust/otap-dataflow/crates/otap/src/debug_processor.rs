@@ -187,6 +187,11 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let active_signals = self.config.signals();
         let output_mode = self.config.output();
 
+        // Start periodic telemetry collection
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         // if the outputmode is via outports then we can have multiple outports configured
         // so there is no clear default we need to determine which portnames are for the main port
         let main_ports: Option<Vec<PortName>> = if let OutputMode::Outports(ref ports) = output_mode

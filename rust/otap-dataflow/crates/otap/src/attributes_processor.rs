@@ -54,8 +54,11 @@ use otel_arrow_rust::otap::{
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    time::Duration,
+};
 
 mod metrics;
 use self::metrics::AttributesProcessorMetrics;
@@ -282,6 +285,11 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
+        // Start periodic telemetry collection
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         match msg {
             Message::Control(control_msg) => match control_msg {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
@@ -1094,7 +1102,7 @@ mod telemetry_tests {
             })
             .validate(move |_| async move {
                 // Allow the collector to pull from the channel
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
 
                 // Inspect current metrics; fields with non-zero values should be present
                 let mut found_consumed = false;

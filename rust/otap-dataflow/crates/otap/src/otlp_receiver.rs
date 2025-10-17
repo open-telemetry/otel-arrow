@@ -131,6 +131,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .add_service(metrics_service_server)
             .add_service(trace_service_server);
 
+        // Start periodic telemetry collection
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         tokio::select! {
             biased;
 

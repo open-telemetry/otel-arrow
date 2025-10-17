@@ -26,7 +26,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 /// URN for the SignalTypeRouter processor
 pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
@@ -171,6 +171,11 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
+        // Start periodic telemetry collection (internal metrics)
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         match msg {
             Message::Control(ctrl) => {
                 if let NodeControlMsg::CollectTelemetry {
