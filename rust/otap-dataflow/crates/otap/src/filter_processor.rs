@@ -153,8 +153,8 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::otap::filter::{
-        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, LogFilter,
-        logs::{LogMatchProperties, LogMatchType, LogServerityNumberMatchProperties},
+        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter,
+        logs::{LogMatchProperties, LogMatchType, LogSeverityNumberMatchProperties, LogFilter},
     };
     use otel_arrow_rust::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -172,7 +172,7 @@ mod tests {
     }
 
     /// Test closure that simulates a typical processor scenario.
-    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario_strict() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
                 // send log message
@@ -387,9 +387,9 @@ mod tests {
                 "deployment.environment".to_string(),
                 AnyValueFilter::String("prod".to_string()),
             )],
-            Vec::new(),                                              // record_attributes
-            vec!["WARN".to_string(), "ERROR".to_string()],           // test severity_texts
-            Some(LogServerityNumberMatchProperties::new(13, false)), // WARN and above
+            Vec::new(),                                             // record_attributes
+            vec!["WARN".to_string(), "ERROR".to_string()],          // test severity_texts
+            Some(LogSeverityNumberMatchProperties::new(13, false)), // WARN and above
             vec![
                 AnyValueFilter::String("checkout started".to_string()),
                 AnyValueFilter::String("failed to write to socket".to_string()),
@@ -403,7 +403,10 @@ mod tests {
                 AnyValueFilter::String("staging".to_string()),
             )],
             vec![
-                KeyValueFilter::new("component".to_string(), AnyValueFilter::String("db".to_string())),
+                KeyValueFilter::new(
+                    "component".to_string(),
+                    AnyValueFilter::String("db".to_string()),
+                ),
                 KeyValueFilter::new("retryable".to_string(), AnyValueFilter::Boolean(true)),
             ],
             vec!["WARN".to_string()], // exclude WARN by severity_texts
@@ -433,7 +436,7 @@ mod tests {
 
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario_strict())
             .validate(validation_procedure());
     }
 }
