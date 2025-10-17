@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module focuses on taking a logs payload and filtering it based on the provided specifications
-//!
 use arrow::array::BooleanArray;
 use serde::Deserialize;
 
@@ -39,6 +37,15 @@ impl KeyValue {
     pub fn new(key: String, value: AnyValue) -> Self {
         Self { key, value }
     }
+}
+
+/// MatchType describes how we should match the String values provided
+#[derive(Debug, Clone, Deserialize)]
+pub enum MatchType {
+    /// match on the string values exactly how they are defined
+    Strict,
+    /// apply string values as a regexp
+    Regexp,
 }
 
 /// Finds all nulls and converts them to false values

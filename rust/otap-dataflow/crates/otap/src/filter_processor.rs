@@ -153,8 +153,8 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::otap::filter::{
-        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter,
-        logs::{LogMatchProperties, LogMatchType, LogSeverityNumberMatchProperties, LogFilter},
+        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
+        logs::{LogMatchProperties, LogSeverityNumberMatchProperties, LogFilter},
     };
     use otel_arrow_rust::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -382,7 +382,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let include_props = LogMatchProperties::new(
-            LogMatchType::Strict,
+            MatchType::Strict,
             vec![KeyValueFilter::new(
                 "deployment.environment".to_string(),
                 AnyValueFilter::String("prod".to_string()),
@@ -397,7 +397,7 @@ mod tests {
         );
 
         let exclude_props = LogMatchProperties::new(
-            LogMatchType::Strict,
+            MatchType::Strict,
             vec![KeyValueFilter::new(
                 "deployment.environment".to_string(),
                 AnyValueFilter::String("staging".to_string()),

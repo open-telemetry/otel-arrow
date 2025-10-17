@@ -11,7 +11,7 @@ use crate::arrays::{
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
-use crate::otap::filter::{AnyValue, KeyValue, nulls_to_false};
+use crate::otap::filter::{AnyValue, KeyValue, MatchType, nulls_to_false};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::array::{
@@ -45,8 +45,8 @@ pub struct LogFilter {
 /// LogMatchProperties specifies the set of properties in a log to match against and the type of string pattern matching to use.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LogMatchProperties {
-    // LogMatchType specifies the type of matching desired
-    match_type: LogMatchType,
+    // MatchType specifies the type of matching desired
+    match_type: MatchType,
 
     // ResourceAttributes defines a list of possible resource attributes to match logs against.
     // A match occurs if any resource attribute matches all expressions in this given list.
@@ -81,9 +81,9 @@ pub struct LogSeverityNumberMatchProperties {
     match_undefined: bool,
 }
 
-/// LogMatchType describes how we should match the String values provided
+/// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
-pub enum LogMatchType {
+pub enum MatchType {
     /// match on the string values exactly how they are defined
     Strict,
     /// apply string values as a regexp
@@ -356,7 +356,7 @@ impl LogMatchProperties {
     /// create a new LogMatchProperties
     #[must_use]
     pub fn new(
-        match_type: LogMatchType,
+        match_type: MatchType,
         resource_attributes: Vec<KeyValue>,
         record_attributes: Vec<KeyValue>,
         severity_texts: Vec<String>,
@@ -421,7 +421,7 @@ impl LogMatchProperties {
                     // get string column
                     let string_column = get_required_array(resource_attrs, consts::ATTRIBUTE_STR)?;
                     match self.match_type {
-                        LogMatchType::Regexp => {
+                        MatchType::Regexp => {
                             let string_column = string_column
                                 .as_any()
                                 .downcast_ref::<StringArray>()
@@ -429,7 +429,7 @@ impl LogMatchProperties {
                             arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                 .expect("can apply string column to regexp scalar")
                         }
-                        LogMatchType::Strict => {
+                        MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                 .expect("can compare string value column to string scalar")
@@ -564,7 +564,7 @@ impl LogMatchProperties {
                             consts::ATTRIBUTE_STR,
                         )?;
                         match self.match_type {
-                            LogMatchType::Regexp => {
+                            MatchType::Regexp => {
                                 let string_column = string_column
                                     .as_any()
                                     .downcast_ref::<StringArray>()
@@ -573,7 +573,7 @@ impl LogMatchProperties {
                                 arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                     .expect("columns should have equal length")
                             }
-                            LogMatchType::Strict => {
+                            MatchType::Strict => {
                                 let value_scalar = StringArray::new_scalar(value);
                                 arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                     .expect("can compare string value column to string scalar")
@@ -694,7 +694,7 @@ impl LogMatchProperties {
                     let string_column = get_required_array(log_attrs, consts::ATTRIBUTE_STR)?;
 
                     match self.match_type {
-                        LogMatchType::Regexp => {
+                        MatchType::Regexp => {
                             let string_column = string_column
                                 .as_any()
                                 .downcast_ref::<StringArray>()
@@ -703,7 +703,7 @@ impl LogMatchProperties {
                             arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                 .expect("can apply match string column with regexp scalar")
                         }
-                        LogMatchType::Strict => {
+                        MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                 .expect("can compare string value column to string scalar")
