@@ -6,6 +6,17 @@ use serde::Deserialize;
 
 pub mod logs;
 
+
+/// MatchType describes how we should match the String values provided
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchType {
+    /// match on the string values exactly how they are defined
+    Strict,
+    /// apply string values as a regexp
+    Regexp,
+}
+
 /// enum that allows a field to have any type
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -37,15 +48,6 @@ impl KeyValue {
     pub fn new(key: String, value: AnyValue) -> Self {
         Self { key, value }
     }
-}
-
-/// MatchType describes how we should match the String values provided
-#[derive(Debug, Clone, Deserialize)]
-pub enum MatchType {
-    /// match on the string values exactly how they are defined
-    Strict,
-    /// apply string values as a regexp
-    Regexp,
 }
 
 /// Finds all nulls and converts them to false values

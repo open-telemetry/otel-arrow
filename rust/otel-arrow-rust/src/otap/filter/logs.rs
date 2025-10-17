@@ -81,15 +81,6 @@ pub struct LogSeverityNumberMatchProperties {
     match_undefined: bool,
 }
 
-/// MatchType describes how we should match the String values provided
-#[derive(Debug, Clone, Deserialize)]
-pub enum MatchType {
-    /// match on the string values exactly how they are defined
-    Strict,
-    /// apply string values as a regexp
-    Regexp,
-}
-
 impl LogFilter {
     /// create a new log filter
     #[must_use]
