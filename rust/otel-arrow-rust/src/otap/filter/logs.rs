@@ -1,7 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//!
+//! This module focuses on taking a filter definition for Logs and building a filter
+//! as a BooleanArray for the Logs, ResourceAttr, and LogsAttr OTAP Record Batches
 //!
 
 use crate::arrays::get_required_array;
@@ -65,6 +66,7 @@ pub enum LogMatchType {
 
 impl LogMatchProperties {
     /// create a new LogMatchProperties
+    #[must_use]
     pub fn new(
         match_type: LogMatchType,
         resource_attributes: Vec<KeyValue>,
@@ -130,7 +132,7 @@ impl LogMatchProperties {
                                 .as_any()
                                 .downcast_ref::<StringArray>()
                                 .expect("array can be downcast to StringArray");
-                            arrow::compute::regexp_is_match_scalar(string_column, &value, None)
+                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                 .expect("columns should have equal length")
                         }
                         LogMatchType::Strict => {
@@ -232,11 +234,13 @@ impl LogMatchProperties {
             .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = log_records.num_rows();
         // create filter for severity texts
-        let severity_texts_column = log_records.column_by_name(consts::SEVERITY_TEXT).context(
-            error::ColumnNotFoundSnafu {
-                name: consts::SEVERITY_TEXT,
-            },
-        )?;
+
+        let severity_texts_column = match log_records.column_by_name(consts::SEVERITY_TEXT) {
+            Some(column) => column,
+            None => {
+                return Ok(vec![false; num_rows].into());
+            }
+        };
 
         let mut severity_texts_filter = BooleanArray::new_null(num_rows);
         for severity_text in &self.severity_texts {
@@ -263,7 +267,7 @@ impl LogMatchProperties {
                                 .downcast_ref::<StringArray>()
                                 .expect("array can be downcast to StringArray");
 
-                            arrow::compute::regexp_is_match_scalar(string_column, &value, None)
+                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                 .expect("columns should have equal length")
                         }
                         LogMatchType::Strict => {
@@ -327,7 +331,12 @@ impl LogMatchProperties {
 
         // if the severity_number field is defined then we create the severity_number filter
         if let Some(severity_number_properties) = &self.severity_number {
-            let severity_number_column = get_required_array(log_records, consts::SEVERITY_NUMBER)?;
+            let severity_number_column = match log_records.column_by_name(consts::SEVERITY_NUMBER) {
+                Some(column) => column,
+                None => {
+                    return Ok(vec![false; num_rows].into());
+                }
+            };
 
             // TODO make min a string that contains the severity number type and map to the int instead
             let min_severity_number = severity_number_properties.min;
@@ -385,7 +394,7 @@ impl LogMatchProperties {
                                 .downcast_ref::<StringArray>()
                                 .expect("array can be downcast to StringArray");
 
-                            arrow::compute::regexp_is_match_scalar(string_column, &value, None)
+                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
                                 .expect("columns should have equal length")
                         }
                         LogMatchType::Strict => {
@@ -468,5 +477,16 @@ impl LogMatchProperties {
         }
 
         Ok(filter)
+    }
+}
+
+impl LogServerityNumberMatchProperties {
+    /// create a new LogSeverityNumberMatchProperties
+    #[must_use]
+    pub fn new(min: i32, match_undefined: bool) -> Self {
+        Self {
+            min,
+            match_undefined,
+        }
     }
 }

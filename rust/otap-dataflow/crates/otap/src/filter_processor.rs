@@ -9,25 +9,21 @@
 //! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
 use self::config::Config;
-use crate::{
-    OTAP_PROCESSOR_FACTORIES,
-    pdata::OtapPdata
-};
+use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 
 use otap_df_config::error::Error as ConfigError;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
- use otap_df_config::experimental::SignalType;
- use otel_arrow_rust::otap::OtapArrowRecords;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -80,7 +76,10 @@ impl FilterProcessor {
     }
 
     /// Creates a new FilterProcessor from a configuration object
-    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(
+        _pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -89,7 +88,6 @@ impl FilterProcessor {
     }
 }
 
-
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
     async fn process(
@@ -97,9 +95,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-
         match msg {
-            Message::Control(control) => {
+            Message::Control(_control) => {
                 // ToDo: add internal telemetry that will be sent out here
                 Ok(())
             }
@@ -114,177 +111,319 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     SignalType::Metrics => {
                         // ToDo: Add support for metrics
                         return Ok(());
-                    },
+                    }
                     SignalType::Logs => {
-                        self.config.log_filters().filter(arrow_records).map_err(|e| {
-                        let source_detail = format_error_sources(&e);
-                        Error::ProcessorError {
-                            processor: effect_handler.processor_id(),
-                            kind: ProcessorErrorKind::Other,
-                            error: format!("Filter error: {e}"),
-                            source_detail,
-                        }
-                    })?
-                    },
+                        self.config
+                            .log_filters()
+                            .filter(arrow_records)
+                            .map_err(|e| {
+                                let source_detail = format_error_sources(&e);
+                                Error::ProcessorError {
+                                    processor: effect_handler.processor_id(),
+                                    kind: ProcessorErrorKind::Other,
+                                    error: format!("Filter error: {e}"),
+                                    source_detail,
+                                }
+                            })?
+                    }
                     SignalType::Traces => {
                         // ToDo: Add support for traces
                         return Ok(());
                     }
                 };
-                effect_handler.send_message(OtapPdata::new(context, filtered_arrow_records.into())).await?;
-            Ok(())
+                effect_handler
+                    .send_message(OtapPdata::new(context, filtered_arrow_records.into()))
+                    .await?;
+                Ok(())
             }
         }
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
+    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use otap_df_config::experimental::SignalType;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::processor::{TestContext, ValidateContext};
+    use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::otap::filter::{
+        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, LogFilter,
+        logs::{LogMatchProperties, LogMatchType, LogServerityNumberMatchProperties},
+    };
+    use otel_arrow_rust::proto::opentelemetry::{
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        resource::v1::Resource,
+    };
+    use prost::Message as _;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::pdata::{OtapPdata, OtlpProtoBytes};
-//     use otap_df_config::node::NodeUserConfig;
-//     use otap_df_engine::context::ControllerContext;
-//     use otap_df_engine::message::Message;
-//     use otap_df_engine::processor::ProcessorWrapper;
-//     use otap_df_engine::testing::processor::TestRuntime;
-//     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
-//     use otap_df_engine::testing::test_node;
-//     use otap_df_telemetry::registry::MetricsRegistryHandle;
-//     use otel_arrow_rust::proto::opentelemetry::{
-//         common::v1::{AnyValue, InstrumentationScope, KeyValue},
-//         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
-//         metrics::v1::{
-//             Exemplar, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-//         },
-//         resource::v1::Resource,
-//         trace::v1::{
-//             ResourceSpans, ScopeSpans, Span, Status, TracesData, span::Event, span::Link,
-//             span::SpanKind, status::StatusCode,
-//         },
-//     };
-//     use prost::Message as _;
-//     use serde_json::Value;
-//     use std::collections::HashSet;
-//     use std::future::Future;
-//     use std::pin::Pin;
-//     use std::sync::Arc;
-//     use tokio::time::Duration;
-//     use otel_arrow_rust::filter::{LogFilter, KeyValue as KeyValueFilter, AnyValue as AnyValueFilter};
-//     use otel_arrow_rust::filter::filter_logs::{LogMatchProperties, LogMatchType, LogServerityNumberMatchProperties};
+    /// Validation closure that checks the outputted data
+    fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut _ctx| {
+            Box::pin(async move {
 
-//     /// Validation closure that checks the outputted data
-//     fn validation_procedure(
-//     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
-//         |mut ctx| {
-//             Box::pin(async move {
-//                 // read in the logs and verify that we received the correct 
-//                 let mut received_messages = 0;
+                // TODO: add validation step read in the signal
+                // check that the read in signal matches the expected
+//                 let expected_logs_data = LogsData::new(vec![
+//     ResourceLogs::build(Resource::build(vec![
+//         KeyValue::new("version", AnyValue::new_string("2.0")),
+//         KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
+//         KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+//         KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+//         KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
+//         KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+//         KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+//         KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+//         KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+//         KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+//         KeyValue::new("process.pid", AnyValue::new_int(12345)),
+//         KeyValue::new("team", AnyValue::new_string("payments")),
+//         KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+//     ]))
+//     .scope_logs(vec![
+//         ScopeLogs::build(
+//             InstrumentationScope::build("library")
+//                 .version("scopev1")
+//                 .finish(),
+//         )
+//         .log_records(vec![
+//             LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "ERROR")
+//                 .attributes(vec![
+//                     KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
+//                     KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
+//                     KeyValue::new("exception.stacktrace", AnyValue::new_string("...stack...")),
+//                     KeyValue::new("peer.address", AnyValue::new_string("10.42.0.7:5432")),
+//                     KeyValue::new("peer.port", AnyValue::new_int(5432)),
+//                     KeyValue::new("peer.tls", AnyValue::new_bool(true)),
+//                     KeyValue::new("bytes_sent", AnyValue::new_int(0)),
+//                     KeyValue::new("jitter", AnyValue::new_double(0.003)),
+//                 ])
+//                 .body(AnyValue::new_string("failed to write to socket"))
+//                 .finish(),
+//         ])
+//         .finish(),
+//     ])
+//     .finish(),
+// ]);
 
-//                 while let Ok(received_signal) = ctx.recv().await {
+                // while let Ok(received_signal) = ctx.recv().await {
+                //     let signal_type = received_signal.signal_type();
+                //     match signal_type {
+                //         SignalType::Metrics => {}
+                //         SignalType::Traces => {}
+                //         SignalType::Logs => {}
+                //     }
+                // }
+            })
+        }
+    }
 
-//                     match received_signal.signal_type() {
-//                         SignalType::Metrics(metric) => {
-                            
-//                         }
-//                         SignalType::Traces(span) => {
-//                             for resource in span.resource_spans.iter() {
-//                                 for scope in resource.scope_spans.iter() {
-//                                     received_messages += scope.spans.len();
-//                                     assert!(scope.spans.len() <= MAX_BATCH);
-//                                 }
-//                             }
-//                         }
-//                         SignalType::Logs(log) => {
-                            
-//                         }
-//                     }
-//                 }
-//             })
-//         }
-//     }
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                // send log message
 
-//     /// Test closure that simulates a typical processor scenario.
-//     fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
-//         move |mut ctx| {
-//             Box::pin(async move {
-//                 // send log message
+                let logs_data = LogsData::new(vec![
+                                // ResourceLogs for prod/checkout-service
+                    ResourceLogs::build(Resource::build(vec![
+                        KeyValue::new("version", AnyValue::new_string("2.0")),
+                        KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
+                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                        KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
+                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                        KeyValue::new("team", AnyValue::new_string("payments")),
+                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                    ]))
+                    .scope_logs(vec![
+                        ScopeLogs::build(
+                            InstrumentationScope::build("library")
+                                .version("scopev1")
+                                .finish(),
+                        )
+                        .log_records(vec![
+                            // WARN: included by severity, then excluded (retryable/body)
+                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                                .attributes(vec![
+                                    KeyValue::new("http.method", AnyValue::new_string("POST")),
+                                    KeyValue::new("http.route", AnyValue::new_string("/api/checkout")),
+                                    KeyValue::new("http.status_code", AnyValue::new_int(429)),
+                                    KeyValue::new("retryable", AnyValue::new_bool(true)),
+                                    KeyValue::new("backoff_ms", AnyValue::new_int(200)),
+                                    KeyValue::new("throttle_factor", AnyValue::new_double(1.5)),
+                                ])
+                                .severity_text("WARN")
+                                .body(AnyValue::new_string("rate limited"))
+                                .finish(),
 
-//                 let logs_data = LogsData::new(vec![
-//                     ResourceLogs::build(Resource::build(vec![KeyValue::new(
-//                             "version",
-//                             AnyValue::new_string("2.0"),
-//                         )]))
-//                         .scope_logs(vec![
-//                             ScopeLogs::build(
-//                                 InstrumentationScope::build("library")
-//                                     .version("scopev1")
-//                                     .finish(),
-//                             )
-//                             .log_records(vec![
-//                                 LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-//                                     .attributes(vec![KeyValue::new(
-//                                         "log_attr1",
-//                                         AnyValue::new_string("log_val_1"),
-//                                     )])
-//                                     .body(AnyValue::new_string("log_body"))
-//                                     .finish(),
-//                             ])
-//                             .finish(),
-//                         ])
-//                         .finish(),
-//                 ]);
+                            // ERROR: included (prod, severity >= WARN), not excluded
+                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                                .attributes(vec![
+                                    KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
+                                    KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
+                                    KeyValue::new("exception.stacktrace", AnyValue::new_string("...stack...")),
+                                    KeyValue::new("peer.address", AnyValue::new_string("10.42.0.7:5432")),
+                                    KeyValue::new("peer.port", AnyValue::new_int(5432)),
+                                    KeyValue::new("peer.tls", AnyValue::new_bool(true)),
+                                    KeyValue::new("bytes_sent", AnyValue::new_int(0)),
+                                    KeyValue::new("jitter", AnyValue::new_double(0.003)),
+                                ])
+                                .severity_text("ERROR")
+                                .body(AnyValue::new_string("failed to write to socket"))
+                                .finish(),
 
-//                 //convert logsdata to otappdata
-//                 let mut bytes = vec![];
-//                 logs_data
-//                     .encode(&mut bytes)
-//                     .expect("failed to encode log data into bytes");
-//                 let otlp_logs_bytes =
-//                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-//                 ctx.process(Message::PData(otlp_logs_bytes))
-//                     .await
-//                     .expect("failed to process");
-//                 let msgs = ctx.drain_pdata().await;
-//                 assert_eq!(msgs.len(), 1);
-//             })
-//         }
-//     }
+                            // WARN: included by severity, then excluded (component=db)
+                            LogRecord::build(2_600_000_000u64, SeverityNumber::Warn, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("db")),
+                                    KeyValue::new("query", AnyValue::new_string("UPDATE inventory SET count = count - 1 WHERE sku='ABC123'")),
+                                    KeyValue::new("rows_affected", AnyValue::new_int(1)),
+                                    KeyValue::new("success", AnyValue::new_bool(true)),
+                                ])
+                                .severity_text("WARN")
+                                .body(AnyValue::new_string("inventory updated"))
+                                .finish(),
+                        ])
+                        .finish(),
+                    ])
+                    .finish(),
 
+                    // ResourceLogs for staging/inventory-service (will not pass include)
+                    ResourceLogs::build(Resource::build(vec![
+                        KeyValue::new("version", AnyValue::new_string("2.0")),
+                        KeyValue::new("service.name", AnyValue::new_string("inventory-service")),
+                        KeyValue::new("service.version", AnyValue::new_string("0.9.1")),
+                        KeyValue::new("service.instance.number", AnyValue::new_int(7)),
+                        KeyValue::new("deployment.environment", AnyValue::new_string("staging")),
+                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                        KeyValue::new("host.cpu_cores", AnyValue::new_int(4)),
+                        KeyValue::new("host.uptime_sec", AnyValue::new_int(12_345)),
+                        KeyValue::new("sampling.rate", AnyValue::new_double(0.10)),
+                        KeyValue::new("debug.enabled", AnyValue::new_bool(true)),
+                        KeyValue::new("process.pid", AnyValue::new_int(22222)),
+                        KeyValue::new("team", AnyValue::new_string("inventory")),
+                    ]))
+                    .scope_logs(vec![
+                        ScopeLogs::build(
+                            InstrumentationScope::build("library")
+                                .version("scopev2")
+                                .finish(),
+                        )
+                        .log_records(vec![
+                            LogRecord::build(3_000_000_000u64, SeverityNumber::Warn, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("rest")),
+                                    KeyValue::new("http.route", AnyValue::new_string("/api/internal/cache_warm")),
+                                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
+                                    KeyValue::new("success", AnyValue::new_bool(true)),
+                                ])
+                                .severity_text("WARN")
+                                .body(AnyValue::new_string("warmup complete"))
+                                .finish(),
 
-//     #[test]
-//     fn test_filter_processor_logs_strict() {
-//         let test_runtime = TestRuntime::new();
-        
-//         let include_resource_attributes = vec![]
-//         let include_record_attributes = vec![KeyValueFilter::new("log_attr1".to_string(), AnyValueFilter::String("log_val_1".to_string()))];
-//         let include_severity_texts = vec![]:
-//         let include_bodies = vec!["log_bodies"];
+                            LogRecord::build(3_100_000_000u64, SeverityNumber::Info, "event")
+                                .attributes(vec![
+                                    KeyValue::new("event.domain", AnyValue::new_string("ops")),
+                                    KeyValue::new("message", AnyValue::new_string("heartbeat")),
+                                    KeyValue::new("uptime_sec", AnyValue::new_int(100)),
+                                ])
+                                .severity_text("INFO")
+                                .body(AnyValue::new_string("heartbeat"))
+                                .finish(),
+                        ])
+                        .finish(),
+                    ])
+                    .finish(),
+                ]);
 
-//         let exclude_resource_attributes = vec![];
-//         let exclude_record_attributes = vec![];
-//         let exclude_bodies = vec![];
+                //convert logsdata to otappdata
+                let mut bytes = vec![];
+                logs_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_logs_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(otlp_logs_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+            })
+        }
+    }
 
+    #[test]
+    fn test_filter_processor_logs_strict() {
+        let test_runtime = TestRuntime::new();
 
-//         let include = LogMatchProperties::new(LogMatchType::Strict, include_resource_attributes, include_record_attributes, );
-//         let exclude = LogMatchProperties::new();
-        
-//         let log_filter = LogFilter::new(include, exclude, vec![]);
-//         let config = Config::new(
-//             log_filter,
-//         );
-//         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let include_props = LogMatchProperties::new(
+            LogMatchType::Strict,
+            vec![KeyValueFilter::new(
+                "deployment.environment".to_string(),
+                AnyValueFilter::String("prod".to_string()),
+            )],
+            Vec::new(),                                              // record_attributes
+            Vec::new(),                                              // severity_texts
+            Some(LogServerityNumberMatchProperties::new(13, false)), // WARN and above
+            Vec::new(),                                              // bodies
+        );
 
-//         let processor = ProcessorWrapper::local(
-//             FilterProcessor::new(config),
-//             test_node(test_runtime.config().name.clone()),
-//             user_config,
-//             test_runtime.config(),
-//         );
+        let exclude_props = LogMatchProperties::new(
+            LogMatchType::Strict,
+            vec![KeyValueFilter::new(
+                "deployment.environment".to_string(),
+                AnyValueFilter::String("staging".to_string()),
+            )],
+            vec![
+                KeyValueFilter::new(
+                    "component".to_string(),
+                    AnyValueFilter::String("db".to_string()),
+                ),
+                KeyValueFilter::new("retryable".to_string(), AnyValueFilter::Boolean(true)),
+            ],
+            vec!["DEBUG".to_string()],
+            None,
+            vec![AnyValueFilter::String("rate limited".to_string())],
+        );
 
-//         test_runtime
-//             .set_processor(processor)
-//             .run_test(scenario())
-//             .validate(validation_procedure());
+        let log_filter = LogFilter::new(
+            include_props,
+            exclude_props,
+            Vec::new(), // log_record ignored
+        );
 
-//     }
-// }
+        let config = Config::new(log_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure());
+    }
+}

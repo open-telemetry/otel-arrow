@@ -571,7 +571,6 @@ mod tests {
         ])
     }
 
-    }
     #[test]
     fn test_config_from_json_parses_actions_and_apply_to_default() {
         let cfg = json!({

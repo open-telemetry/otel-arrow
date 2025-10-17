@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module focuses on filtering down
+//! This module focuses on taking a logs payload and filtering it based on the provided specifications
 //!
 
 use self::logs::LogMatchProperties;
@@ -30,7 +30,7 @@ pub struct LogFilter {
     // all other logs should be included.
     // If both Include and Exclude are specified, Include filtering occurs first.
     exclude: LogMatchProperties,
-    
+
     // LogConditions is a list of OTTL conditions for an ottllog context.
     // If any condition resolves to true, the log event will be dropped.
     // Supports `and`, `or`, and `()`
@@ -65,6 +65,7 @@ pub struct KeyValue {
 
 impl LogFilter {
     /// create a new log filter
+    #[must_use]
     pub fn new(
         include: LogMatchProperties,
         exclude: LogMatchProperties,
@@ -267,7 +268,7 @@ impl LogFilter {
     ) -> Result<HashSet<u16>> {
         // get ids being removed
         let filtered_ids =
-            arrow::compute::filter(id_column, &filter).expect("columns should have equal length");
+            arrow::compute::filter(id_column, filter).expect("columns should have equal length");
 
         // downcast id and get unique values
         let filtered_ids = filtered_ids
@@ -276,7 +277,7 @@ impl LogFilter {
             .with_context(|| error::ColumnDataTypeMismatchSnafu {
                 name: column_type,
                 actual: filtered_ids.data_type().clone(),
-                expect: DataType::UInt16
+                expect: DataType::UInt16,
             })?;
         Ok(filtered_ids.iter().flatten().collect())
     }
@@ -296,5 +297,13 @@ impl LogFilter {
         }
         // inverse because these are the ids we want to remove
         arrow::compute::not(&combined_id_filter).expect("not doesn't fail")
+    }
+}
+
+impl KeyValue {
+    /// create a new key value pair
+    #[must_use]
+    pub fn new(key: String, value: AnyValue) -> Self {
+        Self { key, value }
     }
 }
