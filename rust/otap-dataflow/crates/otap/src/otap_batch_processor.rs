@@ -834,6 +834,7 @@ mod test_helpers {
     /// Construct a processor wrapper from a JSON configuration object and processor runtime config.
     /// The JSON should mirror the Go collector batchprocessor shape. Missing fields fall back to
     /// crate defaults. Invalid numeric values (e.g., zero) are normalized to minimal valid values.
+    #[cfg(test)]
     pub fn from_config(
         node: NodeId,
         cfg: &Value,
