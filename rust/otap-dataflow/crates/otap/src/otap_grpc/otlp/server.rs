@@ -61,8 +61,8 @@ fn route_response(
         }
     };
 
-    // Try to get the channel from the slot under the mutex.
-    let chan = state.lock().map(|mut state| state.get(key)).ok().flatten();
+    // Try to take the channel from the slot under the mutex.
+    let chan = state.lock().map(|mut state| state.take(key)).ok().flatten();
 
     // Try to send.
     if chan

@@ -85,15 +85,15 @@ impl<UData> State<UData> {
         Some((key, ures))
     }
 
-    /// Get user data from a slot (if key is valid).
+    /// Take user data from a slot (if key is valid).
     #[must_use]
-    pub fn get(&mut self, key: Key) -> Option<UData> {
+    pub fn take(&mut self, key: Key) -> Option<UData> {
         self.slots.remove(key)
     }
 
-    /// Get and drop the user data (if key is valid).
+    /// Take and drop the user data (if key is valid).
     pub fn cancel(&mut self, key: Key) {
-        let _ = self.get(key);
+        let _ = self.take(key);
     }
 
     /// Get the number of currently allocated slots
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_current() {
+    fn test_take_current() {
         let mut state = create_test_state();
 
         assert_eq!(state.total_slots(), 0);
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(state.allocated_count(), 1);
 
         state
-            .get(key)
+            .take(key)
             .map(|channel| channel.send(Ok(())))
             .expect("sent")
             .expect("ok");
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_old() {
+    fn test_take_old() {
         let mut state = create_test_state();
 
         let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
@@ -182,8 +182,8 @@ mod tests {
 
         let (_key2, _) = state.allocate(|| oneshot::channel()).unwrap();
 
-        // Try to get old generation
-        assert!(state.get(key).is_none());
+        // Try to take old generation
+        assert!(state.take(key).is_none());
 
         assert_eq!(state.allocated_count(), 1);
     }
