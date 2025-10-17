@@ -38,6 +38,11 @@ pub mod registry;
 pub mod reporter;
 pub mod semconv;
 
+// TODO This should be #[cfg(test)], but something is preventing it from working.
+// The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
+// can't load this module unless I remove #[cfg(test)]! See #1304.
+pub mod testing;
+
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
     /// The metrics registry that holds all registered metrics (data + metadata).

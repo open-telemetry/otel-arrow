@@ -242,14 +242,15 @@ you're more than welcome to participate!
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Albert Lockett](https://github.com/albertlockett), F5
 
 For more information about the maintainer role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#maintainer).
 
 ### Approvers
 
-- [Albert Lockett](https://github.com/albertlockett), F5
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#approver).

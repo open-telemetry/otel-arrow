@@ -7,7 +7,7 @@
 # for the components that are included in the build, which are all of
 # those with sources in this repository plus a few commonly useful
 # accessories (e.g., the profiler extension).
-FROM golang:1.25@sha256:91e2cd436f7adbfad0a0cbb7bf8502fa863ed8461414ceebe36c6304731e0fd9 AS sandbox
+FROM golang:1.25@sha256:6ea52a02734dd15e943286b048278da1e04eca196a564578d718c7720433dbbe AS sandbox
 
 WORKDIR /otel-arrow
 COPY . .
@@ -24,7 +24,7 @@ RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowco
 RUN go build -o otelarrowcol ./collector/cmd/otelarrowcol
 
 # This build uses an Alpine Linux container.
-FROM alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 AS release
+FROM alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS release
 COPY --from=sandbox /otel-arrow/otelarrowcol /
 
 # Network ports
