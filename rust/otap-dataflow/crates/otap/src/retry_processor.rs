@@ -535,7 +535,6 @@ impl Processor<OtapPdata> for RetryProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-
         // Start periodic telemetry collection
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
