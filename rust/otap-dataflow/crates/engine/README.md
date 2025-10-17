@@ -284,9 +284,9 @@ async fn process(
                 NodeControlMsg::Ack(ack) => {
                     // Get the call data.
                     let mycalldata: SomeCallData = ack.calldata.try_into()?;
-                
+
                     // Do something before returning
-                    
+
                     // Notify the next subscriber
                     effect.notify_ack(ack).await
                 }
@@ -295,10 +295,10 @@ async fn process(
                     let mycalldata: SomeCallData = ack.calldata.try_into()?;
 
                     // Do something before returning
-                    
+
                     // Modify the Nack reason
                     nack.reason = format!("more info: {}", nack.reason);
-                    
+
                     // Notify the next subscriber
                     effect.notify_nack(nack).await
                 }
