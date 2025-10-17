@@ -47,7 +47,7 @@ pub struct Config {
     max_slots: usize,
 }
 
-fn default_max_slots() -> usize {
+const fn default_max_slots() -> usize {
     1000
 }
 
