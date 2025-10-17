@@ -110,7 +110,7 @@ impl<UData> State<UData> {
 
     /// Get the maximum number of slots allowed
     #[must_use]
-    pub fn max_slots(&self) -> usize {
+    pub const fn max_slots(&self) -> usize {
         self.config.max_slots
     }
 }
