@@ -132,7 +132,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .add_service(trace_service_server);
 
         // Start periodic telemetry collection
-        let _ = effect_handler
+        let telemetry_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -145,6 +145,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let snapshot = self.metrics.snapshot();
+                            _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
