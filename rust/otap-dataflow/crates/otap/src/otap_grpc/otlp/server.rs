@@ -54,6 +54,7 @@ pub enum RouteResponse {
 
 impl SharedState {
     /// Internal helper to route responses to slots
+    #[must_use]
     pub fn route_response(
         &self,
         calldata: CallData,
@@ -74,11 +75,7 @@ impl SharedState {
             .flatten();
 
         // Try to send.
-        if chan
-            .map(|sender| sender.send(result).ok())
-            .flatten()
-            .is_some()
-        {
+        if chan.and_then(|sender| sender.send(result).ok()).is_some() {
             RouteResponse::Sent
         } else {
             RouteResponse::Expired
@@ -105,11 +102,11 @@ impl Codec for OtlpBytesCodec {
     type Decoder = OtapBatchDecoder;
 
     fn encoder(&mut self) -> Self::Encoder {
-        OtlpResponseEncoder::new(self.signal.clone())
+        OtlpResponseEncoder::new(self.signal)
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtapBatchDecoder::new(self.signal.clone())
+        OtapBatchDecoder::new(self.signal)
     }
 }
 
