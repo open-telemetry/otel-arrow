@@ -182,6 +182,7 @@ impl Decoder for OtapBatchDecoder {
 struct OtapBatchService {
     effect_handler: EffectHandler<OtapPdata>,
     state: SharedState,
+    enable_backpressure: bool,
 }
 
 impl OtapBatchService {
@@ -189,6 +190,10 @@ impl OtapBatchService {
         Self {
             effect_handler,
             state,
+
+            // TODO(#1311) Backpressure is disabled until we address its impact
+            // on the continuous benchmark.
+            enable_backpressure: false,
         }
     }
 }
@@ -217,45 +222,61 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
         let effect_handler = self.effect_handler.clone();
         let state = self.state.clone();
+        let backpressure = self.enable_backpressure;
         Box::pin(async move {
-            // Try to allocate a slot (under the mutex) for calldata.
-            let (key, rx) = match state
-                .0
-                .lock()
-                .map(|mut state| state.allocate(|| oneshot::channel()))
-            {
-                Err(_) => return Err(Status::internal("Mutex poisoned")),
-                Ok(None) => {
-                    return Err(Status::resource_exhausted("Too many concurrent requests"));
-                }
-                Ok(Some(pair)) => pair,
+            let cancel_rx = if backpressure {
+                // Try to allocate a slot (under the mutex) for calldata.
+                let (key, rx) = match state
+                    .0
+                    .lock()
+                    .map(|mut state| state.allocate(|| oneshot::channel()))
+                {
+                    Err(_) => return Err(Status::internal("Mutex poisoned")),
+                    Ok(None) => {
+                        return Err(Status::resource_exhausted("Too many concurrent requests"));
+                    }
+                    Ok(Some(pair)) => pair,
+                };
+
+                // Enter the subscription. Slot key becomes calldata.
+                effect_handler.subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    key.into(),
+                    &mut otap_batch,
+                );
+                Some((SlotGuard { key, state }, rx))
+            } else {
+                None
             };
-
-            // Enter the subscription. Slot key becomes calldata.
-            effect_handler.subscribe_to(
-                Interests::ACKS | Interests::NACKS,
-                key.into(),
-                &mut otap_batch,
-            );
-
-            let _cancel_guard = SlotGuard { key, state };
 
             // Send and wait for Ack/Nack
             match effect_handler.send_message(otap_batch).await {
-                Ok(_) => match rx.await {
-                    Ok(Ok(())) => Ok(tonic::Response::new(())),
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(Status::internal(format!("Failed to send to pipeline: {e}")));
+                }
+            };
+
+            // If backpressure, await a response. The guard will cancel and return the
+            // slot if Tonic times-out this task.
+            if let Some((_cancel_guard, rx)) = cancel_rx {
+                match rx.await {
+                    Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
                         // TODO: Use more specific status codes based on nack reason/type
                         // when more detailed error information is available from the pipeline
-                        Err(Status::unavailable(format!(
+                        return Err(Status::unavailable(format!(
                             "Pipeline processing failed: {}",
                             nack.reason
-                        )))
+                        )));
                     }
-                    Err(_) => Err(Status::internal("Response channel closed unexpectedly")),
-                },
-                Err(e) => Err(Status::internal(format!("Failed to send to pipeline: {e}"))),
+                    Err(_) => {
+                        return Err(Status::internal("Response channel closed unexpectedly"));
+                    }
+                }
             }
+
+            Ok(tonic::Response::new(()))
         })
     }
 }
