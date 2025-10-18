@@ -154,7 +154,7 @@ mod tests {
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
-        logs::{LogMatchProperties, LogSeverityNumberMatchProperties, LogFilter},
+        logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
     };
     use otel_arrow_rust::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -172,7 +172,8 @@ mod tests {
     }
 
     /// Test closure that simulates a typical processor scenario.
-    fn scenario_strict() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario_strict() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>>
+    {
         move |mut ctx| {
             Box::pin(async move {
                 // send log message

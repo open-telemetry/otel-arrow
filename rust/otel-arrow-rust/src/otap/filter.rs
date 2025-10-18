@@ -6,7 +6,6 @@ use serde::Deserialize;
 
 pub mod logs;
 
-
 /// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]

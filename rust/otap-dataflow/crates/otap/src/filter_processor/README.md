@@ -52,5 +52,5 @@ will be the interesection of the two. Currently we allow you to filter
 based on `resource_attributes` (all the attributes must match),
 `record_attributes` (only one in the list has to match), `severity_texts`,
 `severity_number`, and `bodies`. When defining the `severity_number` you set
-the min acceptable `severity_number` you can also choose whether to match 
-on undefined 
+the min acceptable `severity_number` you can also choose whether to match
+on undefined
