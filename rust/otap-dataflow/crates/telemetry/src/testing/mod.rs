@@ -48,6 +48,7 @@ pub struct MockMetricSet {
 
 impl MockMetricSet {
     /// A test metric with two counters
+    #[must_use]
     pub fn new() -> Self {
         Self { values: vec![0, 0] }
     }
@@ -82,6 +83,7 @@ pub struct MockAttributeSet {
 
 impl MockAttributeSet {
     /// New test attribute set.
+    #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             attribute_values: vec![AttributeValue::String(value.into())],
@@ -101,5 +103,24 @@ impl AttributeSetHandler for MockAttributeSet {
     }
     fn attribute_values(&self) -> &[AttributeValue] {
         &self.attribute_values
+    }
+}
+
+/// The empty attribute set descriptor.
+static EMPTY_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+    name: "empty_metrics",
+    fields: &[],
+};
+
+/// Empty attribute set for testing.
+pub struct EmptyAttributes();
+
+impl AttributeSetHandler for EmptyAttributes {
+    fn descriptor(&self) -> &'static AttributesDescriptor {
+        &EMPTY_ATTRIBUTES_DESCRIPTOR
+    }
+
+    fn attribute_values(&self) -> &[AttributeValue] {
+        &[]
     }
 }

@@ -397,7 +397,7 @@ impl RetryProcessor {
             Err(TypedError::ChannelSendError(sent)) => {
                 let reason = sent.to_string();
                 let data = sent.inner();
-                let _ = effect_handler
+                effect_handler
                     .notify_nack(NackMsg::new(reason, data))
                     .await?;
                 self.metrics.add_consumed_failure(signal, items);
