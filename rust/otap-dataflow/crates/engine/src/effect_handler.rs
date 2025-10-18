@@ -11,7 +11,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
 /// Common implementation of all effect handlers.
@@ -37,7 +37,8 @@ impl<PData> EffectHandlerCore<PData> {
         }
     }
 
-    pub(crate) fn set_pipeline_ctrl_msg_sender(
+    /// Sets the pipeline control message sender for this effect handler.
+    pub fn set_pipeline_ctrl_msg_sender(
         &mut self,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
@@ -270,6 +271,23 @@ impl<PData> EffectHandlerCore<PData> {
         } else {
             Ok(())
         }
+    }
+
+    /// Delay a message.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.send_pipeline_ctrl_msg(PipelineControlMsg::DelayData {
+            node_id: self.node_id().index,
+            when,
+            data,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| -> PData {
+            match e.inner() {
+                PipelineControlMsg::DelayData { data, .. } => *data,
+                _ => unreachable!(),
+            }
+        })
     }
 }
 
