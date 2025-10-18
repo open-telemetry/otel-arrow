@@ -191,7 +191,8 @@ impl OtapBatchService {
             effect_handler,
             state,
 
-            // TODO(#1311)
+            // TODO(#1311) Backpressure is disabled until we address its impact
+            // on the continuous benchmark.
             enable_backpressure: false,
         }
     }
@@ -256,7 +257,8 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 }
             };
 
-            // If there Ack/Nack
+            // If backpressure, await a response. The guard will cancel and return the
+            // slot if Tonic times-out this task.
             if let Some((_cancel_guard, rx)) = cancel_rx {
                 match rx.await {
                     Ok(Ok(())) => {}
