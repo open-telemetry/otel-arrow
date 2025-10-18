@@ -597,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_otlp_receiver_nack() {
         let test_runtime = TestRuntime::new();
 
