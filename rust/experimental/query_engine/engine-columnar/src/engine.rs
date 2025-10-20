@@ -90,6 +90,7 @@ fn scan_batch(
         let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]]).unwrap();
         let table_source = provider_as_source(Arc::new(table_provider));
         let logical_plan = LogicalPlanBuilder::scan(
+            // TODO could avoid allocation here?
             format!("{:?}", payload_type).to_ascii_lowercase(),
             table_source,
             None,
@@ -112,10 +113,14 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 
     fn try_from(accessor: &ValueAccessor) -> Result<Self> {
         let selectors = accessor.get_selectors();
+
+        // TODO the parsing here is kind of goofy
         match &selectors[1] {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
                 match column_name {
+                    
+                    // TODO parsing here is kind of goofy
                     "attributes" => match &selectors[2] {
                         ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
                             Ok(Self::Attributes(attr_key.get_value().to_string()))
@@ -180,7 +185,7 @@ fn handle_binary_filter_expr(
     match left_col {
         ColumnAccessor::ColumnName(col_name) => {
             let col = logical_expr::col(col_name);
-            let filter_expr = logical_expr::binary_expr(col, Operator::Eq, right_expr);
+            let filter_expr = logical_expr::binary_expr(col, operator, right_expr);
             filter_builder.root_batch_exprs.push(filter_expr);
         }
         ColumnAccessor::Attributes(attr_key) => {
@@ -209,6 +214,7 @@ fn handle_filter_predicate(
 ) -> Result<()> {
     match predicate {
         LogicalExpression::Or(or_expr) => {
+            // TODO it'd be nice to avoid the allocations here ...
             let mut left_builder = FilterBuilder::default();
             let left = or_expr.get_left();
             handle_filter_predicate(&mut left_builder, left)?;
@@ -296,34 +302,9 @@ async fn filter_batch(
     predicate: &LogicalExpression,
 ) -> Result<OtapArrowRecords> {
     let mut filter_builder = FilterBuilder::default();
-
-    // let mut root_batch_filter_exprs = vec![];
-    // let mut attr_batch_filter_exprs = vec![];
     handle_filter_predicate(&mut filter_builder, predicate)?;
     let root_logical_plan =
         append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
-
-    // let rpc = root_logical_plan.clone();
-    // root_logical_plan = root_logical_plan.filter(logical_expr::binary_expr(logical_expr::col("severity_text"), Operator::Eq, logical_expr::lit("WARN"))).unwrap()
-    //     // .join(
-    //     //     rpc.build().unwrap(),
-    //     //     JoinType::Left,
-    //     //     (vec![consts::ID], vec![consts::ID]),
-    //     //     None
-    //     // ).unwrap();
-    //     //  Doesn't work -- duplicates stuff
-    //     .union_distinct(
-    //         rpc.clone().join(
-    //             attrs_logical_plan.build().unwrap(),
-    //             JoinType::LeftSemi,
-    //             (vec![consts::ID], vec![consts::PARENT_ID]),
-    //             None,
-    //         ).unwrap()
-    //         .build()
-    //         .unwrap()
-    //     )
-    //     .unwrap();
-    // .dis;
 
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan = {}", logical_plan);
@@ -434,7 +415,6 @@ mod test {
         // - filter by attrs where type isn't a string
         // - filter by resource.name
         // - filter by resource.attributes
-        // - severity_text == "WARN" or attributes["X"] == "Y"
 
         let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
 
