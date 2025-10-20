@@ -489,7 +489,7 @@ mod test {
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_default_config() {
@@ -531,22 +531,32 @@ mod test {
     }
 
     fn create_test_config() -> serde_json::Value {
+        // These settings are designed for 3 retries:
+        // 1st retry: +0.05=+0.05 retry_count=1
+        // 2nd retry: +0.10=+0.15 retry_count=2
+        // 3nd retry: +0.20=+0.35 retry_count=3
+        // 4nd retry: +0.40=+0.75 deadline
         json!({
             "initial_interval": 0.05,     // 50ms initial delay
-            "max_interval": 0.15,         // 150ms max delay
-            "max_elapsed_time": 0.3,      // 300ms total timeout
-            "multiplier": 2.0,            // Double each retry
+            "max_interval": 0.40,         // 400ms max delay
+            "max_elapsed_time": 0.5,      // 500ms total timeout
+            "multiplier": 2.0,            // Double
         })
     }
 
     #[test]
-    fn test_retry_processor_three_nacks_then_success() {
+    fn test_retry_processor_nacks_then_success() {
         test_retry_processor(create_test_config(), 3, None)
     }
 
     #[test]
-    fn test_retry_processor_three_nacks_then_failure() {
-        test_retry_processor(create_test_config(), 10, Some("failed".into()))
+    fn test_retry_processor_nacks_then_failure() {
+        test_retry_processor(create_test_config(), 3, Some("simulated".into()))
+    }
+
+    #[test]
+    fn test_retry_processor_nacks_then_deadline() {
+        test_retry_processor(create_test_config(), 4, Some("final retry".into()))
     }
 
     fn test_retry_processor(
@@ -579,7 +589,7 @@ mod test {
 
                 let mut retry_count: usize = 0;
                 let pdata_in = create_test_pdata().test_subscribe_to(
-                    Interests::ACKS | Interests::RETURN_DATA,
+                    Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
                     TestCallData::default().into(),
                     4444,
                 );
@@ -596,20 +606,24 @@ mod test {
 
                 // Simulate downstream failures and retry
                 let mut current_data = first_attempt;
-                let repeats = 0..number_of_nacks;
-                for _ in repeats {
+                let mut have_pmsg: Option<PipelineControlMsg<OtapPdata>> = None;
+                let mut nacks_delivered = 0;
+                while have_pmsg.is_none() && nacks_delivered < number_of_nacks {
                     let nack = NackMsg::new("simulated downstream failure", current_data.clone());
 
                     let (_, nack_ctx) = Context::next_nack(nack).unwrap();
 
-                    println!("Process a NACK");
                     ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                    nacks_delivered += 1;
 
                     // The processor should schedule a delayed retry via DelayData
-                    match pipeline_rx.recv().await {
+                    let resp = match pipeline_rx.recv().await {
                         Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
                             retry_count += 1;
-                            // Deliver immediately (0 delay for test)
+                            // Here, we actually wait, because the processor uses walltime
+                            // to continue retrying w/o a limit on retry count.
+                            ctx.sleep(when.duration_since(Instant::now())).await;
+
                             ctx.process(Message::Control(NodeControlMsg::DelayedData {
                                 when,
                                 data,
@@ -621,33 +635,38 @@ mod test {
                             let mut retry_output = ctx.drain_pdata().await;
                             assert_eq!(retry_output.len(), 1);
                             current_data = retry_output.remove(0);
+                            None
                         }
+                        Ok(msg) => Some(msg),
                         other => {
                             panic!("unexpected pipeline control message: {:?}", other);
                         }
+                    };
+                    have_pmsg = have_pmsg.or(resp);
+                }
+
+                if have_pmsg.is_none() {
+                    // Send final ACK or NACK
+                    if let Some(message) = &outcome_failure {
+                        let nack = NackMsg::new(format!("TEST {} FAILED", message), current_data);
+                        let (_, nack_ctx) = Context::next_nack(nack).unwrap();
+                        ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                    } else {
+                        let ack = AckMsg::new(current_data);
+                        let (_, ack_ctx) = Context::next_ack(ack).unwrap();
+                        ctx.process(Message::ack_ctrl_msg(ack_ctx)).await.unwrap();
                     }
+
+                    // Verify the processor sent the ACK or NACK upstream
+                    have_pmsg = Some(
+                        tokio::time::timeout(Duration::from_secs(1), pipeline_rx.recv())
+                            .await
+                            .expect("timeout waiting for final DeliverAck")
+                            .expect("channel closed"),
+                    );
                 }
 
-                // Send final ACK or NACK
-                if let Some(message) = &outcome_failure {
-                    println!("SEND FINAL NACK");
-                    let nack = NackMsg::new(format!("TEST {} FAILED", message), current_data);
-                    let (_, nack_ctx) = Context::next_nack(nack).unwrap();
-                    ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
-                } else {
-                    println!("SEND FINAL ACK");
-                    let ack = AckMsg::new(current_data);
-                    let (_, ack_ctx) = Context::next_ack(ack).unwrap();
-                    ctx.process(Message::ack_ctrl_msg(ack_ctx)).await.unwrap();
-                }
-
-                // Verify the processor sent the ACK or NACK upstream
-                let msg = tokio::time::timeout(Duration::from_secs(1), pipeline_rx.recv())
-                    .await
-                    .expect("timeout waiting for final DeliverAck")
-                    .expect("channel closed");
-
-                match msg {
+                match have_pmsg.expect("retry replied") {
                     PipelineControlMsg::DeliverAck { node_id, ack } => {
                         assert!(
                             outcome_failure.is_none(),
@@ -662,6 +681,7 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        println!("REASON IS {}", nack.reason);
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))
@@ -674,15 +694,12 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), nack.refused.num_items());
                     }
-                    PipelineControlMsg::DelayData { data, .. } => {
-                        // @@ HERE YOU ARE
-                    }
                     other => {
-                        panic!("expected DeliverAck but got: {:?}", other);
+                        panic!("expected DeliverAck/Nack but got: {:?}", other);
                     }
                 }
 
-                assert_eq!(number_of_nacks, retry_count);
+                assert_eq!(3, retry_count);
             })
             .validate(|ctx| async move {
                 // Verify no unexpected control message processing
