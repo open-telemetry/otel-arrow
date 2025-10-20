@@ -241,13 +241,15 @@ impl<PData> ProcessorWrapper<PData> {
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
 
                 // Start periodic telemetry collection
-                let _ = effect_handler
+                let telemetry_cancel_handle = effect_handler
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Cancel periodic collection
+                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 processor
                     .process(
@@ -264,9 +266,17 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+
+                // Start periodic telemetry collection
+                let telemetry_cancel_handle = effect_handler
+                    .start_periodic_telemetry(Duration::from_secs(1))
+                    .await?;
+
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Cancel periodic collection
+                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 processor
                     .process(

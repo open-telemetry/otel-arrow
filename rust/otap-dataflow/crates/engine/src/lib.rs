@@ -372,6 +372,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             .map(|id| pipeline.get_node(id.index).expect("ok"))
                     })
                     .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
+
                 dest_nodes.push(node);
             }
 
