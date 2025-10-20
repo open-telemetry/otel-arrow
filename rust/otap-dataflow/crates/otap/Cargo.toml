@@ -29,6 +29,7 @@ thiserror = { workspace = true }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true }
 simdutf8 = { workspace = true }
+slotmap = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
