@@ -7,7 +7,7 @@ This crate will contain the implementation of the filter processor.
 ## Example Config
 
 ```yaml
-config: 
+config:
   logs:
     include:
       match_type: strict
