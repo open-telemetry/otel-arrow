@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1760958493285,
+  "lastUpdate": 1760963168237,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c03a3ea488414d4f432a047f4084d5208775dce0",
-          "message": "[query-engine] Add support for parsing KQL dynamic expressions (#1092)\n\n## Changes\n\n* Adds support in the KQL parser for the `dynamic` expression",
-          "timestamp": "2025-09-08T17:01:12Z",
-          "tree_id": "74ba4b38b9ca4ef48aefa7374eaf50600160e418",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/c03a3ea488414d4f432a047f4084d5208775dce0"
-        },
-        "date": 1757351427182,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 738500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 22155000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 22155000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 5.61,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 6.63,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 131.58,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 152.42,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 739000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 22170000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 22170000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 5.7,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 6.75,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 159.48,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 185.37,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 21.53,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "afaf61d8b090151204377c14cbc2f30aa2d25203",
+          "message": "Update all patch versions (#1313)\n\nThis PR contains the following updates:\n\n| Package | Change | Age | Confidence |\n|---|---|---|---|\n| [psutil](https://redirect.github.com/giampaolo/psutil) | `==7.1.0` ->\n`==7.1.1` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/psutil/7.1.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/psutil/7.1.0/7.1.1?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n| [pydantic](https://redirect.github.com/pydantic/pydantic)\n([changelog](https://docs.pydantic.dev/latest/changelog/)) | `==2.12.2`\n-> `==2.12.3` |\n[![age](https://developer.mend.io/api/mc/badges/age/pypi/pydantic/2.12.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n[![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pydantic/2.12.2/2.12.3?slim=true)](https://docs.renovatebot.com/merge-confidence/)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>giampaolo/psutil (psutil)</summary>\n\n###\n[`v7.1.1`](https://redirect.github.com/giampaolo/psutil/blob/HEAD/HISTORY.rst#711)\n\n[Compare\nSource](https://redirect.github.com/giampaolo/psutil/compare/release-7.1.0...release-7.1.1)\n\n\\=====\n\n2025-10-19\n\n**Enhancements**\n\n- 2645\\_, \\[SunOS]: dropped support for SunOS 10.\n- 2646\\_, \\[SunOS]: add CI test runner for SunOS.\n\n**Bug fixes**\n\n- 2641\\_, \\[SunOS]: cannot compile psutil from sources due to missing C\ninclude.\n- 2357\\_, \\[SunOS]: `Process.cmdline()`\\_ does not handle spaces\nproperly. (patch\n  by Ben Raz)\n\n**Compatibility notes**\n\n- 2645\\_: SunOS 10 is no longer supported.\n\n</details>\n\n<details>\n<summary>pydantic/pydantic (pydantic)</summary>\n\n###\n[`v2.12.3`](https://redirect.github.com/pydantic/pydantic/blob/HEAD/HISTORY.md#v2123-2025-10-17)\n\n[Compare\nSource](https://redirect.github.com/pydantic/pydantic/compare/v2.12.2...v2.12.3)\n\n[GitHub\nrelease](https://redirect.github.com/pydantic/pydantic/releases/tag/v2.12.3)\n\n##### What's Changed\n\nThis is the third 2.13 patch release, fixing issues related to the\n`FieldInfo` class, and reverting a change to the supported\n[*after* model\nvalidator](https://docs.pydantic.dev/latest/concepts/validators/#model-validators)\nfunction signatures.\n\n- Raise a warning when an invalid after model validator function\nsignature is raised by\n[@&#8203;Viicos](https://redirect.github.com/Viicos) in\n[#&#8203;12414](https://redirect.github.com/pydantic/pydantic/pull/12414).\nStarting in 2.12.0, using class methods for *after* model validators\nraised an error, but the error wasn't raised concistently. We decided\n  to emit a deprecation warning instead.\n- Add\n[`FieldInfo.asdict()`](https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.FieldInfo.asdict)\nmethod, improve documentation around `FieldInfo` by\n[@&#8203;Viicos](https://redirect.github.com/Viicos) in\n[#&#8203;12411](https://redirect.github.com/pydantic/pydantic/pull/12411).\nThis also add back support for mutations on `FieldInfo` classes, that\nare reused as `Annotated` metadata. **However**, note that this is still\n*not* a supported pattern. Instead, please refer to the [added\nexample](https://docs.pydantic.dev/latest/examples/dynamic_models/) in\nthe documentation.\n\nThe [blog\npost](https://pydantic.dev/articles/pydantic-v2-12-release#changes)\nsection on changes was also updated to document the changes related to\n`serialize_as_any`.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am every weekday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0MS4xNDMuMSIsInVwZGF0ZWRJblZlciI6IjQxLjE0My4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2025-10-20T12:17:09Z",
+          "tree_id": "9159e50890b3e666c7984aecef51ae533f975d17",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/afaf61d8b090151204377c14cbc2f30aa2d25203"
+        },
+        "date": 1760963166139,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": -0.03333333333333333,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": -1,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 22.55,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 22.64,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": -0.03333333333333333,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": -1,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 21,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 21.13,
             "unit": "MiB"
           }
         ]
