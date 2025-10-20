@@ -384,12 +384,23 @@ mod tests {
 
         let include_props = LogMatchProperties::new(
             MatchType::Strict,
-            vec![KeyValueFilter::new(
-                "deployment.environment".to_string(),
-                AnyValueFilter::String("prod".to_string()),
-            ), KeyValueFilter::new("service.instance.number".to_string(), AnyValueFilter::Int(42)), KeyValueFilter::new("sampling.rate".to_string(), AnyValueFilter::Double(0.25)), KeyValueFilter::new("debug.enabled".to_string(), AnyValueFilter::Boolean(false))],
-            vec![KeyValueFilter::new("peer.port".to_string(), AnyValueFilter::Int(5432)), KeyValueFilter::new("jitter".to_string(), AnyValueFilter::Double(0.003))],
-            vec!["WARN".to_string(), "ERROR".to_string()],          // test severity_texts
+            vec![
+                KeyValueFilter::new(
+                    "deployment.environment".to_string(),
+                    AnyValueFilter::String("prod".to_string()),
+                ),
+                KeyValueFilter::new(
+                    "service.instance.number".to_string(),
+                    AnyValueFilter::Int(42),
+                ),
+                KeyValueFilter::new("sampling.rate".to_string(), AnyValueFilter::Double(0.25)),
+                KeyValueFilter::new("debug.enabled".to_string(), AnyValueFilter::Boolean(false)),
+            ],
+            vec![
+                KeyValueFilter::new("peer.port".to_string(), AnyValueFilter::Int(5432)),
+                KeyValueFilter::new("jitter".to_string(), AnyValueFilter::Double(0.003)),
+            ],
+            vec!["WARN".to_string(), "ERROR".to_string()], // test severity_texts
             Some(LogSeverityNumberMatchProperties::new(13, true)), // WARN and above
             vec![
                 AnyValueFilter::String("checkout started".to_string()),
