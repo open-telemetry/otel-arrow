@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use arrow::compute::concat_batches;
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DoubleValue, IntegerValue, LogicalExpression, PipelineExpression, ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringValue, ValueAccessor
+    BooleanValue, DataExpression, DoubleValue, IntegerValue, LogicalExpression, PipelineExpression,
+    ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
 use datafusion::common::{Column, JoinType};
@@ -102,8 +103,6 @@ fn scan_batch(
     }
 }
 
-
-
 enum ColumnAccessor {
     ColumnName(String),
     Attributes(String),
@@ -120,7 +119,6 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
                 match column_name {
-                    
                     // TODO parsing here is kind of goofy
                     "attributes" => match &selectors[2] {
                         ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
@@ -155,10 +153,8 @@ fn handle_binary_arg(scalar_expr: &ScalarExpression) -> Result<BinaryArg> {
     let binary_arg = match scalar_expr {
         ScalarExpression::Source(source) => {
             BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
-        },
-        ScalarExpression::Static(static_expr) => {
-            BinaryArg::Literal(static_expr.clone())
         }
+        ScalarExpression::Static(static_expr) => BinaryArg::Literal(static_expr.clone()),
         _ => {
             todo!("handle invalid scalar expr");
         }
@@ -199,58 +195,55 @@ fn handle_binary_filter_expr(
     let left_arg = handle_binary_arg(left)?;
     let right_arg = handle_binary_arg(right)?;
 
-
     // TODO support yoda people who put the column name on the right
-    // - "WARN" == "severity_text" 
+    // - "WARN" == "severity_text"
     // TODO support people who wanna match columns together (e.g. neither left or right are literals)
     match left_arg {
-        BinaryArg::Column(left_col) => {
-            match left_col {
-                ColumnAccessor::ColumnName(col_name) => {
-                    match right_arg {
-                        BinaryArg::Column(_) => {
-                            todo!("handle binary right column")
-                        },
-                        BinaryArg::Literal(static_scalar_expr) => {
-                            let col = logical_expr::col(col_name);
-                            let filter_expr = logical_expr::binary_expr(col, operator, try_static_scalar_to_literal(&static_scalar_expr)?);
-                            filter_builder.root_batch_exprs.push(filter_expr);
-                        }
-                    }
+        BinaryArg::Column(left_col) => match left_col {
+            ColumnAccessor::ColumnName(col_name) => match right_arg {
+                BinaryArg::Column(_) => {
+                    todo!("handle binary right column")
                 }
-                ColumnAccessor::Attributes(attr_key) => {
-                    match right_arg {
-                        BinaryArg::Column(_) => {
-                            todo!("handle column on right");
-                        },
-                        BinaryArg::Literal(static_scalar_expr) => {
-                            let attr_val_column_name = match static_scalar_expr {
-                                StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
-                                StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
-                                StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
-                                StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
-                                _ => {
-                                    todo!("handle other attribute columns for binary expr")
-                                }
-                            };
+                BinaryArg::Literal(static_scalar_expr) => {
+                    let col = logical_expr::col(col_name);
+                    let filter_expr = logical_expr::binary_expr(
+                        col,
+                        operator,
+                        try_static_scalar_to_literal(&static_scalar_expr)?,
+                    );
+                    filter_builder.root_batch_exprs.push(filter_expr);
+                }
+            },
+            ColumnAccessor::Attributes(attr_key) => match right_arg {
+                BinaryArg::Column(_) => {
+                    todo!("handle column on right");
+                }
+                BinaryArg::Literal(static_scalar_expr) => {
+                    let attr_val_column_name = match static_scalar_expr {
+                        StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
+                        StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
+                        StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
+                        StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
+                        _ => {
+                            todo!("handle other attribute columns for binary expr")
+                        }
+                    };
 
-                            let filter_expr = logical_expr::and(
-                                logical_expr::binary_expr(
-                                    logical_expr::col(consts::ATTRIBUTE_KEY),
-                                    operator,
-                                    logical_expr::lit(attr_key),
-                                ),
-                                logical_expr::binary_expr(
-                                    logical_expr::col(attr_val_column_name),
-                                    operator,
-                                    try_static_scalar_to_literal(&static_scalar_expr)?,
-                                ),
-                            );
-                            filter_builder.attr_batch_exprs.push(filter_expr);
-                        }
-                    }
+                    let filter_expr = logical_expr::and(
+                        logical_expr::binary_expr(
+                            logical_expr::col(consts::ATTRIBUTE_KEY),
+                            operator,
+                            logical_expr::lit(attr_key),
+                        ),
+                        logical_expr::binary_expr(
+                            logical_expr::col(attr_val_column_name),
+                            operator,
+                            try_static_scalar_to_literal(&static_scalar_expr)?,
+                        ),
+                    );
+                    filter_builder.attr_batch_exprs.push(filter_expr);
                 }
-            }
+            },
         },
         _ => {
             todo!("handle non column left");
@@ -430,11 +423,8 @@ mod test {
                         },
                         LogRecord {
                             attributes: vec![
-                                KeyValue::new(
-                                    "error",
-                                    AnyValue::new_string("error happen"),
-                                ),
-                                KeyValue::new("attr_int", AnyValue::new_int(1))
+                                KeyValue::new("error", AnyValue::new_string("error happen")),
+                                KeyValue::new("attr_int", AnyValue::new_int(1)),
                             ],
                             event_name: "5".to_string(),
                             ..Default::default()
@@ -465,7 +455,6 @@ mod test {
         // let kql_expr = "logs | where log.attributes[\"X\"] == \"Y\"";
         // let kql_expr = "logs | where log.severity_text == \"INFO\" or log.severity_text == \"ERROR\"";
         // let kql_expr = "logs | where log.severity_text == \"ERROR\" or log.attributes[\"error\"] == \"error happen\"";
-
         let kql_expr = "logs | where log.attributes[\"attr_int\"] == 1";
 
         // TODO next:
