@@ -12,8 +12,8 @@ use datafusion::catalog::MemTable;
 use datafusion::common::{Column, JoinType};
 use datafusion::datasource::provider_as_source;
 use datafusion::functions::unicode::right;
-use datafusion::logical_expr::{logical_plan, Expr};
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
+use datafusion::logical_expr::{Expr, logical_plan};
 
 use datafusion::prelude::{SessionContext, col};
 
@@ -177,7 +177,6 @@ fn try_static_scalar_to_literal(static_scalar_expr: &StaticScalarExpression) -> 
     Ok(lit_expr)
 }
 
-
 enum FilterSubQuery {
     // TODO dumb that these are vec, should be left/right tulues
     LeftSemiJoin(Vec<FilterBuilder>),
@@ -270,29 +269,47 @@ fn handle_filter_predicate(
             let mut right_builder = FilterBuilder::default();
             handle_filter_predicate(&mut right_builder, and_expr.get_right())?;
 
-            let nested_unions = matches!(left_builder.sub_query, Some(FilterSubQuery::UnionDistinct(_)))
-                && matches!(right_builder.sub_query, Some(FilterSubQuery::UnionDistinct(_)));
-            
+            let nested_unions = matches!(
+                left_builder.sub_query,
+                Some(FilterSubQuery::UnionDistinct(_))
+            ) && matches!(
+                right_builder.sub_query,
+                Some(FilterSubQuery::UnionDistinct(_))
+            );
+
             match (&left_builder.sub_query, &right_builder.sub_query) {
                 // (x1 or x2) and (y1 or y2)
                 //
                 // (select x1 union distinct x2) Join::LeftSemi (y1 union distinct y2)
-                (Some(FilterSubQuery::UnionDistinct(_)), Some(FilterSubQuery::UnionDistinct(_))) => {
-                    filter_builder.sub_query = Some(FilterSubQuery::LeftSemiJoin(vec![left_builder, right_builder]));
-                },
+                (
+                    Some(FilterSubQuery::UnionDistinct(_)),
+                    Some(FilterSubQuery::UnionDistinct(_)),
+                ) => {
+                    filter_builder.sub_query = Some(FilterSubQuery::LeftSemiJoin(vec![
+                        left_builder,
+                        right_builder,
+                    ]));
+                }
 
                 // select x1 and y1
                 (None, None) => {
                     // all the fields can just be and-ed together
 
                     // TODO just make this an append method ....
-                    filter_builder.root_batch_exprs.append(&mut left_builder.root_batch_exprs);
-                    filter_builder.attr_batch_exprs.append(&mut left_builder.attr_batch_exprs);
-                    
-                    filter_builder.root_batch_exprs.append(&mut right_builder.root_batch_exprs);
-                    filter_builder.attr_batch_exprs.append(&mut right_builder.attr_batch_exprs);
+                    filter_builder
+                        .root_batch_exprs
+                        .append(&mut left_builder.root_batch_exprs);
+                    filter_builder
+                        .attr_batch_exprs
+                        .append(&mut left_builder.attr_batch_exprs);
 
-                },
+                    filter_builder
+                        .root_batch_exprs
+                        .append(&mut right_builder.root_batch_exprs);
+                    filter_builder
+                        .attr_batch_exprs
+                        .append(&mut right_builder.attr_batch_exprs);
+                }
                 _ => {
                     todo!("handle other join clauses")
                 }
@@ -325,9 +342,10 @@ fn handle_filter_predicate(
                 let filter_expr = logical_expr::or(lefts, rights);
                 filter_builder.root_batch_exprs.push(filter_expr);
             } else {
-                // filter_builder.union_distinct.push(left_builder);
-                // filter_builder.union_distinct.push(right_builder);
-                filter_builder.sub_query = Some(FilterSubQuery::UnionDistinct(vec![left_builder, right_builder]))
+                filter_builder.sub_query = Some(FilterSubQuery::UnionDistinct(vec![
+                    left_builder,
+                    right_builder,
+                ]))
             }
         }
         LogicalExpression::EqualTo(eq_expr) => {
@@ -353,19 +371,23 @@ fn append_filter_steps(
         root_logical_plan = root_logical_plan.filter(filter_expr.clone()).unwrap();
     }
 
+    // TODO check the perf here, but it might be better to join this with itself vs. with the root
+    // plan multiple times?
     if !filter_builder.attr_batch_exprs.is_empty() {
         for filter_expr in &filter_builder.attr_batch_exprs {
             root_logical_plan = root_logical_plan
                 .join(
-                    scan_batch(&exec_ctx, ArrowPayloadType::LogAttrs)?.filter(filter_expr.clone()).unwrap().build().unwrap(),
+                    scan_batch(&exec_ctx, ArrowPayloadType::LogAttrs)?
+                        .filter(filter_expr.clone())
+                        .unwrap()
+                        .build()
+                        .unwrap(),
                     JoinType::LeftSemi,
                     (vec![consts::ID], vec![consts::PARENT_ID]),
                     None,
                 )
                 .unwrap();
         }
-
-
     }
 
     // TODO this is a goofy check
@@ -377,8 +399,15 @@ fn append_filter_steps(
             let right_builder = &sub_queries[1];
             let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
 
-            root_logical_plan = left.join(right.build().unwrap(), JoinType::LeftSemi, (vec![consts::ID], vec![consts::ID]), None).unwrap();
-        },
+            root_logical_plan = left
+                .join(
+                    right.build().unwrap(),
+                    JoinType::LeftSemi,
+                    (vec![consts::ID], vec![consts::ID]),
+                    None,
+                )
+                .unwrap();
+        }
         Some(FilterSubQuery::UnionDistinct(sub_queries)) => {
             let left_builder = &sub_queries[0];
             let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
@@ -387,7 +416,7 @@ fn append_filter_steps(
             let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
 
             root_logical_plan = left.union_distinct(right.build().unwrap()).unwrap();
-        },
+        }
         None => {
             // nothing to do
         }
