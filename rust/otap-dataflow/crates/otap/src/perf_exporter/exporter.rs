@@ -26,9 +26,10 @@ use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
@@ -151,17 +152,17 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     _ = timer_cancel_handle.cancel().await;
                     return Ok(self.terminal_state(deadline));
                 }
-                Message::PData(pdata) => {
+                Message::PData(mut pdata) => {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
                     // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    // Context is unused
-                    let (_ctx, data) = pdata.into_parts();
+                    let payload = pdata.take_payload();
+                    let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
-                    let batch: OtapArrowRecords = match data.try_into() {
+                    let batch: OtapArrowRecords = match payload.try_into() {
                         Ok(batch) => batch,
                         Err(_) => {
                             self.pdata_metrics.inc_failed(signal_type);
