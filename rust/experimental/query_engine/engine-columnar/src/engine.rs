@@ -12,7 +12,7 @@ use datafusion::catalog::MemTable;
 use datafusion::common::{Column, JoinType};
 use datafusion::datasource::provider_as_source;
 use datafusion::functions::unicode::right;
-use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::{logical_plan, Expr};
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
 
 use datafusion::prelude::{SessionContext, col};
@@ -177,13 +177,18 @@ fn try_static_scalar_to_literal(static_scalar_expr: &StaticScalarExpression) -> 
     Ok(lit_expr)
 }
 
+
+enum FilterSubQuery {
+    // TODO dumb that these are vec, should be left/right tulues
+    LeftSemiJoin(Vec<FilterBuilder>),
+    UnionDistinct(Vec<FilterBuilder>),
+}
+
 #[derive(Default)]
 struct FilterBuilder {
     root_batch_exprs: Vec<Expr>,
     attr_batch_exprs: Vec<Expr>,
-
-    // TODO make this not a vec, it should be a left/right tuple ...
-    union_distinct: Vec<FilterBuilder>,
+    sub_query: Option<FilterSubQuery>,
 }
 
 fn handle_binary_filter_expr(
@@ -258,6 +263,41 @@ fn handle_filter_predicate(
     predicate: &LogicalExpression,
 ) -> Result<()> {
     match predicate {
+        LogicalExpression::And(and_expr) => {
+            let mut left_builder = FilterBuilder::default();
+            handle_filter_predicate(&mut left_builder, and_expr.get_left())?;
+
+            let mut right_builder = FilterBuilder::default();
+            handle_filter_predicate(&mut right_builder, and_expr.get_right())?;
+
+            let nested_unions = matches!(left_builder.sub_query, Some(FilterSubQuery::UnionDistinct(_)))
+                && matches!(right_builder.sub_query, Some(FilterSubQuery::UnionDistinct(_)));
+            
+            match (&left_builder.sub_query, &right_builder.sub_query) {
+                // (x1 or x2) and (y1 or y2)
+                //
+                // (select x1 union distinct x2) Join::LeftSemi (y1 union distinct y2)
+                (Some(FilterSubQuery::UnionDistinct(_)), Some(FilterSubQuery::UnionDistinct(_))) => {
+                    filter_builder.sub_query = Some(FilterSubQuery::LeftSemiJoin(vec![left_builder, right_builder]));
+                },
+
+                // select x1 and y1
+                (None, None) => {
+                    // all the fields can just be and-ed together
+
+                    // TODO just make this an append method ....
+                    filter_builder.root_batch_exprs.append(&mut left_builder.root_batch_exprs);
+                    filter_builder.attr_batch_exprs.append(&mut left_builder.attr_batch_exprs);
+                    
+                    filter_builder.root_batch_exprs.append(&mut right_builder.root_batch_exprs);
+                    filter_builder.attr_batch_exprs.append(&mut right_builder.attr_batch_exprs);
+
+                },
+                _ => {
+                    todo!("handle other join clauses")
+                }
+            }
+        }
         LogicalExpression::Or(or_expr) => {
             // TODO it'd be nice to avoid the allocations here ...
             let mut left_builder = FilterBuilder::default();
@@ -285,8 +325,9 @@ fn handle_filter_predicate(
                 let filter_expr = logical_expr::or(lefts, rights);
                 filter_builder.root_batch_exprs.push(filter_expr);
             } else {
-                filter_builder.union_distinct.push(left_builder);
-                filter_builder.union_distinct.push(right_builder);
+                // filter_builder.union_distinct.push(left_builder);
+                // filter_builder.union_distinct.push(right_builder);
+                filter_builder.sub_query = Some(FilterSubQuery::UnionDistinct(vec![left_builder, right_builder]))
             }
         }
         LogicalExpression::EqualTo(eq_expr) => {
@@ -313,30 +354,43 @@ fn append_filter_steps(
     }
 
     if !filter_builder.attr_batch_exprs.is_empty() {
-        let mut attrs_logical_plan = scan_batch(&exec_ctx, ArrowPayloadType::LogAttrs)?;
         for filter_expr in &filter_builder.attr_batch_exprs {
-            attrs_logical_plan = attrs_logical_plan.filter(filter_expr.clone()).unwrap();
+            root_logical_plan = root_logical_plan
+                .join(
+                    scan_batch(&exec_ctx, ArrowPayloadType::LogAttrs)?.filter(filter_expr.clone()).unwrap().build().unwrap(),
+                    JoinType::LeftSemi,
+                    (vec![consts::ID], vec![consts::PARENT_ID]),
+                    None,
+                )
+                .unwrap();
         }
 
-        root_logical_plan = root_logical_plan
-            .join(
-                attrs_logical_plan.build().unwrap(),
-                JoinType::LeftSemi,
-                (vec![consts::ID], vec![consts::PARENT_ID]),
-                None,
-            )
-            .unwrap();
+
     }
 
     // TODO this is a goofy check
-    if filter_builder.union_distinct.len() == 2 {
-        let left_builder = &filter_builder.union_distinct[0];
-        let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
+    match &filter_builder.sub_query {
+        Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
+            let left_builder = &sub_queries[0];
+            let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
 
-        let right_builder = &filter_builder.union_distinct[1];
-        let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
+            let right_builder = &sub_queries[1];
+            let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
 
-        root_logical_plan = left.union_distinct(right.build().unwrap()).unwrap();
+            root_logical_plan = left.join(right.build().unwrap(), JoinType::LeftSemi, (vec![consts::ID], vec![consts::ID]), None).unwrap();
+        },
+        Some(FilterSubQuery::UnionDistinct(sub_queries)) => {
+            let left_builder = &sub_queries[0];
+            let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
+
+            let right_builder = &sub_queries[1];
+            let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
+
+            root_logical_plan = left.union_distinct(right.build().unwrap()).unwrap();
+        },
+        None => {
+            // nothing to do
+        }
     }
 
     return Ok(root_logical_plan);
@@ -351,14 +405,21 @@ async fn filter_batch(
     let root_logical_plan =
         append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
 
+    let ctx = SessionContext::new();
+
+    // let lp2 = root_logical_plan.clone().explain(true, false).unwrap().build().unwrap();
+    // let exp_result = ctx.execute_logical_plan(lp2).await.unwrap().collect().await.unwrap();
+    // println!("{:?}", exp_result[0]);
+
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan = {}", logical_plan);
-    let ctx = SessionContext::new();
-    let physical_plan = ctx
-        .state()
-        .create_physical_plan(&logical_plan)
-        .await
-        .unwrap();
+
+    // let physical_plan = ctx
+    //     .state()
+    //     .create_physical_plan(&logical_plan)
+    //     .await
+    //     .unwrap();
+
     // println!("physical plan = {:#?}", physical_plan);
     // physical_plan.execute(partition, context)
 
@@ -407,7 +468,10 @@ mod test {
                         },
                         LogRecord {
                             severity_text: "WARN".to_string(),
-                            attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                            attributes: vec![
+                                KeyValue::new("X", AnyValue::new_string("Y")),
+                                KeyValue::new("error", AnyValue::new_string("error happen")),
+                            ],
                             event_name: "2".to_string(),
                             ..Default::default()
                         },
@@ -426,6 +490,7 @@ mod test {
                                 KeyValue::new("error", AnyValue::new_string("error happen")),
                                 KeyValue::new("attr_int", AnyValue::new_int(1)),
                             ],
+                            severity_text: "DEBUG".to_string(),
                             event_name: "5".to_string(),
                             ..Default::default()
                         },
@@ -455,9 +520,14 @@ mod test {
         // let kql_expr = "logs | where log.attributes[\"X\"] == \"Y\"";
         // let kql_expr = "logs | where log.severity_text == \"INFO\" or log.severity_text == \"ERROR\"";
         // let kql_expr = "logs | where log.severity_text == \"ERROR\" or log.attributes[\"error\"] == \"error happen\"";
-        let kql_expr = "logs | where log.attributes[\"attr_int\"] == 1";
+        // let kql_expr = "logs | where log.attributes[\"attr_int\"] == 1 and log.attributes[\"error\"] == \"error happen\" and log.severity_text == \"DEBUG\"";
+        let kql_expr = "logs | where (log.attributes[\"attr_int\"] == 1 or log.severity_text == \"WARN\") and (log.severity_text == \"DEBUG\" or log.attributes[\"error\"] == \"error happen\")";
 
         // TODO next:
+        // - logs | where logs.attributes["X"] == "Y" and (log.severity_text == \"ERROR\" or log.severity_text == "DEBUG")
+        // - logs | where severity_text == "WARN" and (log.severity_text == \"ERROR\" or log.attributes[\"error\"] == \"error happen\"")
+        // - logs | where (log.severity_text == ERROR or log.attributes["error"] == "error happen") and (log.severity_text == "INFO" or log.attributes["info"] == true)
+
         // - filter with an AND expression
         // - filter by resource.name
         // - filter by resource.attributes
