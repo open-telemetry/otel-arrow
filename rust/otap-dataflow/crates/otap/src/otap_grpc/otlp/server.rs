@@ -30,7 +30,9 @@ use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
 
-/// Shared state for binding requests with responses.
+/// Shared state for binding requests with responses.  This map is
+/// generally optional depending on wait_for_result: true, we do not
+/// create or use the state when ack/nack is not required.
 #[derive(Clone)]
 pub struct SharedState(Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>);
 
@@ -191,7 +193,21 @@ impl Decoder for OtlpBytesDecoder {
     }
 }
 
-/// implementation of tonic service that handles the decoded request (the OtapBatch).
+/// Returns a new gRPC service with OTLP bytes codec for the
+/// appropriate signal.  Note! This is an inexpensive call, called for
+/// each request instead of a Clone + Sync + Send trait binding that
+/// would require Arc<Mutex<_>>.
+fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
+    let codec = OtlpBytesCodec::new(signal);
+    Grpc::new(codec).apply_compression_config(
+        settings.accept_compression_encodings,
+        settings.send_compression_encodings,
+    )
+}
+
+/// Tonic service handler for decoded requests of the appropriate
+/// signal.  Like new_grpc, these are inexpensive to create and do
+/// not require Arc<Mutex<_>>.
 struct OtapBatchService {
     effect_handler: EffectHandler<OtapPdata>,
     state: Option<SharedState>,
@@ -204,17 +220,6 @@ impl OtapBatchService {
             state,
         }
     }
-}
-
-/// Returns a new gRPC service with OTLP bytes codec for the appropriate signal.
-/// Note! This is called for each request instead of a Clone + Sync + Send trait
-/// binding that would require is to Arc<Mutex<Grpc<OtlpBytesCodec>>>.
-fn new_otlp_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal);
-    Grpc::new(codec).apply_compression_config(
-        settings.accept_compression_encodings,
-        settings.send_compression_encodings,
-    )
 }
 
 /// Guard mechanism for cancelling a slot when Tonic timeout
@@ -366,7 +371,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         let common = self.common.clone();
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => Box::pin(async move {
-                Ok(new_otlp_grpc(SignalType::Logs, common.settings)
+                Ok(new_grpc(SignalType::Logs, common.settings)
                     .unary(
                         OtapBatchService::new(common.effect_handler, common.state),
                         req,
@@ -412,7 +417,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
         let common = self.common.clone();
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => Box::pin(async move {
-                Ok(new_otlp_grpc(SignalType::Metrics, common.settings)
+                Ok(new_grpc(SignalType::Metrics, common.settings)
                     .unary(
                         OtapBatchService::new(common.effect_handler, common.state),
                         req,
@@ -458,7 +463,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
         let common = self.common.clone();
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => Box::pin(async move {
-                Ok(new_otlp_grpc(SignalType::Traces, common.settings)
+                Ok(new_grpc(SignalType::Traces, common.settings)
                     .unary(
                         OtapBatchService::new(common.effect_handler, common.state),
                         req,

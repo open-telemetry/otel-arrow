@@ -222,7 +222,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let settings = Settings {
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
-            accept_compression_encodings: compression.clone(),
+            accept_compression_encodings: compression,
             send_compression_encodings: compression,
         };
 
