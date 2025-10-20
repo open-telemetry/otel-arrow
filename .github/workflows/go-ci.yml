@@ -61,8 +61,8 @@ jobs:
     - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
       with:
         go-version: "1.25.3"
-    - uses: github/codeql-action/init@f443b600d91635bebf5b0d9ebc620189c0d6fba5 # v4.30.8
+    - uses: github/codeql-action/init@16140ae1a102900babc80a33c44059580f687047 # v4.30.9
       with:
         languages: go
-    - uses: github/codeql-action/analyze@f443b600d91635bebf5b0d9ebc620189c0d6fba5 # v4.30.8
+    - uses: github/codeql-action/analyze@16140ae1a102900babc80a33c44059580f687047 # v4.30.9
       timeout-minutes: 60
