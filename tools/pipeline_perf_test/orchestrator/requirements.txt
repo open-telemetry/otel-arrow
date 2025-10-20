@@ -3,11 +3,11 @@
 # General dependencies
 requests==2.32.5
 pyyaml==6.0.3
-pydantic==2.12.2
+pydantic==2.12.3
 
 # Docker management
 docker==7.1.0
-psutil==7.1.0
+psutil==7.1.1
 
 # Kubernetes management
 kubernetes==33.1.0
