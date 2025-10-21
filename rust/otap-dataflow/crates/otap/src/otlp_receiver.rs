@@ -56,7 +56,7 @@ pub struct Config {
 
     /// Whether to wait for the result (default: true)
     /// Note when wait_for_result=false, it is impossible to
-    /// see a failure, errors are efffectively suppressed.
+    /// see a failure, errors are effectively suppressed.
     #[serde(default = "default_wait_for_result")]
     wait_for_result: bool,
 }
