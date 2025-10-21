@@ -4,28 +4,23 @@
 use std::sync::Arc;
 
 use arrow::compute::concat_batches;
-use arrow::ipc::RecordBatch;
 use data_engine_expressions::{
     BooleanValue, DataExpression, DoubleValue, IntegerValue, LogicalExpression, PipelineExpression,
-    ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
+    ScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
-use datafusion::common::{Column, JoinType};
+use datafusion::common::JoinType;
 use datafusion::datasource::provider_as_source;
-use datafusion::functions::unicode::right;
 use datafusion::functions_window::expr_fn::row_number;
-use datafusion::logical_expr::expr::{WindowFunction, WindowFunctionParams};
+use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
-use datafusion::logical_expr::{Expr, logical_plan};
-
-use datafusion::prelude::{SessionContext, col};
+use datafusion::prelude::SessionContext;
 
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::out_port::{OutPort, OutPortProvider};
 
 const ROW_NUMBER_COL: &str = "_row_number";
 
@@ -180,21 +175,6 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
     }
 }
 
-// TODO delete this
-fn handle_binary_arg(scalar_expr: &ScalarExpression) -> Result<BinaryArg> {
-    let binary_arg = match scalar_expr {
-        ScalarExpression::Source(source) => {
-            BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
-        }
-        ScalarExpression::Static(static_expr) => BinaryArg::Literal(static_expr.clone()),
-        _ => {
-            todo!("handle invalid scalar expr");
-        }
-    };
-
-    Ok(binary_arg)
-}
-
 fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
     let lit_expr = match static_scalar {
         StaticScalarExpression::String(str_val) => logical_expr::lit(str_val.get_value()),
@@ -223,221 +203,6 @@ fn try_static_scalar_to_any_val_column(
     };
 
     Ok(col_name)
-}
-
-#[derive(Clone, Debug)]
-enum FilterSubQuery {
-    // TODO dumb that these are vec, should be left/right tulues
-    LeftSemiJoin(Vec<FilterBuilder>),
-    UnionDistinct(Vec<FilterBuilder>),
-}
-
-#[derive(Clone, Debug, Default)]
-struct FilterBuilder {
-    root_batch_exprs: Vec<Expr>,
-    attr_batch_exprs: Vec<Expr>,
-    sub_query: Option<FilterSubQuery>,
-}
-
-fn handle_binary_filter_expr(
-    filter_builder: &mut FilterBuilder,
-    operator: Operator,
-    left: &ScalarExpression,
-    right: &ScalarExpression,
-) -> Result<()> {
-    let left_arg = handle_binary_arg(left)?;
-    let right_arg = handle_binary_arg(right)?;
-
-    // TODO support yoda people who put the column name on the right
-    // - "WARN" == "severity_text"
-    // TODO support people who wanna match columns together (e.g. neither left or right are literals)
-    match left_arg {
-        BinaryArg::Column(left_col) => match left_col {
-            ColumnAccessor::ColumnName(col_name) => match right_arg {
-                BinaryArg::Column(_) => {
-                    todo!("handle binary right column")
-                }
-                BinaryArg::Literal(static_scalar_expr) => {
-                    let col = logical_expr::col(col_name);
-                    let filter_expr = logical_expr::binary_expr(
-                        col,
-                        operator,
-                        try_static_scalar_to_literal(&static_scalar_expr)?,
-                    );
-                    filter_builder.root_batch_exprs.push(filter_expr);
-                }
-            },
-            ColumnAccessor::Attributes(attr_key) => match right_arg {
-                BinaryArg::Column(_) => {
-                    todo!("handle column on right");
-                }
-                BinaryArg::Literal(static_scalar_expr) => {
-                    let attr_val_column_name = match static_scalar_expr {
-                        StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
-                        StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
-                        StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
-                        StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
-                        _ => {
-                            todo!("handle other attribute columns for binary expr")
-                        }
-                    };
-
-                    let filter_expr = logical_expr::and(
-                        logical_expr::binary_expr(
-                            logical_expr::col(consts::ATTRIBUTE_KEY),
-                            operator,
-                            logical_expr::lit(attr_key),
-                        ),
-                        logical_expr::binary_expr(
-                            logical_expr::col(attr_val_column_name),
-                            operator,
-                            try_static_scalar_to_literal(&static_scalar_expr)?,
-                        ),
-                    );
-                    filter_builder.attr_batch_exprs.push(filter_expr);
-                }
-            },
-        },
-        _ => {
-            todo!("handle non column left");
-        }
-    };
-
-    Ok(())
-}
-
-fn handle_filter_predicate(
-    filter_builder: &mut FilterBuilder,
-    predicate: &LogicalExpression,
-) -> Result<()> {
-    match predicate {
-        LogicalExpression::And(and_expr) => {
-            let mut left_builder = FilterBuilder::default();
-            handle_filter_predicate(&mut left_builder, and_expr.get_left())?;
-
-            let mut right_builder = FilterBuilder::default();
-            handle_filter_predicate(&mut right_builder, and_expr.get_right())?;
-
-            match (&left_builder.sub_query, &right_builder.sub_query) {
-                // (x1 or x2) and (y1 or y2)
-                //
-                // (select x1 union distinct x2) Join::LeftSemi (y1 union distinct y2)
-                (
-                    Some(FilterSubQuery::UnionDistinct(_)),
-                    Some(FilterSubQuery::UnionDistinct(_)),
-                ) => {
-                    filter_builder.sub_query = Some(FilterSubQuery::LeftSemiJoin(vec![
-                        left_builder,
-                        right_builder,
-                    ]));
-                }
-
-                // x1 and (y1 or y1)
-                //
-                // select x1 and (y1 union distinct y2)
-                (_, Some(FilterSubQuery::UnionDistinct(union_sub_queries))) => {
-                    filter_builder
-                        .root_batch_exprs
-                        .append(&mut left_builder.root_batch_exprs);
-                    filter_builder
-                        .attr_batch_exprs
-                        .append(&mut left_builder.attr_batch_exprs);
-
-                    // TODO once again it'd be nice to avoid the clone
-                    filter_builder.sub_query =
-                        Some(FilterSubQuery::UnionDistinct(union_sub_queries.to_vec()));
-                }
-
-                // (x1 or x2) and y1
-                //
-                // select (x1 union distinct x2) and y1
-                (Some(FilterSubQuery::UnionDistinct(union_sub_queries)), _) => {
-                    filter_builder
-                        .root_batch_exprs
-                        .append(&mut right_builder.root_batch_exprs);
-                    filter_builder
-                        .attr_batch_exprs
-                        .append(&mut right_builder.attr_batch_exprs);
-
-                    // TODO once again it'd be nice to avoid the clone
-                    filter_builder.sub_query =
-                        Some(FilterSubQuery::UnionDistinct(union_sub_queries.to_vec()));
-                }
-
-                // select x1 and y1
-                (None, None) => {
-                    // all the fields can just be and-ed together
-
-                    // TODO just make this an append method ....
-                    filter_builder
-                        .root_batch_exprs
-                        .append(&mut left_builder.root_batch_exprs);
-                    filter_builder
-                        .attr_batch_exprs
-                        .append(&mut left_builder.attr_batch_exprs);
-
-                    filter_builder
-                        .root_batch_exprs
-                        .append(&mut right_builder.root_batch_exprs);
-                    filter_builder
-                        .attr_batch_exprs
-                        .append(&mut right_builder.attr_batch_exprs);
-                }
-                _ => {
-                    todo!("handle other join clauses")
-                }
-            }
-        }
-        LogicalExpression::Or(or_expr) => {
-            // TODO it'd be nice to avoid the allocations here ...
-            let mut left_builder = FilterBuilder::default();
-            let left = or_expr.get_left();
-            handle_filter_predicate(&mut left_builder, left)?;
-
-            let mut right_builder = FilterBuilder::default();
-            let right = or_expr.get_right();
-            handle_filter_predicate(&mut right_builder, right)?;
-
-            // TODO need to check we're not also joining resource_attrs, scope_attrs
-            let no_joins = right_builder.attr_batch_exprs.is_empty()
-                && left_builder.attr_batch_exprs.is_empty();
-
-            // TODO there's an optimization that can be made here for filters like
-            // attributes["X"] == "Y" or attributes["X"] == "Z"
-            // rather than doing a subquery, we can do a single join against the
-            // root table while filtering attrs table for either of these attributes
-
-            if no_joins {
-                let mut lefts = left_builder.root_batch_exprs[0].clone();
-                for next_left in left_builder.root_batch_exprs.iter().skip(1) {
-                    lefts = logical_expr::and(lefts, next_left.clone());
-                }
-
-                let mut rights = right_builder.root_batch_exprs[0].clone();
-                for next_right in right_builder.root_batch_exprs.iter().skip(1) {
-                    rights = logical_expr::and(rights, next_right.clone());
-                }
-                let filter_expr = logical_expr::or(lefts, rights);
-                filter_builder.root_batch_exprs.push(filter_expr);
-            } else {
-                filter_builder.sub_query = Some(FilterSubQuery::UnionDistinct(vec![
-                    left_builder,
-                    right_builder,
-                ]))
-            }
-        }
-        LogicalExpression::EqualTo(eq_expr) => {
-            // println!("handling EQ expr {:#?}", eq_expr);
-            let left = eq_expr.get_left();
-            let right = eq_expr.get_right();
-            handle_binary_filter_expr(filter_builder, Operator::Eq, left, right)?;
-        }
-        _ => {
-            todo!("handle unsupported predicate")
-        }
-    };
-
-    Ok(())
 }
 
 struct FilteringJoin {
@@ -613,9 +378,6 @@ impl Filter {
                             todo!("How does this happen?")
                         }
                     },
-                    _ => {
-                        todo!()
-                    }
                 }
             }
 
@@ -729,84 +491,10 @@ impl Filter {
     }
 }
 
-fn append_filter_steps(
-    exec_ctx: &mut ExecutionContext,
-    mut root_logical_plan: LogicalPlanBuilder,
-    filter_builder: &FilterBuilder,
-) -> Result<LogicalPlanBuilder> {
-    for filter_expr in &filter_builder.root_batch_exprs {
-        root_logical_plan = root_logical_plan.filter(filter_expr.clone()).unwrap();
-    }
-
-    // TODO check the perf here, but it might be better to join this with itself vs. with the root
-    // plan multiple times?
-    if !filter_builder.attr_batch_exprs.is_empty() {
-        for filter_expr in &filter_builder.attr_batch_exprs {
-            root_logical_plan = root_logical_plan
-                .join(
-                    scan_batch(&exec_ctx, ArrowPayloadType::LogAttrs)?
-                        .filter(filter_expr.clone())
-                        .unwrap()
-                        .build()
-                        .unwrap(),
-                    JoinType::LeftSemi,
-                    (vec![consts::ID], vec![consts::PARENT_ID]),
-                    None,
-                )
-                .unwrap();
-        }
-    }
-
-    match &filter_builder.sub_query {
-        Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
-            let left_builder = &sub_queries[0];
-            let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
-
-            let right_builder = &sub_queries[1];
-            let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
-
-            root_logical_plan = left
-                .join(
-                    right.build().unwrap(),
-                    JoinType::LeftSemi,
-                    (vec![consts::ID], vec![consts::ID]),
-                    None,
-                )
-                .unwrap();
-        }
-
-        // TODO -- double check if this is the most efficient way to do this.
-        // e.g. there's 2 options here: x1 and (y1 or y2)
-        //
-        // op 1: select (y1 where x1) union distinct (y2 where x1)
-        // op 2: select (y1 union y2) where x1
-        //
-        Some(FilterSubQuery::UnionDistinct(sub_queries)) => {
-            let left_builder = &sub_queries[0];
-            let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
-
-            let right_builder = &sub_queries[1];
-            let right = append_filter_steps(exec_ctx, root_logical_plan.clone(), right_builder)?;
-
-            root_logical_plan = left.union_distinct(right.build().unwrap()).unwrap();
-        }
-        None => {
-            // nothing to do
-        }
-    }
-
-    return Ok(root_logical_plan);
-}
-
 async fn filter_batch(
     exec_ctx: &mut ExecutionContext,
     predicate: &LogicalExpression,
 ) -> Result<()> {
-    // let mut filter_builder = FilterBuilder::default();
-    // handle_filter_predicate(&mut filter_builder, predicate)?;
-    // let root_logical_plan =
-    //     append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
-
     let filter = Filter::try_from_predicate(&exec_ctx, predicate)?;
     let mut root_logical_plan = scan_root_batch(&exec_ctx)?;
 
@@ -886,21 +574,16 @@ async fn filter_attrs_for_root(
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{DictionaryArray, StringArray, UInt8Array};
+    use arrow::array::{DictionaryArray, StringArray};
     use arrow::datatypes::UInt8Type;
-    use data_engine_kql_parser::{
-        KqlParser, Parser, ParserMapKeySchema, ParserMapSchema, ParserOptions,
-    };
+    use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use datafusion::prelude::lit;
-    use datafusion::sql::sqlparser::keywords::ROW;
     use otap_df_otap::encoder::encode_logs_otap_batch;
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use prost::Message;
-
-    use crate::out_port::MapOutPortProvider;
 
     use super::*;
 
@@ -1323,7 +1006,7 @@ mod test {
 
         let mut engine = OtapBatchEngine {};
 
-        let mut parser_options = ParserOptions::new();
+        let parser_options = ParserOptions::new();
 
         // TODO what is the point of this?
         // let mut logs_schema = ParserMapSchema::new()
@@ -1408,7 +1091,7 @@ mod test {
         let ctx = SessionContext::new();
         let plan = scan_root_batch(&exec_ctx)
             .unwrap()
-            .filter(col("severity_text").eq(lit("WARN")))
+            .filter(logical_expr::col("severity_text").eq(lit("WARN")))
             .unwrap();
 
         let result = ctx
@@ -1424,7 +1107,7 @@ mod test {
 
         let plan2 = scan_root_batch(&exec_ctx)
             .unwrap()
-            .filter(col("event_name").eq(lit("3")))
+            .filter(logical_expr::col("event_name").eq(lit("3")))
             .unwrap();
 
         let result = ctx
