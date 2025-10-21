@@ -179,13 +179,14 @@ fn try_static_scalar_to_literal(static_scalar_expr: &StaticScalarExpression) -> 
     Ok(lit_expr)
 }
 
+#[derive(Clone, Debug)]
 enum FilterSubQuery {
     // TODO dumb that these are vec, should be left/right tulues
     LeftSemiJoin(Vec<FilterBuilder>),
     UnionDistinct(Vec<FilterBuilder>),
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct FilterBuilder {
     root_batch_exprs: Vec<Expr>,
     attr_batch_exprs: Vec<Expr>,
@@ -285,6 +286,38 @@ fn handle_filter_predicate(
                     ]));
                 }
 
+                // x1 and (y1 or y1)
+                //
+                // select x1 and (y1 union distinct y2)
+                (_, Some(FilterSubQuery::UnionDistinct(union_sub_queries))) => {
+                    filter_builder
+                        .root_batch_exprs
+                        .append(&mut left_builder.root_batch_exprs);
+                    filter_builder
+                        .attr_batch_exprs
+                        .append(&mut left_builder.attr_batch_exprs);
+
+                    // TODO once again it'd be nice to avoid the clone
+                    filter_builder.sub_query =
+                        Some(FilterSubQuery::UnionDistinct(union_sub_queries.to_vec()));
+                }
+
+                // (x1 or x2) and y1
+                //
+                // select (x1 union distinct x2) and y1
+                (Some(FilterSubQuery::UnionDistinct(union_sub_queries)), _) => {
+                    filter_builder
+                        .root_batch_exprs
+                        .append(&mut right_builder.root_batch_exprs);
+                    filter_builder
+                        .attr_batch_exprs
+                        .append(&mut right_builder.attr_batch_exprs);
+
+                    // TODO once again it'd be nice to avoid the clone
+                    filter_builder.sub_query =
+                        Some(FilterSubQuery::UnionDistinct(union_sub_queries.to_vec()));
+                }
+
                 // select x1 and y1
                 (None, None) => {
                     // all the fields can just be and-ed together
@@ -348,7 +381,7 @@ fn handle_filter_predicate(
             }
         }
         LogicalExpression::EqualTo(eq_expr) => {
-            println!("handling EQ expr {:#?}", eq_expr);
+            // println!("handling EQ expr {:#?}", eq_expr);
             let left = eq_expr.get_left();
             let right = eq_expr.get_right();
             handle_binary_filter_expr(filter_builder, Operator::Eq, left, right)?;
@@ -389,6 +422,12 @@ fn append_filter_steps(
         }
     }
 
+    // TODO -- double check if this is the most efficient way to do this.
+    // e.g. there's 2 options here: x1 and (y1 or y2)
+    //
+    // op 1: select (y1 where x1) union distinct (y2 where x1)
+    // op 2: select (y1 union y2) where x1
+    //
     match &filter_builder.sub_query {
         Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
             let left_builder = &sub_queries[0];
@@ -433,7 +472,7 @@ async fn filter_batch(
         append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
 
     let logical_plan = root_logical_plan.build().unwrap();
-    println!("logical plan = {}", logical_plan);
+    println!("logical plan:\n{}", logical_plan);
 
     let batches = exec_ctx
         .session_ctx
@@ -518,6 +557,8 @@ mod test {
         // TODO is this kind of a hokey way to validate?
         expected_event_name: Vec<String>,
     ) {
+        println!("\n>>>>\nHADLING QUERY:\n  {}\n>>>>", kql_expr);
+
         let mut bytes = vec![];
         record.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
@@ -680,6 +721,140 @@ mod test {
             export_req,
             "logs | where attributes[\"X\"] == \"Y\" or severity_text == \"INFO\"",
             vec!["1".into(), "2".into(), "4".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_logical_and() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+        ]);
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where severity_text == \"WARN\" and event_name == \"1\"",
+            vec!["1".into()],
+        )
+        .await;
+
+        // when attributes are filtered twice like this, we need filter attributes table twice,
+        // then LeftSemi join all the results
+        run_logs_test(
+            export_req.clone(),
+            "logs | where attributes[\"X\"] == \"Y\" and attributes[\"X2\"] == \"Y2\"",
+            vec!["1".into(), "5".into()],
+        )
+        .await;
+
+        run_logs_test(
+            export_req,
+            "logs | where severity_text == \"DEBUG\" and attributes[\"X\"] == \"Y\" and attributes[\"X2\"] == \"Y2\"",
+            vec!["5".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_logical_and_with_or_together() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y2")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        // this will have to union distinct for the or clause, but it will not have to join the result
+        // (1, 4) and ((4, 5) or (1, 3))
+        // (1, 4) and (1, 3, 4, 5)
+        // (1, 4)
+        run_logs_test(
+            export_req.clone(),
+            "logs | where attributes[\"X\"] == \"Y\" and (severity_text == \"DEBUG\" or attributes[\"X2\"] == \"Y2\")", 
+            vec!["1".into(), "4".into()]
+        ).await;
+
+        // same as above, just ensuring we handle it correctly when the side requiring the sub
+        // queries is on the left
+        run_logs_test(
+            export_req.clone(),
+            "logs | where (severity_text == \"DEBUG\" or attributes[\"X2\"] == \"Y2\") and attributes[\"X\"] == \"Y\"", 
+            vec!["1".into(), "4".into()]
+        ).await;
+
+        // this query will need to union distinct for each nested or, and then join the results
+        // ((1, 4) or (4, 5)) and ((3, 5) or (1, 3))
+        // (1, 4, 5) and (1, 3, 5)
+        // (1, 5)
+        run_logs_test(
+            export_req.clone(),
+            "logs | where (attributes[\"X\"] == \"Y\" or severity_text == \"DEBUG\") and (attributes[\"X\"] == \"Y2\" or severity_text == \"WARN\")",
+            vec!["1".into(), "5".into()],
         )
         .await;
     }
