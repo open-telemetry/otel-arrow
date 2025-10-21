@@ -55,6 +55,8 @@ impl KeyValue {
 /// the null values
 #[must_use]
 pub fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
+    // is_not_null doesn't error see https://docs.rs/arrow/latest/arrow/compute/fn.is_not_null.html
     let valid = arrow::compute::is_not_null(a).expect("is_not_null doesn't error"); // BooleanArray with no nulls
+    // the result of boolean array will be a boolean array of equal length so we can guarantee that these two columns have the same length
     arrow::compute::and_kleene(a, &valid).expect("can combine two columns with equal length") // nulls become false; trues stay true
 }

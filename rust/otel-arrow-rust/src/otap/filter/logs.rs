@@ -19,7 +19,7 @@ use arrow::array::{
 };
 use arrow::datatypes::DataType;
 use serde::Deserialize;
-use snafu::OptionExt;
+use snafu::{OptionExt, ResultExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -110,13 +110,13 @@ impl LogFilter {
             &include_resource_attr_filter,
             &exclude_resource_attr_filter,
         )
-        .expect("can combine two boolean arrays with equal length");
+        .context(error::ColumnLengthMismatchSnafu)?;
         let log_record_filter =
             arrow::compute::and_kleene(&include_log_record_filter, &exclude_log_record_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         let log_attr_filter =
             arrow::compute::and_kleene(&include_log_attr_filter, &exclude_log_attr_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
 
         let (resource_attr_filter, scope_attr_filter, log_record_filter, log_attr_filter) = self
             .sync_up_filters(
@@ -140,12 +140,12 @@ impl LogFilter {
         // apply filters to the logs
         let filtered_resource_attrs =
             arrow::compute::filter_record_batch(resource_attrs, &resource_attr_filter)
-                .expect("can apply predicate on record batch with equal row length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         let filtered_log_records =
             arrow::compute::filter_record_batch(log_records, &log_record_filter)
-                .expect("can apply predicate on record batch with equal row length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         let filtered_log_attrs = arrow::compute::filter_record_batch(log_attrs, &log_attr_filter)
-            .expect("can apply predicate on record batch with equal row length");
+            .context(error::ColumnLengthMismatchSnafu)?;
 
         logs_payload.set(ArrowPayloadType::ResourceAttrs, filtered_resource_attrs);
         logs_payload.set(ArrowPayloadType::Logs, filtered_log_records);
@@ -156,7 +156,7 @@ impl LogFilter {
                 .get(ArrowPayloadType::ScopeAttrs)
                 .context(error::LogRecordNotFoundSnafu)?;
             let filtered_scope_attrs = arrow::compute::filter_record_batch(scope_attrs, &filter)
-                .expect("can apply predicate on record batch with equal row length");
+                .context(error::ColumnLengthMismatchSnafu)?;
             logs_payload.set(ArrowPayloadType::ScopeAttrs, filtered_scope_attrs);
         }
 
@@ -229,12 +229,12 @@ impl LogFilter {
             log_record_resource_ids_column,
             resource_attr_parent_ids_removed,
             true,
-        );
+        )?;
 
         // update the log_record_filter
         log_record_filter =
             arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
 
         // repeat with ids from log_attrs
         let inverse_log_attr_filter =
@@ -245,9 +245,9 @@ impl LogFilter {
             consts::PARENT_ID,
         )?;
         let log_record_ids_filter =
-            self.build_id_filter(log_record_ids_column, log_attr_parent_ids_removed, true);
+            self.build_id_filter(log_record_ids_column, log_attr_parent_ids_removed, true)?;
         log_record_filter = arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
-            .expect("can combine two boolean arrays with equal length");
+            .context(error::ColumnLengthMismatchSnafu)?;
 
         // now using the updated log_record_filter we need to update the rest of the filers
         let inverse_log_record_filter =
@@ -258,9 +258,9 @@ impl LogFilter {
             consts::ID,
         )?;
         let log_attr_parent_ids_filter =
-            self.build_id_filter(log_attr_parent_ids_column, log_record_ids_removed, true);
+            self.build_id_filter(log_attr_parent_ids_column, log_record_ids_removed, true)?;
         log_attr_filter = arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
-            .expect("can combine two boolean arrays with equal length");
+            .context(error::ColumnLengthMismatchSnafu)?;
 
         // part 4: clean up resource attrs
 
@@ -273,10 +273,10 @@ impl LogFilter {
             resource_attr_parent_ids_column,
             log_record_resource_ids_kept,
             false,
-        );
+        )?;
         resource_attr_filter =
             arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
 
         let scope_attr_filter = if let Some(scope_attrs_record_batch) = scope_attrs {
             let scope_attr_parent_ids_column =
@@ -287,7 +287,7 @@ impl LogFilter {
                 scope_attr_parent_ids_column,
                 log_record_scope_ids_kept,
                 false,
-            ))
+            )?)
         } else {
             None
         };
@@ -310,8 +310,8 @@ impl LogFilter {
     ) -> Result<HashSet<u16>> {
         // get ids being removed
         // error out herre
-        let filtered_ids = arrow::compute::filter(id_column, filter)
-            .expect("can apply predicate on column with equal length");
+        let filtered_ids =
+            arrow::compute::filter(id_column, filter).context(error::ColumnLengthMismatchSnafu)?;
 
         // downcast id and get unique values
         let filtered_ids = filtered_ids
@@ -334,7 +334,7 @@ impl LogFilter {
         id_column: &Arc<dyn Array>,
         id_set: HashSet<u16>,
         match_id: bool,
-    ) -> BooleanArray {
+    ) -> Result<BooleanArray> {
         let mut combined_id_filter = BooleanArray::new_null(id_column.len());
         // build id filter using the id hashset
         for id in id_set {
@@ -347,12 +347,13 @@ impl LogFilter {
                     .expect("can compare uint16 id column with uint16 scalar")
             };
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
         // make sure there are no null values before we invert
         combined_id_filter = nulls_to_false(&combined_id_filter);
         // inverse because these are the ids we want to remove
-        arrow::compute::not(&combined_id_filter).expect("not doesn't fail")
+        // not is safe please see https://docs.rs/arrow/latest/arrow/compute/fn.not.html
+        Ok(arrow::compute::not(&combined_id_filter).expect("not doesn't fail"))
     }
 }
 
@@ -503,10 +504,10 @@ impl LogMatchProperties {
             };
             // build filter that checks for both matching key and value filter
             let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
             // combine with overrall filter
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
 
         // ToDo optimize the logic below where we build the final filter based on the ids
@@ -520,7 +521,7 @@ impl LogMatchProperties {
         let parent_id_column = get_required_array(resource_attrs, consts::PARENT_ID)?;
         // the ids should show up self.resource_attr.len() times otherwise they don't have all the required attributes
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
-            .expect("can apply predicate on column with equal length");
+            .context(error::ColumnLengthMismatchSnafu)?;
         // extract correct ids
         let ids = ids
             .as_any()
@@ -546,7 +547,7 @@ impl LogMatchProperties {
             let id_filter = arrow::compute::kernels::cmp::eq(&parent_id_column, &id_scalar)
                 .expect("can compare uint16 id column to uint16 scalar");
             filter = arrow::compute::or_kleene(&filter, &id_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
         Ok(nulls_to_false(&filter))
     }
@@ -578,10 +579,10 @@ impl LogMatchProperties {
                         .expect("can compare string severity text column to string scalar");
                 severity_texts_filter =
                     arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
-                        .expect("can combine two boolean arrays with equal length");
+                        .context(error::ColumnLengthMismatchSnafu)?;
             }
             filter = arrow::compute::and_kleene(&filter, &severity_texts_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
 
         if !&self.bodies.is_empty() {
@@ -659,11 +660,11 @@ impl LogMatchProperties {
                     }
                 };
                 bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
-                    .expect("can combine two boolean arrays with equal length");
+                    .context(error::ColumnLengthMismatchSnafu)?;
                 // combine the filters
             }
             filter = arrow::compute::and_kleene(&filter, &bodies_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
 
         // if the severity_number field is defined then we create the severity_number filter
@@ -693,11 +694,11 @@ impl LogMatchProperties {
                     &severity_numbers_filter,
                     &unknown_severity_number_filter,
                 )
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
             }
             // combine severity number filter to the log record filter
             filter = arrow::compute::and_kleene(&filter, &severity_numbers_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
         Ok(nulls_to_false(&filter))
     }
@@ -806,17 +807,17 @@ impl LogMatchProperties {
             };
             // build filter that checks for both matching key and value filter
             let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
             // combine with rest of filters
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
 
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
         let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
 
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
-            .expect("can apply predicate on column with equal length");
+            .context(error::ColumnLengthMismatchSnafu)?;
         let ids = ids
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -829,7 +830,7 @@ impl LogMatchProperties {
             let id_filter = arrow::compute::kernels::cmp::eq(&parent_id_column, &id_scalar)
                 .expect("can compare uint16 id column to uint16 scalar");
             filter = arrow::compute::or_kleene(&filter, &id_filter)
-                .expect("can combine two boolean arrays with equal length");
+                .context(error::ColumnLengthMismatchSnafu)?;
         }
         Ok(nulls_to_false(&filter))
     }

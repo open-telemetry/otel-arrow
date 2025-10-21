@@ -34,6 +34,14 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to compare two columns with unequal length"))]
+    ColumnLengthMismatch {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Cannot recognize metric type: {}", metric_type))]
     UnrecognizedMetricType {
         metric_type: i32,

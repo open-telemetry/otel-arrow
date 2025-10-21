@@ -44,8 +44,12 @@ nodes:
             - body_text
         include:
           match_type: strict
-          resource_attributes: []
-          record_attributes: []
+          resource_attributes:
+            - key: fake_data_generator
+              value: v1
+          record_attributes: 
+            - key: gen_ai.system
+              value: openai
           severity_texts: []
           severity_number: null
           bodies: []
@@ -59,7 +63,7 @@ nodes:
           - noop
         dispatch_strategy: round_robin
     config:
-      verbosity: detailed
+      verbosity: basic
       mode: signal
   noop:
     kind: exporter
