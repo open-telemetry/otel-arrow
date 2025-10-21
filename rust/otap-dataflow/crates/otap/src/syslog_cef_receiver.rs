@@ -213,7 +213,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     }
                                                                     Err(_e) => {
                                                                         // parse error => count one failed item
-                                                                        metrics.borrow_mut().received_logs_failure.inc();
+                                                                        metrics.borrow_mut().received_logs_invalid.inc();
                                                                     }
                                                                 }
                                                             }
@@ -227,8 +227,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
-                                                                        Ok(_) => m.received_logs_success.add(items),
-                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                                        Err(_) => m.received_logs_forward_failed.add(items),
                                                                     }
                                                                 }
                                                             }
@@ -261,7 +261,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 }
                                                                 Err(_e) => {
                                                                     // parsing error counts as one failed item
-                                                                    metrics.borrow_mut().received_logs_failure.inc();
+                                                                    metrics.borrow_mut().received_logs_invalid.inc();
                                                                     // Skip this message
                                                                     line_bytes.clear();
                                                                     continue;
@@ -288,8 +288,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
-                                                                        Ok(_) => m.received_logs_success.add(items),
-                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                                        Err(_) => m.received_logs_forward_failed.add(items),
                                                                     }
                                                                 }
                                                                 if res.is_err() { return; }
@@ -305,8 +305,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
-                                                                        Ok(_) => m.received_logs_success.add(items),
-                                                                        Err(_) => m.received_logs_refused.add(items),
+                                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                                        Err(_) => m.received_logs_forward_failed.add(items),
                                                                     }
                                                                 }
                                                             }
@@ -332,8 +332,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         {
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
-                                                                Ok(_) => m.received_logs_success.add(items),
-                                                                Err(_) => m.received_logs_refused.add(items),
+                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                Err(_) => m.received_logs_forward_failed.add(items),
                                                             }
                                                         }
                                                         if res.is_err() { return; }
@@ -404,7 +404,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         Ok(parsed) => parsed,
                                         Err(_e) => {
                                             // ToDo: Handle parsing error (log, emit metrics, etc.)
-                                            self.metrics.borrow_mut().received_logs_failure.inc();
+                                            self.metrics.borrow_mut().received_logs_invalid.inc();
                                             continue; // Skip this message
                                         }
                                     };
@@ -426,8 +426,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         {
                                             let mut m = self.metrics.borrow_mut();
                                             match &res {
-                                                Ok(_) => m.received_logs_success.add(items),
-                                                Err(_) => m.received_logs_refused.add(items),
+                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                Err(_) => m.received_logs_forward_failed.add(items),
                                             }
                                         }
                                         // UDP path: do not propagate downstream send errors; keep running
@@ -465,8 +465,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 {
                                     let mut m = self.metrics.borrow_mut();
                                     match &res {
-                                        Ok(_) => m.received_logs_success.add(items),
-                                        Err(_) => m.received_logs_refused.add(items),
+                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                        Err(_) => m.received_logs_forward_failed.add(items),
                                     }
                                 }
                                 // UDP path: do not propagate downstream send errors; keep running
@@ -491,15 +491,15 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
     #[metric(unit = "{item}")]
-    pub received_logs_success: Counter<u64>,
+    pub received_logs_forwarded: Counter<u64>,
 
     /// Number of log records that failed to be received (parse errors, etc.)
     #[metric(unit = "{item}")]
-    pub received_logs_failure: Counter<u64>,
+    pub received_logs_invalid: Counter<u64>,
 
     /// Number of log records refused by downstream (backpressure/unavailable)
     #[metric(unit = "{item}")]
-    pub received_logs_refused: Counter<u64>,
+    pub received_logs_forward_failed: Counter<u64>,
 
     /// Total number of log records observed at the socket before parsing
     #[metric(unit = "{item}")]
@@ -1224,10 +1224,10 @@ mod telemetry_tests {
             // Validate
             let snapshot = metrics_rx.recv_async().await.unwrap();
             let m = snapshot.get_metrics();
-            // Order: success, failure, refused, total, tcp_connections_active
+            // Order: forwarded, invalid, forward_failed, total, tcp_connections_active
             assert_eq!(m[3], 2, "total == 2");
-            assert_eq!(m[0], 1, "success == 1");
-            assert_eq!(m[1], 1, "failure == 1");
+            assert_eq!(m[0], 1, "forwarded == 1");
+            assert_eq!(m[1], 1, "invalid == 1");
         }));
     }
 
@@ -1307,7 +1307,7 @@ mod telemetry_tests {
 
             let snap = metrics_rx.recv_async().await.unwrap();
             let m = snap.get_metrics();
-            assert_eq!(m[2], 1, "refused == 1");
+            assert_eq!(m[2], 1, "forward_failed == 1");
         }));
     }
 }
