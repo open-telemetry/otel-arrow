@@ -36,7 +36,7 @@ pub struct FilterProcessor {
     config: Config,
 }
 
-/// Factory function to create an FilterProcessor.
+/// Factory function to create a FilterProcessor.
 ///
 /// See the module documentation for configuration examples
 pub fn create_filter_processor(

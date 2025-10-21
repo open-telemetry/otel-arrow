@@ -39,6 +39,7 @@ pub struct LogFilter {
     // If any condition resolves to true, the log event will be dropped.
     // Supports `and`, `or`, and `()`
     #[allow(dead_code)]
+    // ToDo: Add OTTL Support and accept OTTL expressions
     log_record: Vec<String>,
 }
 
@@ -162,6 +163,10 @@ impl LogFilter {
         Ok(logs_payload)
     }
 
+    /// this function takes the filters for each record batch and makes sure that incomplete
+    /// returns the cleaned up filters that can be immediately applied on the record batches
+    /// ToDo: RecordBatches that are optional and not present will result in the corresponding filter being returned as None
+    /// ToDo: Handle edge case where LogRecords don't have attributes are getting through when we want to filter on attributes as well.
     fn sync_up_filters(
         &self,
         logs_payload: &OtapArrowRecords,
@@ -295,6 +300,8 @@ impl LogFilter {
         ))
     }
 
+    /// get_ids() takes the id_column from a record batch and the corresponding filter
+    /// and applies it to extract all ids that match and then returns the set of ids.
     fn get_ids(
         &self,
         id_column: &Arc<dyn Array>,
@@ -318,6 +325,10 @@ impl LogFilter {
         Ok(filtered_ids.iter().flatten().collect())
     }
 
+    /// build_id_filter() takes a id_set which contains ids we want to remove and the id_column that
+    /// the set of id's should map to. The function then iterates through the ids and builds a filter
+    /// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
+    /// that contain those ids
     fn build_id_filter(
         &self,
         id_column: &Arc<dyn Array>,
@@ -325,6 +336,7 @@ impl LogFilter {
         match_id: bool,
     ) -> BooleanArray {
         let mut combined_id_filter = BooleanArray::new_null(id_column.len());
+        // build id filter using the id hashset
         for id in id_set {
             let id_scalar = UInt16Array::new_scalar(id);
             let id_filter = if match_id {
@@ -337,6 +349,7 @@ impl LogFilter {
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
                 .expect("can combine two boolean arrays with equal length");
         }
+        // make sure there are no null values before we invert
         combined_id_filter = nulls_to_false(&combined_id_filter);
         // inverse because these are the ids we want to remove
         arrow::compute::not(&combined_id_filter).expect("not doesn't fail")
@@ -376,6 +389,7 @@ impl LogMatchProperties {
             self.get_log_attr_filter(logs_payload)?,
         );
 
+        // invert flag depending on whether we are excluding or including
         if invert {
             resource_attr_filter =
                 arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
@@ -388,25 +402,40 @@ impl LogMatchProperties {
         Ok((resource_attr_filter, log_record_filter, log_attr_filter))
     }
 
+    /// Creates a booleanarray that will filter a resource_attribute record batch based on the
+    /// defined resource attributes we want to match
     fn get_resource_attr_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         // get resource_attrs record batch
-        let resource_attrs = logs_payload
-            .get(ArrowPayloadType::ResourceAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        let resource_attrs = match logs_payload.get(ArrowPayloadType::ResourceAttrs) {
+            Some(record_batch) => {
+                if self.resource_attributes.is_empty() {
+                    return Ok(vec![true; record_batch.num_rows()].into());
+                }
+                record_batch
+            }
+            None => {
+                // if there is no record batch then
+                // if we didn't plan to match any resource attributes -> allow all values through
+                if self.resource_attributes.is_empty() {
+                    return Ok(vec![true].into());
+                } else {
+                    // if we did match on resource attributes then there are no attributes to match
+                    return Ok(vec![false].into());
+                }
+            }
+        };
 
         let num_rows = resource_attrs.num_rows();
-        if self.resource_attributes.is_empty() {
-            return Ok(vec![true; num_rows].into());
-        }
-
         let mut attributes_filter = BooleanArray::new_null(num_rows);
         let key_column = get_required_array(resource_attrs, consts::ATTRIBUTE_KEY)?;
         // generate the filter for this record_batch
         for attribute in &self.resource_attributes {
+            // match on key
             let key_scalar = StringArray::new_scalar(attribute.key.clone());
 
             let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
                 .expect("can compare string key column to string scalar");
+            // and match on value
             let value_filter = match &attribute.value {
                 AnyValue::String(value) => {
                     // get string column
@@ -475,12 +504,19 @@ impl LogMatchProperties {
             // build filter that checks for both matching key and value filter
             let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
                 .expect("can combine two boolean arrays with equal length");
+            // combine with overrall filter
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
                 .expect("can combine two boolean arrays with equal length");
         }
 
         // ToDo optimize the logic below where we build the final filter based on the ids
         // now we get ids of resource_attrs
+
+        // using the attribute filter we need to get the ids of the rows that match and use that to build our final filter
+        // this is to make sure we don't drop attributes that belong to a resource that matched the resource_attributes that
+        // were defined
+
+        // we get the id column and apply filter to get the ids we should keep
         let parent_id_column = get_required_array(resource_attrs, consts::PARENT_ID)?;
         // the ids should show up self.resource_attr.len() times otherwise they don't have all the required attributes
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
@@ -493,12 +529,14 @@ impl LogMatchProperties {
         // remove null values
         let ids: Vec<u16> = ids.iter().flatten().collect();
         let mut ids_counted: HashMap<u16, usize> = HashMap::new();
+        // since we require that all the resource attributes match we use the count of the ids extracted to determine a full match
+        // a full match should meant that the amount of times a id appears is equal the number of resource attributes we want to match on
         for &id in &ids {
             *ids_counted.entry(id).or_insert(0) += 1;
         }
 
         let required_ids_count = self.resource_attributes.len();
-
+        // filter out ids that don't fully match
         ids_counted.retain(|_key, value| *value >= required_ids_count);
 
         // build filter around the ids
@@ -513,21 +551,25 @@ impl LogMatchProperties {
         Ok(nulls_to_false(&filter))
     }
 
+    /// Creates a booleanarray that will filter a log record record batch based on the
+    /// defined severity_text, log body, and severity_number (if definied). A log record should match all
+    /// defined requirements.
     fn get_log_record_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         let log_records = logs_payload
             .get(ArrowPayloadType::Logs)
             .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = log_records.num_rows();
         // create filter for severity texts
-
-        let severity_texts_column = match log_records.column_by_name(consts::SEVERITY_TEXT) {
-            Some(column) => column,
-            None => {
-                return Ok(vec![false; num_rows].into());
-            }
-        };
         let mut filter: BooleanArray = vec![true; num_rows].into();
         if !&self.severity_texts.is_empty() {
+            // get he severity text column
+            let severity_texts_column = match log_records.column_by_name(consts::SEVERITY_TEXT) {
+                Some(column) => column,
+                None => {
+                    // any columns that don't exist means we can't match so we default to all false boolean array
+                    return Ok(vec![false; num_rows].into());
+                }
+            };
             let mut severity_texts_filter = BooleanArray::new_null(num_rows);
             for severity_text in &self.severity_texts {
                 let severity_text_scalar = StringArray::new_scalar(severity_text);
@@ -547,6 +589,7 @@ impl LogMatchProperties {
             let mut bodies_filter = BooleanArray::new_null(num_rows);
             let bodies_column = get_required_struct_array(log_records, consts::BODY)?;
             for body in &self.bodies {
+                // match on body value
                 let body_filter = match body {
                     AnyValue::String(value) => {
                         // get string column
@@ -659,26 +702,42 @@ impl LogMatchProperties {
         Ok(nulls_to_false(&filter))
     }
 
+    /// Creates a booleanarray that will filter a log_attribute record batch based on the
+    /// defined log record attributes we want to match
     fn get_log_attr_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         // get log_attrs record batch
-        let log_attrs = logs_payload
-            .get(ArrowPayloadType::LogAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        let log_attrs = match logs_payload.get(ArrowPayloadType::LogAttrs) {
+            Some(record_batch) => {
+                if self.record_attributes.is_empty() {
+                    return Ok(vec![true; record_batch.num_rows()].into());
+                }
+                record_batch
+            }
+            None => {
+                // if there is no record batch then
+                // if we didn't plan to match any record attributes -> allow all values through
+                if self.record_attributes.is_empty() {
+                    return Ok(vec![true].into());
+                } else {
+                    // if we did match on record attributes then there are no attributes to match
+                    return Ok(vec![false].into());
+                }
+            }
+        };
 
         let num_rows = log_attrs.num_rows();
         // if there is nothing to filter we return all true
-        if self.record_attributes.is_empty() {
-            return Ok(vec![true; num_rows].into());
-        }
         let mut attributes_filter = BooleanArray::new_null(num_rows);
 
         let key_column = get_required_array(log_attrs, consts::ATTRIBUTE_KEY)?;
 
         // generate the filter for this record_batch
         for attribute in &self.record_attributes {
+            // match on key
             let key_scalar = StringArray::new_scalar(attribute.key.clone());
             let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
                 .expect("can compare string key column to string scalar");
+            // match on value
             let value_filter = match &attribute.value {
                 AnyValue::String(value) => {
                     // get string column
@@ -753,7 +812,7 @@ impl LogMatchProperties {
                 .expect("can combine two boolean arrays with equal length");
         }
 
-        // now we get ids of
+        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
         let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
 
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)

@@ -3,6 +3,8 @@
 Status: **WIP**
 
 This crate will contain the implementation of the filter processor.
+For reference please the golang version of the filter processor.
+https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/filterprocessor/README.md
 
 ## Example Config
 
@@ -47,7 +49,7 @@ Currently we only support log filter
 ### Logs
 
 To filter logs you can choose to define logs to `include` or `exclude`.
-You can also choose to define both, if both are defined then then result
+You can also choose to define both, if both are defined then the result
 will be the interesection of the two. Currently we allow you to filter
 based on `resource_attributes` (all the attributes must match),
 `record_attributes` (only one in the list has to match), `severity_texts`,
