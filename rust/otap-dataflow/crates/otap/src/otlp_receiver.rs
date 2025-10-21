@@ -46,7 +46,7 @@ pub struct Config {
     listening_addr: SocketAddr,
 
     /// Compression methods accepted
-    /// TODO: this should be Vec<CompressionMethod>, with separate settings
+    /// TODO: this should be (CompressionMethod, CompressionMethod), with separate settings
     /// (as tonic supports) for request and response compression.
     compression_method: Option<CompressionMethod>,
 
