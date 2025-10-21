@@ -88,7 +88,7 @@ impl SharedState {
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// Maximum concurrency
+    /// Maximum concurrent requests per receiver instance (per core).
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
