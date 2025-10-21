@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::control::{AckMsg, NackMsg};
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, ProcessorErrorKind, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
@@ -202,6 +202,14 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     /// Send an Ack to a node of known-interest.

@@ -3,7 +3,8 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::otlp::server::{
-    LogsServiceServer, MetricsServiceServer, RouteResponse, SharedState, TraceServiceServer,
+    LogsServiceServer, MetricsServiceServer, RouteResponse, Settings, SharedState,
+    TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
 
@@ -31,6 +32,7 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::Server;
 
 /// URN for the OTLP Receiver
@@ -40,16 +42,38 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// The endpoint details: protocol, name, port.
     listening_addr: SocketAddr,
+
+    /// Compression methods accepted
+    /// TODO: this should be (CompressionMethod, CompressionMethod), with separate settings
+    /// (as tonic supports) for request and response compression.
     compression_method: Option<CompressionMethod>,
 
     /// Maximum number of concurrent (in-flight) requests (default: 1000)
     #[serde(default = "default_max_concurrent_requests")]
     max_concurrent_requests: usize,
+
+    /// Whether to wait for the result (default: true)
+    ///
+    /// When enabled, the receiver will not send a response until the
+    /// immediate downstream component has acknowledged receipt of the
+    /// data.  This does not guarantee that data has been fully
+    /// processed or successfully exported to the final destination,
+    /// since components are able acknowledge early.
+    ///
+    /// Note when wait_for_result=false, it is impossible to
+    /// see a failure, errors are effectively suppressed.
+    #[serde(default = "default_wait_for_result")]
+    wait_for_result: bool,
 }
 
 const fn default_max_concurrent_requests() -> usize {
     1000
+}
+
+const fn default_wait_for_result() -> bool {
+    true
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
@@ -60,9 +84,9 @@ pub struct OTLPReceiver {
 
 /// State shared between gRPC server task and the effect handler.
 struct SharedStates {
-    logs: SharedState,
-    metrics: SharedState,
-    traces: SharedState,
+    logs: Option<SharedState>,
+    metrics: Option<SharedState>,
+    traces: Option<SharedState>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -106,10 +130,20 @@ impl OTLPReceiver {
         let calldata = ack.calldata;
         let resp = Ok(());
         match ack.accepted.signal_type() {
-            SignalType::Logs => states.logs.route_response(calldata, resp),
-            SignalType::Metrics => states.metrics.route_response(calldata, resp),
-            SignalType::Traces => states.traces.route_response(calldata, resp),
+            SignalType::Logs => states
+                .logs
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
+            SignalType::Metrics => states
+                .metrics
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
+            SignalType::Traces => states
+                .traces
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
         }
+        .unwrap_or(RouteResponse::None)
     }
 
     fn route_nack_response(
@@ -121,10 +155,20 @@ impl OTLPReceiver {
         let sigtype = nack.refused.signal_type();
         let resp = Err(nack);
         match sigtype {
-            SignalType::Logs => states.logs.route_response(calldata, resp),
-            SignalType::Metrics => states.metrics.route_response(calldata, resp),
-            SignalType::Traces => states.traces.route_response(calldata, resp),
+            SignalType::Logs => states
+                .logs
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
+            SignalType::Metrics => states
+                .metrics
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
+            SignalType::Traces => states
+                .traces
+                .as_ref()
+                .map(|state| state.route_response(calldata, resp)),
         }
+        .unwrap_or(RouteResponse::None)
     }
 
     fn handle_acknack_response(&mut self, resp: RouteResponse) {
@@ -132,6 +176,7 @@ impl OTLPReceiver {
             RouteResponse::Sent => self.metrics.acks_sent.inc(),
             RouteResponse::Expired => self.metrics.nacks_sent.inc(),
             RouteResponse::Invalid => self.metrics.acks_nacks_expired.inc(),
+            RouteResponse::None => {}
         }
     }
 }
@@ -174,37 +219,39 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_server =
-            LogsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
-        let mut metrics_server =
-            MetricsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
-        let mut traces_server =
-            TraceServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+        let mut compression = EnabledCompressionEncodings::default();
+        let _ = self
+            .config
+            .compression_method
+            .as_ref()
+            .map(|method| compression.enable(method.map_to_compression_encoding()));
 
-        let states = SharedStates {
-            logs: logs_server.state(),
-            metrics: metrics_server.state(),
-            traces: traces_server.state(),
+        let settings = Settings {
+            max_concurrent_requests: self.config.max_concurrent_requests,
+            wait_for_result: self.config.wait_for_result,
+            accept_compression_encodings: compression,
+            send_compression_encodings: compression,
         };
 
-        if let Some(ref compression) = self.config.compression_method {
-            let encoding = compression.map_to_compression_encoding();
+        let logs_server = LogsServiceServer::new(effect_handler.clone(), &settings);
+        let metrics_server = MetricsServiceServer::new(effect_handler.clone(), &settings);
+        let traces_server = TraceServiceServer::new(effect_handler.clone(), &settings);
 
-            logs_server = logs_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            metrics_server = metrics_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            traces_server = traces_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-        }
+        let states = SharedStates {
+            logs: logs_server.common.state(),
+            metrics: metrics_server.common.state(),
+            traces: traces_server.common.state(),
+        };
 
         let server = Server::builder()
             .add_service(logs_server)
             .add_service(metrics_server)
             .add_service(traces_server);
+
+        // Start periodic telemetry collection
+        let telemetry_cancel_handle = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
 
         tokio::select! {
             biased;
@@ -215,6 +262,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let snapshot = self.metrics.snapshot();
+                            _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -222,7 +270,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            // Route Ack to the appropriate correlation slot
                             self.handle_acknack_response(self.route_ack_response(&states, ack));
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
@@ -560,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_otlp_receiver() {
+    fn test_otlp_receiver_ack() {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
@@ -579,6 +626,7 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: Config {
+                    wait_for_result: true,
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
@@ -597,7 +645,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_otlp_receiver_nack() {
         let test_runtime = TestRuntime::new();
 
@@ -616,6 +663,7 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: Config {
+                    wait_for_result: true,
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
