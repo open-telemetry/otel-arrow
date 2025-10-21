@@ -76,7 +76,7 @@ impl Config {
 struct SyslogCefReceiver {
     config: Config,
     /// RFC-aligned internal telemetry for this receiver
-    metrics: Option<Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>>,
+    metrics: Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>,
 }
 
 impl SyslogCefReceiver {
@@ -85,7 +85,7 @@ impl SyslogCefReceiver {
         let metrics = pipeline.register_metrics::<SyslogCefReceiverMetrics>();
         SyslogCefReceiver {
             config,
-            metrics: Some(Rc::new(RefCell::new(metrics))),
+            metrics: Rc::new(RefCell::new(metrics)),
         }
     }
 
@@ -150,10 +150,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     break;
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                    if let Some(rc) = self.metrics.as_ref() {
-                                        let mut m = rc.borrow_mut();
-                                        let _ = metrics_reporter.report(&mut m);
-                                    }
+                                    let mut m = self.metrics.borrow_mut();
+                                    let _ = metrics_reporter.report(&mut m);
                                 }
                                 Err(e) => {
                                     return Err(Error::ChannelRecvError(e));
@@ -169,9 +167,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             match accept_result {
                                 Ok((socket, _peer_addr)) => {
                                     // Track active connections
-                                    if let Some(rc) = self.metrics.as_ref() {
-                                        rc.borrow_mut().tcp_connections_active.inc();
-                                    }
+                                    self.metrics.borrow_mut().tcp_connections_active.inc();
 
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
@@ -209,9 +205,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 };
 
                                                                 // Count total received at socket level before parsing
-                                                                if let Some(rc) = metrics.as_ref() {
-                                                                    rc.borrow_mut().received_logs_total.inc();
-                                                                }
+                                                                metrics.borrow_mut().received_logs_total.inc();
 
                                                                 match parser::parse(message_bytes) {
                                                                     Ok(parsed_message) => {
@@ -219,9 +213,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     }
                                                                     Err(_e) => {
                                                                         // parse error => count one failed item
-                                                                        if let Some(rc) = metrics.as_ref() {
-                                                                            rc.borrow_mut().received_logs_failure.inc();
-                                                                        }
+                                                                        metrics.borrow_mut().received_logs_failure.inc();
                                                                     }
                                                                 }
                                                             }
@@ -232,8 +224,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
                                                                 let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                if let Some(rc) = metrics.as_ref() {
-                                                                    let mut m = rc.borrow_mut();
+                                                                {
+                                                                    let mut m = metrics.borrow_mut();
                                                                     match &res {
                                                                         Ok(_) => m.received_logs_success.add(items),
                                                                         Err(_) => m.received_logs_refused.add(items),
@@ -242,9 +234,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
 
                                                             // Decrement active connections on EOF
-                                                            if let Some(rc) = metrics.as_ref() {
-                                                                rc.borrow_mut().tcp_connections_active.dec();
-                                                            }
+                                                            metrics.borrow_mut().tcp_connections_active.dec();
                                                             break;
                                                         }
                                                         Ok(_) => {
@@ -263,9 +253,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             };
 
                                                             // Count total received at socket level before parsing
-                                                            if let Some(rc) = metrics.as_ref() {
-                                                                rc.borrow_mut().received_logs_total.inc();
-                                                            }
+                                                            metrics.borrow_mut().received_logs_total.inc();
 
                                                             match parser::parse(message_to_parse) {
                                                                 Ok(parsed) => {
@@ -273,9 +261,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 }
                                                                 Err(_e) => {
                                                                     // parsing error counts as one failed item
-                                                                    if let Some(rc) = metrics.as_ref() {
-                                                                        rc.borrow_mut().received_logs_failure.inc();
-                                                                    }
+                                                                    metrics.borrow_mut().received_logs_failure.inc();
                                                                     // Skip this message
                                                                     line_bytes.clear();
                                                                     continue;
@@ -299,8 +285,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 interval.reset();
 
                                                                 let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                                if let Some(rc) = metrics.as_ref() {
-                                                                    let mut m = rc.borrow_mut();
+                                                                {
+                                                                    let mut m = metrics.borrow_mut();
                                                                     match &res {
                                                                         Ok(_) => m.received_logs_success.add(items),
                                                                         Err(_) => m.received_logs_refused.add(items),
@@ -316,8 +302,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
                                                                 let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                if let Some(rc) = metrics.as_ref() {
-                                                                    let mut m = rc.borrow_mut();
+                                                                {
+                                                                    let mut m = metrics.borrow_mut();
                                                                     match &res {
                                                                         Ok(_) => m.received_logs_success.add(items),
                                                                         Err(_) => m.received_logs_refused.add(items),
@@ -326,9 +312,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
 
                                                             // Decrement active connections on read error
-                                                            if let Some(rc) = metrics.as_ref() {
-                                                                rc.borrow_mut().tcp_connections_active.dec();
-                                                            }
+                                                            metrics.borrow_mut().tcp_connections_active.dec();
                                                             break; // ToDo: Handle read error properly
                                                         }
                                                     }
@@ -345,8 +329,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
                                                         let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                        if let Some(rc) = metrics.as_ref() {
-                                                            let mut m = rc.borrow_mut();
+                                                        {
+                                                            let mut m = metrics.borrow_mut();
                                                             match &res {
                                                                 Ok(_) => m.received_logs_success.add(items),
                                                                 Err(_) => m.received_logs_refused.add(items),
@@ -395,10 +379,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     break;
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                    if let Some(rc) = self.metrics.as_ref() {
-                                        let mut m = rc.borrow_mut();
-                                        let _ = metrics_reporter.report(&mut m);
-                                    }
+                                    let mut m = self.metrics.borrow_mut();
+                                    let _ = metrics_reporter.report(&mut m);
                                 }
                                 Err(e) => {
                                     return Err(Error::ChannelRecvError(e));
@@ -416,17 +398,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // ToDo: Consider logging or using peer_addr for security/auditing
 
                                     // Count total received at socket level before parsing
-                                    if let Some(rc) = self.metrics.as_ref() {
-                                        rc.borrow_mut().received_logs_total.inc();
-                                    }
+                                    self.metrics.borrow_mut().received_logs_total.inc();
 
                                     let parsed_message = match parser::parse(&buf[..n]) {
                                         Ok(parsed) => parsed,
                                         Err(_e) => {
                                             // ToDo: Handle parsing error (log, emit metrics, etc.)
-                                            if let Some(rc) = self.metrics.as_ref() {
-                                                rc.borrow_mut().received_logs_failure.inc();
-                                            }
+                                            self.metrics.borrow_mut().received_logs_failure.inc();
                                             continue; // Skip this message
                                         }
                                     };
@@ -445,8 +423,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         interval.reset();
 
                                         let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                        if let Some(rc) = self.metrics.as_ref() {
-                                            let mut m = rc.borrow_mut();
+                                        {
+                                            let mut m = self.metrics.borrow_mut();
                                             match &res {
                                                 Ok(_) => m.received_logs_success.add(items),
                                                 Err(_) => m.received_logs_refused.add(items),
@@ -484,8 +462,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
                                 let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                if let Some(rc) = self.metrics.as_ref() {
-                                    let mut m = rc.borrow_mut();
+                                {
+                                    let mut m = self.metrics.borrow_mut();
                                     match &res {
                                         Ok(_) => m.received_logs_success.add(items),
                                         Err(_) => m.received_logs_refused.add(items),
@@ -541,9 +519,15 @@ mod tests {
     impl SyslogCefReceiver {
         #[allow(dead_code)]
         fn new(config: Config) -> Self {
+            // Create a standalone metrics set for tests (not bound to a pipeline)
+            let handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+            let metric_set =
+                handle.register::<SyslogCefReceiverMetrics>(
+                    otap_df_telemetry::testing::EmptyAttributes(),
+                );
             SyslogCefReceiver {
                 config,
-                metrics: None,
+                metrics: Rc::new(RefCell::new(metric_set)),
             }
         }
     }
