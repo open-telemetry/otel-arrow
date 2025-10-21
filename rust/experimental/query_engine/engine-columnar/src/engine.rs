@@ -841,9 +841,9 @@ async fn filter_batch(
     // TODO how do we know it's logs here?
     exec_ctx.curr_batch.set(ArrowPayloadType::Logs, result);
 
-    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
-    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
-    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
 
     Ok(())
 }
