@@ -1,0 +1,40 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - proc
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_batch_size: 1000
+        signals_per_second: 1000
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+  proc:
+    kind: processor
+    plugin_urn: "urn:otap:processor:batch"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config: {}
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:perf:exporter"
+    config:
+      frequency: 1000
+      cpu_usage: false
+      mem_usage: false
+      disk_usage: false
+      io_usage: false
