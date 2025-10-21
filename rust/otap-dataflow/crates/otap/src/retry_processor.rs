@@ -334,8 +334,6 @@ impl RetryProcessor {
             * self.config.multiplier.powi(rstate.retries as i32))
         .min(self.config.max_interval.as_secs_f64());
 
-        rstate.retries += 1;
-
         // Compute the delay.
         let now_s = SystemTime::now();
         let now_i = Instant::now();
@@ -349,6 +347,8 @@ impl RetryProcessor {
             self.metrics.add_consumed_failure(signal, items as u64);
             return Ok(());
         }
+
+        rstate.retries += 1;
 
         // Updated RetryState back onto context for retry attempt
         let mut rereq = nack.refused;
@@ -546,17 +546,18 @@ mod test {
 
     #[test]
     fn test_retry_processor_nacks_then_success() {
-        test_retry_processor(create_test_config(), 3, None)
+        for i in 0..3 {
+            test_retry_processor(create_test_config(), i, None)
+        }
     }
 
     #[test]
     fn test_retry_processor_nacks_then_failure() {
-        test_retry_processor(create_test_config(), 3, Some("simulated".into()))
-    }
-
-    #[test]
-    fn test_retry_processor_nacks_then_deadline() {
-        test_retry_processor(create_test_config(), 4, Some("final retry".into()))
+        test_retry_processor(
+            create_test_config(),
+            4,
+            Some("final retry: simulated".into()),
+        )
     }
 
     fn test_retry_processor(
@@ -606,9 +607,13 @@ mod test {
 
                 // Simulate downstream failures and retry
                 let mut current_data = first_attempt;
+                // have_pmsg is the first non-DelayData message
+                // received in the loop, this will happen when
+                // number_of_nacks is 4, i.e., the nack before the
+                // final retry attempt.
                 let mut have_pmsg: Option<PipelineControlMsg<OtapPdata>> = None;
                 let mut nacks_delivered = 0;
-                while have_pmsg.is_none() && nacks_delivered < number_of_nacks {
+                while nacks_delivered < number_of_nacks {
                     let nack = NackMsg::new("simulated downstream failure", current_data.clone());
 
                     let (_, nack_ctx) = Context::next_nack(nack).unwrap();
@@ -681,7 +686,6 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineControlMsg::DeliverNack { node_id, nack } => {
-                        println!("REASON IS {}", nack.reason);
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))
@@ -699,7 +703,9 @@ mod test {
                     }
                 }
 
-                assert_eq!(3, retry_count);
+                // With 0-3 Nacks, we retry every time. On the 4th Nack, this changes.
+                assert_eq!(std::cmp::min(nacks_delivered, 3), retry_count);
+                assert_eq!(nacks_delivered, number_of_nacks);
             })
             .validate(|ctx| async move {
                 // Verify no unexpected control message processing
