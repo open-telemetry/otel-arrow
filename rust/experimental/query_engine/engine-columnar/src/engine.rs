@@ -88,7 +88,9 @@ fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
     }?;
 
     // add a row number column
-    let plan = plan.window(vec![ row_number().alias(ROW_NUMBER_COL) ]).unwrap();
+    let plan = plan
+        .window(vec![row_number().alias(ROW_NUMBER_COL)])
+        .unwrap();
 
     Ok(plan)
 }
@@ -207,7 +209,9 @@ fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> Resul
     Ok(lit_expr)
 }
 
-fn try_static_scalar_to_any_val_column(static_scalar: &StaticScalarExpression) -> Result<&'static str> {
+fn try_static_scalar_to_any_val_column(
+    static_scalar: &StaticScalarExpression,
+) -> Result<&'static str> {
     let col_name = match static_scalar {
         StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
         StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
@@ -436,8 +440,6 @@ fn handle_filter_predicate(
     Ok(())
 }
 
-
-
 struct FilteringJoin {
     logical_plan: LogicalPlan,
     join_type: JoinType,
@@ -447,13 +449,14 @@ struct FilteringJoin {
 
 impl FilteringJoin {
     fn join_to_plan(self, plan_builder: LogicalPlanBuilder) -> LogicalPlanBuilder {
-        plan_builder.join(
-            self.logical_plan,
-            self.join_type,
-            (vec![self.left_col], vec![self.right_col]),
-            None
-        )
-        .unwrap()
+        plan_builder
+            .join(
+                self.logical_plan,
+                self.join_type,
+                (vec![self.left_col], vec![self.right_col]),
+                None,
+            )
+            .unwrap()
     }
 }
 
@@ -465,7 +468,7 @@ struct Filter {
 impl Filter {
     fn try_from_predicate(
         exec_ctx: &ExecutionContext,
-        predicate: &LogicalExpression
+        predicate: &LogicalExpression,
     ) -> Result<Self> {
         match predicate {
             LogicalExpression::And(and_expr) => {
@@ -475,7 +478,7 @@ impl Filter {
                 let filter_expr = match (left_filter.filter_expr, right_filter.filter_expr) {
                     (Some(left), Some(right)) => Some(left.and(right)),
                     (None, Some(filter_expr)) | (Some(filter_expr), None) => Some(filter_expr),
-                    _ => None
+                    _ => None,
                 };
 
                 let join = match (left_filter.join, right_filter.join) {
@@ -485,29 +488,30 @@ impl Filter {
                                 left_join.logical_plan,
                                 JoinType::LeftSemi,
                                 (vec![left_join.left_col], vec![left_join.right_col]),
-                                None
-                            ).unwrap()
+                                None,
+                            )
+                            .unwrap()
                             .join(
                                 right_join.logical_plan,
                                 JoinType::LeftSemi,
                                 (vec![right_join.left_col], vec![right_join.right_col]),
-                                None
-                            ).unwrap();
+                                None,
+                            )
+                            .unwrap();
 
                         Some(FilteringJoin {
                             logical_plan: join_both.build().unwrap(),
                             join_type: JoinType::LeftSemi,
                             left_col: ROW_NUMBER_COL,
-                            right_col: ROW_NUMBER_COL
+                            right_col: ROW_NUMBER_COL,
                         })
-                    },
+                    }
                     (None, Some(join)) | (Some(join), None) => Some(join),
-                    _ => None
+                    _ => None,
                 };
 
                 Ok(Self { filter_expr, join })
-
-            },
+            }
 
             LogicalExpression::Or(or_expr) => {
                 let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
@@ -527,17 +531,20 @@ impl Filter {
                         }
                         right_plan = right_join.join_to_plan(right_plan);
 
-                        
                         Ok(Self {
                             filter_expr: None,
-                            join: Some(FilteringJoin { 
-                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
+                            join: Some(FilteringJoin {
+                                logical_plan: left_plan
+                                    .union_distinct(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .build()
+                                    .unwrap(),
                                 join_type: JoinType::LeftSemi,
                                 left_col: ROW_NUMBER_COL,
-                                right_col: ROW_NUMBER_COL
-                            })
+                                right_col: ROW_NUMBER_COL,
+                            }),
                         })
-                    },
+                    }
 
                     (Some(left_join), None) => {
                         let mut left_plan = scan_root_batch(exec_ctx)?;
@@ -555,12 +562,16 @@ impl Filter {
 
                         Ok(Self {
                             filter_expr: None,
-                            join: Some(FilteringJoin { 
-                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
-                                join_type: JoinType::LeftSemi, 
+                            join: Some(FilteringJoin {
+                                logical_plan: left_plan
+                                    .union_distinct(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .build()
+                                    .unwrap(),
+                                join_type: JoinType::LeftSemi,
                                 left_col: ROW_NUMBER_COL,
                                 right_col: ROW_NUMBER_COL,
-                            })
+                            }),
                         })
                     }
 
@@ -580,37 +591,37 @@ impl Filter {
 
                         Ok(Self {
                             filter_expr: None,
-                            join: Some(FilteringJoin { 
-                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
-                                join_type: JoinType::LeftSemi, 
+                            join: Some(FilteringJoin {
+                                logical_plan: left_plan
+                                    .union_distinct(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .build()
+                                    .unwrap(),
+                                join_type: JoinType::LeftSemi,
                                 left_col: ROW_NUMBER_COL,
                                 right_col: ROW_NUMBER_COL,
-                            })
+                            }),
                         })
                     }
 
-                    (None, None) => {
-                        match (left_filter.filter_expr, right_filter.filter_expr) {
-                            (Some(left_filter), Some(right_filter)) => {
-                                Ok(Self {
-                                    filter_expr: Some(logical_expr::or(left_filter, right_filter)),
-                                    join: None
-                                })
-                            },
-                            _ => {
-                                todo!("How does this happen?")
-                            }
+                    (None, None) => match (left_filter.filter_expr, right_filter.filter_expr) {
+                        (Some(left_filter), Some(right_filter)) => Ok(Self {
+                            filter_expr: Some(logical_expr::or(left_filter, right_filter)),
+                            join: None,
+                        }),
+                        _ => {
+                            todo!("How does this happen?")
                         }
-                    }
+                    },
                     _ => {
                         todo!()
                     }
                 }
-
-            },
+            }
 
             LogicalExpression::Not(not_expr) => {
-                let not_filter = Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())?;
+                let not_filter =
+                    Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())?;
                 if let Some(not_join) = not_filter.join {
                     let mut plan = scan_root_batch(exec_ctx)?;
                     if let Some(filter_expr) = not_filter.filter_expr {
@@ -624,10 +635,9 @@ impl Filter {
                             logical_plan: plan.build().unwrap(),
                             join_type: JoinType::LeftAnti,
                             left_col: ROW_NUMBER_COL,
-                            right_col: ROW_NUMBER_COL
-                        })
+                            right_col: ROW_NUMBER_COL,
+                        }),
                     })
-
                 } else {
                     if let Some(expr) = not_filter.filter_expr {
                         Ok(Self {
@@ -638,11 +648,14 @@ impl Filter {
                         todo!("invalid?")
                     }
                 }
-            },
-
-            LogicalExpression::EqualTo(eq_expr) => {
-                Self::try_from_binary_expr(exec_ctx, Operator::Eq, eq_expr.get_left(), eq_expr.get_right())
             }
+
+            LogicalExpression::EqualTo(eq_expr) => Self::try_from_binary_expr(
+                exec_ctx,
+                Operator::Eq,
+                eq_expr.get_left(),
+                eq_expr.get_right(),
+            ),
             _ => {
                 todo!("return error")
             }
@@ -676,39 +689,38 @@ impl Filter {
                 ColumnAccessor::Attributes(attr_key) => match right_arg {
                     BinaryArg::Column(_) => {
                         todo!("handle column right arg in binary expr")
-                    },
+                    }
                     BinaryArg::Literal(static_scalar) => {
-                        let attr_val_col_name = try_static_scalar_to_any_val_column(&static_scalar)?;
+                        let attr_val_col_name =
+                            try_static_scalar_to_any_val_column(&static_scalar)?;
 
                         // TODO -- not have payload type hard-coded
                         let attrs_filter = scan_batch(exec_ctx, ArrowPayloadType::LogAttrs)?
-                            .filter(
-                                logical_expr::and(
-                                    logical_expr::binary_expr(
-                                        logical_expr::col(consts::ATTRIBUTE_KEY),
-                                        operator,
-                                        logical_expr::lit(attr_key),
-                                    ),
-                                    logical_expr::binary_expr(
-                                        logical_expr::col(attr_val_col_name),
-                                        operator,
-                                        try_static_scalar_to_literal(&static_scalar)?,
-                                    ),
-                                )
-                            )
+                            .filter(logical_expr::and(
+                                logical_expr::binary_expr(
+                                    logical_expr::col(consts::ATTRIBUTE_KEY),
+                                    operator,
+                                    logical_expr::lit(attr_key),
+                                ),
+                                logical_expr::binary_expr(
+                                    logical_expr::col(attr_val_col_name),
+                                    operator,
+                                    try_static_scalar_to_literal(&static_scalar)?,
+                                ),
+                            ))
                             .unwrap();
 
                         Ok(Self {
                             filter_expr: None,
-                            join: Some(FilteringJoin { 
-                                logical_plan: attrs_filter.build().unwrap(), 
-                                join_type: JoinType::LeftSemi, 
+                            join: Some(FilteringJoin {
+                                logical_plan: attrs_filter.build().unwrap(),
+                                join_type: JoinType::LeftSemi,
                                 left_col: consts::ID,
                                 right_col: consts::PARENT_ID,
-                            })
+                            }),
                         })
                     }
-                }
+                },
             },
             _ => {
                 todo!("handle non column left arg in binary expr");
@@ -745,7 +757,6 @@ fn append_filter_steps(
         }
     }
 
-
     match &filter_builder.sub_query {
         Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
             let left_builder = &sub_queries[0];
@@ -763,7 +774,7 @@ fn append_filter_steps(
                 )
                 .unwrap();
         }
-        
+
         // TODO -- double check if this is the most efficient way to do this.
         // e.g. there's 2 options here: x1 and (y1 or y2)
         //
@@ -823,7 +834,7 @@ async fn filter_batch(
     let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
 
     // remove the ROW_ID col
-    if let Ok(col_idx) =  result.schema_ref().index_of(ROW_NUMBER_COL) {
+    if let Ok(col_idx) = result.schema_ref().index_of(ROW_NUMBER_COL) {
         _ = result.remove_column(col_idx);
     }
 
@@ -1245,14 +1256,16 @@ mod test {
         run_logs_test(
             export_req.clone(),
             "logs | where not(severity_text == \"WARN\")",
-            vec!["2".into(), "4".into(), "5".into()]
-        ).await;
+            vec!["2".into(), "4".into(), "5".into()],
+        )
+        .await;
 
         run_logs_test(
             export_req.clone(),
             "logs | where not(attributes[\"X\"] == \"Y\")",
-            vec!["2".into(), "3".into(), "5".into()]
-        ).await;
+            vec!["2".into(), "3".into(), "5".into()],
+        )
+        .await;
     }
 
     #[ignore]
@@ -1386,19 +1399,20 @@ mod test {
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
 
         arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
-        
 
         let exec_ctx = ExecutionContext {
             curr_batch: otap_batch,
-            session_ctx: SessionContext::new()
+            session_ctx: SessionContext::new(),
         };
 
         let ctx = SessionContext::new();
-        let plan = scan_root_batch(&exec_ctx).unwrap()
+        let plan = scan_root_batch(&exec_ctx)
+            .unwrap()
             .filter(col("severity_text").eq(lit("WARN")))
             .unwrap();
 
-        let result = ctx.execute_logical_plan(plan.clone().build().unwrap())
+        let result = ctx
+            .execute_logical_plan(plan.clone().build().unwrap())
             .await
             .unwrap()
             .collect()
@@ -1408,11 +1422,13 @@ mod test {
         println!("result1 :");
         arrow::util::pretty::print_batches(&result).unwrap();
 
-        let plan2 = scan_root_batch(&exec_ctx).unwrap()
+        let plan2 = scan_root_batch(&exec_ctx)
+            .unwrap()
             .filter(col("event_name").eq(lit("3")))
             .unwrap();
 
-        let result = ctx.execute_logical_plan(plan2.clone().build().unwrap())
+        let result = ctx
+            .execute_logical_plan(plan2.clone().build().unwrap())
             .await
             .unwrap()
             .collect()
@@ -1422,14 +1438,18 @@ mod test {
         println!("result2 :");
         arrow::util::pretty::print_batches(&result).unwrap();
 
-        let jp = plan.clone().join(
-            plan2.clone().build().unwrap(),
-            JoinType::LeftSemi,
-            (vec!["id"], vec!["id"]),
-            None
-        ).unwrap();
+        let jp = plan
+            .clone()
+            .join(
+                plan2.clone().build().unwrap(),
+                JoinType::LeftSemi,
+                (vec!["id"], vec!["id"]),
+                None,
+            )
+            .unwrap();
 
-        let result = ctx.execute_logical_plan(jp.clone().build().unwrap())
+        let result = ctx
+            .execute_logical_plan(jp.clone().build().unwrap())
             .await
             .unwrap()
             .collect()
@@ -1438,17 +1458,18 @@ mod test {
 
         println!("result3 :");
         arrow::util::pretty::print_batches(&result).unwrap();
-        
 
+        let jp = plan
+            .join(
+                plan2.build().unwrap(),
+                JoinType::LeftSemi,
+                (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+                None,
+            )
+            .unwrap();
 
-        let jp = plan.join(
-            plan2.build().unwrap(),
-            JoinType::LeftSemi,
-            (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
-            None
-        ).unwrap();
-
-        let result = ctx.execute_logical_plan(jp.clone().build().unwrap())
+        let result = ctx
+            .execute_logical_plan(jp.clone().build().unwrap())
             .await
             .unwrap()
             .collect()
