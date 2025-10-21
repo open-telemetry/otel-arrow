@@ -13,6 +13,8 @@ use datafusion::catalog::MemTable;
 use datafusion::common::{Column, JoinType};
 use datafusion::datasource::provider_as_source;
 use datafusion::functions::unicode::right;
+use datafusion::functions_window::expr_fn::row_number;
+use datafusion::logical_expr::expr::{WindowFunction, WindowFunctionParams};
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
 use datafusion::logical_expr::{Expr, logical_plan};
 
@@ -24,6 +26,8 @@ use otel_arrow_rust::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::out_port::{OutPort, OutPortProvider};
+
+const ROW_NUMBER_COL: &str = "_row_number";
 
 struct ExecutionContext {
     curr_batch: OtapArrowRecords,
@@ -75,13 +79,47 @@ impl OtapBatchEngine {
     }
 }
 
+// fn row_number_expr() -> Expr {
+//     Expr::WindowFunction(Box::new(WindowFunction {
+//         fun: Wi
+//         params: WindowFunctionParams {
+//             ..Default::default()
+//         }
+//     }));
+//     //     fun: WindowFunction::BuiltIn(BuiltinWindowFunction::RowNumber),
+//     //     args: vec![],
+//     //     partition_by: vec![],
+//     //     order_by: vec![],
+//     //     window_frame: None,
+//     // }
+//     todo!()
+// }
+
 fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
-    match exec_ctx.curr_batch {
+    let plan = match exec_ctx.curr_batch {
         OtapArrowRecords::Logs(_) => scan_batch(exec_ctx, ArrowPayloadType::Logs),
         _ => {
             todo!("handle other root batches");
         }
-    }
+    }?;
+
+    let plan = plan.window(vec![ row_number().alias(ROW_NUMBER_COL) ]).unwrap();
+
+    Ok(plan)
+
+    // let projection = plan.schema().fields()
+    //     .iter()
+    //     .map(|f| logical_expr::col(f.name()))
+    //     .collect::<Vec<_>>();
+
+    // Ok(plan.project(projection).unwrap())
+
+    // this row_number col is needed b/c of how we join
+    // Ok(plan.project([logical_expr::col("*"), row_number().alias("_row_number")]).unwrap())
+    // Ok(
+    //     plan.window(vec![ row_number().alias(ROW_NUMBER_COL) ]).unwrap()
+    //         // .project([logical_expr::col("*")]).unwrap()
+    // )
 }
 
 fn scan_batch(
@@ -151,6 +189,25 @@ enum BinaryArg {
     Literal(StaticScalarExpression),
 }
 
+impl TryFrom<&ScalarExpression> for BinaryArg {
+    type Error = Error;
+
+    fn try_from(scalar_expr: &ScalarExpression) -> Result<Self> {
+        let binary_arg = match scalar_expr {
+            ScalarExpression::Source(source) => {
+                BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
+            }
+            ScalarExpression::Static(static_expr) => BinaryArg::Literal(static_expr.clone()),
+            _ => {
+                todo!("handle invalid scalar expr");
+            }
+        };
+
+        Ok(binary_arg)
+    }
+}
+
+// TODO delete this
 fn handle_binary_arg(scalar_expr: &ScalarExpression) -> Result<BinaryArg> {
     let binary_arg = match scalar_expr {
         ScalarExpression::Source(source) => {
@@ -165,8 +222,8 @@ fn handle_binary_arg(scalar_expr: &ScalarExpression) -> Result<BinaryArg> {
     Ok(binary_arg)
 }
 
-fn try_static_scalar_to_literal(static_scalar_expr: &StaticScalarExpression) -> Result<Expr> {
-    let lit_expr = match static_scalar_expr {
+fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
+    let lit_expr = match static_scalar {
         StaticScalarExpression::String(str_val) => logical_expr::lit(str_val.get_value()),
         StaticScalarExpression::Boolean(bool_val) => logical_expr::lit(bool_val.get_value()),
         StaticScalarExpression::Integer(int_val) => logical_expr::lit(int_val.get_value()),
@@ -177,6 +234,20 @@ fn try_static_scalar_to_literal(static_scalar_expr: &StaticScalarExpression) -> 
     };
 
     Ok(lit_expr)
+}
+
+fn try_static_scalar_to_any_val_column(static_scalar: &StaticScalarExpression) -> Result<&'static str> {
+    let col_name = match static_scalar {
+        StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
+        StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
+        StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
+        StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
+        _ => {
+            todo!("handle other attribute columns for binary expr")
+        }
+    };
+
+    Ok(col_name)
 }
 
 #[derive(Clone, Debug)]
@@ -394,6 +465,255 @@ fn handle_filter_predicate(
     Ok(())
 }
 
+
+
+struct FilteringJoin {
+    logical_plan: LogicalPlan,
+    join_type: JoinType,
+    left_col: &'static str,
+    right_col: &'static str,
+}
+
+impl FilteringJoin {
+    fn join_to_plan(self, plan_builder: LogicalPlanBuilder) -> LogicalPlanBuilder {
+        plan_builder.join(
+            self.logical_plan,
+            self.join_type,
+            (vec![self.left_col], vec![self.right_col]),
+            None
+        )
+        .unwrap()
+    }
+}
+
+struct Filter {
+    filter_expr: Option<Expr>,
+    join: Option<FilteringJoin>,
+}
+
+impl Filter {
+    fn try_from_predicate(
+        exec_ctx: &ExecutionContext,
+        predicate: &LogicalExpression
+    ) -> Result<Self> {
+        match predicate {
+            LogicalExpression::And(and_expr) => {
+                let left_filter = Self::try_from_predicate(exec_ctx, and_expr.get_left())?;
+                let right_filter = Self::try_from_predicate(exec_ctx, and_expr.get_right())?;
+
+                let filter_expr = match (left_filter.filter_expr, right_filter.filter_expr) {
+                    (Some(left), Some(right)) => Some(left.and(right)),
+                    (None, Some(filter_expr)) | (Some(filter_expr), None) => Some(filter_expr),
+                    _ => None
+                };
+
+                let join = match (left_filter.join, right_filter.join) {
+                    (Some(left_join), Some(right_join)) => {
+                        let join_both = scan_root_batch(exec_ctx)?
+                            .join(
+                                left_join.logical_plan,
+                                JoinType::LeftSemi,
+                                (vec![left_join.left_col], vec![left_join.right_col]),
+                                None
+                            ).unwrap()
+                            .join(
+                                right_join.logical_plan,
+                                JoinType::LeftSemi,
+                                (vec![right_join.left_col], vec![right_join.right_col]),
+                                None
+                            ).unwrap();
+
+                        Some(FilteringJoin {
+                            logical_plan: join_both.build().unwrap(),
+                            join_type: JoinType::LeftSemi,
+                            left_col: ROW_NUMBER_COL,
+                            right_col: ROW_NUMBER_COL
+                        })
+                    },
+                    (None, Some(join)) | (Some(join), None) => Some(join),
+                    _ => None
+                };
+
+                Ok(Self { filter_expr, join })
+
+            },
+
+            LogicalExpression::Or(or_expr) => {
+                let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
+                let right_filter = Self::try_from_predicate(exec_ctx, or_expr.get_right())?;
+
+                match (left_filter.join, right_filter.join) {
+                    (Some(left_join), Some(right_join)) => {
+                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = left_filter.filter_expr {
+                            left_plan = left_plan.filter(filter_expr).unwrap();
+                        }
+                        left_plan = left_join.join_to_plan(left_plan);
+
+                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = right_filter.filter_expr {
+                            right_plan = right_plan.filter(filter_expr).unwrap();
+                        }
+                        right_plan = right_join.join_to_plan(right_plan);
+
+                        
+                        Ok(Self {
+                            filter_expr: None,
+                            join: Some(FilteringJoin { 
+                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
+                                join_type: JoinType::LeftSemi,
+                                left_col: ROW_NUMBER_COL,
+                                right_col: ROW_NUMBER_COL
+                            })
+                        })
+                    },
+
+                    (Some(left_join), None) => {
+                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = left_filter.filter_expr {
+                            left_plan = left_plan.filter(filter_expr).unwrap();
+                        }
+                        left_plan = left_join.join_to_plan(left_plan);
+
+                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = right_filter.filter_expr {
+                            right_plan = right_plan.filter(filter_expr).unwrap();
+                        } else {
+                            todo!("would this be invalid?")
+                        }
+
+                        Ok(Self {
+                            filter_expr: None,
+                            join: Some(FilteringJoin { 
+                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
+                                join_type: JoinType::LeftSemi, 
+                                left_col: ROW_NUMBER_COL,
+                                right_col: ROW_NUMBER_COL,
+                            })
+                        })
+                    }
+
+                    (None, Some(right_join)) => {
+                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = left_filter.filter_expr {
+                            left_plan = left_plan.filter(filter_expr).unwrap();
+                        } else {
+                            todo!("would this be invalid?")
+                        }
+
+                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        if let Some(filter_expr) = right_filter.filter_expr {
+                            right_plan = right_plan.filter(filter_expr).unwrap();
+                        }
+                        right_plan = right_join.join_to_plan(right_plan);
+
+                        Ok(Self {
+                            filter_expr: None,
+                            join: Some(FilteringJoin { 
+                                logical_plan: left_plan.union_distinct(right_plan.build().unwrap()).unwrap().build().unwrap(), 
+                                join_type: JoinType::LeftSemi, 
+                                left_col: ROW_NUMBER_COL,
+                                right_col: ROW_NUMBER_COL,
+                            })
+                        })
+                    }
+
+                    (None, None) => {
+                        match (left_filter.filter_expr, right_filter.filter_expr) {
+                            (Some(left_filter), Some(right_filter)) => {
+                                Ok(Self {
+                                    filter_expr: Some(logical_expr::or(left_filter, right_filter)),
+                                    join: None
+                                })
+                            },
+                            _ => {
+                                todo!("How does this happen?")
+                            }
+                        }
+                    }
+                    _ => {
+                        todo!()
+                    }
+                }
+
+            },
+            LogicalExpression::EqualTo(eq_expr) => {
+                Self::try_from_binary_expr(exec_ctx, Operator::Eq, eq_expr.get_left(), eq_expr.get_right())
+            }
+            _ => {
+                todo!("return error")
+            }
+        }
+    }
+
+    fn try_from_binary_expr(
+        exec_ctx: &ExecutionContext,
+        operator: Operator,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+    ) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(left)?;
+        let right_arg = BinaryArg::try_from(right)?;
+
+        match left_arg {
+            BinaryArg::Column(left_col) => match left_col {
+                ColumnAccessor::ColumnName(col_name) => match right_arg {
+                    BinaryArg::Column(_) => {
+                        todo!("handle column right arg in binary expr")
+                    }
+                    BinaryArg::Literal(static_scalar) => {
+                        let left = logical_expr::col(col_name);
+                        let right = try_static_scalar_to_literal(&static_scalar)?;
+                        Ok(Self {
+                            filter_expr: Some(logical_expr::binary_expr(left, operator, right)),
+                            join: None,
+                        })
+                    }
+                },
+                ColumnAccessor::Attributes(attr_key) => match right_arg {
+                    BinaryArg::Column(_) => {
+                        todo!("handle column right arg in binary expr")
+                    },
+                    BinaryArg::Literal(static_scalar) => {
+                        let attr_val_col_name = try_static_scalar_to_any_val_column(&static_scalar)?;
+
+                        // TODO -- not have payload type hard-coded
+                        let attrs_filter = scan_batch(exec_ctx, ArrowPayloadType::LogAttrs)?
+                            .filter(
+                                logical_expr::and(
+                                    logical_expr::binary_expr(
+                                        logical_expr::col(consts::ATTRIBUTE_KEY),
+                                        operator,
+                                        logical_expr::lit(attr_key),
+                                    ),
+                                    logical_expr::binary_expr(
+                                        logical_expr::col(attr_val_col_name),
+                                        operator,
+                                        try_static_scalar_to_literal(&static_scalar)?,
+                                    ),
+                                )
+                            )
+                            .unwrap();
+
+                        Ok(Self {
+                            filter_expr: None,
+                            join: Some(FilteringJoin { 
+                                logical_plan: attrs_filter.build().unwrap(), 
+                                join_type: JoinType::LeftSemi, 
+                                left_col: consts::ID,
+                                right_col: consts::PARENT_ID,
+                            })
+                        })
+                    }
+                }
+            },
+            _ => {
+                todo!("handle non column left arg in binary expr");
+            }
+        }
+    }
+}
+
 fn append_filter_steps(
     exec_ctx: &mut ExecutionContext,
     mut root_logical_plan: LogicalPlanBuilder,
@@ -422,12 +742,7 @@ fn append_filter_steps(
         }
     }
 
-    // TODO -- double check if this is the most efficient way to do this.
-    // e.g. there's 2 options here: x1 and (y1 or y2)
-    //
-    // op 1: select (y1 where x1) union distinct (y2 where x1)
-    // op 2: select (y1 union y2) where x1
-    //
+
     match &filter_builder.sub_query {
         Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
             let left_builder = &sub_queries[0];
@@ -445,6 +760,13 @@ fn append_filter_steps(
                 )
                 .unwrap();
         }
+        
+        // TODO -- double check if this is the most efficient way to do this.
+        // e.g. there's 2 options here: x1 and (y1 or y2)
+        //
+        // op 1: select (y1 where x1) union distinct (y2 where x1)
+        // op 2: select (y1 union y2) where x1
+        //
         Some(FilterSubQuery::UnionDistinct(sub_queries)) => {
             let left_builder = &sub_queries[0];
             let left = append_filter_steps(exec_ctx, root_logical_plan.clone(), left_builder)?;
@@ -466,10 +788,21 @@ async fn filter_batch(
     exec_ctx: &mut ExecutionContext,
     predicate: &LogicalExpression,
 ) -> Result<()> {
-    let mut filter_builder = FilterBuilder::default();
-    handle_filter_predicate(&mut filter_builder, predicate)?;
-    let root_logical_plan =
-        append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
+    // let mut filter_builder = FilterBuilder::default();
+    // handle_filter_predicate(&mut filter_builder, predicate)?;
+    // let root_logical_plan =
+    //     append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
+
+    let filter = Filter::try_from_predicate(&exec_ctx, predicate)?;
+    let mut root_logical_plan = scan_root_batch(&exec_ctx)?;
+
+    if let Some(expr) = filter.filter_expr {
+        root_logical_plan = root_logical_plan.filter(expr).unwrap();
+    }
+
+    if let Some(join) = filter.join {
+        root_logical_plan = join.join_to_plan(root_logical_plan);
+    }
 
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan:\n{}", logical_plan);
@@ -484,14 +817,19 @@ async fn filter_batch(
         .unwrap();
     // TODO handle batches empty
     // TODO not sure concat_batches is necessary here as there should only be one batch
-    let result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+    let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+
+    // remove the ROW_ID col
+    if let Ok(col_idx) =  result.schema_ref().index_of(ROW_NUMBER_COL) {
+        _ = result.remove_column(col_idx);
+    }
 
     // TODO how do we know it's logs here?
     exec_ctx.curr_batch.set(ArrowPayloadType::Logs, result);
 
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
 
     Ok(())
 }
@@ -539,6 +877,8 @@ mod test {
     use data_engine_kql_parser::{
         KqlParser, Parser, ParserMapKeySchema, ParserMapSchema, ParserOptions,
     };
+    use datafusion::prelude::lit;
+    use datafusion::sql::sqlparser::keywords::ROW;
     use otap_df_otap::encoder::encode_logs_otap_batch;
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -943,5 +1283,123 @@ mod test {
         let result = engine.process(&pipeline_expr, &otap_batch).await.unwrap();
         arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fussin() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        let mut bytes = vec![];
+        export_req.encode(&mut bytes).unwrap();
+
+        let logs_view = RawLogsData::new(&bytes);
+        let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
+
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
+        
+
+        let exec_ctx = ExecutionContext {
+            curr_batch: otap_batch,
+            session_ctx: SessionContext::new()
+        };
+
+        let ctx = SessionContext::new();
+        let plan = scan_root_batch(&exec_ctx).unwrap()
+            .filter(col("severity_text").eq(lit("WARN")))
+            .unwrap();
+
+        let result = ctx.execute_logical_plan(plan.clone().build().unwrap())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        println!("result1 :");
+        arrow::util::pretty::print_batches(&result).unwrap();
+
+        let plan2 = scan_root_batch(&exec_ctx).unwrap()
+            .filter(col("event_name").eq(lit("3")))
+            .unwrap();
+
+        let result = ctx.execute_logical_plan(plan2.clone().build().unwrap())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        println!("result2 :");
+        arrow::util::pretty::print_batches(&result).unwrap();
+
+        let jp = plan.clone().join(
+            plan2.clone().build().unwrap(),
+            JoinType::LeftSemi,
+            (vec!["id"], vec!["id"]),
+            None
+        ).unwrap();
+
+        let result = ctx.execute_logical_plan(jp.clone().build().unwrap())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        println!("result3 :");
+        arrow::util::pretty::print_batches(&result).unwrap();
+        
+
+
+        let jp = plan.join(
+            plan2.build().unwrap(),
+            JoinType::LeftSemi,
+            (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+            None
+        ).unwrap();
+
+        let result = ctx.execute_logical_plan(jp.clone().build().unwrap())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        println!("result4 :");
+        arrow::util::pretty::print_batches(&result).unwrap();
     }
 }
