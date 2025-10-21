@@ -79,22 +79,6 @@ impl OtapBatchEngine {
     }
 }
 
-// fn row_number_expr() -> Expr {
-//     Expr::WindowFunction(Box::new(WindowFunction {
-//         fun: Wi
-//         params: WindowFunctionParams {
-//             ..Default::default()
-//         }
-//     }));
-//     //     fun: WindowFunction::BuiltIn(BuiltinWindowFunction::RowNumber),
-//     //     args: vec![],
-//     //     partition_by: vec![],
-//     //     order_by: vec![],
-//     //     window_frame: None,
-//     // }
-//     todo!()
-// }
-
 fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
     let plan = match exec_ctx.curr_batch {
         OtapArrowRecords::Logs(_) => scan_batch(exec_ctx, ArrowPayloadType::Logs),
@@ -103,23 +87,10 @@ fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
         }
     }?;
 
+    // add a row number column
     let plan = plan.window(vec![ row_number().alias(ROW_NUMBER_COL) ]).unwrap();
 
     Ok(plan)
-
-    // let projection = plan.schema().fields()
-    //     .iter()
-    //     .map(|f| logical_expr::col(f.name()))
-    //     .collect::<Vec<_>>();
-
-    // Ok(plan.project(projection).unwrap())
-
-    // this row_number col is needed b/c of how we join
-    // Ok(plan.project([logical_expr::col("*"), row_number().alias("_row_number")]).unwrap())
-    // Ok(
-    //     plan.window(vec![ row_number().alias(ROW_NUMBER_COL) ]).unwrap()
-    //         // .project([logical_expr::col("*")]).unwrap()
-    // )
 }
 
 fn scan_batch(
@@ -637,6 +608,38 @@ impl Filter {
                 }
 
             },
+
+            LogicalExpression::Not(not_expr) => {
+                let not_filter = Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())?;
+                if let Some(not_join) = not_filter.join {
+                    let mut plan = scan_root_batch(exec_ctx)?;
+                    if let Some(filter_expr) = not_filter.filter_expr {
+                        plan = plan.filter(filter_expr).unwrap();
+                    }
+
+                    plan = not_join.join_to_plan(plan);
+                    Ok(Self {
+                        filter_expr: None,
+                        join: Some(FilteringJoin {
+                            logical_plan: plan.build().unwrap(),
+                            join_type: JoinType::LeftAnti,
+                            left_col: ROW_NUMBER_COL,
+                            right_col: ROW_NUMBER_COL
+                        })
+                    })
+
+                } else {
+                    if let Some(expr) = not_filter.filter_expr {
+                        Ok(Self {
+                            filter_expr: Some(logical_expr::not(expr)),
+                            join: None,
+                        })
+                    } else {
+                        todo!("invalid?")
+                    }
+                }
+            },
+
             LogicalExpression::EqualTo(eq_expr) => {
                 Self::try_from_binary_expr(exec_ctx, Operator::Eq, eq_expr.get_left(), eq_expr.get_right())
             }
@@ -1197,6 +1200,59 @@ mod test {
             vec!["1".into(), "5".into()],
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn filter_logical_not_expr() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y2")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(severity_text == \"WARN\")",
+            vec!["2".into(), "4".into(), "5".into()]
+        ).await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(attributes[\"X\"] == \"Y\")",
+            vec!["2".into(), "3".into(), "5".into()]
+        ).await;
     }
 
     #[ignore]
