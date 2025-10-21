@@ -55,6 +55,13 @@ pub struct Config {
     max_concurrent_requests: usize,
 
     /// Whether to wait for the result (default: true)
+    ///
+    /// When enabled, the receiver will not send a response until the
+    /// immediate downstream component has acknowledged receipt of the
+    /// data.  This does not guarantee that data has been fully
+    /// processed or successfully exported to the final destination,
+    /// since components are able acknowledge early.
+    ///
     /// Note when wait_for_result=false, it is impossible to
     /// see a failure, errors are effectively suppressed.
     #[serde(default = "default_wait_for_result")]
