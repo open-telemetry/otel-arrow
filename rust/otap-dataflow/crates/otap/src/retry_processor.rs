@@ -252,20 +252,28 @@ struct RetryState {
 
     /// Deadline for the retry operation.
     deadline: f64,
+
+    /// Item count
+    num_items: u64,
 }
 
 impl RetryState {
-    fn new(deadline: f64) -> Self {
+    fn new(num_items: u64, deadline: f64) -> Self {
         Self {
             retries: 0,
             deadline,
+            num_items,
         }
     }
 }
 
 impl From<RetryState> for CallData {
     fn from(value: RetryState) -> Self {
-        smallvec::smallvec![value.retries.into(), value.deadline.into()]
+        smallvec::smallvec![
+            value.retries.into(),
+            value.deadline.into(),
+            value.num_items.into()
+        ]
     }
 }
 
@@ -273,7 +281,7 @@ impl TryFrom<CallData> for RetryState {
     type Error = Error;
 
     fn try_from(value: CallData) -> Result<Self, Self::Error> {
-        if value.len() != 2 {
+        if value.len() != 3 {
             return Err(Error::InternalError {
                 message: "invalid calldata".into(),
             });
@@ -282,6 +290,7 @@ impl TryFrom<CallData> for RetryState {
         Ok(Self {
             retries: value[0].into(),
             deadline: value[1].into(),
+            num_items: value[2].into(),
         })
     }
 }
@@ -299,9 +308,22 @@ impl RetryProcessor {
         ack: AckMsg<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // Forward the ACK upstream to complete the request chain
+        let signal = ack.accepted.signal_type();
+        let calldata = ack.calldata.clone();
+
         effect_handler.notify_ack(ack).await?;
-        // @@@ METRICS
+
+        // Forward the ACK upstream to complete the request chain
+        match calldata.try_into() {
+            Err(_err) => {
+                return Ok(());
+            }
+            Ok(RetryState { num_items, .. }) => {
+                self.metrics.add_consumed_success(signal, num_items);
+                self.metrics.add_produced_success(signal, num_items);
+            }
+        };
+
         Ok(())
     }
 
@@ -311,23 +333,28 @@ impl RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = nack.refused.signal_type();
-        let items = nack.refused.num_items();
+
+        let mut rstate: RetryState = match nack.calldata.clone().try_into() {
+            Err(err) => {
+                // Note: we don't know the number of items lost.
+                nack.reason = format!("retry internal error: {:?}: {}", err, nack.reason);
+                effect_handler.notify_nack(nack).await?;
+                return Ok(());
+            }
+            Ok(retry) => retry,
+        };
 
         // Regardless of the next step, this NACK counts as a producer
         // refusal.
-        self.metrics.add_produced_refused(signal, items as u64);
+        self.metrics.add_produced_refused(signal, rstate.num_items);
 
-        let rstate_res: Result<RetryState, _> = nack.calldata.clone().try_into();
-
-        // Check the basics: we should have data
-        if nack.refused.is_empty() || rstate_res.is_err() {
-            nack.reason = format!("retry internal error: {}", nack.reason);
+        // Check for missing payload, we won't retry an empty request.
+        if nack.refused.is_empty() {
+            nack.reason = format!("retry lost payload: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
-            self.metrics.add_consumed_failure(signal, items as u64);
+            self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
-
-        let mut rstate = rstate_res.expect("ok");
 
         // Retry attempt: calculate delayed retry and increment
         let delay_secs = (self.config.initial_interval.as_secs_f64()
@@ -344,11 +371,14 @@ impl RetryProcessor {
             // Deadline expired: forward NACK upstream.
             nack.reason = format!("final retry: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
-            self.metrics.add_consumed_failure(signal, items as u64);
+            self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
 
         rstate.retries += 1;
+
+        // Save for use below.
+        let num_items = rstate.num_items;
 
         // Updated RetryState back onto context for retry attempt
         let mut rereq = nack.refused;
@@ -358,7 +388,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        self.metrics.add_retry_attempts(signal, items as u64);
+        self.metrics.add_retry_attempts(signal, num_items);
 
         // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
@@ -367,7 +397,7 @@ impl RetryProcessor {
                 effect_handler
                     .notify_nack(NackMsg::new("cannot delay", refused))
                     .await?;
-                self.metrics.add_consumed_failure(signal, items as u64);
+                self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
         }
@@ -378,17 +408,18 @@ impl RetryProcessor {
         _when: Instant,
         data: Box<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
+        num_items: u64,
     ) -> Result<(), Error> {
-        self.send_or_nack(*data, effect_handler).await
+        self.send_or_nack(*data, effect_handler, num_items).await
     }
 
     async fn send_or_nack(
         &mut self,
         data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
+        num_items: u64,
     ) -> Result<(), Error> {
         let signal = data.signal_type();
-        let items = data.num_items() as u64;
         match effect_handler.send_message(data).await {
             Ok(()) => {
                 // Request control flows downstream.
@@ -400,7 +431,7 @@ impl RetryProcessor {
                 effect_handler
                     .notify_nack(NackMsg::new(reason, data))
                     .await?;
-                self.metrics.add_consumed_failure(signal, items);
+                self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
             Err(e) => Err(e.into()),
@@ -417,13 +448,22 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
+                let num_items = data.num_items();
+                if num_items == 0 {
+                    // Immediately Ack an empty request. Otherwise
+                    // looks like a failure to return data in the Nack
+                    // code path.
+                    effect_handler.notify_ack(AckMsg::new(data));
+                    return Ok(());
+                }
+
                 let deadline = now_f64() + self.config.max_elapsed_time.as_secs_f64();
                 effect_handler.subscribe_to(
                     Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
-                    RetryState::new(deadline).into(),
+                    RetryState::new(deadline, num_items).into(),
                     &mut data,
                 );
-                self.send_or_nack(data, effect_handler).await
+                self.send_or_nack(data, effect_handler, num_items).await
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
@@ -535,7 +575,7 @@ mod test {
         // 1st retry: +0.05=+0.05 retry_count=1
         // 2nd retry: +0.10=+0.15 retry_count=2
         // 3nd retry: +0.20=+0.35 retry_count=3
-        // 4nd retry: +0.40=+0.75 deadline
+        // 4nd retry: +0.40=+0.75 max_elapsed reached
         json!({
             "initial_interval": 0.05,     // 50ms initial delay
             "max_interval": 0.40,         // 400ms max delay

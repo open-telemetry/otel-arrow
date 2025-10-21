@@ -61,7 +61,7 @@ impl From<Context8u8> for f64 {
 /// size is arbitrary, but shouldn't be larger than needed by
 /// callers. For example: retry count, sequence and generation
 /// numbers, etc.
-pub type CallData = SmallVec<[Context8u8; 2]>;
+pub type CallData = SmallVec<[Context8u8; 3]>;
 
 /// The ACK message.
 #[derive(Debug, Clone)]
