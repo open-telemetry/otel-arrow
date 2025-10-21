@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use arrow::compute::concat_batches;
+use arrow::ipc::RecordBatch;
 use data_engine_expressions::{
     BooleanValue, DataExpression, DoubleValue, IntegerValue, LogicalExpression, PipelineExpression,
     ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
@@ -26,6 +27,7 @@ use crate::out_port::{OutPort, OutPortProvider};
 
 struct ExecutionContext {
     curr_batch: OtapArrowRecords,
+    session_ctx: SessionContext,
 }
 
 pub struct OtapBatchEngine {}
@@ -35,16 +37,17 @@ impl OtapBatchEngine {
         &mut self,
         pipeline: &PipelineExpression,
         otap_batch: &OtapArrowRecords,
-    ) -> Result<()> {
+    ) -> Result<OtapArrowRecords> {
         let mut exec_ctx = ExecutionContext {
             curr_batch: otap_batch.clone(),
+            session_ctx: SessionContext::new(),
         };
 
         for data_expr in pipeline.get_expressions() {
             self.process_data_expr(data_expr, &mut exec_ctx).await?;
         }
 
-        Ok(())
+        Ok(exec_ctx.curr_batch)
     }
 
     async fn process_data_expr(
@@ -58,8 +61,7 @@ impl OtapBatchEngine {
                     match predicate {
                         // we do opposite of the discard predicate. e.g. keep what would be discarded
                         LogicalExpression::Not(not_expr) => {
-                            // TODO do something with the result
-                            _ = filter_batch(exec_ctx, not_expr.get_inner_expression()).await;
+                            filter_batch(exec_ctx, not_expr.get_inner_expression()).await?;
                         }
                         _ => todo!("handle invalid discard predciate"),
                     }
@@ -115,12 +117,12 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
         let selectors = accessor.get_selectors();
 
         // TODO the parsing here is kind of goofy
-        match &selectors[1] {
+        match &selectors[0] {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
                 match column_name {
                     // TODO parsing here is kind of goofy
-                    "attributes" => match &selectors[2] {
+                    "attributes" => match &selectors[1] {
                         ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
                             Ok(Self::Attributes(attr_key.get_value().to_string()))
                         }
@@ -269,14 +271,6 @@ fn handle_filter_predicate(
             let mut right_builder = FilterBuilder::default();
             handle_filter_predicate(&mut right_builder, and_expr.get_right())?;
 
-            let nested_unions = matches!(
-                left_builder.sub_query,
-                Some(FilterSubQuery::UnionDistinct(_))
-            ) && matches!(
-                right_builder.sub_query,
-                Some(FilterSubQuery::UnionDistinct(_))
-            );
-
             match (&left_builder.sub_query, &right_builder.sub_query) {
                 // (x1 or x2) and (y1 or y2)
                 //
@@ -328,6 +322,11 @@ fn handle_filter_predicate(
             // TODO need to check we're not also joining resource_attrs, scope_attrs
             let no_joins = right_builder.attr_batch_exprs.is_empty()
                 && left_builder.attr_batch_exprs.is_empty();
+
+            // TODO there's an optimization that can be made here for filters like
+            // attributes["X"] == "Y" or attributes["X"] == "Z"
+            // rather than doing a subquery, we can do a single join against the
+            // root table while filtering attrs table for either of these attributes
 
             if no_joins {
                 let mut lefts = left_builder.root_batch_exprs[0].clone();
@@ -390,7 +389,6 @@ fn append_filter_steps(
         }
     }
 
-    // TODO this is a goofy check
     match &filter_builder.sub_query {
         Some(FilterSubQuery::LeftSemiJoin(sub_queries)) => {
             let left_builder = &sub_queries[0];
@@ -428,47 +426,77 @@ fn append_filter_steps(
 async fn filter_batch(
     exec_ctx: &mut ExecutionContext,
     predicate: &LogicalExpression,
-) -> Result<OtapArrowRecords> {
+) -> Result<()> {
     let mut filter_builder = FilterBuilder::default();
     handle_filter_predicate(&mut filter_builder, predicate)?;
     let root_logical_plan =
         append_filter_steps(exec_ctx, scan_root_batch(&exec_ctx)?, &filter_builder)?;
 
-    let ctx = SessionContext::new();
-
-    // let lp2 = root_logical_plan.clone().explain(true, false).unwrap().build().unwrap();
-    // let exp_result = ctx.execute_logical_plan(lp2).await.unwrap().collect().await.unwrap();
-    // println!("{:?}", exp_result[0]);
-
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan = {}", logical_plan);
 
-    // let physical_plan = ctx
-    //     .state()
-    //     .create_physical_plan(&logical_plan)
-    //     .await
-    //     .unwrap();
-
-    // println!("physical plan = {:#?}", physical_plan);
-    // physical_plan.execute(partition, context)
-
-    // ctx.execute_logical_plan(logical_plan)
-    let batches = ctx
+    let batches = exec_ctx
+        .session_ctx
         .execute_logical_plan(logical_plan)
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
+    // TODO handle batches empty
+    // TODO not sure concat_batches is necessary here as there should only be one batch
     let result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
 
-    arrow::util::pretty::print_batches(&[result]).unwrap();
+    // TODO how do we know it's logs here?
+    exec_ctx.curr_batch.set(ArrowPayloadType::Logs, result);
 
-    todo!()
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
+    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
+
+    Ok(())
+}
+
+async fn filter_attrs_for_root(
+    exec_ctx: &mut ExecutionContext,
+    payload_type: ArrowPayloadType,
+) -> Result<()> {
+    if exec_ctx.curr_batch.get(payload_type).is_some() {
+        let attrs_table_scan = scan_batch(exec_ctx, payload_type)?;
+        let root_table_scan = scan_root_batch(exec_ctx)?;
+
+        let logical_plan = attrs_table_scan
+            .join(
+                root_table_scan.build().unwrap(),
+                JoinType::LeftSemi,
+                (vec![consts::PARENT_ID], vec![consts::ID]),
+                None,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let batches = exec_ctx
+            .session_ctx
+            .execute_logical_plan(logical_plan)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        // TODO handle batches empty
+        let result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+
+        exec_ctx.curr_batch.set(payload_type, result);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod test {
+    use arrow::array::{DictionaryArray, StringArray, UInt8Array};
+    use arrow::datatypes::UInt8Type;
     use data_engine_kql_parser::{
         KqlParser, Parser, ParserMapKeySchema, ParserMapSchema, ParserOptions,
     };
@@ -483,6 +511,180 @@ mod test {
 
     use super::*;
 
+    async fn run_logs_test(
+        record: ExportLogsServiceRequest,
+        kql_expr: &str,
+
+        // TODO is this kind of a hokey way to validate?
+        expected_event_name: Vec<String>,
+    ) {
+        let mut bytes = vec![];
+        record.encode(&mut bytes).unwrap();
+        let logs_view = RawLogsData::new(&bytes);
+        let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
+        let mut engine = OtapBatchEngine {};
+        let parser_options = ParserOptions::new();
+        let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
+        let result = engine.process(&pipeline_expr, &otap_batch).await.unwrap();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        let event_name_col = logs_rb.column_by_name(consts::EVENT_NAME).unwrap();
+
+        let tmp = event_name_col
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let tmp2 = tmp.downcast_dict::<StringArray>().unwrap();
+        let mut event_names = tmp2
+            .into_iter()
+            .map(|v| v.unwrap().to_string())
+            .collect::<Vec<_>>();
+        event_names.sort();
+
+        assert_eq!(expected_event_name, event_names)
+    }
+
+    fn logs_to_export_req(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_simple() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                ..Default::default()
+            },
+        ]);
+        run_logs_test(
+            export_req,
+            "logs | where severity_text == \"WARN\"",
+            vec!["1".into(), "3".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_attrs_simple() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                attributes: vec![KeyValue::new("X2", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+        run_logs_test(
+            export_req,
+            "logs | where attributes[\"X\"] == \"Y\"",
+            vec!["1".into(), "4".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_logical_or() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X2", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        // this query can be resolved with a simple "or" logical expr on the root table
+        run_logs_test(
+            export_req.clone(),
+            "logs | where severity_text == \"WARN\" or severity_text == \"INFO\"",
+            vec!["1".into(), "2".into(), "3".into()],
+        )
+        .await;
+
+        // this query can be resolved by a simple "or" logical on the attrs table
+        // (TODO -- make the optimization this comment describes)
+        run_logs_test(
+            export_req.clone(),
+            "logs | where attributes[\"X\"] == \"Y\" or attributes[\"X\"] == \"Y2\"",
+            vec!["1".into(), "3".into(), "4".into()],
+        )
+        .await;
+
+        // this query is more complex, need to filter root, then filter attrs and join to root,
+        // then take the distinct union of these two clauses
+        run_logs_test(
+            export_req,
+            "logs | where attributes[\"X\"] == \"Y\" or severity_text == \"INFO\"",
+            vec!["1".into(), "2".into(), "4".into()],
+        )
+        .await;
+    }
+
+    #[ignore]
     #[tokio::test]
     async fn smoke_test() {
         let record = ExportLogsServiceRequest {
@@ -563,6 +765,8 @@ mod test {
 
         let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
 
-        engine.process(&pipeline_expr, &otap_batch).await.unwrap();
+        let result = engine.process(&pipeline_expr, &otap_batch).await.unwrap();
+        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
     }
 }
