@@ -2,17 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{
+    LogsServiceServer, MetricsServiceServer, RouteResponse, SharedState, TraceServiceServer,
+};
 use crate::pdata::OtapPdata;
 
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -39,12 +42,27 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
+
+    /// Maximum number of concurrent (in-flight) requests (default: 1000)
+    #[serde(default = "default_max_concurrent_requests")]
+    max_concurrent_requests: usize,
+}
+
+const fn default_max_concurrent_requests() -> usize {
+    1000
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
 pub struct OTLPReceiver {
     config: Config,
     metrics: MetricSet<OtlpReceiverMetrics>,
+}
+
+/// State shared between gRPC server task and the effect handler.
+struct SharedStates {
+    logs: SharedState,
+    metrics: SharedState,
+    traces: SharedState,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -81,20 +99,68 @@ impl OTLPReceiver {
         // Register OTLP receiver metrics for this node.
         let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
 
-        Ok(OTLPReceiver { config, metrics })
+        Ok(Self { config, metrics })
+    }
+
+    fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
+        let calldata = ack.calldata;
+        let resp = Ok(());
+        match ack.accepted.signal_type() {
+            SignalType::Logs => states.logs.route_response(calldata, resp),
+            SignalType::Metrics => states.metrics.route_response(calldata, resp),
+            SignalType::Traces => states.traces.route_response(calldata, resp),
+        }
+    }
+
+    fn route_nack_response(
+        &self,
+        states: &SharedStates,
+        mut nack: NackMsg<OtapPdata>,
+    ) -> RouteResponse {
+        let calldata = std::mem::take(&mut nack.calldata);
+        let sigtype = nack.refused.signal_type();
+        let resp = Err(nack);
+        match sigtype {
+            SignalType::Logs => states.logs.route_response(calldata, resp),
+            SignalType::Metrics => states.metrics.route_response(calldata, resp),
+            SignalType::Traces => states.traces.route_response(calldata, resp),
+        }
+    }
+
+    fn handle_acknack_response(&mut self, resp: RouteResponse) {
+        match resp {
+            RouteResponse::Sent => self.metrics.acks_sent.inc(),
+            RouteResponse::Expired => self.metrics.nacks_sent.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_expired.inc(),
+        }
     }
 }
 
-/// OTLP receiver metrics moved into the node module.
+/// OTLP receiver metrics.
+//
+// TODO: The following were unused, would have to be implemented in
+// a different location:
+//
+// /// Number of bytes received.
+// #[metric(unit = "By")]
+// pub bytes_received: Counter<u64>,
+// /// Number of messages received.
+// #[metric(unit = "{msg}")]
+// pub messages_received: Counter<u64>,
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
-    /// Number of bytes received.
-    #[metric(unit = "By")]
-    pub bytes_received: Counter<u64>,
-    /// Number of messages received.
-    #[metric(unit = "{msg}")]
-    pub messages_received: Counter<u64>,
+    /// Number of acks sent.
+    #[metric(unit = "{acks}")]
+    pub acks_sent: Counter<u64>,
+
+    /// Number of nacks sent.
+    #[metric(unit = "{nacks}")]
+    pub nacks_sent: Counter<u64>,
+
+    /// Number of invalid/expired acks/nacks.
+    #[metric(unit = "{ack_or_nack}")]
+    pub acks_nacks_expired: Counter<u64>,
 }
 
 #[async_trait]
@@ -108,28 +174,37 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let mut logs_service_server = LogsServiceServer::new(effect_handler.clone());
-        let mut metrics_service_server = MetricsServiceServer::new(effect_handler.clone());
-        let mut trace_service_server = TraceServiceServer::new(effect_handler.clone());
+        let mut logs_server =
+            LogsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+        let mut metrics_server =
+            MetricsServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+        let mut traces_server =
+            TraceServiceServer::new(effect_handler.clone(), self.config.max_concurrent_requests);
+
+        let states = SharedStates {
+            logs: logs_server.state(),
+            metrics: metrics_server.state(),
+            traces: traces_server.state(),
+        };
 
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
 
-            logs_service_server = logs_service_server
+            logs_server = logs_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
-            metrics_service_server = metrics_service_server
+            metrics_server = metrics_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
-            trace_service_server = trace_service_server
+            traces_server = traces_server
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
         }
 
         let server = Server::builder()
-            .add_service(logs_service_server)
-            .add_service(metrics_service_server)
-            .add_service(trace_service_server);
+            .add_service(logs_server)
+            .add_service(metrics_server)
+            .add_service(traces_server);
 
         tokio::select! {
             biased;
@@ -145,6 +220,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
+                        },
+                        Ok(NodeControlMsg::Ack(ack)) => {
+                            // Route Ack to the appropriate correlation slot
+                            self.handle_acknack_response(self.route_ack_response(&states, ack));
+                        },
+                        Ok(NodeControlMsg::Nack(nack)) => {
+                            self.handle_acknack_response(self.route_nack_response(&states, nack));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -181,14 +263,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::pdata::OtlpProtoBytes;
-
     use super::*;
 
-    use std::pin::Pin;
-    use std::time::Duration;
-    use std::time::Instant;
-
+    use crate::pdata::OtlpProtoBytes;
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -208,6 +285,8 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NackMsg;
+    use otap_df_engine::control::{AckMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
@@ -215,6 +294,8 @@ mod tests {
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
+    use std::pin::Pin;
+    use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
@@ -287,6 +368,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_config_parsing() {
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config_with_max_concurrent_requests = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_concurrent_requests": 5000
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
+                .unwrap();
+        assert_eq!(receiver.config.max_concurrent_requests, 5000);
+
+        let config_default = json!({
+            "listening_addr": "127.0.0.1:4317"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
+        assert_eq!(receiver.config.max_concurrent_requests, 1000);
+
+        let config_full = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "compression_method": "gzip",
+            "max_concurrent_requests": 2500
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
+        assert_eq!(receiver.config.max_concurrent_requests, 2500);
+    }
+
     fn scenario(
         grpc_endpoint: String,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -352,54 +466,95 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                let logs_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                // Receive logs pdata
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                // Validate logs payload
+                let logs_proto: OtlpProtoBytes = logs_pdata
+                    .clone()
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
-
-                assert!(matches!(logs_pdata, OtlpProtoBytes::ExportLogsRequest(_)));
+                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
                 let expected = create_logs_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, logs_pdata.as_bytes());
+                assert_eq!(&expected_bytes, logs_proto.as_bytes());
 
-                let metrics_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                // Send Ack back to unblock the gRPC handler
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack for logs");
+                }
+
+                // Receive metrics pdata
+                let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for metrics message")
+                    .expect("No metrics message received");
+
+                // Validate metrics payload
+                let metrics_proto: OtlpProtoBytes = metrics_pdata
+                    .clone()
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
-                    metrics_pdata,
+                    metrics_proto,
                     OtlpProtoBytes::ExportMetricsRequest(_)
                 ));
 
                 let expected = create_metrics_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, metrics_pdata.as_bytes());
+                assert_eq!(&expected_bytes, metrics_proto.as_bytes());
 
-                let trace_pdata: OtlpProtoBytes = timeout(Duration::from_secs(3), ctx.recv())
+                // Send Ack back to unblock the gRPC handler
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack for metrics");
+                }
+
+                // Receive trace pdata
+                let trace_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
+                    .expect("Timed out waiting for trace message")
+                    .expect("No trace message received");
+
+                // Validate trace payload
+                let trace_proto: OtlpProtoBytes = trace_pdata
+                    .clone()
                     .payload()
                     .try_into()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
-                    trace_pdata,
+                    trace_proto,
                     OtlpProtoBytes::ExportTracesRequest(_)
                 ));
 
                 let expected = create_traces_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, trace_pdata.as_bytes());
+                assert_eq!(&expected_bytes, trace_proto.as_bytes());
+
+                // Send Ack back to unblock the gRPC handler
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(trace_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack for traces");
+                }
             })
         }
     }
@@ -426,6 +581,7 @@ mod tests {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
+                    max_concurrent_requests: 1000,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -437,6 +593,82 @@ mod tests {
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
-            .run_validation(validation_procedure());
+            .run_validation_concurrent(validation_procedure());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_otlp_receiver_nack() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: Config {
+                    listening_addr: addr,
+                    compression_method: None,
+                    max_concurrent_requests: 1000,
+                },
+                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let nack_scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server");
+
+                let result = logs_client.export(create_logs_service_request()).await;
+
+                assert!(result.is_err(), "Expected error response");
+                let status = result.unwrap_err();
+
+                // Verify we get UNAVAILABLE status code
+                assert_eq!(status.code(), tonic::Code::Unavailable);
+                assert!(status.message().contains("Test nack reason"));
+                assert!(status.message().contains("Pipeline processing failed"));
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let nack_validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                // Receive the logs pdata, create Nack message and send it back
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                let nack = NackMsg::new("Test nack reason", logs_pdata);
+                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                        .await
+                        .expect("Failed to send Nack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(nack_scenario)
+            .run_validation_concurrent(nack_validation);
     }
 }
