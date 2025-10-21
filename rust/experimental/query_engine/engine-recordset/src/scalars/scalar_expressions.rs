@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{cell::Ref, slice::Iter};
+use std::{cell::Ref, slice::Iter, sync::LazyLock};
 
 use data_engine_expressions::*;
 
@@ -15,6 +15,15 @@ use crate::{
     },
     *,
 };
+
+static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
+    let mut items = Vec::new();
+    for value_type in ValueType::get_value_types() {
+        let name: &str = value_type.into();
+        items.push(StringValueStorage::new(name.into()));
+    }
+    items
+});
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
@@ -357,6 +366,14 @@ where
         ScalarExpression::Temporal(t) => execute_temporal_scalar_expression(execution_context, t),
         ScalarExpression::Text(t) => execute_text_scalar_expression(execution_context, t),
         ScalarExpression::Math(m) => execute_math_scalar_expression(execution_context, m),
+        ScalarExpression::GetType(g) => {
+            let value_type =
+                execute_scalar_expression(execution_context, g.get_value())?.get_value_type();
+
+            Ok(ResolvedValue::Value(Value::String(
+                &VALUE_TYPE_NAMES[value_type as usize],
+            )))
+        }
     }
 }
 
@@ -580,6 +597,9 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use chrono::{TimeDelta, Utc};
+    use regex::Regex;
 
     use super::*;
 
@@ -1622,6 +1642,102 @@ mod tests {
                 QueryLocation::new_fake(),
                 "Array slice index ends at '6' which is beyond the length of '5'".into(),
             ),
+        );
+    }
+
+    #[test]
+    fn test_execute_get_type_scalar_expression() {
+        fn run_test_success(input: ScalarExpression, expected: &str) {
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let expression = ScalarExpression::GetType(GetTypeScalarExpression::new(
+                QueryLocation::new_fake(),
+                input,
+            ));
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+
+            assert_eq!(
+                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                actual.to_value()
+            );
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "Array",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            "Boolean",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::DateTime(
+                DateTimeScalarExpression::new(QueryLocation::new_fake(), Utc::now().into()),
+            )),
+            "DateTime",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                0.0,
+            ))),
+            "Double",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+            )),
+            "Integer",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            ))),
+            "Map",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+            "Null",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            ))),
+            "Regex",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "",
+            ))),
+            "String",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                TimeSpanScalarExpression::new(QueryLocation::new_fake(), TimeDelta::minutes(1)),
+            )),
+            "TimeSpan",
         );
     }
 }

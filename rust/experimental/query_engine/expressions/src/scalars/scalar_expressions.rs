@@ -37,6 +37,9 @@ pub enum ScalarExpression {
     /// Convert scalar values into different types.
     Convert(ConvertScalarExpression),
 
+    /// Returns the type string for the inner expression.
+    GetType(GetTypeScalarExpression),
+
     /// Contains scalar functions for working with date and time values.
     Temporal(TemporalScalarExpression),
 
@@ -87,6 +90,7 @@ impl ScalarExpression {
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
             ScalarExpression::Constant(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Collection(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::GetType(_) => Ok(Some(ValueType::String)),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(scope),
@@ -184,6 +188,7 @@ impl ScalarExpression {
             ScalarExpression::Conditional(c) => c.try_resolve_static(scope),
             ScalarExpression::Case(c) => c.try_resolve_static(scope),
             ScalarExpression::Convert(c) => c.try_resolve_static(scope),
+            ScalarExpression::GetType(g) => g.try_resolve_static(scope),
             ScalarExpression::Length(l) => l.try_resolve_static(scope),
             ScalarExpression::Slice(s) => s.try_resolve_static(scope),
             ScalarExpression::Parse(p) => p.try_resolve_static(scope),
@@ -203,6 +208,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Static(s) => s.get_query_location(),
             ScalarExpression::Constant(c) => c.get_query_location(),
             ScalarExpression::Collection(c) => c.get_query_location(),
+            ScalarExpression::GetType(g) => g.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
@@ -224,6 +230,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
             ScalarExpression::Static(s) => s.get_name(),
             ScalarExpression::Collection(_) => "ScalarExpression(Collection)",
+            ScalarExpression::GetType(_) => "ScalarExpression(GetType)",
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
@@ -248,6 +255,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Collection(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::Conditional(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::Convert(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::GetType(g) => g.fmt_with_indent(f, indent),
             ScalarExpression::Temporal(t) => t.fmt_with_indent(f, indent),
             ScalarExpression::Length(l) => l.fmt_with_indent(f, indent),
             ScalarExpression::Logical(l) => l.fmt_with_indent(f, indent),
@@ -294,6 +302,10 @@ impl SourceScalarExpression {
 
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
+    }
+
+    pub fn get_value_accessor_mut(&mut self) -> &mut ValueAccessor {
+        &mut self.accessor
     }
 
     pub fn get_value_type(&self) -> Option<ValueType> {
@@ -1202,9 +1214,67 @@ impl Expression for SliceScalarExpression {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetTypeScalarExpression {
+    query_location: QueryLocation,
+    value: Box<ScalarExpression>,
+}
+
+impl GetTypeScalarExpression {
+    pub fn new(query_location: QueryLocation, value: ScalarExpression) -> GetTypeScalarExpression {
+        Self {
+            query_location,
+            value: value.into(),
+        }
+    }
+
+    pub fn get_value(&self) -> &ScalarExpression {
+        &self.value
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        ScalarStaticResolutionResult::Ok(match self.value.try_resolve_static(scope)? {
+            Some(s) => {
+                let value_type = s.to_value().get_value_type();
+
+                Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        self.query_location.clone(),
+                        value_type.into(),
+                    )),
+                ))
+            }
+            None => None,
+        })
+    }
+}
+
+impl Expression for GetTypeScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "GetTypeScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "GetType(Scalar): ")?;
+        self.value.fmt_with_indent(f, indent)?;
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use chrono::{TimeDelta, Utc};
+    use regex::Regex;
 
     use crate::{BooleanScalarExpression, StringScalarExpression};
 
@@ -2674,6 +2744,105 @@ mod tests {
                 .to_value(),
             ),
             None,
+        );
+    }
+
+    #[test]
+    fn test_get_type_try_resolve_static() {
+        fn run_test_success(input: ScalarExpression, expected: &str) {
+            let pipeline: PipelineExpression = Default::default();
+
+            let mut get_type = GetTypeScalarExpression::new(QueryLocation::new_fake(), input);
+
+            let actual_value = get_type
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(
+                Some(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        expected
+                    ))
+                    .to_value()
+                ),
+                actual_value.as_ref().map(|v| v.to_value())
+            );
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "Array",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            "Boolean",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::DateTime(
+                DateTimeScalarExpression::new(QueryLocation::new_fake(), Utc::now().into()),
+            )),
+            "DateTime",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                0.0,
+            ))),
+            "Double",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+            )),
+            "Integer",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            ))),
+            "Map",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+            "Null",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            ))),
+            "Regex",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "",
+            ))),
+            "String",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                TimeSpanScalarExpression::new(QueryLocation::new_fake(), TimeDelta::minutes(1)),
+            )),
+            "TimeSpan",
         );
     }
 }

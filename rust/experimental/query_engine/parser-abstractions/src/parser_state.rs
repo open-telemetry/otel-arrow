@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::{Ref, RefCell},
+    collections::{HashMap, HashSet},
+};
 
 use data_engine_expressions::*;
 
@@ -11,10 +14,10 @@ pub struct ParserState {
     source_map_schema: Option<ParserMapSchema>,
     summary_map_schema: Option<ParserMapSchema>,
     attached_data_names: HashSet<Box<str>>,
-    global_variable_names: HashSet<Box<str>>,
-    variable_names: HashSet<Box<str>>,
-    constants: HashMap<Box<str>, (usize, ValueType)>,
-    pipeline_builder: PipelineExpressionBuilder,
+    global_variable_names: RefCell<HashSet<Box<str>>>,
+    variable_names: RefCell<HashSet<Box<str>>>,
+    constants: RefCell<HashMap<Box<str>, (usize, ValueType)>>,
+    pipeline_builder: RefCell<PipelineExpressionBuilder>,
 }
 
 impl ParserState {
@@ -27,40 +30,37 @@ impl ParserState {
             source_map_schema: options.source_map_schema,
             summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
-            global_variable_names: HashSet::new(),
-            variable_names: HashSet::new(),
-            constants: HashMap::new(),
-            pipeline_builder: PipelineExpressionBuilder::new(query),
+            global_variable_names: RefCell::new(HashSet::new()),
+            variable_names: RefCell::new(HashSet::new()),
+            constants: RefCell::new(HashMap::new()),
+            pipeline_builder: RefCell::new(PipelineExpressionBuilder::new(query)),
         }
     }
 
-    pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
-        self.pipeline_builder.push_global_variable(name, value);
-        self.global_variable_names.insert(name.into());
+    pub fn push_global_variable(&self, name: &str, value: ScalarExpression) {
+        self.pipeline_builder
+            .borrow_mut()
+            .push_global_variable(name, value);
+        self.global_variable_names.borrow_mut().insert(name.into());
     }
 
-    pub fn push_constant(&mut self, name: &str, value: StaticScalarExpression) {
-        let value_type = value.get_value_type();
-        let constant_id = self.pipeline_builder.push_constant(value);
-
-        self.constants
-            .insert(name.into(), (constant_id, value_type));
-    }
-
-    pub fn push_expression(&mut self, expression: DataExpression) {
-        self.pipeline_builder.push_expression(expression)
+    pub fn push_expression(&self, expression: DataExpression) {
+        self.pipeline_builder
+            .borrow_mut()
+            .push_expression(expression)
     }
 
     pub fn build(self) -> Result<PipelineExpression, Vec<ParserError>> {
         self.pipeline_builder
+            .into_inner()
             .build()
             .map_err(|e| e.iter().map(ParserError::from).collect())
     }
 }
 
 impl ParserScope for ParserState {
-    fn get_pipeline(&self) -> &PipelineExpression {
-        self.pipeline_builder.as_ref()
+    fn get_pipeline(&self) -> Ref<'_, PipelineExpression> {
+        Ref::map(self.pipeline_builder.borrow(), |v| v.as_ref())
     }
 
     fn get_source_schema(&self) -> Option<&ParserMapSchema> {
@@ -83,22 +83,35 @@ impl ParserScope for ParserState {
     }
 
     fn is_variable_defined(&self, name: &str) -> bool {
-        self.variable_names.contains(name) || self.global_variable_names.contains(name)
+        self.variable_names.borrow().contains(name)
+            || self.global_variable_names.borrow().contains(name)
     }
 
     fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)> {
-        self.constants.get(name).cloned()
+        self.constants.borrow().get(name).cloned()
     }
 
-    fn get_constant_name(&self, id: usize) -> Option<&str> {
+    fn get_constant_name(&self, id: usize) -> Option<(Box<str>, ValueType)> {
         self.constants
+            .borrow()
             .iter()
             .find(|(_, v)| v.0 == id)
-            .map(|(k, _)| k.as_ref())
+            .map(|(k, v)| (k.clone(), v.1.clone()))
     }
 
-    fn push_variable_name(&mut self, name: &str) {
-        self.variable_names.insert(name.into());
+    fn push_variable_name(&self, name: &str) {
+        self.variable_names.borrow_mut().insert(name.into());
+    }
+
+    fn push_constant(&self, name: &str, value: StaticScalarExpression) -> usize {
+        let value_type = value.get_value_type();
+        let constant_id = self.pipeline_builder.borrow_mut().push_constant(value);
+
+        self.constants
+            .borrow_mut()
+            .insert(name.into(), (constant_id, value_type));
+
+        constant_id
     }
 
     fn create_scope<'a>(&'a self, options: ParserOptions) -> ParserStateScope<'a> {
@@ -108,25 +121,25 @@ impl ParserScope for ParserState {
             summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
             global_variable_names: &self.global_variable_names,
-            variable_names: HashSet::new(),
+            variable_names: RefCell::new(HashSet::new()),
             constants: &self.constants,
         }
     }
 }
 
 pub struct ParserStateScope<'a> {
-    pipeline_builder: &'a PipelineExpressionBuilder,
+    pipeline_builder: &'a RefCell<PipelineExpressionBuilder>,
     source_map_schema: Option<ParserMapSchema>,
     summary_map_schema: Option<ParserMapSchema>,
     attached_data_names: HashSet<Box<str>>,
-    global_variable_names: &'a HashSet<Box<str>>,
-    variable_names: HashSet<Box<str>>,
-    constants: &'a HashMap<Box<str>, (usize, ValueType)>,
+    global_variable_names: &'a RefCell<HashSet<Box<str>>>,
+    variable_names: RefCell<HashSet<Box<str>>>,
+    constants: &'a RefCell<HashMap<Box<str>, (usize, ValueType)>>,
 }
 
 impl ParserScope for ParserStateScope<'_> {
-    fn get_pipeline(&self) -> &PipelineExpression {
-        self.pipeline_builder.as_ref()
+    fn get_pipeline(&self) -> Ref<'_, PipelineExpression> {
+        Ref::map(self.pipeline_builder.borrow(), |v| v.as_ref())
     }
 
     fn get_source_schema(&self) -> Option<&ParserMapSchema> {
@@ -149,22 +162,35 @@ impl ParserScope for ParserStateScope<'_> {
     }
 
     fn is_variable_defined(&self, name: &str) -> bool {
-        self.variable_names.contains(name) || self.global_variable_names.contains(name)
+        self.variable_names.borrow().contains(name)
+            || self.global_variable_names.borrow().contains(name)
     }
 
     fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)> {
-        self.constants.get(name).cloned()
+        self.constants.borrow().get(name).cloned()
     }
 
-    fn get_constant_name(&self, id: usize) -> Option<&str> {
+    fn get_constant_name(&self, id: usize) -> Option<(Box<str>, ValueType)> {
         self.constants
+            .borrow()
             .iter()
             .find(|(_, v)| v.0 == id)
-            .map(|(k, _)| k.as_ref())
+            .map(|(k, v)| (k.clone(), v.1.clone()))
     }
 
-    fn push_variable_name(&mut self, name: &str) {
-        self.variable_names.insert(name.into());
+    fn push_variable_name(&self, name: &str) {
+        self.variable_names.borrow_mut().insert(name.into());
+    }
+
+    fn push_constant(&self, name: &str, value: StaticScalarExpression) -> usize {
+        let value_type = value.get_value_type();
+        let constant_id = self.pipeline_builder.borrow_mut().push_constant(value);
+
+        self.constants
+            .borrow_mut()
+            .insert(name.into(), (constant_id, value_type));
+
+        constant_id
     }
 
     fn create_scope<'a>(&'a self, options: ParserOptions) -> ParserStateScope<'a> {
@@ -174,21 +200,21 @@ impl ParserScope for ParserStateScope<'_> {
             summary_map_schema: options.summary_map_schema,
             attached_data_names: options.attached_data_names,
             global_variable_names: self.global_variable_names,
-            variable_names: HashSet::new(),
+            variable_names: RefCell::new(HashSet::new()),
             constants: self.constants,
         }
     }
 }
 
 pub trait ParserScope {
-    fn get_pipeline(&self) -> &PipelineExpression;
+    fn get_pipeline(&self) -> Ref<'_, PipelineExpression>;
 
-    fn get_query(&self) -> &str {
-        self.get_pipeline().get_query()
+    fn get_query(&self) -> Ref<'_, str> {
+        Ref::map(self.get_pipeline(), |p| p.get_query())
     }
 
-    fn get_query_slice(&self, query_location: &QueryLocation) -> &str {
-        self.get_pipeline().get_query_slice(query_location)
+    fn get_query_slice(&self, query_location: &QueryLocation) -> Ref<'_, str> {
+        Ref::map(self.get_pipeline(), |p| p.get_query_slice(query_location))
     }
 
     fn get_source_schema(&self) -> Option<&ParserMapSchema>;
@@ -203,9 +229,11 @@ pub trait ParserScope {
 
     fn get_constant_id(&self, name: &str) -> Option<(usize, ValueType)>;
 
-    fn get_constant_name(&self, id: usize) -> Option<&str>;
+    fn get_constant_name(&self, id: usize) -> Option<(Box<str>, ValueType)>;
 
-    fn push_variable_name(&mut self, name: &str);
+    fn push_variable_name(&self, name: &str);
+
+    fn push_constant(&self, name: &str, value: StaticScalarExpression) -> usize;
 
     fn create_scope<'a>(&'a self, options: ParserOptions) -> ParserStateScope<'a>;
 
