@@ -411,11 +411,10 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let common = self.common.clone();
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(SignalType::Logs, common.settings);
+                let mut grpc = new_grpc(SignalType::Metrics, common.settings);
                 let service = OtapBatchService::new(common.effect_handler, common.state);
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -455,11 +454,10 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let common = self.common.clone();
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(SignalType::Logs, common.settings);
+                let mut grpc = new_grpc(SignalType::Traces, common.settings);
                 let service = OtapBatchService::new(common.effect_handler, common.state);
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }

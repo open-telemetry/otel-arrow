@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn test_otlp_receiver() {
+    fn test_otlp_receiver_ack() {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
