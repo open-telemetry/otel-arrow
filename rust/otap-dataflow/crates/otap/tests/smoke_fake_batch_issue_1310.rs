@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #![allow(missing_docs)]
 //! Integration smoke test for fake-batch-perf-issue-1310.
 
