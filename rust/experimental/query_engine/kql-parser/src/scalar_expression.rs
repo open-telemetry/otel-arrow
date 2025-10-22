@@ -1113,4 +1113,52 @@ mod tests {
         run_test("1 + 0 == true", "true");
         run_test("0!=1 and 1!=0", "true");
     }
+
+    #[test]
+    fn test_parse_get_type_scalar_expression() {
+        let run_test_success = |input: &str, expected: &str| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let mut scalar = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            let pipeline = state.get_pipeline();
+
+            let actual = scalar
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    expected
+                ))
+                .to_value(),
+                actual.unwrap().as_ref().to_value()
+            );
+        };
+
+        run_test_success("gettype(dynamic([0, 1, 2]))", "array");
+
+        run_test_success("gettype(true)", "bool");
+
+        run_test_success("gettype(datetime(10/21/2025))", "datetime");
+
+        run_test_success("gettype(real(1.18))", "real");
+
+        run_test_success("gettype(18)", "long");
+
+        run_test_success("gettype(dynamic({'key1':1}))", "dictionary");
+
+        run_test_success("gettype(int(null))", "null");
+
+        run_test_success("gettype(parse_regex('.*'))", "regex");
+
+        run_test_success("gettype('hello world')", "string");
+
+        run_test_success("gettype(1m)", "timespan");
+    }
 }

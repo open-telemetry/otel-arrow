@@ -370,9 +370,15 @@ where
             let value_type =
                 execute_scalar_expression(execution_context, g.get_value())?.get_value_type();
 
-            Ok(ResolvedValue::Value(Value::String(
-                &VALUE_TYPE_NAMES[value_type as usize],
-            )))
+            let value_type_name = &VALUE_TYPE_NAMES[value_type as usize];
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: '{}'", value_type_name.get_value()),
+            );
+
+            Ok(ResolvedValue::Value(Value::String(value_type_name)))
         }
     }
 }
