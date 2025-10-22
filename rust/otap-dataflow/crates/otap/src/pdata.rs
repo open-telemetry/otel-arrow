@@ -161,13 +161,19 @@ impl Context {
         None
     }
 
-    /// Determine whether the context is may request return payload.
+    /// Determine whether the context is requesting payload returned.
     #[must_use]
     pub fn may_return_payload(&self) -> bool {
         self.stack
             .last()
             .map(|f| f.interests & Interests::RETURN_DATA != Interests::empty())
             .unwrap_or(false)
+    }
+
+    /// Return the current calldata.
+    #[must_use]
+    pub fn current_calldata(&self) -> Option<CallData> {
+        self.stack.last().map(|f| f.calldata.clone())
     }
 }
 
@@ -328,6 +334,12 @@ impl OtapPdata {
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
         self
+    }
+
+    /// Return the current calldata.
+    #[must_use]
+    pub fn current_calldata(&self) -> Option<CallData> {
+        self.context.current_calldata()
     }
 }
 
