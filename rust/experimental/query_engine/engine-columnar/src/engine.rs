@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use arrow::compute::concat_batches;
+use arrow::util::pretty::print_batches;
 use data_engine_expressions::{
     BooleanValue, DataExpression, DoubleValue, IntegerValue, LogicalExpression, PipelineExpression,
     ScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
@@ -120,7 +121,31 @@ fn scan_batch(
 enum ColumnAccessor {
     ColumnName(String),
     StructCol(&'static str, String),
-    Attributes(String),
+
+    /// payload type identifies which attributes are being joined
+    /// and the string identifies the attribute key
+    Attributes(AttributesIdentifier, String),
+}
+
+enum AttributesIdentifier {
+    Root,
+    Other(ArrowPayloadType),
+}
+
+impl ColumnAccessor {
+    fn try_from_attrs_key(
+        attrs_identifier: AttributesIdentifier,
+        scalar_expr: &ScalarExpression,
+    ) -> Result<Self> {
+        match scalar_expr {
+            ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => Ok(
+                Self::Attributes(attrs_identifier, attr_key.get_value().to_string()),
+            ),
+            _ => {
+                todo!("handle invalid attribute key")
+            }
+        }
+    }
 }
 
 impl TryFrom<&ValueAccessor> for ColumnAccessor {
@@ -133,20 +158,16 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
                 match column_name {
-                    ATTRIBUTES_FIELD_NAME => match &selectors[1] {
-                        ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
-                            Ok(Self::Attributes(attr_key.get_value().to_string()))
-                        }
-                        _ => {
-                            todo!("handle invalid attribute key")
-                        }
-                    },
+                    ATTRIBUTES_FIELD_NAME => {
+                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1])
+                    }
                     RESOURCES_FIELD_NAME => match &selectors[1] {
                         ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
                             match resource_col.get_value() {
-                                ATTRIBUTES_FIELD_NAME => {
-                                    todo!("handle resource attrs access")
-                                }
+                                ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
+                                    AttributesIdentifier::Other(ArrowPayloadType::ResourceAttrs),
+                                    &selectors[2],
+                                ),
                                 resource_col => {
                                     Ok(Self::StructCol(consts::RESOURCE, resource_col.to_string()))
                                 }
@@ -159,9 +180,10 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                     SCOPE_FIELD_NAME => match &selectors[1] {
                         ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
                             match resource_col.get_value() {
-                                ATTRIBUTES_FIELD_NAME => {
-                                    todo!("handle resource attrs access")
-                                }
+                                ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
+                                    AttributesIdentifier::Other(ArrowPayloadType::ScopeAttrs),
+                                    &selectors[2],
+                                ),
                                 resource_col => {
                                     Ok(Self::StructCol(consts::SCOPE, resource_col.to_string()))
                                 }
@@ -234,23 +256,34 @@ fn try_static_scalar_to_any_val_column(
     Ok(col_name)
 }
 
+#[derive(Debug)]
 struct FilteringJoin {
     logical_plan: LogicalPlan,
     join_type: JoinType,
-    left_col: &'static str,
-    right_col: &'static str,
+    condition: FilteringJoinCondition,
+}
+
+#[derive(Debug)]
+enum FilteringJoinCondition {
+    Filter(Expr),
+    MatchingColumnPairs(&'static str, &'static str),
 }
 
 impl FilteringJoin {
     fn join_to_plan(self, plan_builder: LogicalPlanBuilder) -> LogicalPlanBuilder {
-        plan_builder
-            .join(
-                self.logical_plan,
-                self.join_type,
-                (vec![self.left_col], vec![self.right_col]),
-                None,
-            )
-            .unwrap()
+        match self.condition {
+            FilteringJoinCondition::MatchingColumnPairs(left_col, right_col) => plan_builder
+                .join(
+                    self.logical_plan,
+                    self.join_type,
+                    (vec![left_col], vec![right_col]),
+                    None,
+                )
+                .unwrap(),
+            FilteringJoinCondition::Filter(join_filter_expr) => plan_builder
+                .join_on(self.logical_plan, self.join_type, [join_filter_expr])
+                .unwrap(),
+        }
     }
 }
 
@@ -277,27 +310,17 @@ impl Filter {
 
                 let join = match (left_filter.join, right_filter.join) {
                     (Some(left_join), Some(right_join)) => {
-                        let join_both = scan_root_batch(exec_ctx)?
-                            .join(
-                                left_join.logical_plan,
-                                JoinType::LeftSemi,
-                                (vec![left_join.left_col], vec![left_join.right_col]),
-                                None,
-                            )
-                            .unwrap()
-                            .join(
-                                right_join.logical_plan,
-                                JoinType::LeftSemi,
-                                (vec![right_join.left_col], vec![right_join.right_col]),
-                                None,
-                            )
-                            .unwrap();
+                        let mut plan = scan_root_batch(exec_ctx)?;
+                        plan = left_join.join_to_plan(plan);
+                        plan = right_join.join_to_plan(plan);
 
                         Some(FilteringJoin {
-                            logical_plan: join_both.build().unwrap(),
+                            logical_plan: plan.build().unwrap(),
                             join_type: JoinType::LeftSemi,
-                            left_col: ROW_NUMBER_COL,
-                            right_col: ROW_NUMBER_COL,
+                            condition: FilteringJoinCondition::MatchingColumnPairs(
+                                ROW_NUMBER_COL,
+                                ROW_NUMBER_COL,
+                            ),
                         })
                     }
                     (None, Some(join)) | (Some(join), None) => Some(join),
@@ -357,8 +380,10 @@ impl Filter {
                                     .build()
                                     .unwrap(),
                                 join_type: JoinType::LeftSemi,
-                                left_col: ROW_NUMBER_COL,
-                                right_col: ROW_NUMBER_COL,
+                                condition: FilteringJoinCondition::MatchingColumnPairs(
+                                    ROW_NUMBER_COL,
+                                    ROW_NUMBER_COL,
+                                ),
                             }),
                         })
                     }
@@ -392,8 +417,10 @@ impl Filter {
                                     .build()
                                     .unwrap(),
                                 join_type: JoinType::LeftSemi,
-                                left_col: ROW_NUMBER_COL,
-                                right_col: ROW_NUMBER_COL,
+                                condition: FilteringJoinCondition::MatchingColumnPairs(
+                                    ROW_NUMBER_COL,
+                                    ROW_NUMBER_COL,
+                                ),
                             }),
                         })
                     }
@@ -427,8 +454,10 @@ impl Filter {
                                     .build()
                                     .unwrap(),
                                 join_type: JoinType::LeftSemi,
-                                left_col: ROW_NUMBER_COL,
-                                right_col: ROW_NUMBER_COL,
+                                condition: FilteringJoinCondition::MatchingColumnPairs(
+                                    ROW_NUMBER_COL,
+                                    ROW_NUMBER_COL,
+                                ),
                             }),
                         })
                     }
@@ -460,8 +489,10 @@ impl Filter {
                         join: Some(FilteringJoin {
                             logical_plan: plan.build().unwrap(),
                             join_type: JoinType::LeftAnti,
-                            left_col: ROW_NUMBER_COL,
-                            right_col: ROW_NUMBER_COL,
+                            condition: FilteringJoinCondition::MatchingColumnPairs(
+                                ROW_NUMBER_COL,
+                                ROW_NUMBER_COL,
+                            ),
                         }),
                     })
                 } else {
@@ -525,7 +556,7 @@ impl Filter {
                         })
                     }
                 },
-                ColumnAccessor::Attributes(attr_key) => match right_arg {
+                ColumnAccessor::Attributes(attrs_identifier, attr_key) => match right_arg {
                     BinaryArg::Column(_) => {
                         todo!("handle column right arg in binary expr")
                     }
@@ -533,8 +564,12 @@ impl Filter {
                         let attr_val_col_name =
                             try_static_scalar_to_any_val_column(&static_scalar)?;
 
-                        // TODO -- not have payload type hard-coded
-                        let attrs_filter = scan_batch(exec_ctx, ArrowPayloadType::LogAttrs)?
+                        let attrs_payload_type = match attrs_identifier {
+                            // TODO - this shouldn't be hard-coded to logs
+                            AttributesIdentifier::Root => ArrowPayloadType::LogAttrs,
+                            AttributesIdentifier::Other(payload_type) => payload_type,
+                        };
+                        let attrs_filter = scan_batch(exec_ctx, attrs_payload_type)?
                             .filter(logical_expr::and(
                                 logical_expr::binary_expr(
                                     logical_expr::col(consts::ATTRIBUTE_KEY),
@@ -549,13 +584,28 @@ impl Filter {
                             ))
                             .unwrap();
 
+                        let join_condition = match attrs_payload_type {
+                            ArrowPayloadType::ResourceAttrs => FilteringJoinCondition::Filter(
+                                logical_expr::col(consts::RESOURCE)
+                                    .field(consts::ID)
+                                    .eq(logical_expr::col(consts::PARENT_ID)),
+                            ),
+                            ArrowPayloadType::ScopeAttrs => FilteringJoinCondition::Filter(
+                                logical_expr::col(consts::SCOPE)
+                                    .field(consts::ID)
+                                    .eq(logical_expr::col(consts::PARENT_ID)),
+                            ),
+                            _ => FilteringJoinCondition::MatchingColumnPairs(
+                                consts::ID,
+                                consts::PARENT_ID,
+                            ),
+                        };
                         Ok(Self {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: attrs_filter.build().unwrap(),
                                 join_type: JoinType::LeftSemi,
-                                left_col: consts::ID,
-                                right_col: consts::PARENT_ID,
+                                condition: join_condition,
                             }),
                         })
                     }
@@ -581,6 +631,32 @@ async fn filter_batch(
     }
 
     if let Some(join) = filter.join {
+        // // println!("join = {:#?}", join);
+        println!(">>>>>>");
+        println!("join right plan = {}", join.logical_plan);
+
+        let left_joining_batches = exec_ctx
+            .session_ctx
+            .execute_logical_plan(root_logical_plan.clone().build().unwrap())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        print_batches(&left_joining_batches);
+
+        let right_joining_batches = exec_ctx
+            .session_ctx
+            .execute_logical_plan(join.logical_plan.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        print_batches(&right_joining_batches);
+
+        println!("<<<<<<<");
+
         root_logical_plan = join.join_to_plan(root_logical_plan);
     }
 
@@ -618,9 +694,10 @@ async fn filter_batch(
     // TODO how do we know it's logs here?
     exec_ctx.curr_batch.set(ArrowPayloadType::Logs, result);
 
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
-    filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
+    // TODO need re-add this
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
+    // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
 
     Ok(())
 }
@@ -713,6 +790,8 @@ mod test {
             .map(|v| v.unwrap().to_string())
             .collect::<Vec<_>>();
         event_names.sort();
+
+        // TODO we should probably check the attributes and other child batches are correct
 
         assert_eq!(expected_event_name, event_names)
     }
@@ -1119,25 +1198,46 @@ mod test {
     #[tokio::test]
     async fn filter_resource_and_scope_fields() {
         let export_req = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                schema_url: "resource_schema1".to_string(),
-                resource: Some(Resource {
-                    // TODO fill this in
-                    ..Default::default()
-                }),
-                scope_logs: vec![ScopeLogs {
-                    scope: Some(InstrumentationScope {
-                        name: "scope1".to_string(),
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "resource_schema1".to_string(),
+                    resource: Some(Resource {
+                        // TODO fill this in
                         ..Default::default()
                     }),
-                    log_records: vec![LogRecord {
-                        event_name: "1".to_string(),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope1".to_string(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            event_name: "1".to_string(),
+                            ..Default::default()
+                        }],
                         ..Default::default()
                     }],
                     ..Default::default()
-                }],
-                ..Default::default()
-            }],
+                },
+                ResourceLogs {
+                    schema_url: "resource_schema2".to_string(),
+                    resource: Some(Resource {
+                        // TODO fill this in
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope2".to_string(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            event_name: "2".to_string(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
         };
 
         run_logs_test(
@@ -1151,6 +1251,95 @@ mod test {
             export_req.clone(),
             "logs | where instrumentation_scope.name == \"scope1\"",
             ["1"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_resource_and_scope_attrs() {
+        let export_req = ExportLogsServiceRequest {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "resource_schema1".to_string(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope1".to_string(),
+                            attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                            ..Default::default()
+                        }),
+                        // create some logs with attributes here to ensure the scope & resource
+                        // IDs are offset from the log ID. we do this to ensure we join correctly
+                        // on resource.id for resource and scope.id for scopes instead of naively
+                        // joining on id
+                        log_records: vec![
+                            LogRecord {
+                                event_name: "1".to_string(),
+                                attributes: vec![KeyValue::new("A", AnyValue::new_string("B"))],
+                                ..Default::default()
+                            },
+                            LogRecord {
+                                event_name: "2".to_string(),
+                                attributes: vec![KeyValue::new("A", AnyValue::new_string("B"))],
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ResourceLogs {
+                    schema_url: "resource_schema2".to_string(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![
+                        ScopeLogs {
+                            scope: Some(InstrumentationScope {
+                                name: "scope2".to_string(),
+                                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                                ..Default::default()
+                            }),
+                            log_records: vec![LogRecord {
+                                event_name: "3".to_string(),
+                                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        ScopeLogs {
+                            scope: Some(InstrumentationScope {
+                                name: "scope2".to_string(),
+                                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y3"))],
+                                ..Default::default()
+                            }),
+                            log_records: vec![LogRecord {
+                                event_name: "4".to_string(),
+                                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ],
+        };
+        run_logs_test(
+            export_req.clone(),
+            "logs | where resource.attributes[\"X\"] == \"Y2\"",
+            ["3", "4"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where instrumentation_scope.attributes[\"X\"] == \"Y2\"",
+            ["3"].iter().map(|i| i.to_string()).collect(),
         )
         .await;
     }
