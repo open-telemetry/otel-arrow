@@ -375,13 +375,6 @@ pub enum Error {
     /// Too many nodes are configured.
     #[error("Too many nodes defined")]
     TooManyNodes {},
-
-    /// Telemetry errors
-    #[error("Telemetry error: {error}")]
-    Telemetry {
-        /// A telemetry error
-        error: otap_df_telemetry::error::Error,
-    },
 }
 
 impl Error {
@@ -414,7 +407,6 @@ impl Error {
             Error::JoinTaskError { .. } => "JoinTaskError",
             Error::InternalError { .. } => "InternalError",
             Error::TooManyNodes {} => "TooManyNodes",
-            Error::Telemetry { .. } => "Telemetry",
         }
         .to_owned()
     }

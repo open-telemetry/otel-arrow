@@ -60,10 +60,107 @@ impl MetricsCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::MetricSet;
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsDescriptor,
+        MetricsField,
+    };
+    use crate::metrics::MetricSetHandler;
     use crate::registry::MetricsKey;
-    use crate::testing::*;
+    use std::fmt::Debug;
     use std::time::Duration;
+
+    // --- Test-only mock metric/attributes definitions (no pipeline required) ---
+
+    #[derive(Debug)]
+    struct MockMetricSet {
+        values: Vec<u64>,
+    }
+
+    impl MockMetricSet {
+        fn new() -> Self {
+            Self { values: vec![0, 0] }
+        }
+    }
+
+    impl Default for MockMetricSet {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    static MOCK_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_metrics",
+        metrics: &[
+            MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+            },
+            MetricsField {
+                name: "counter2",
+                unit: "1",
+                brief: "Test counter 2",
+                instrument: Instrument::Counter,
+            },
+        ],
+    };
+
+    static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "test_attributes",
+        fields: &[AttributeField {
+            key: "test_key",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }],
+    };
+
+    impl MetricSetHandler for MockMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &MOCK_METRICS_DESCRIPTOR
+        }
+        fn snapshot_values(&self) -> Vec<u64> {
+            self.values.clone()
+        }
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(|v| *v = 0);
+        }
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| v != 0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockAttributeSet {
+        _value: String,
+        attribute_values: Vec<AttributeValue>,
+    }
+
+    impl MockAttributeSet {
+        fn new(value: impl Into<String>) -> Self {
+            let v = value.into();
+            Self {
+                _value: v.clone(),
+                attribute_values: vec![AttributeValue::String(v)],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for MockAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &MOCK_ATTRIBUTES_DESCRIPTOR
+        }
+        fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
+            crate::attributes::AttributeIterator::new(
+                MOCK_ATTRIBUTES_DESCRIPTOR.fields,
+                &self.attribute_values,
+            )
+        }
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.attribute_values
+        }
+    }
 
     fn create_test_config(_flush_interval_ms: u64) -> Config {
         // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
@@ -103,7 +200,8 @@ mod tests {
         let registry = create_test_registry();
 
         // Register a metric set to get a valid key
-        let metric_set: MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = MetricsCollector::new(config, registry.clone());
@@ -147,7 +245,8 @@ mod tests {
     async fn test_visit_then_reset_via_registry_api() {
         let config = create_test_config(10);
         let registry = create_test_registry();
-        let metric_set: MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = MetricsCollector::new(config, registry.clone());
