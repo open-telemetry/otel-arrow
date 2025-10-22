@@ -490,7 +490,7 @@ pub struct SyslogCefReceiverMetrics {
     #[metric(unit = "{item}")]
     pub received_logs_forwarded: Counter<u64>,
 
-    /// Number of log records that failed to be received (parse errors, etc.)
+    /// Number of log records that failed to be parsed
     #[metric(unit = "{item}")]
     pub received_logs_invalid: Counter<u64>,
 
