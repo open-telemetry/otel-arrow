@@ -504,13 +504,6 @@ impl Processor<OtapPdata> for RetryProcessor {
 }
 
 impl RetryProcessor {
-    /// Creates a new RetryProcessor with default configuration
-    #[must_use]
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self::with_config(RetryConfig::default())
-    }
-
     /// Creates a new RetryProcessor with the specified configuration
     #[must_use]
     #[cfg(test)]
