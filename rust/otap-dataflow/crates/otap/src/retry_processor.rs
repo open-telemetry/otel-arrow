@@ -477,12 +477,11 @@ impl Processor<OtapPdata> for RetryProcessor {
                 }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                } => {
-                    let _ = metrics_reporter
-                        .report(&mut self.metrics)
-                        .map_err(|error| Error::Telemetry { error })?;
-                    Ok(())
-                }
+                } => metrics_reporter
+                    .report(&mut self.metrics)
+                    .map_err(|e| Error::InternalError {
+                        message: e.to_string(),
+                    }),
                 NodeControlMsg::Config { config } => {
                     if let Ok(new_config) = serde_json::from_value::<RetryConfig>(config) {
                         self.config = new_config;
@@ -511,7 +510,8 @@ impl RetryProcessor {
     #[cfg(test)]
     pub fn with_config(config: RetryConfig) -> Self {
         let handle = otap_df_telemetry::registry::MetricsRegistryHandle::default();
-        let metrics: MetricSet<RetryProcessorMetrics> = handle.register(());
+        let metrics: MetricSet<RetryProcessorMetrics> =
+            handle.register(otap_df_telemetry::testing::EmptyAttributes());
 
         Self { config, metrics }
     }
