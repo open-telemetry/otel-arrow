@@ -334,7 +334,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 Err(_) => m.received_logs_forward_failed.add(items),
                                                             }
                                                         }
-                                                        if res.is_err() { return; }
                                                     }
                                                 },
                                             }
