@@ -57,10 +57,10 @@ impl From<Context8u8> for f64 {
     }
 }
 
-/// Standard context values hold two caller-specified fields.  The
+/// Standard context values hold 4 caller-specified fields.  The
 /// size is arbitrary, but shouldn't be larger than needed by
 /// callers. For example: retry count, sequence and generation
-/// numbers, etc.
+/// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
 /// The ACK message.

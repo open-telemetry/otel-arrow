@@ -335,7 +335,6 @@ pub enum Error {
 
     /// Pdata sender is not supported for exporter nodes. Exporter nodes only support
     /// control sender and pdata receiver.
-
     #[error("Pdata sender is not supported for exporter nodes.")]
     PdataSenderNotSupported,
 
