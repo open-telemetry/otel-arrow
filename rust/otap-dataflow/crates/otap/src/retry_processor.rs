@@ -311,9 +311,9 @@ impl RetryProcessor {
         let signal = ack.accepted.signal_type();
         let calldata = ack.calldata.clone();
 
+        // Forward the ACK upstream to complete the request chain
         effect_handler.notify_ack(ack).await?;
 
-        // Forward the ACK upstream to complete the request chain
         match calldata.try_into() {
             Err(_err) => {
                 // Malformed context error: we don't know what this is.
