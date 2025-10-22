@@ -184,7 +184,7 @@ impl RetryProcessorMetrics {
     }
 
     /// Increment retry_attempts for the given signal by 1.
-    pub fn add_retry_attempts(&mut self, st: SignalType) {
+    pub fn increment_retry_attempts(&mut self, st: SignalType) {
         match st {
             SignalType::Logs => self.retry_attempts_logs.add(1),
             SignalType::Metrics => self.retry_attempts_metrics.add(1),
