@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::LazyLock;
+use std::{collections::HashMap, sync::LazyLock};
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
@@ -288,6 +288,57 @@ pub(crate) fn parse_scalar_unary_expression(
         Rule::type_unary_expressions => {
             ScalarExpression::Static(parse_type_unary_expressions(rule)?)
         }
+        Rule::get_type_expression => {
+            let location = to_query_location(&rule);
+
+            let scalar = parse_scalar_expression(rule.into_inner().next().unwrap(), scope)?;
+
+            let type_map_id = match scope.get_constant_id("@type_map") {
+                Some(id) => id.0,
+                None => {
+                    let mut type_map: HashMap<Box<str>, StaticScalarExpression> = HashMap::new();
+                    for value_type in ValueType::get_value_types() {
+                        let item = match value_type {
+                            ValueType::Array => ("Array", "array"),
+                            ValueType::Boolean => ("Boolean", "bool"),
+                            ValueType::DateTime => ("DateTime", "datetime"),
+                            ValueType::Double => ("Double", "real"),
+                            ValueType::Integer => ("Integer", "long"),
+                            ValueType::Map => ("Map", "dictionary"),
+                            ValueType::Null => ("Null", "null"),
+                            ValueType::Regex => ("Regex", "regex"),
+                            ValueType::String => ("String", "string"),
+                            ValueType::TimeSpan => ("TimeSpan", "timespan"),
+                        };
+                        type_map.insert(
+                            item.0.into(),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                location.clone(),
+                                item.1,
+                            )),
+                        );
+                    }
+                    scope.push_constant(
+                        "@type_map",
+                        StaticScalarExpression::Map(MapScalarExpression::new(
+                            location.clone(),
+                            type_map,
+                        )),
+                    )
+                }
+            };
+
+            let get_type =
+                ScalarExpression::GetType(GetTypeScalarExpression::new(location.clone(), scalar));
+
+            // Note: We register a lookup into the type map to translate expression ValueType into KQL type
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                location,
+                ValueType::Map,
+                type_map_id,
+                ValueAccessor::new_with_selectors(vec![get_type]),
+            ))
+        }
         Rule::conditional_unary_expressions => parse_conditional_unary_expressions(rule, scope)?,
         Rule::conversion_unary_expressions => parse_conversion_unary_expressions(rule, scope)?,
         Rule::string_unary_expressions => parse_string_unary_expressions(rule, scope)?,
@@ -321,9 +372,10 @@ pub(crate) fn try_resolve_identifier(
         ScalarExpression::Constant(c) => {
             let name = scope
                 .get_constant_name(c.get_constant_id())
-                .expect("Constant not found");
+                .expect("Constant not found")
+                .0;
 
-            parse_identifier_from_accessor(name, c.get_value_accessor(), scope)
+            parse_identifier_from_accessor(name.as_ref(), c.get_value_accessor(), scope)
         }
         ScalarExpression::Source(s) => {
             parse_identifier_from_accessor("source", s.get_value_accessor(), scope)
@@ -384,6 +436,14 @@ pub(crate) fn try_resolve_identifier(
         ScalarExpression::Slice(_) => Ok(None),
         ScalarExpression::Static(_) => Ok(None),
         ScalarExpression::Text(_) => Ok(None),
+        ScalarExpression::GetType(g) => {
+            if let Some(mut i) = try_resolve_identifier(g.get_value(), scope)? {
+                i.insert(0, "type".into());
+                return Ok(Some(i));
+            }
+
+            Ok(None)
+        }
     };
 
     if let Ok(Some(mut identifier)) = r {
@@ -429,10 +489,11 @@ fn parse_identifier_from_accessor(
             ScalarExpression::Constant(c) => {
                 let name = scope
                     .get_constant_name(c.get_constant_id())
-                    .expect("Constant not found");
+                    .expect("Constant not found")
+                    .0;
 
                 if let Some(mut i) =
-                    parse_identifier_from_accessor(name, c.get_value_accessor(), scope)?
+                    parse_identifier_from_accessor(name.as_ref(), c.get_value_accessor(), scope)?
                 {
                     identifier.append(&mut i);
                 } else {
@@ -1032,8 +1093,10 @@ mod tests {
 
             println!("{expression:?}");
 
+            let pipeline = state.get_pipeline();
+
             let resolved_expression = expression
-                .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                .try_resolve_static(&pipeline.get_resolution_scope())
                 .unwrap();
 
             if let Some(s) = resolved_expression {
@@ -1049,5 +1112,53 @@ mod tests {
         run_test("1 > 0 + 1 == false", "true");
         run_test("1 + 0 == true", "true");
         run_test("0!=1 and 1!=0", "true");
+    }
+
+    #[test]
+    fn test_parse_get_type_scalar_expression() {
+        let run_test_success = |input: &str, expected: &str| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let mut scalar = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            let pipeline = state.get_pipeline();
+
+            let actual = scalar
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    expected
+                ))
+                .to_value(),
+                actual.unwrap().as_ref().to_value()
+            );
+        };
+
+        run_test_success("gettype(dynamic([0, 1, 2]))", "array");
+
+        run_test_success("gettype(true)", "bool");
+
+        run_test_success("gettype(datetime(10/21/2025))", "datetime");
+
+        run_test_success("gettype(real(1.18))", "real");
+
+        run_test_success("gettype(18)", "long");
+
+        run_test_success("gettype(dynamic({'key1':1}))", "dictionary");
+
+        run_test_success("gettype(int(null))", "null");
+
+        run_test_success("gettype(parse_regex('.*'))", "regex");
+
+        run_test_success("gettype('hello world')", "string");
+
+        run_test_success("gettype(1m)", "timespan");
     }
 }
