@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use arrow::util::pretty::print_batches;
 use data_engine_expressions::{
@@ -17,8 +18,9 @@ use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
 use datafusion::physical_plan::displayable;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionContext, coalesce};
 
+use datafusion::scalar::ScalarValue;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
@@ -29,11 +31,6 @@ const ROW_NUMBER_COL: &str = "_row_number";
 const ATTRIBUTES_FIELD_NAME: &str = "attributes";
 const RESOURCES_FIELD_NAME: &str = "resource";
 const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
-
-struct ExecutionContext {
-    curr_batch: OtapArrowRecords,
-    session_ctx: SessionContext,
-}
 
 pub struct OtapBatchEngine {}
 
@@ -68,7 +65,7 @@ impl OtapBatchEngine {
                         LogicalExpression::Not(not_expr) => {
                             filter_batch(exec_ctx, not_expr.get_inner_expression()).await?;
                         }
-                        _ => todo!("handle invalid discard predciate"),
+                        _ => todo!("handle invalid discard predicate"),
                     }
                 }
             }
@@ -80,46 +77,83 @@ impl OtapBatchEngine {
     }
 }
 
-// TODO these could be methods on ExecutionContext
-fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
-    let plan = match exec_ctx.curr_batch {
-        OtapArrowRecords::Logs(_) => scan_batch(exec_ctx, ArrowPayloadType::Logs),
-        _ => {
-            todo!("handle other root batches");
-        }
-    }?;
-
-    // add a row number column
-    let plan = plan
-        .window(vec![row_number().alias(ROW_NUMBER_COL)])
-        .unwrap();
-
-    Ok(plan)
+struct ExecutionContext {
+    curr_batch: OtapArrowRecords,
+    session_ctx: SessionContext,
 }
 
-fn scan_batch(
-    exec_ctx: &ExecutionContext,
-    payload_type: ArrowPayloadType,
-) -> Result<LogicalPlanBuilder> {
-    if let Some(rb) = exec_ctx.curr_batch.get(payload_type) {
-        let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]]).unwrap();
-        let table_source = provider_as_source(Arc::new(table_provider));
-        let logical_plan = LogicalPlanBuilder::scan(
-            // TODO could avoid allocation here?
-            format!("{:?}", payload_type).to_ascii_lowercase(),
-            table_source,
-            None,
-        )
-        .unwrap();
+impl ExecutionContext {
+    fn root_batch_payload_type(&self) -> ArrowPayloadType {
+        match self.curr_batch {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            _ => {
+                todo!("handle other root batches");
+            }
+        }
+    }
 
-        Ok(logical_plan)
-    } else {
-        todo!("handle payload type missing");
+    // TODO - give this a less fear-inducing name than scan?
+    fn scan_root_batch(&self) -> Result<LogicalPlanBuilder> {
+        let plan = self.scan_batch(self.root_batch_payload_type())?;
+
+        // add a row number column
+        // TODO comment on why we're doing this
+        let plan = plan
+            .window(vec![row_number().alias(ROW_NUMBER_COL)])
+            .unwrap();
+
+        Ok(plan)
+    }
+
+    // TODO - give this a less fear-inducing name than scan?
+    fn scan_batch(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
+        if let Some(rb) = self.curr_batch.get(payload_type) {
+            // TODO would there be anything gained by registering this table on the execution context
+            // and just reusing it? Probably save at least:
+            // - the vec allocations
+            // - the arc allocation
+            // - cloning the record batch (more vec/arc allocations internally)
+
+            let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]]).unwrap();
+            let table_source = provider_as_source(Arc::new(table_provider));
+            let logical_plan = LogicalPlanBuilder::scan(
+                // TODO could avoid allocation here?
+                format!("{:?}", payload_type).to_ascii_lowercase(),
+                table_source,
+                None,
+            )
+            .unwrap();
+
+            Ok(logical_plan)
+        } else {
+            todo!("handle payload type missing");
+        }
+    }
+
+    fn column_exists(&self, accessor: &ColumnAccessor) -> bool {
+        match accessor {
+            ColumnAccessor::ColumnName(column_name) => {
+                // TODO - eventually we might need to loosen the assumption that this is
+                // on the root batch?
+                if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()) {
+                    rb.column_by_name(&column_name).is_some()
+                } else {
+                    // it'd be unusual if the root batch didn't exit
+                    false
+                }
+            }
+            _ => {
+                // TODO
+                true
+            }
+        }
     }
 }
 
 enum ColumnAccessor {
     ColumnName(String),
+
+    /// column in a nested struct. for example resource.schema_url or instrumentation_scope.name
     StructCol(&'static str, String),
 
     /// payload type identifies which attributes are being joined
@@ -129,7 +163,7 @@ enum ColumnAccessor {
 
 enum AttributesIdentifier {
     Root,
-    Other(ArrowPayloadType),
+    NonRoot(ArrowPayloadType),
 }
 
 impl ColumnAccessor {
@@ -143,6 +177,30 @@ impl ColumnAccessor {
             ),
             _ => {
                 todo!("handle invalid attribute key")
+            }
+        }
+    }
+
+    fn try_from_struct_field(
+        struct_column_name: &'static str,
+        attrs_payload_type: ArrowPayloadType,
+        selectors: &[ScalarExpression],
+    ) -> Result<Self> {
+        match &selectors[1] {
+            ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
+                match struct_field.get_value() {
+                    ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
+                        AttributesIdentifier::NonRoot(attrs_payload_type),
+                        &selectors[2],
+                    ),
+                    struct_field => Ok(Self::StructCol(
+                        struct_column_name,
+                        struct_field.to_string(),
+                    )),
+                }
+            }
+            _ => {
+                todo!("handle invalid struct field name")
             }
         }
     }
@@ -161,38 +219,16 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                     ATTRIBUTES_FIELD_NAME => {
                         Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1])
                     }
-                    RESOURCES_FIELD_NAME => match &selectors[1] {
-                        ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
-                            match resource_col.get_value() {
-                                ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
-                                    AttributesIdentifier::Other(ArrowPayloadType::ResourceAttrs),
-                                    &selectors[2],
-                                ),
-                                resource_col => {
-                                    Ok(Self::StructCol(consts::RESOURCE, resource_col.to_string()))
-                                }
-                            }
-                        }
-                        _ => {
-                            todo!("handle invalid resource field name")
-                        }
-                    },
-                    SCOPE_FIELD_NAME => match &selectors[1] {
-                        ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
-                            match resource_col.get_value() {
-                                ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
-                                    AttributesIdentifier::Other(ArrowPayloadType::ScopeAttrs),
-                                    &selectors[2],
-                                ),
-                                resource_col => {
-                                    Ok(Self::StructCol(consts::SCOPE, resource_col.to_string()))
-                                }
-                            }
-                        }
-                        _ => {
-                            todo!("handle invalid resource field name")
-                        }
-                    },
+                    RESOURCES_FIELD_NAME => Self::try_from_struct_field(
+                        consts::RESOURCE,
+                        ArrowPayloadType::ResourceAttrs,
+                        selectors,
+                    ),
+                    SCOPE_FIELD_NAME => Self::try_from_struct_field(
+                        consts::SCOPE,
+                        ArrowPayloadType::ScopeAttrs,
+                        selectors,
+                    ),
                     value => Ok(Self::ColumnName(value.to_string())),
                 }
             }
@@ -310,7 +346,7 @@ impl Filter {
 
                 let join = match (left_filter.join, right_filter.join) {
                     (Some(left_join), Some(right_join)) => {
-                        let mut plan = scan_root_batch(exec_ctx)?;
+                        let mut plan = exec_ctx.scan_root_batch()?;
                         plan = left_join.join_to_plan(plan);
                         plan = right_join.join_to_plan(plan);
 
@@ -353,13 +389,13 @@ impl Filter {
 
                 match (left_filter.join, right_filter.join) {
                     (Some(left_join), Some(right_join)) => {
-                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        let mut left_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
                             left_plan = left_plan.filter(filter_expr).unwrap();
                         }
                         left_plan = left_join.join_to_plan(left_plan);
 
-                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        let mut right_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
                             right_plan = right_plan.filter(filter_expr).unwrap();
                         }
@@ -389,13 +425,13 @@ impl Filter {
                     }
 
                     (Some(left_join), None) => {
-                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        let mut left_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
                             left_plan = left_plan.filter(filter_expr).unwrap();
                         }
                         left_plan = left_join.join_to_plan(left_plan);
 
-                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        let mut right_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
                             right_plan = right_plan.filter(filter_expr).unwrap();
                         } else {
@@ -426,14 +462,14 @@ impl Filter {
                     }
 
                     (None, Some(right_join)) => {
-                        let mut left_plan = scan_root_batch(exec_ctx)?;
+                        let mut left_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
                             left_plan = left_plan.filter(filter_expr).unwrap();
                         } else {
                             todo!("would this be invalid?")
                         }
 
-                        let mut right_plan = scan_root_batch(exec_ctx)?;
+                        let mut right_plan = exec_ctx.scan_root_batch()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
                             right_plan = right_plan.filter(filter_expr).unwrap();
                         }
@@ -478,7 +514,7 @@ impl Filter {
                 let not_filter =
                     Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())?;
                 if let Some(not_join) = not_filter.join {
-                    let mut plan = scan_root_batch(exec_ctx)?;
+                    let mut plan = exec_ctx.scan_root_batch()?;
                     if let Some(filter_expr) = not_filter.filter_expr {
                         plan = plan.filter(filter_expr).unwrap();
                     }
@@ -514,7 +550,7 @@ impl Filter {
                 eq_expr.get_right(),
             ),
             _ => {
-                todo!("return error")
+                todo!("unsupported logical expr")
             }
         }
     }
@@ -529,88 +565,109 @@ impl Filter {
         let right_arg = BinaryArg::try_from(right)?;
 
         match left_arg {
-            BinaryArg::Column(left_col) => match left_col {
-                ColumnAccessor::ColumnName(col_name) => match right_arg {
-                    BinaryArg::Column(_) => {
-                        todo!("handle column right arg in binary expr")
-                    }
-                    BinaryArg::Literal(static_scalar) => {
-                        let left = logical_expr::col(col_name);
-                        let right = try_static_scalar_to_literal(&static_scalar)?;
-                        Ok(Self {
-                            filter_expr: Some(logical_expr::binary_expr(left, operator, right)),
-                            join: None,
-                        })
-                    }
-                },
-                ColumnAccessor::StructCol(struct_col, struct_field) => match right_arg {
-                    BinaryArg::Column(_) => {
-                        todo!("handle column right arg in binary expr");
-                    }
-                    BinaryArg::Literal(static_scalar) => {
-                        let left = logical_expr::col(struct_col).field(struct_field);
-                        let right = try_static_scalar_to_literal(&static_scalar)?;
-                        Ok(Self {
-                            filter_expr: Some(logical_expr::binary_expr(left, operator, right)),
-                            join: None,
-                        })
-                    }
-                },
-                ColumnAccessor::Attributes(attrs_identifier, attr_key) => match right_arg {
-                    BinaryArg::Column(_) => {
-                        todo!("handle column right arg in binary expr")
-                    }
-                    BinaryArg::Literal(static_scalar) => {
-                        let attr_val_col_name =
-                            try_static_scalar_to_any_val_column(&static_scalar)?;
+            BinaryArg::Column(left_col) => {
+                let left_col_exists = exec_ctx.column_exists(&left_col);
+                match left_col {
+                    ColumnAccessor::ColumnName(col_name) => match right_arg {
+                        BinaryArg::Column(_) => {
+                            todo!("handle column right arg in binary expr")
+                        }
+                        BinaryArg::Literal(static_scalar) => {
+                            let left = if left_col_exists {
+                                logical_expr::col(col_name)
+                            } else {
+                                logical_expr::lit(ScalarValue::Null)
+                            };
+                            let right = try_static_scalar_to_literal(&static_scalar)?;
+                            Ok(Self {
+                                // TODO figure out if `coalesce`` is needed here. this was added to
+                                // cover the case where left_col is not existing, in which case we
+                                // create an expr like: `lit(Null) <operator> lit(<right>)`.
+                                //
+                                // without coalesce, this gets optimized to lit(Bool(null)) by
+                                // [`datafusion::optimizer::ExprSimplifier`] but if we use this
+                                // this in the context of a `not` expr, e.g.
+                                // `not(lit(null) <operator> lit(right))`` this also gets optimized
+                                // to bool(null) even though it should be `true` always if right is
+                                // not null.
+                                filter_expr: Some(coalesce(vec![
+                                    logical_expr::binary_expr(left, operator, right),
+                                    logical_expr::lit(false),
+                                ])),
+                                join: None,
+                            })
+                        }
+                    },
+                    ColumnAccessor::StructCol(struct_col, struct_field) => match right_arg {
+                        BinaryArg::Column(_) => {
+                            todo!("handle column right arg in binary expr");
+                        }
+                        BinaryArg::Literal(static_scalar) => {
+                            let left = logical_expr::col(struct_col).field(struct_field);
+                            let right = try_static_scalar_to_literal(&static_scalar)?;
+                            Ok(Self {
+                                filter_expr: Some(logical_expr::binary_expr(left, operator, right)),
+                                join: None,
+                            })
+                        }
+                    },
+                    ColumnAccessor::Attributes(attrs_identifier, attr_key) => match right_arg {
+                        BinaryArg::Column(_) => {
+                            todo!("handle column right arg in binary expr")
+                        }
+                        BinaryArg::Literal(static_scalar) => {
+                            let attr_val_col_name =
+                                try_static_scalar_to_any_val_column(&static_scalar)?;
 
-                        let attrs_payload_type = match attrs_identifier {
-                            // TODO - this shouldn't be hard-coded to logs
-                            AttributesIdentifier::Root => ArrowPayloadType::LogAttrs,
-                            AttributesIdentifier::Other(payload_type) => payload_type,
-                        };
-                        let attrs_filter = scan_batch(exec_ctx, attrs_payload_type)?
-                            .filter(logical_expr::and(
-                                logical_expr::binary_expr(
-                                    logical_expr::col(consts::ATTRIBUTE_KEY),
-                                    operator,
-                                    logical_expr::lit(attr_key),
-                                ),
-                                logical_expr::binary_expr(
-                                    logical_expr::col(attr_val_col_name),
-                                    operator,
-                                    try_static_scalar_to_literal(&static_scalar)?,
-                                ),
-                            ))
-                            .unwrap();
+                            let attrs_payload_type = match attrs_identifier {
+                                // TODO - this shouldn't be hard-coded to logs
+                                AttributesIdentifier::Root => ArrowPayloadType::LogAttrs,
+                                AttributesIdentifier::NonRoot(payload_type) => payload_type,
+                            };
+                            let attrs_filter = exec_ctx
+                                .scan_batch(attrs_payload_type)?
+                                .filter(logical_expr::and(
+                                    logical_expr::binary_expr(
+                                        logical_expr::col(consts::ATTRIBUTE_KEY),
+                                        operator,
+                                        logical_expr::lit(attr_key),
+                                    ),
+                                    logical_expr::binary_expr(
+                                        logical_expr::col(attr_val_col_name),
+                                        operator,
+                                        try_static_scalar_to_literal(&static_scalar)?,
+                                    ),
+                                ))
+                                .unwrap();
 
-                        let join_condition = match attrs_payload_type {
-                            ArrowPayloadType::ResourceAttrs => FilteringJoinCondition::Filter(
-                                logical_expr::col(consts::RESOURCE)
-                                    .field(consts::ID)
-                                    .eq(logical_expr::col(consts::PARENT_ID)),
-                            ),
-                            ArrowPayloadType::ScopeAttrs => FilteringJoinCondition::Filter(
-                                logical_expr::col(consts::SCOPE)
-                                    .field(consts::ID)
-                                    .eq(logical_expr::col(consts::PARENT_ID)),
-                            ),
-                            _ => FilteringJoinCondition::MatchingColumnPairs(
-                                consts::ID,
-                                consts::PARENT_ID,
-                            ),
-                        };
-                        Ok(Self {
-                            filter_expr: None,
-                            join: Some(FilteringJoin {
-                                logical_plan: attrs_filter.build().unwrap(),
-                                join_type: JoinType::LeftSemi,
-                                condition: join_condition,
-                            }),
-                        })
-                    }
-                },
-            },
+                            let join_condition = match attrs_payload_type {
+                                ArrowPayloadType::ResourceAttrs => FilteringJoinCondition::Filter(
+                                    logical_expr::col(consts::RESOURCE)
+                                        .field(consts::ID)
+                                        .eq(logical_expr::col(consts::PARENT_ID)),
+                                ),
+                                ArrowPayloadType::ScopeAttrs => FilteringJoinCondition::Filter(
+                                    logical_expr::col(consts::SCOPE)
+                                        .field(consts::ID)
+                                        .eq(logical_expr::col(consts::PARENT_ID)),
+                                ),
+                                _ => FilteringJoinCondition::MatchingColumnPairs(
+                                    consts::ID,
+                                    consts::PARENT_ID,
+                                ),
+                            };
+                            Ok(Self {
+                                filter_expr: None,
+                                join: Some(FilteringJoin {
+                                    logical_plan: attrs_filter.build().unwrap(),
+                                    join_type: JoinType::LeftSemi,
+                                    condition: join_condition,
+                                }),
+                            })
+                        }
+                    },
+                }
+            }
             _ => {
                 // yoda
                 todo!("handle non column left arg in binary expr");
@@ -624,7 +681,7 @@ async fn filter_batch(
     predicate: &LogicalExpression,
 ) -> Result<()> {
     let filter = Filter::try_from_predicate(&exec_ctx, predicate)?;
-    let mut root_logical_plan = scan_root_batch(&exec_ctx)?;
+    let mut root_logical_plan = exec_ctx.scan_root_batch()?;
 
     if let Some(expr) = filter.filter_expr {
         root_logical_plan = root_logical_plan.filter(expr).unwrap();
@@ -662,6 +719,14 @@ async fn filter_batch(
 
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan:\n{}", logical_plan);
+    // println!("logical plan details:\n{:#?}", logical_plan);
+
+    let optimized_plan = exec_ctx
+        .session_ctx
+        .state()
+        .optimize(&logical_plan)
+        .unwrap();
+    println!("optimized plan:\n{}", optimized_plan);
 
     let physical_plan = exec_ctx
         .session_ctx
@@ -682,17 +747,30 @@ async fn filter_batch(
         .collect()
         .await
         .unwrap();
-    // TODO handle batches empty
-    // TODO not sure concat_batches is necessary here as there should only be one batch
-    let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
 
-    // remove the ROW_ID col
-    if let Ok(col_idx) = result.schema_ref().index_of(ROW_NUMBER_COL) {
-        _ = result.remove_column(col_idx);
-    }
+    let result = if batches.len() > 0 {
+        // TODO not sure concat_batches is necessary here as there should only be one batch
+        let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+
+        // remove the ROW_ID col
+        if let Ok(col_idx) = result.schema_ref().index_of(ROW_NUMBER_COL) {
+            _ = result.remove_column(col_idx);
+        }
+
+        result
+    } else {
+        // TODO can expect here ..
+        let root_batch = exec_ctx
+            .curr_batch
+            .get(exec_ctx.root_batch_payload_type())
+            .unwrap();
+        RecordBatch::new_empty(root_batch.schema())
+    };
 
     // TODO how do we know it's logs here?
-    exec_ctx.curr_batch.set(ArrowPayloadType::Logs, result);
+    exec_ctx
+        .curr_batch
+        .set(exec_ctx.root_batch_payload_type(), result);
 
     // TODO need re-add this
     // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
@@ -702,13 +780,14 @@ async fn filter_batch(
     Ok(())
 }
 
+// tODO implementation of this is not correct
 async fn filter_attrs_for_root(
     exec_ctx: &mut ExecutionContext,
     payload_type: ArrowPayloadType,
 ) -> Result<()> {
     if exec_ctx.curr_batch.get(payload_type).is_some() {
-        let attrs_table_scan = scan_batch(exec_ctx, payload_type)?;
-        let root_table_scan = scan_root_batch(exec_ctx)?;
+        let attrs_table_scan = exec_ctx.scan_batch(payload_type)?;
+        let root_table_scan = exec_ctx.scan_root_batch()?;
 
         let logical_plan = attrs_table_scan
             .join(
@@ -836,6 +915,55 @@ mod test {
             export_req,
             "logs | where severity_text == \"WARN\"",
             vec!["1".into(), "3".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_with_predicate_containing_missing_optional_field() {
+        // TODO get rid of logging config .. it's here to get the optimizer output
+        env_logger::builder()
+            .filter(None, log::LevelFilter::Debug)
+            .init();
+
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                attributes: vec![KeyValue::new("X2", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where severity_text == \"WARN\"",
+            vec![],
+        )
+        .await;
+
+        run_logs_test(
+            export_req,
+            "logs | where not(severity_text == \"WARN\")",
+            (1..6).map(|i| format!("{i}")).collect(),
         )
         .await;
     }
@@ -1482,7 +1610,8 @@ mod test {
         };
 
         let ctx = SessionContext::new();
-        let plan = scan_root_batch(&exec_ctx)
+        let plan = exec_ctx
+            .scan_root_batch()
             .unwrap()
             .filter(logical_expr::col("severity_text").eq(lit("WARN")))
             .unwrap();
@@ -1498,7 +1627,8 @@ mod test {
         println!("result1 :");
         arrow::util::pretty::print_batches(&result).unwrap();
 
-        let plan2 = scan_root_batch(&exec_ctx)
+        let plan2 = exec_ctx
+            .scan_root_batch()
             .unwrap()
             .filter(logical_expr::col("event_name").eq(lit("3")))
             .unwrap();
