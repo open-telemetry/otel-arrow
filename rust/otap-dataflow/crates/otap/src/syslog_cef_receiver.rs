@@ -272,7 +272,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             line_bytes.clear();
 
                                                             if arrow_records_builder.len() >= MAX_BATCH_SIZE {
-                                                                // Build the Arrow records and send them
                                                                 let items = u64::from(arrow_records_builder.len());
 
                                                                 // Build the Arrow records to send them
