@@ -315,8 +315,11 @@ impl RetryProcessor {
 
         // Forward the ACK upstream to complete the request chain
         match calldata.try_into() {
-            Err(_err) => {}
+            Err(_err) => {
+                // Malformed context error: we don't know what this is.
+            }
             Ok(RetryState { num_items, .. }) => {
+                // The producer and consumer both succeed.
                 self.metrics.add_consumed_success(signal, num_items);
                 self.metrics.add_produced_success(signal, num_items);
             }
@@ -333,10 +336,9 @@ impl RetryProcessor {
         let signal = nack.refused.signal_type();
 
         let mut rstate: RetryState = match nack.calldata.clone().try_into() {
-            Err(err) => {
-                // Note: we don't know the number of items lost.
-                nack.reason = format!("retry internal error: {:?}: {}", err, nack.reason);
+            Err(_err) => {
                 effect_handler.notify_nack(nack).await?;
+                // Malformed context error: we don't know what this is.
                 return Ok(());
             }
             Ok(retry) => retry,
@@ -350,6 +352,8 @@ impl RetryProcessor {
         if nack.refused.is_empty() {
             nack.reason = format!("retry lost payload: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
+            // The downstream refused the request and did not give us
+            // back data to retry.
             self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
@@ -366,9 +370,9 @@ impl RetryProcessor {
         let next_retry_time_i = now_i + Duration::from_secs_f64(delay_secs);
 
         if rstate.deadline <= systemtime_f64(next_retry_time_s) {
-            // Deadline expired: forward NACK upstream.
             nack.reason = format!("final retry: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
+            // The caller has refused as much as we'll let them.
             self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
@@ -386,7 +390,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        self.metrics.add_retry_attempts(signal, num_items);
+        self.metrics.add_retry_attempts(signal, 1);
 
         // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
@@ -395,6 +399,7 @@ impl RetryProcessor {
                 effect_handler
                     .notify_nack(NackMsg::new("cannot delay", refused))
                     .await?;
+                // This component failed.
                 self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
@@ -429,6 +434,7 @@ impl RetryProcessor {
                 effect_handler
                     .notify_nack(NackMsg::new(reason, data))
                     .await?;
+                // This component failed.
                 self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
