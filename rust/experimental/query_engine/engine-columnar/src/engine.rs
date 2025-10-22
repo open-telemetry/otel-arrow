@@ -11,6 +11,7 @@ use data_engine_expressions::{
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
 use datafusion::datasource::provider_as_source;
+use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
@@ -25,7 +26,7 @@ use crate::error::{Error, Result};
 
 const ROW_NUMBER_COL: &str = "_row_number";
 const ATTRIBUTES_FIELD_NAME: &str = "attributes";
-const RESOURCES_FIELD_NAME: &str = "resources";
+const RESOURCES_FIELD_NAME: &str = "resource";
 const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 
 struct ExecutionContext {
@@ -78,6 +79,7 @@ impl OtapBatchEngine {
     }
 }
 
+// TODO these could be methods on ExecutionContext
 fn scan_root_batch(exec_ctx: &ExecutionContext) -> Result<LogicalPlanBuilder> {
     let plan = match exec_ctx.curr_batch {
         OtapArrowRecords::Logs(_) => scan_batch(exec_ctx, ArrowPayloadType::Logs),
@@ -117,6 +119,7 @@ fn scan_batch(
 
 enum ColumnAccessor {
     ColumnName(String),
+    StructCol(&'static str, String),
     Attributes(String),
 }
 
@@ -138,12 +141,36 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                             todo!("handle invalid attribute key")
                         }
                     },
-                    RESOURCES_FIELD_NAME => {
-                        todo!("handle resource access");
-                    }
-                    SCOPE_FIELD_NAME => {
-                        todo!("handle instrumentation scope");
-                    }
+                    RESOURCES_FIELD_NAME => match &selectors[1] {
+                        ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
+                            match resource_col.get_value() {
+                                ATTRIBUTES_FIELD_NAME => {
+                                    todo!("handle resource attrs access")
+                                }
+                                resource_col => {
+                                    Ok(Self::StructCol(consts::RESOURCE, resource_col.to_string()))
+                                }
+                            }
+                        }
+                        _ => {
+                            todo!("handle invalid resource field name")
+                        }
+                    },
+                    SCOPE_FIELD_NAME => match &selectors[1] {
+                        ScalarExpression::Static(StaticScalarExpression::String(resource_col)) => {
+                            match resource_col.get_value() {
+                                ATTRIBUTES_FIELD_NAME => {
+                                    todo!("handle resource attrs access")
+                                }
+                                resource_col => {
+                                    Ok(Self::StructCol(consts::SCOPE, resource_col.to_string()))
+                                }
+                            }
+                        }
+                        _ => {
+                            todo!("handle invalid resource field name")
+                        }
+                    },
                     value => Ok(Self::ColumnName(value.to_string())),
                 }
             }
@@ -485,6 +512,19 @@ impl Filter {
                         })
                     }
                 },
+                ColumnAccessor::StructCol(struct_col, struct_field) => match right_arg {
+                    BinaryArg::Column(_) => {
+                        todo!("handle column right arg in binary expr");
+                    }
+                    BinaryArg::Literal(static_scalar) => {
+                        let left = logical_expr::col(struct_col).field(struct_field);
+                        let right = try_static_scalar_to_literal(&static_scalar)?;
+                        Ok(Self {
+                            filter_expr: Some(logical_expr::binary_expr(left, operator, right)),
+                            join: None,
+                        })
+                    }
+                },
                 ColumnAccessor::Attributes(attr_key) => match right_arg {
                     BinaryArg::Column(_) => {
                         todo!("handle column right arg in binary expr")
@@ -522,6 +562,7 @@ impl Filter {
                 },
             },
             _ => {
+                // yoda
                 todo!("handle non column left arg in binary expr");
             }
         }
@@ -624,13 +665,17 @@ async fn filter_attrs_for_root(
 mod test {
     use arrow::array::{DictionaryArray, StringArray};
     use arrow::datatypes::UInt8Type;
+    use arrow::util::pretty::print_batches;
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use datafusion::prelude::lit;
     use otap_df_otap::encoder::encode_logs_otap_batch;
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue,
+    };
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
 
     use super::*;
@@ -653,6 +698,9 @@ mod test {
         let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
         let result = engine.process(&pipeline_expr, &otap_batch).await.unwrap();
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+
+        print_batches(&[logs_rb.clone()]).unwrap();
+
         let event_name_col = logs_rb.column_by_name(consts::EVENT_NAME).unwrap();
 
         let tmp = event_name_col
@@ -1064,6 +1112,45 @@ mod test {
             export_req.clone(),
             "logs | where not(severity_text == \"WARN\") and attributes[\"X\"] == \"Y\"",
             ["4"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_resource_and_scope_fields() {
+        let export_req = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                schema_url: "resource_schema1".to_string(),
+                resource: Some(Resource {
+                    // TODO fill this in
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "scope1".to_string(),
+                        ..Default::default()
+                    }),
+                    log_records: vec![LogRecord {
+                        event_name: "1".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where resource.schema_url == \"resource_schema1\"",
+            ["1"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where instrumentation_scope.name == \"scope1\"",
+            ["1"].iter().map(|i| i.to_string()).collect(),
         )
         .await;
     }
