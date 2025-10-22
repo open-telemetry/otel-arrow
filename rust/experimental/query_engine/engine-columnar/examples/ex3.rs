@@ -30,6 +30,22 @@ async fn main() {
     )
     .unwrap();
 
+    let schema2 = Arc::new(Schema::new(vec![
+        Field::new("parent_id", DataType::UInt8, false),
+        Field::new("key", DataType::Utf8, false),
+        Field::new("val", DataType::Utf8, false),
+    ]));
+
+    let rb2 = RecordBatch::try_new(
+        schema2.clone(),
+        vec![
+            Arc::new(UInt8Array::from_iter_values(vec![0, 1])),
+            Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+            Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+        ],
+    )
+    .unwrap();
+
     let ctx = SessionContext::new();
 
     ctx.register_table(
@@ -38,8 +54,15 @@ async fn main() {
     )
     .unwrap();
 
+    ctx.register_table(
+        "table2",
+        Arc::new(MemTable::try_new(schema2.clone(), vec![vec![rb2]]).unwrap()),
+    )
+    .unwrap();
+
+    let query = "select * from table1 left semi join table2 on table1.s.a == table2.parent_id";
     let batches = ctx
-        .sql("select * from table1 where s.a > 1")
+        .sql(query.clone())
         .await
         .unwrap()
         .collect()
@@ -48,7 +71,7 @@ async fn main() {
 
     print_batches(&batches).unwrap();
 
-    let df = ctx.sql("select * from table1 where s.a > 1").await.unwrap();
+    let df = ctx.sql(query.clone()).await.unwrap();
     let lp = df.logical_plan();
     println!("logical plan:\n{}", lp);
     println!("logical plan:\n{:#?}", lp);
