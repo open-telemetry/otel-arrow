@@ -239,10 +239,10 @@ you're more than welcome to participate!
 
 ### Maintainers
 
+- [Albert Lockett](https://github.com/albertlockett), F5
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
-- [Albert Lockett](https://github.com/albertlockett), F5
 
 For more information about the maintainer role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#maintainer).

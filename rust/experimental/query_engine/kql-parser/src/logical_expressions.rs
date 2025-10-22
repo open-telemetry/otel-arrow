@@ -81,7 +81,7 @@ mod tests {
         let run_test = |input: &str, expected: LogicalExpression| {
             println!("Testing: {input}");
 
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -332,7 +332,7 @@ mod tests {
         let run_test_success = |input: &str, expected: LogicalExpression| {
             println!("Testing: {input}");
 
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn test_parse_contains_expressions() {
         let run_test = |input: &str, expected: LogicalExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );

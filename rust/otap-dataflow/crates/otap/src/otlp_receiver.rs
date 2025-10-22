@@ -73,7 +73,9 @@ const fn default_max_concurrent_requests() -> usize {
 }
 
 const fn default_wait_for_result() -> bool {
-    true
+    // See https://github.com/open-telemetry/otel-arrow/issues/1311
+    // This matches the OTel Collector default for wait_for_result, presently.
+    false
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
