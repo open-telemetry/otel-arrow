@@ -466,7 +466,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         Err(_) => m.received_logs_forward_failed.add(items),
                                     }
                                 }
-                                // UDP path: do not propagate downstream send errors; keep running
+                                // Do not propagate downstream send errors; keep running
                                 // so that telemetry can still be collected and reported.
                                 if res.is_err() {
                                     // swallow error (already counted above)
