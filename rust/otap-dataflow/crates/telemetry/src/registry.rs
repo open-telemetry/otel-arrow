@@ -6,8 +6,9 @@
 //! Note: Concrete metrics live in their respective crates; this registry aggregates them via
 //! dynamic dispatch.
 
-use crate::attributes::{AttributeSetHandler, AttributeValue};
-use crate::descriptor::{AttributesDescriptor, MetricsDescriptor, MetricsField};
+use crate::attributes::AttributeSetHandler;
+use crate::descriptor::MetricsDescriptor;
+use crate::descriptor::MetricsField;
 use crate::metrics::{MetricSet, MetricSetHandler};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
@@ -26,7 +27,7 @@ pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
     pub metrics_descriptor: &'static MetricsDescriptor,
     /// The static descriptor describing the attributes structure
-    pub attributes_descriptor: &'static AttributesDescriptor,
+    pub attributes_descriptor: &'static crate::descriptor::AttributesDescriptor,
 
     /// Current metric values stored as a vector
     pub metric_values: Vec<u64>,
@@ -51,7 +52,7 @@ impl MetricsEntry {
     #[must_use]
     pub fn new(
         metrics_descriptor: &'static MetricsDescriptor,
-        attributes_descriptor: &'static AttributesDescriptor,
+        attributes_descriptor: &'static crate::descriptor::AttributesDescriptor,
         metric_values: Vec<u64>,
         attribute_values: Box<dyn AttributeSetHandler + Send + Sync>,
     ) -> Self {
@@ -363,21 +364,6 @@ impl MetricsRegistryHandle {
                 f(desc, attrs, MetricsIterator::new(desc.metrics, values));
             }
         }
-    }
-}
-
-static EMPTY_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
-    name: "empty_metrics",
-    fields: &[],
-};
-
-impl AttributeSetHandler for () {
-    fn descriptor(&self) -> &'static AttributesDescriptor {
-        &EMPTY_ATTRIBUTES_DESCRIPTOR
-    }
-
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &[]
     }
 }
 
