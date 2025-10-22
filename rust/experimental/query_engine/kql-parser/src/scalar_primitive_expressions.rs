@@ -1532,7 +1532,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut state = ParserState::new("['sub.key thing'][var][-neg_attr]");
+        let state = ParserState::new("['sub.key thing'][var][-neg_attr]");
 
         state.push_variable_name("var");
 
@@ -1760,7 +1760,7 @@ mod tests {
     fn test_parse_accessor_expression_from_variable() {
         let mut result = KqlPestParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
-        let mut state = ParserState::new("a[-1]");
+        let state = ParserState::new("a[-1]");
 
         state.push_variable_name("a");
 
@@ -1785,7 +1785,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_int",
@@ -1825,7 +1825,7 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_int",
@@ -1981,7 +1981,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_str",

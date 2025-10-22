@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn test_parse_extend_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -1485,7 +1485,7 @@ mod tests {
     #[test]
     fn test_parse_project_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -1513,7 +1513,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -1962,7 +1962,7 @@ mod tests {
     #[test]
     fn test_parse_project_keep_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -1990,7 +1990,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -2434,7 +2434,7 @@ mod tests {
     #[test]
     fn test_parse_project_away_expression() {
         let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -2462,7 +2462,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -2942,7 +2942,7 @@ mod tests {
     #[test]
     fn test_parse_project_rename_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_variable_name("variable");
 
@@ -2955,7 +2955,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_variable_name("variable");
 
@@ -3130,7 +3130,7 @@ mod tests {
     #[test]
     fn test_parse_where_expression() {
         let run_test_success = |input: &str, expected: DataExpression| {
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_variable_name("variable");
 
@@ -3183,7 +3183,7 @@ mod tests {
     #[test]
     fn test_parse_summarize_expression() {
         let run_test_success = |input: &str, expected: SummaryDataExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(
@@ -3212,7 +3212,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_message: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
                     .with_source_map_schema(

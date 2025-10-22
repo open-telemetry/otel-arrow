@@ -143,6 +143,8 @@ type_unary_expressions = {
     | string_literal
 }
 
+get_type_expression = { "gettype" ~ "(" ~ scalar_expression ~ ")" }
+
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 coalesce_expression = { "coalesce" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
@@ -223,6 +225,7 @@ would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
 scalar_unary_expression = {
     type_unary_expressions
+    | get_type_expression
     | conditional_unary_expressions
     | conversion_unary_expressions
     | string_unary_expressions
