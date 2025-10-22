@@ -258,7 +258,7 @@ struct RetryState {
 }
 
 impl RetryState {
-    fn new(num_items: u64, deadline: f64) -> Self {
+    const fn new(num_items: u64, deadline: f64) -> Self {
         Self {
             retries: 0,
             deadline,
