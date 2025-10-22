@@ -183,12 +183,12 @@ impl RetryProcessorMetrics {
         }
     }
 
-    /// Increment retry_attempts for the given signal by n
-    pub fn add_retry_attempts(&mut self, st: SignalType, n: u64) {
+    /// Increment retry_attempts for the given signal by 1.
+    pub fn add_retry_attempts(&mut self, st: SignalType) {
         match st {
-            SignalType::Logs => self.retry_attempts_logs.add(n),
-            SignalType::Metrics => self.retry_attempts_metrics.add(n),
-            SignalType::Traces => self.retry_attempts_traces.add(n),
+            SignalType::Logs => self.retry_attempts_logs.add(1),
+            SignalType::Metrics => self.retry_attempts_metrics.add(1),
+            SignalType::Traces => self.retry_attempts_traces.add(1),
         }
     }
 }
@@ -390,7 +390,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        self.metrics.add_retry_attempts(signal, 1);
+        self.metrics.add_retry_attempts(signal);
 
         // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
