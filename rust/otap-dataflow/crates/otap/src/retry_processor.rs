@@ -315,9 +315,7 @@ impl RetryProcessor {
 
         // Forward the ACK upstream to complete the request chain
         match calldata.try_into() {
-            Err(_err) => {
-                return Ok(());
-            }
+            Err(_err) => {}
             Ok(RetryState { num_items, .. }) => {
                 self.metrics.add_consumed_success(signal, num_items);
                 self.metrics.add_produced_success(signal, num_items);
@@ -448,19 +446,19 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
-                let num_items = data.num_items();
+                let num_items = data.num_items() as u64;
                 if num_items == 0 {
                     // Immediately Ack an empty request. Otherwise
                     // looks like a failure to return data in the Nack
                     // code path.
-                    effect_handler.notify_ack(AckMsg::new(data));
+                    effect_handler.notify_ack(AckMsg::new(data)).await?;
                     return Ok(());
                 }
 
                 let deadline = now_f64() + self.config.max_elapsed_time.as_secs_f64();
                 effect_handler.subscribe_to(
                     Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
-                    RetryState::new(deadline, num_items).into(),
+                    RetryState::new(num_items, deadline).into(),
                     &mut data,
                 );
                 self.send_or_nack(data, effect_handler, num_items).await
@@ -469,7 +467,13 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
-                    self.handle_delayed(when, data, effect_handler).await
+                    if let Some(calldata) = data.current_calldata() {
+                        let rstate: RetryState = calldata.try_into()?;
+                        let _ = self
+                            .handle_delayed(when, data, effect_handler, rstate.num_items)
+                            .await?;
+                    }
+                    Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,

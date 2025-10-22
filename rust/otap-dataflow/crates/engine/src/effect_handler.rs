@@ -237,7 +237,6 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
         if let Some((node_id, ack)) = transfer(ack_in) {
-            println!("Sent ACK");
             self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
                 .await
                 .map(|_| ())
@@ -245,7 +244,6 @@ impl<PData> EffectHandlerCore<PData> {
                     error: e.to_string(),
                 })
         } else {
-            println!("NOBODY ACK");
             Ok(())
         }
     }
@@ -264,7 +262,6 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         if let Some((node_id, nack)) = transfer(nack_in) {
-            println!("Sent NACK");
             self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
                 .await
                 .map(|_| ())
@@ -272,7 +269,6 @@ impl<PData> EffectHandlerCore<PData> {
                     error: e.to_string(),
                 })
         } else {
-            println!("NOBODY NACK");
             Ok(())
         }
     }
