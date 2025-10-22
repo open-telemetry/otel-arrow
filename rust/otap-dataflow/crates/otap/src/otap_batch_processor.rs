@@ -171,24 +171,19 @@ async fn log_batching_failed(
 }
 
 impl OtapBatchProcessor {
-    /// Construct a processor wrapper from a JSON configuration object and processor runtime config,
-    /// with optional metrics for internal telemetry. Functional behavior is unchanged.
-    pub fn from_config(
-        node: NodeId,
+    /// Parse JSON config and build the processor instance with the provided metrics set.
+    /// This function does not wrap the processor into a ProcessorWrapper so callers can
+    /// preserve the original NodeUserConfig (including out_ports/default_out_port).
+    pub fn build_from_json(
         cfg: &Value,
-        proc_cfg: &ProcessorConfig,
         metrics: MetricSet<OtapBatchProcessorMetrics>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    ) -> Result<Self, ConfigError> {
         let mut config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
         // Basic validation/normalization
-        // Allow send_batch_size = 0 to mean: ignore size threshold (send immediately),
-        // subject only to send_batch_max_size when non-zero (Go parity).
-        // Keep send_batch_max_size = 0 as unlimited (no upper bound).
-        // Validate: when both are non-zero, max must be >= size.
         if config.send_batch_max_size != 0 {
             if let Some(s) = config.send_batch_size {
                 if s != 0 && config.send_batch_max_size < s {
@@ -207,10 +202,8 @@ impl OtapBatchProcessor {
                 config.metadata_cardinality_limit = Some(MIN_METADATA_CARDINALITY_LIMIT);
             }
         }
-        let user_config = Arc::new(NodeUserConfig::new_processor_config(
-            OTAP_BATCH_PROCESSOR_URN,
-        ));
-        let proc = OtapBatchProcessor {
+
+        Ok(OtapBatchProcessor {
             config,
             current_logs: Vec::new(),
             current_metrics: Vec::new(),
@@ -222,7 +215,22 @@ impl OtapBatchProcessor {
             dirty_metrics: false,
             dirty_traces: false,
             metrics,
-        };
+        })
+    }
+
+    /// Backward-compatible helper used by unit tests to construct a processor wrapper
+    /// directly from JSON. Note: This creates a fresh NodeUserConfig without out_ports,
+    /// which is fine for unit tests that do not rely on engine wiring.
+    pub fn from_config(
+        node: NodeId,
+        cfg: &Value,
+        proc_cfg: &ProcessorConfig,
+        metrics: MetricSet<OtapBatchProcessorMetrics>,
+    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+        let proc = Self::build_from_json(cfg, metrics)?;
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(
+            OTAP_BATCH_PROCESSOR_URN,
+        ));
         Ok(ProcessorWrapper::local(proc, node, user_config, proc_cfg))
     }
 
@@ -549,7 +557,15 @@ pub fn create_otap_batch_processor(
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = pipeline_ctx.register_metrics::<OtapBatchProcessorMetrics>();
-    OtapBatchProcessor::from_config(node, &node_config.config, processor_config, metrics)
+    let proc = OtapBatchProcessor::build_from_json(&node_config.config, metrics)?;
+    // IMPORTANT: preserve the original node_config so engine wiring (out_ports/default_out_port)
+    // remains intact.
+    Ok(ProcessorWrapper::local(
+        proc,
+        node,
+        node_config,
+        processor_config,
+    ))
 }
 
 #[async_trait(?Send)]
@@ -849,7 +865,68 @@ mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    // Helper to read dotted metric field names via snake_case identifiers in tests.
+    use super::create_otap_batch_processor;
+    use super::test_helpers; // module for from_config
+    use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
+    use super::{Config, OTAP_BATCH_PROCESSOR_URN, OtapBatchProcessor};
+    use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
+    use crate::pdata::OtapPdata;
+    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::node::Node; // bring trait in scope for user_config()
+    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::otap::OtapArrowRecords;
+    use serde_json::json;
+    use std::collections::HashSet;
+    use std::ops::Add;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[test]
+    fn test_factory_preserves_node_user_config_ports() {
+        // Build a pipeline context to register metrics
+        let registry = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            otap_df_config::PipelineGroupId::from("g".to_string()),
+            otap_df_config::PipelineId::from("p".to_string()),
+            0,
+            0,
+        );
+
+        // Prepare a NodeUserConfig with an out_port and a default_out_port
+        let mut nuc = NodeUserConfig::with_user_config(
+            NodeKind::Processor,
+            OTAP_BATCH_PROCESSOR_URN.into(),
+            serde_json::json!({}),
+        );
+        let mut dests: HashSet<otap_df_config::NodeId> = HashSet::new();
+        let _ = dests.insert("exporter".into());
+        let edge = HyperEdgeConfig {
+            destinations: dests,
+            dispatch_strategy: DispatchStrategy::RoundRobin,
+        };
+        let _ = nuc.add_out_port("out_port".into(), edge);
+        nuc.set_default_out_port("out_port");
+        let nuc = Arc::new(nuc);
+
+        // Create processor via factory and ensure the provided NodeUserConfig is preserved
+        let proc_cfg = ProcessorConfig::new("batch");
+        let node = test_node(proc_cfg.name.clone());
+        let wrapper = create_otap_batch_processor(pipeline_ctx, node, nuc.clone(), &proc_cfg)
+            .expect("factory should succeed");
+
+        let uc = wrapper.user_config();
+        assert!(uc.out_ports.contains_key("out_port"));
+        assert_eq!(uc.default_out_port.as_deref(), Some("out_port"));
+        let edge = &uc.out_ports["out_port"];
+        assert!(edge.destinations.contains("exporter"));
+    }
     // See crates/telemetry-macros/README.md ("Define a metric set"): if a metric field name is not
     // overridden, the field identifier is converted by replacing '_' with '.'.
     // Example: consumed_items_traces => consumed.items.traces
@@ -860,18 +937,6 @@ mod tests {
             .or_else(|| map.get(snake_case).copied())
             .unwrap_or(0)
     }
-
-    use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
-    use super::*;
-    use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::test_node;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use serde_json::json;
-    use std::ops::Add;
-    use std::time::Instant;
 
     // Test constants to avoid magic numbers/strings
     const TEST_SHUTDOWN_DEADLINE_MS: u64 = 50;
