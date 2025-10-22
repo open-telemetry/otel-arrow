@@ -12,77 +12,26 @@ use crate::*;
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
 
-static EXPRESSIONS: LazyLock<RwLock<Vec<PipelineExpression>>> =
+static EXPRESSIONS: LazyLock<RwLock<Vec<(ParserOptions, PipelineExpression)>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
 pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<PipelineExpression, Vec<ParserError>> {
-    let mut parser_options = ParserOptions::new().with_attached_data_names(&[
-        "resource",
-        "instrumentation_scope",
-        "scope",
-    ]);
-
-    let mut log_record_schema = ParserMapSchema::new()
-        .set_default_map_key("Attributes")
-        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
-        .with_key_definition("SeverityText", ParserMapKeySchema::String)
-        .with_key_definition("Body", ParserMapKeySchema::Any)
-        .with_key_definition("TraceId", ParserMapKeySchema::Array)
-        .with_key_definition("SpanId", ParserMapKeySchema::Array)
-        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-        .with_key_definition("EventName", ParserMapKeySchema::String);
-
-    if let Some(mut attributes_schema) = options.and_then(|mut v| v.take_attributes_schema()) {
-        let schema = attributes_schema.get_schema_mut();
-        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
-            // Note: If any top-level fields are duplicated on Attributes Schema
-            // they get removed automatically. This is done for two purposes.
-            // The first is to make it easy for callers to pass in something
-            // like a table schema. Many backends flatten log records into
-            // columns. This feature is essentially a convenience thing so
-            // callers with table schema don't need to map columns back to the
-            // log record schema. The second reason is to prevent
-            // accidental\confusing query results. If for example "Body" is
-            // present in Attributes users might query with ambiguous naming.
-            // For example: source | extend Body = 'something' will write to the
-            // top-level field and not Attributes.
-            if let Some(removed) = schema.remove(top_level_key)
-                && &removed != top_level_key_schema
-            {
-                return Err(vec![ParserError::SchemaError(format!(
-                    "'{top_level_key}' key cannot be declared as '{}' type",
-                    &removed
-                ))]);
-            }
-        }
-
-        parser_options = parser_options.with_summary_map_schema(attributes_schema.clone());
-
-        log_record_schema = log_record_schema.with_key_definition(
-            "Attributes",
-            ParserMapKeySchema::Map(Some(attributes_schema)),
-        );
-    }
-
-    KqlParser::parse_with_options(
-        query,
-        parser_options.with_source_map_schema(log_record_schema),
-    )
+    KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)
 }
 
 pub fn register_pipeline_for_kql_query(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<usize, Vec<ParserError>> {
-    let pipeline = parse_kql_query_into_pipeline(query, options)?;
+    let options = build_parser_options(options).map_err(|e| vec![e])?;
+
+    let pipeline = KqlParser::parse_with_options(query, options.clone())?;
 
     let mut expressions = EXPRESSIONS.write().unwrap();
-    expressions.push(pipeline);
+    expressions.push((options, pipeline));
     Ok(expressions.len() - 1)
 }
 
@@ -93,11 +42,12 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 ) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
     let expressions = EXPRESSIONS.read().unwrap();
 
-    let pipeline_expression = expressions.get(pipeline);
+    let pipeline_registration = expressions.get(pipeline);
 
-    if pipeline_expression.is_none() {
-        return Err(BridgeError::PipelineNotFound(pipeline));
-    }
+    let (options, pipeline) = match pipeline_registration {
+        Some(v) => v,
+        None => return Err(BridgeError::PipelineNotFound(pipeline)),
+    };
 
     let request =
         ExportLogsServiceRequest::from_protobuf(export_logs_service_request_protobuf_data);
@@ -107,7 +57,8 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
     }
 
     match process_export_logs_service_request_using_pipeline(
-        pipeline_expression.unwrap(),
+        Some(options),
+        pipeline,
         log_level,
         request.unwrap(),
     ) {
@@ -147,6 +98,7 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 }
 
 pub fn process_export_logs_service_request_using_pipeline(
+    options: Option<&ParserOptions>,
     pipeline: &PipelineExpression,
     log_level: RecordSetEngineDiagnosticLevel,
     mut export_logs_service_request: ExportLogsServiceRequest,
@@ -164,6 +116,50 @@ pub fn process_export_logs_service_request_using_pipeline(
     let mut batch = engine
         .begin_batch(pipeline)
         .map_err(|e| BridgeError::PipelineInitializationError(e.to_string()))?;
+
+    if let Some(options) = options
+        && let Some(ParserMapKeySchema::Map(Some(attributes_schema))) = options
+            .get_source_map_schema()
+            .and_then(|s| s.get_schema_for_key("Attributes"))
+    {
+        // Note: This block is a not-so-elegant fix to OTLP not supporting
+        // roundtrip of extended types. What we do is if we know something is a
+        // DateTime via the schema and the value is a string we will try to
+        // convert to a real DateTime.
+        let schema = attributes_schema.get_schema();
+
+        for resource in &mut export_logs_service_request.resource_logs {
+            for scope in &mut resource.scope_logs {
+                for log in &mut scope.log_records {
+                    let attributes = log.attributes.get_values_mut();
+
+                    for (key, schema) in schema {
+                        match schema {
+                            ParserMapKeySchema::DateTime => {
+                                if let Some(v) = attributes.get(key)
+                                    && v.get_value_type() == ValueType::String
+                                {
+                                    if let Some(d) = Value::convert_to_datetime(&v.to_value()) {
+                                        attributes.insert(
+                                            key.clone(),
+                                            AnyValue::Extended(ExtendedValue::DateTime(
+                                                DateTimeValueStorage::new(d),
+                                            )),
+                                        );
+                                    } else {
+                                        attributes.remove(key);
+                                    }
+                                }
+                            }
+                            _ => {
+                                // todo: Fix up Regex & TimeSpan types and look into maps if we have sub-schema
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let dropped_records = batch.push_records(&mut export_logs_service_request);
 
@@ -316,6 +312,95 @@ pub fn process_export_logs_service_request_using_pipeline(
     }
 
     Ok((included_records, dropped_records))
+}
+
+fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions, ParserError> {
+    let mut parser_options = ParserOptions::new().with_attached_data_names(&[
+        "resource",
+        "instrumentation_scope",
+        "scope",
+    ]);
+
+    let (log_record_schema, summary_schema) =
+        build_log_record_schema(options.and_then(|mut v| v.take_attributes_schema()))?;
+
+    if let Some(summary_schema) = summary_schema {
+        parser_options = parser_options.with_summary_map_schema(summary_schema);
+    }
+
+    Ok(parser_options.with_source_map_schema(log_record_schema))
+}
+
+fn build_log_record_schema(
+    attributes_schema: Option<ParserMapSchema>,
+) -> Result<(ParserMapSchema, Option<ParserMapSchema>), ParserError> {
+    let mut log_record_schema = ParserMapSchema::new()
+        .set_default_map_key("Attributes")
+        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+        .with_key_definition("Body", ParserMapKeySchema::Any)
+        .with_key_definition("TraceId", ParserMapKeySchema::Array)
+        .with_key_definition("SpanId", ParserMapKeySchema::Array)
+        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
+        .with_key_definition("EventName", ParserMapKeySchema::String);
+
+    if let Some(mut attributes_schema) = attributes_schema {
+        let schema = attributes_schema.get_schema_mut();
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            // Note: If any top-level fields are duplicated on Attributes Schema
+            // they get removed automatically. This is done for two purposes.
+            // The first is to make it easy for callers to pass in something
+            // like a table schema. Many backends flatten log records into
+            // columns. This feature is essentially a convenience thing so
+            // callers with table schema don't need to map columns back to the
+            // log record schema. The second reason is to prevent
+            // accidental\confusing query results. If for example "Body" is
+            // present in Attributes users might query with ambiguous naming.
+            // For example: source | extend Body = 'something' will write to the
+            // top-level field and not Attributes.
+            if let Some(removed) = schema.remove(top_level_key)
+                && &removed != top_level_key_schema
+            {
+                return Err(ParserError::SchemaError(format!(
+                    "'{top_level_key}' key cannot be declared as '{}' type",
+                    &removed
+                )));
+            }
+        }
+
+        let allow_undefined_keys = attributes_schema.get_allow_undefined_keys();
+
+        log_record_schema = log_record_schema.with_key_definition(
+            "Attributes",
+            ParserMapKeySchema::Map(Some(attributes_schema)),
+        );
+
+        let mut summary_schema = ParserMapSchema::new();
+
+        if allow_undefined_keys {
+            summary_schema = summary_schema.set_allow_undefined_keys();
+        }
+
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            if top_level_key.as_ref() == "Attributes" {
+                if let ParserMapKeySchema::Map(Some(attributes_schema)) = top_level_key_schema {
+                    for (top_level_key, top_level_key_schema) in attributes_schema.get_schema() {
+                        summary_schema = summary_schema
+                            .with_key_definition(top_level_key, top_level_key_schema.clone());
+                    }
+                }
+                continue;
+            }
+            summary_schema =
+                summary_schema.with_key_definition(top_level_key, top_level_key_schema.clone());
+        }
+
+        return Ok((log_record_schema, Some(summary_schema)));
+    }
+
+    Ok((log_record_schema, None))
 }
 
 fn process_log_record_results(
@@ -501,6 +586,7 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
+                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -521,6 +607,7 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
+                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -542,6 +629,7 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
+                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -555,6 +643,8 @@ mod tests {
     #[test]
     fn test_parse_kql_query_into_pipeline_with_attributes_schema() {
         let run_test_success = |query: &str| {
+            println!("Testing: {query}");
+
             parse_kql_query_into_pipeline(
                 query,
                 Some(
@@ -569,6 +659,8 @@ mod tests {
         };
 
         let run_test_failure = |query: &str| {
+            println!("Testing: {query}");
+
             parse_kql_query_into_pipeline(
                 query,
                 Some(
@@ -611,6 +703,46 @@ mod tests {
         run_test_success("source | extend Body = 'hello world'");
         // Note: Body gets removed from Attributes schema because it is defined at the root
         run_test_failure("source | extend Attributes.Body = 'hello world'");
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_with_attributes_schema() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(
+                LogRecord::new().with_attribute(
+                    "TimeGenerated",
+                    AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
+                        "10/22/2025".into(),
+                    ))),
+                ),
+            )),
+        );
+
+        let options = build_parser_options(Some(
+            BridgeOptions::new().with_attributes_schema(
+                ParserMapSchema::new()
+                    .with_key_definition("TimeGenerated", ParserMapKeySchema::DateTime),
+            ),
+        ))
+        .unwrap();
+
+        let pipeline = KqlParser::parse_with_options(
+            "source | where gettype(TimeGenerated) == 'datetime'",
+            options.clone(),
+        )
+        .unwrap();
+
+        let (included_records, dropped_records) =
+            process_export_logs_service_request_using_pipeline(
+                Some(&options),
+                &pipeline,
+                RecordSetEngineDiagnosticLevel::Verbose,
+                request,
+            )
+            .unwrap();
+
+        assert!(included_records.is_some());
+        assert!(dropped_records.is_none());
     }
 
     #[test]
