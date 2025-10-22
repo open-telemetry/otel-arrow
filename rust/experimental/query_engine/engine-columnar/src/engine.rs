@@ -14,6 +14,7 @@ use datafusion::datasource::provider_as_source;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::{self, LogicalPlan, LogicalPlanBuilder, Operator};
+use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
 
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -23,6 +24,9 @@ use otel_arrow_rust::schema::consts;
 use crate::error::{Error, Result};
 
 const ROW_NUMBER_COL: &str = "_row_number";
+const ATTRIBUTES_FIELD_NAME: &str = "attributes";
+const RESOURCES_FIELD_NAME: &str = "resources";
+const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 
 struct ExecutionContext {
     curr_batch: OtapArrowRecords,
@@ -122,13 +126,11 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
     fn try_from(accessor: &ValueAccessor) -> Result<Self> {
         let selectors = accessor.get_selectors();
 
-        // TODO the parsing here is kind of goofy
         match &selectors[0] {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
                 match column_name {
-                    // TODO parsing here is kind of goofy
-                    "attributes" => match &selectors[1] {
+                    ATTRIBUTES_FIELD_NAME => match &selectors[1] {
                         ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
                             Ok(Self::Attributes(attr_key.get_value().to_string()))
                         }
@@ -136,10 +138,10 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                             todo!("handle invalid attribute key")
                         }
                     },
-                    "resource" => {
+                    RESOURCES_FIELD_NAME => {
                         todo!("handle resource access");
                     }
-                    "instrumentation_scope" => {
+                    SCOPE_FIELD_NAME => {
                         todo!("handle instrumentation scope");
                     }
                     value => Ok(Self::ColumnName(value.to_string())),
@@ -278,6 +280,23 @@ impl Filter {
                 Ok(Self { filter_expr, join })
             }
 
+            // TODO -- there are two things that might be inefficient in the handling of filters
+            // with or here that we should optimize.
+            //
+            // first case
+            // - when both sides of the or require a join to evaluate, but the same table is what's
+            //   on the right of the join in both branches, instead of joining both tables and
+            //   doing a union/distinct on the result, then joining back to the main table, we can
+            //   just create an `or` filter on the right table and join that back to the parent
+            //
+            // second case:
+            // - basically what we're doing here is evaluating all filters inside both sides of the
+            //   or locally, union/distinct both sides, and join this back to the parent table. But
+            //   if the parent table had some filters applied to it, we could eliminate this join
+            //   by pushing the filters down to the both sides of the or evaluation. This might come
+            //   at the cost of evaluating the filters multiple times however, so need further
+            //   investigation.
+            //
             LogicalExpression::Or(or_expr) => {
                 let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
                 let right_filter = Self::try_from_predicate(exec_ctx, or_expr.get_right())?;
@@ -300,7 +319,13 @@ impl Filter {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union_distinct(right_plan.build().unwrap())
+                                    .union(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .distinct_on(
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        None,
+                                    )
                                     .unwrap()
                                     .build()
                                     .unwrap(),
@@ -329,7 +354,13 @@ impl Filter {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union_distinct(right_plan.build().unwrap())
+                                    .union(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .distinct_on(
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        None,
+                                    )
                                     .unwrap()
                                     .build()
                                     .unwrap(),
@@ -358,7 +389,13 @@ impl Filter {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union_distinct(right_plan.build().unwrap())
+                                    .union(right_plan.build().unwrap())
+                                    .unwrap()
+                                    .distinct_on(
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        vec![logical_expr::col(ROW_NUMBER_COL)],
+                                        None,
+                                    )
                                     .unwrap()
                                     .build()
                                     .unwrap(),
@@ -508,6 +545,17 @@ async fn filter_batch(
 
     let logical_plan = root_logical_plan.build().unwrap();
     println!("logical plan:\n{}", logical_plan);
+
+    let physical_plan = exec_ctx
+        .session_ctx
+        .state()
+        .create_physical_plan(&logical_plan)
+        .await
+        .unwrap();
+    println!(
+        ">>>>\nphysical plan:\n{}",
+        displayable(physical_plan.as_ref()).indent(true)
+    );
 
     let batches = exec_ctx
         .session_ctx
@@ -947,6 +995,75 @@ mod test {
             export_req.clone(),
             "logs | where not(attributes[\"X\"] == \"Y\")",
             vec!["2".into(), "3".into(), "5".into()],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_inverting_and_or_with_not() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                severity_text: "WARN".into(),
+                attributes: vec![
+                    KeyValue::new("X", AnyValue::new_string("Y2")),
+                    KeyValue::new("X2", AnyValue::new_string("Y2")),
+                ],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y"))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "5".into(),
+                severity_text: "DEBUG".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_string("Y2"))],
+                ..Default::default()
+            },
+        ]);
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(attributes[\"X\"] == \"Y\" and attributes[\"X2\"] == \"Y2\")",
+            ["2", "3", "4", "5"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(severity_text == \"WARN\" or attributes[\"X2\"] == \"Y2\")",
+            ["2", "4", "5"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(severity_text == \"WARN\") or attributes[\"X\"] == \"Y2\"",
+            ["2", "3", "4", "5"].iter().map(|i| i.to_string()).collect(),
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(severity_text == \"WARN\") and attributes[\"X\"] == \"Y\"",
+            ["4"].iter().map(|i| i.to_string()).collect(),
         )
         .await;
     }
