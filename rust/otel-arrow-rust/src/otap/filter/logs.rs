@@ -309,7 +309,7 @@ impl LogFilter {
         column_type: &str,
     ) -> Result<HashSet<u16>> {
         // get ids being removed
-        // error out herre
+        // error out here
         let filtered_ids =
             arrow::compute::filter(id_column, filter).context(error::ColumnLengthMismatchSnafu)?;
 
