@@ -176,6 +176,11 @@ impl ConditionalDataExpressionBuilder {
         Self { inner }
     }
 
+    pub fn with_else(mut self, branch: Vec<DataExpression>) -> Self {
+        self.inner.default_branch = Some(branch);
+        self
+    }
+
     pub fn build(self) -> ConditionalDataExpression {
         self.inner
     }
