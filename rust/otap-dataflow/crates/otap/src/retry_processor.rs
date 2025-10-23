@@ -205,6 +205,15 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
 ///
 /// This component only maintains state in the request context.
 pub struct RetryProcessor {
+    /// This is how many retries we can attempt in the worst case, and
+    /// this is enforced so that retries would not repeat forever if the
+    /// clock stopped.
+    retry_limit: usize,
+
+    /// Delays stores all the exponentially-scaled durations so that
+    /// we do not repeat the f64::pow() operation for each request.
+    delays: Vec<Duration>,
+
     config: RetryConfig,
     metrics: MetricSet<RetryProcessorMetrics>,
 }
@@ -244,7 +253,7 @@ fn now_f64() -> f64 {
     systemtime_f64(SystemTime::now())
 }
 
-/// State tracking for retry attempts
+/// State tracking for retry attempts, sized for Context8u8.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RetryState {
     /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
@@ -300,7 +309,14 @@ impl RetryProcessor {
     #[must_use]
     pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: RetryConfig) -> Self {
         let metrics = pipeline_ctx.register_metrics::<RetryProcessorMetrics>();
-        Self { config, metrics }
+
+        let (retry_limit, delays) = internal::compute_retry_delays(&config);
+        Self {
+            retry_limit,
+            delays,
+            config,
+            metrics,
+        }
     }
 
     async fn handle_ack(
@@ -311,20 +327,19 @@ impl RetryProcessor {
         let signal = ack.accepted.signal_type();
         let calldata = ack.calldata.clone();
 
-        // Forward the ACK upstream to complete the request chain
-        effect_handler.notify_ack(ack).await?;
-
-        match calldata.try_into() {
+        let num_items = match calldata.try_into() {
             Err(_err) => {
-                // Malformed context error: we don't know what this is.
+                // We don't know how many items,
+                // ToDo: this shouldn't happen; how to count?
+                0
             }
-            Ok(RetryState { num_items, .. }) => {
-                // The producer and consumer both succeed.
-                self.metrics.add_consumed_success(signal, num_items);
-                self.metrics.add_produced_success(signal, num_items);
-            }
+            Ok(RetryState { num_items, .. }) => num_items,
         };
 
+        // The producer and consumer both succeed.
+        self.metrics.add_produced_success(signal, num_items);
+        effect_handler.notify_ack(ack).await?;
+        self.metrics.add_consumed_success(signal, num_items);
         Ok(())
     }
 
@@ -337,8 +352,8 @@ impl RetryProcessor {
 
         let mut rstate: RetryState = match nack.calldata.clone().try_into() {
             Err(_err) => {
-                effect_handler.notify_nack(nack).await?;
                 // Malformed context error: we don't know what this is.
+                effect_handler.notify_nack(nack).await?;
                 return Ok(());
             }
             Ok(retry) => retry,
@@ -350,32 +365,34 @@ impl RetryProcessor {
 
         // Check for missing payload, we won't retry an empty request.
         if nack.refused.is_empty() {
-            nack.reason = format!("retry lost payload: {}", nack.reason);
-            effect_handler.notify_nack(nack).await?;
             // The downstream refused the request and did not give us
             // back data to retry.
+            nack.reason = format!("retry lost payload: {}", nack.reason);
+            effect_handler.notify_nack(nack).await?;
             self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
-
-        // Retry attempt: calculate delayed retry and increment
-        let delay_secs = (self.config.initial_interval.as_secs_f64()
-            * self.config.multiplier.powi(rstate.retries as i32))
-        .min(self.config.max_interval.as_secs_f64());
 
         // Compute the delay.
-        let now_s = SystemTime::now();
-        let now_i = Instant::now();
-        let next_retry_time_s = now_s + Duration::from_secs_f64(delay_secs);
-        let next_retry_time_i = now_i + Duration::from_secs_f64(delay_secs);
+        // Limited is defined by the worst-case, where exports take 0 time.
+        // If the clock is working, the deadlock check will agree with
+        // this check, but this check is less expensive.
+        let limited = (rstate.retries as usize) >= self.retry_limit;
+        let delay = self
+            .delays
+            .get(rstate.retries as usize)
+            .unwrap_or(&self.config.max_interval);
 
-        if rstate.deadline <= systemtime_f64(next_retry_time_s) {
+        if limited || rstate.deadline <= now_f64() + delay.as_secs_f64() {
+            // The caller has refused, as often as we'll let them.
             nack.reason = format!("final retry: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
-            // The caller has refused as much as we'll let them.
             self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
+
+        let now_i = Instant::now();
+        let next_retry_time_i = now_i + *delay;
 
         rstate.retries += 1;
 
@@ -390,7 +407,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        self.metrics.add_retry_attempts(signal);
+        self.metrics.increment_retry_attempts(signal);
 
         // Delay the data, we'll continue in the DelayedData branch next.
         match effect_handler.delay_data(next_retry_time_i, rereq).await {
@@ -512,7 +529,54 @@ impl RetryProcessor {
         let metrics: MetricSet<RetryProcessorMetrics> =
             handle.register(otap_df_telemetry::testing::EmptyAttributes());
 
-        Self { config, metrics }
+        let (retry_limit, delays) = internal::compute_retry_delays(&config);
+        Self {
+            retry_limit,
+            delays,
+            config,
+            metrics,
+        }
+    }
+}
+
+mod internal {
+    use super::*;
+
+    /// Computes the maximum retry count by simulation. The configuration
+    /// combines exponential growth with a limit, making it difficult tnnnno
+    /// reach a closed form. Returns the retry-count limit and vector of
+    /// durations; note that the vector length covers only the exponential
+    /// portion, subsequent retries use max_interval.
+    pub fn compute_retry_delays(config: &RetryConfig) -> (usize, Vec<Duration>) {
+        let mut count = 0;
+        let mut delays: Vec<Duration> = Vec::new();
+        let mut total_elapsed = 0.0;
+        let mut accum_multiplier = 1.0;
+
+        let single_multiplier = config.multiplier;
+        let initial_interval = config.initial_interval.as_secs_f64();
+        let max_interval = config.max_interval.as_secs_f64();
+        let limit_total_elapsed = config.max_elapsed_time.as_secs_f64();
+
+        loop {
+            let mult_d = accum_multiplier * initial_interval;
+            let use_mult = mult_d < max_interval;
+            let this_d = if use_mult { mult_d } else { max_interval };
+
+            if this_d + total_elapsed >= limit_total_elapsed {
+                break;
+            }
+
+            if use_mult {
+                accum_multiplier *= single_multiplier;
+                delays.push(Duration::from_secs_f64(this_d));
+            }
+
+            total_elapsed += this_d;
+            count += 1
+        }
+
+        (count, delays)
     }
 }
 
@@ -588,18 +652,36 @@ mod test {
     }
 
     #[test]
-    fn test_retry_processor_nacks_then_success() {
+    fn test_retry_processor_nacks_then_success_time() {
+        // For the success case, we expect success with or without a
+        // working clock.  Test both ways.
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None)
+            test_retry_processor(create_test_config(), i, None, true)
+        }
+        for i in 0..3 {
+            test_retry_processor(create_test_config(), i, None, false)
         }
     }
 
     #[test]
-    fn test_retry_processor_nacks_then_failure() {
+    fn test_retry_processor_nacks_then_timeout() {
         test_retry_processor(
             create_test_config(),
             4,
             Some("final retry: simulated".into()),
+            true,
+        )
+    }
+
+    #[test]
+    fn test_retry_processor_nacks_then_limit() {
+        test_retry_processor(
+            create_test_config(),
+            4,
+            Some("final retry: simulated".into()),
+            // this places emphasis on the logical limit, not the
+            // max-elapsed walltime.
+            false,
         )
     }
 
@@ -607,6 +689,7 @@ mod test {
         config: serde_json::Value,
         number_of_nacks: usize,
         outcome_failure: Option<String>,
+        working_clock: bool,
     ) {
         let pipeline_ctx = create_test_pipeline_context();
         let node = test_node("retry-processor-full-test");
@@ -668,9 +751,10 @@ mod test {
                     let resp = match pipeline_rx.recv().await {
                         Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
                             retry_count += 1;
-                            // Here, we actually wait, because the processor uses walltime
-                            // to continue retrying w/o a limit on retry count.
-                            ctx.sleep(when.duration_since(Instant::now())).await;
+
+                            if working_clock {
+                                ctx.sleep(when.duration_since(Instant::now())).await;
+                            }
 
                             ctx.process(Message::Control(NodeControlMsg::DelayedData {
                                 when,
