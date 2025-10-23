@@ -12,8 +12,8 @@ use crate::arrays::{
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
 use crate::otap::filter::{
-    AnyValue, KeyValue, MatchType, apply_filter, build_uint16_id_filter, get_uint16_ids,
-    nulls_to_false, regex_match_column,
+    AnyValue, KeyValue, MatchType, apply_filter, build_uint16_id_filter, default_match_type,
+    get_uint16_ids, nulls_to_false, regex_match_column,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -48,18 +48,22 @@ pub struct LogFilter {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LogMatchProperties {
     // MatchType specifies the type of matching desired
+    #[serde(default = "default_match_type")]
     match_type: MatchType,
 
     // ResourceAttributes defines a list of possible resource attributes to match logs against.
     // A match occurs if any resource attribute matches all expressions in this given list.
+    #[serde(default)]
     resource_attributes: Vec<KeyValue>,
 
     // RecordAttributes defines a list of possible record attributes to match logs against.
     // A match occurs if any record attribute matches at least one expression in this given list.
+    #[serde(default)]
     record_attributes: Vec<KeyValue>,
 
     // SeverityTexts is a list of strings that the LogRecord's severity text field must match
     // against.
+    #[serde(default)]
     severity_texts: Vec<String>,
 
     // SeverityNumberProperties defines how to match against a log record's SeverityNumber, if defined.
@@ -67,6 +71,7 @@ pub struct LogMatchProperties {
 
     // LogBodies is a list of values that the LogRecord's body field must match
     // against.
+    #[serde(default)]
     bodies: Vec<AnyValue>,
 }
 
@@ -469,9 +474,6 @@ impl LogMatchProperties {
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
                 .context(error::ColumnLengthMismatchSnafu)?;
         }
-
-        // ToDo optimize the logic below where we build the final filter based on the ids
-        // now we get ids of resource_attrs
 
         // using the attribute filter we need to get the ids of the rows that match and use that to build our final filter
         // this is to make sure we don't drop attributes that belong to a resource that matched the resource_attributes that

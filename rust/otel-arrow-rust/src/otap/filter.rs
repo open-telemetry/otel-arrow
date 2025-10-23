@@ -16,6 +16,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 pub mod logs;
 
+// threshold numbers to determine which method to use for building id filter
+// ToDo: determine optimimal numbers
+const ID_COLUMN_LENGTH_MIN_THRESHOLD: usize = 2000;
+const IDS_PERCENTAGE_MAX_THRESHOLD: f64 = 0.1;
 /// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +28,10 @@ pub enum MatchType {
     Strict,
     /// apply string values as a regexp
     Regexp,
+}
+
+fn default_match_type() -> MatchType {
+    MatchType::Strict
 }
 
 /// enum that allows a field to have any type
@@ -64,7 +72,7 @@ impl KeyValue {
 /// we perform the not operation nothing happens to
 /// the null values
 #[must_use]
-pub fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
+fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
     // is_not_null doesn't error see https://docs.rs/arrow/latest/arrow/compute/fn.is_not_null.html
     let valid = arrow::compute::is_not_null(a).expect("is_not_null doesn't error"); // BooleanArray with no nulls
     // the result of boolean array will be a boolean array of equal length so we can guarantee that these two columns have the same length
@@ -76,7 +84,7 @@ pub fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
 /// array and then applys a regex expression onto it, returns the corresponding boolean
 /// array.
 /// Returns an error if string column is not a utf8, dictionary(uint8, utf8), or dictionary(uint16, utf8)
-pub fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
+fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
     match src.data_type() {
         DataType::Utf8 => {
             let string_array = src
@@ -172,11 +180,13 @@ pub fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
 /// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
 /// that contain those ids
 /// This will return an error if the column is not DataType::UInt16
-pub fn build_uint16_id_filter(
+fn build_uint16_id_filter(
     id_column: &Arc<dyn Array>,
     id_set: HashSet<u16>,
 ) -> Result<BooleanArray> {
-    if (id_column.len() >= 2000) && ((id_set.len() as f64 / id_column.len() as f64) <= 0.1) {
+    if (id_column.len() >= ID_COLUMN_LENGTH_MIN_THRESHOLD)
+        && ((id_set.len() as f64 / id_column.len() as f64) <= IDS_PERCENTAGE_MAX_THRESHOLD)
+    {
         let mut combined_id_filter = BooleanArray::new_null(id_column.len());
         // build id filter using the id hashset
         for id in id_set {
@@ -219,7 +229,7 @@ pub fn build_uint16_id_filter(
 /// get_uint16_ids() takes the id_column from a record batch and the corresponding filter
 /// and applies it to extract all ids that match and then returns the set of ids.
 /// This will return an error if the column is not DataType::UInt16
-pub fn get_uint16_ids(
+fn get_uint16_ids(
     id_column: &Arc<dyn Array>,
     filter: &BooleanArray,
     column_type: &str,
@@ -246,7 +256,7 @@ pub fn get_uint16_ids(
 /// new record batch.
 /// This function will error out if the record batch doesn't exist or the filter column length
 /// doesn't match the record batch column length
-pub fn apply_filter(
+fn apply_filter(
     payload: &mut OtapArrowRecords,
     payload_type: ArrowPayloadType,
     filter: &BooleanArray,
