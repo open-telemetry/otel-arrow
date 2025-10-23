@@ -27,7 +27,8 @@ impl DataExpression {
             DataExpression::Summary(s) => s.try_fold(scope),
             DataExpression::Transform(t) => t.try_fold(scope),
             DataExpression::Conditional(_) => {
-                todo!("try_fold conditional data expr")
+                // TODO
+                Ok(())
             }
         }
     }
@@ -126,15 +127,22 @@ impl Expression for DiscardDataExpression {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConditionalDataExpression {
     query_location: QueryLocation,
     branches: Vec<(LogicalExpression, Vec<DataExpression>)>,
     default_branch: Option<Vec<DataExpression>>,
-
 }
 
+impl ConditionalDataExpression {
+    pub fn get_branches(&self) -> &[(LogicalExpression, Vec<DataExpression>)] {
+        &self.branches
+    }
+
+    pub fn get_default_branch(&self) -> Option<&Vec<DataExpression>> {
+        self.default_branch.as_ref()
+    }
+}
 
 impl Expression for ConditionalDataExpression {
     fn get_query_location(&self) -> &QueryLocation {
@@ -149,5 +157,26 @@ impl Expression for ConditionalDataExpression {
         writeln!(f, "Conditional")?;
         writeln!(f, "{indent}└── TODO ")?;
         Ok(())
+    }
+}
+
+pub struct ConditionalDataExpressionBuilder {
+    inner: ConditionalDataExpression,
+}
+
+impl ConditionalDataExpressionBuilder {
+    pub fn from_if(condition: LogicalExpression, branch: Vec<DataExpression>) -> Self {
+        let inner = ConditionalDataExpression {
+            // TODO doubt fake is the correct thing to use here
+            query_location: QueryLocation::new_fake(),
+            branches: vec![(condition, branch)],
+            default_branch: None,
+        };
+
+        Self { inner }
+    }
+
+    pub fn build(self) -> ConditionalDataExpression {
+        self.inner
     }
 }

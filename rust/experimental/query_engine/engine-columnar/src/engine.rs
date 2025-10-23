@@ -7,9 +7,9 @@ use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use arrow::util::pretty::print_batches;
 use data_engine_expressions::{
-    DataExpression, LogicalExpression, MutableValueExpression, PipelineExpression,
-    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-    StringValue, TransformExpression, ValueAccessor,
+    ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
+    PipelineExpression, ScalarExpression, SetTransformExpression, SourceScalarExpression,
+    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
 use datafusion::common::{Column, JoinType};
@@ -19,6 +19,7 @@ use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::prelude::SessionContext;
 
+use datafusion::sql::sqlparser::keywords::ROW;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
@@ -98,6 +99,7 @@ impl OtapBatchEngine {
         Ok(exec_ctx.curr_batch)
     }
 
+    // TODO this method has a different signature than the others. make it consistent
     async fn process_data_expr(
         &mut self,
         data_expr: &DataExpression,
@@ -120,6 +122,9 @@ impl OtapBatchEngine {
 
             DataExpression::Transform(TransformExpression::Set(set_expr)) => {
                 self.apply_set_transform(exec_ctx, set_expr).await?;
+            }
+            DataExpression::Conditional(conditional_expr) => {
+                self.apply_conditional(exec_ctx, conditional_expr).await?
             }
             _ => {
                 todo!()
@@ -212,8 +217,56 @@ impl OtapBatchEngine {
 
         Ok(())
     }
+
+    async fn apply_conditional(
+        &mut self,
+        exec_ctx: &mut ExecutionContext,
+        conditional_expr: &ConditionalDataExpression,
+    ) -> Result<()> {
+        let branches = conditional_expr.get_branches();
+
+        // handle if branch
+        let (if_cond, if_data_exprs) = &branches[0];
+        let mut if_exec_ctx = exec_ctx.clone();
+        self.apply_filter(&mut if_exec_ctx, if_cond).await?;
+
+        // save the filtered_plan
+        let filtered_plan = if_exec_ctx.root_batch_plan()?;
+
+        // apply the data expressions inside the if plan
+        for data_expr in if_data_exprs {
+            // note: Box::pin here is required for recursion in async
+            Box::pin(self.process_data_expr(data_expr, &mut if_exec_ctx)).await?;
+        }
+
+        let root_plan = exec_ctx.root_batch_plan()?;
+        let next_branch_plan = root_plan
+            .join(
+                filtered_plan.build().unwrap(),
+                JoinType::LeftAnti,
+                (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+                None,
+            )
+            .unwrap();
+
+        // TODO handle branches for else if
+
+        // TODO handle else
+
+        let result_plan = if_exec_ctx
+            .curr_plan
+            .union(next_branch_plan.build().unwrap())
+            .unwrap();
+
+        println!("result plan = {}", result_plan.clone().build().unwrap());
+
+        exec_ctx.curr_plan = result_plan;
+
+        Ok(())
+    }
 }
 
+#[derive(Clone)]
 pub(crate) struct ExecutionContext {
     curr_plan: LogicalPlanBuilder,
     curr_batch: OtapArrowRecords,
@@ -431,6 +484,11 @@ async fn filter_attrs_for_root(
 #[cfg(test)]
 mod test {
     use arrow::array::StringArray;
+    use arrow::util::pretty::print_batches;
+    use data_engine_expressions::{
+        ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
+        PipelineExpressionBuilder,
+    };
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use otel_arrow_rust::proto::opentelemetry::{arrow::v1::ArrowPayloadType, logs::v1::LogRecord};
     use otel_arrow_rust::schema::consts;
@@ -484,5 +542,69 @@ mod test {
         }
     }
 
-    
+    // TODO the KQL parser doesn't yet support our if/else syntax, so to build a pipeline with
+    // this type of expression in it, we need to cheese it
+    struct IfElseExpressions {
+        if_condition: &'static str,
+        if_branch: &'static str,
+        else_branch: Option<&'static str>,
+    }
+
+    impl IfElseExpressions {
+        fn to_data_expr(self) -> DataExpression {
+            let if_condition = parse_to_condition(self.if_condition);
+            let if_branch_data_exprs = parse_to_data_exprs(self.if_branch);
+            let if_expr =
+                ConditionalDataExpressionBuilder::from_if(if_condition, if_branch_data_exprs)
+                    .build();
+            DataExpression::Conditional(if_expr)
+        }
+    }
+
+    fn parse_to_condition(condition: &str) -> LogicalExpression {
+        let pipeline_expr = KqlParser::parse(&format!("i | where {}", condition)).unwrap();
+        let pipeline_exprs = pipeline_expr.get_expressions();
+        if let DataExpression::Discard(discard_expr) = &pipeline_exprs[0] {
+            if let LogicalExpression::Not(not_expr) = discard_expr.get_predicate().unwrap() {
+                return not_expr.get_inner_expression().clone();
+            }
+        }
+
+        panic!("invalid pipeline {}", pipeline_expr);
+    }
+
+    fn parse_to_data_exprs(pipeline_exprs: &str) -> Vec<DataExpression> {
+        let pipeline_expr = KqlParser::parse(&format!("i |{}", pipeline_exprs)).unwrap();
+        let pipeline_exprs = pipeline_expr.get_expressions();
+        return pipeline_exprs.to_vec();
+    }
+
+    #[tokio::test]
+    async fn test_simple_if() {
+        let if_expr = IfElseExpressions {
+            if_condition: "severity_text == \"INFO\"",
+            if_branch: "extend severity_text = \"DEBUG\"",
+            else_branch: None,
+        };
+
+        let pipeline_expr = PipelineExpressionBuilder::new("")
+            .with_expressions(vec![if_expr.to_data_expr()])
+            .build()
+            .unwrap();
+
+        let log_records = logs_to_export_req(vec![
+            LogRecord {
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(),
+                ..Default::default()
+            },
+        ]);
+
+        let result = apply_to_logs(log_records, pipeline_expr).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        print_batches(&[logs_rb.clone()]).unwrap()
+    }
 }
