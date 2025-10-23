@@ -57,20 +57,21 @@ impl OtapBatchEngine {
         //
         // TODO can we avoid the clone here by deconstructing the execution context?
         // it's needed b/c below we call root_batch_payload_type() and `build()` moves the plan
-        let plan = exec_ctx.curr_plan.clone().build().unwrap();
+        let plan = exec_ctx.curr_plan.clone().build()?;
         let batches = exec_ctx
             .session_ctx
             .execute_logical_plan(plan)
-            .await
-            .unwrap()
+            .await?
             .collect()
-            .await
-            .unwrap();
+            .await?;
 
         let result = if batches.len() > 0 {
             // TODO not sure concat_batches is necessary here as there should only be one batch.
             // need to double check if any repartitioning happens that could cause multiple batches
-            let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+            // safety: this shouldn't fail because all the batches should have same schema
+            // (datafusion enforces this)
+            let mut result =
+                concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches");
 
             // remove the ROW_ID col
             if let Ok(col_idx) = result.schema_ref().index_of(ROW_NUMBER_COL) {
@@ -79,7 +80,6 @@ impl OtapBatchEngine {
 
             result
         } else {
-            // TODO can expect here ..
             let root_batch = exec_ctx
                 .curr_batch
                 .get(exec_ctx.root_batch_payload_type()?)
@@ -167,7 +167,7 @@ impl OtapBatchEngine {
         }
 
         if let Some(join) = filter.join {
-            root_plan = join.join_to_plan(root_plan);
+            root_plan = join.join_to_plan(root_plan)?;
         }
 
         // update the current plan now that filters are applied
@@ -189,8 +189,13 @@ impl OtapBatchEngine {
         // it's possible we could drop the column.
         let source_expr = match set.get_source() {
             ScalarExpression::Static(static_scalar) => try_static_scalar_to_literal(static_scalar)?,
-            _ => {
-                todo!("handle other/invalid sources")
+            source => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "only setting value from static literal source is currently supported. received {:?}",
+                        source
+                    ),
+                });
             }
         };
 
@@ -199,13 +204,23 @@ impl OtapBatchEngine {
                 let column_accessor = ColumnAccessor::try_from(source.get_value_accessor())?;
                 match column_accessor {
                     ColumnAccessor::ColumnName(column_name) => column_name,
-                    _ => {
-                        todo!("handle unsupported set target")
+                    column_accessor => {
+                        return Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "only setting non-nested column on root batch is current supported. received {:?}",
+                                column_accessor
+                            ),
+                        });
                     }
                 }
             }
-            _ => {
-                todo!("handle unsupported target definition")
+            MutableValueExpression::Variable(var) => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "only setting fields are supported. received variable {:?}",
+                        var
+                    ),
+                });
             }
         };
 
@@ -213,6 +228,7 @@ impl OtapBatchEngine {
         let new_col = source_expr.alias(&column_name);
         let mut col_exists = false;
 
+        // select all current columns, replacing the column we're setting by name
         let mut selection: Vec<Expr> = root_plan
             .schema()
             .fields()
@@ -227,6 +243,8 @@ impl OtapBatchEngine {
             })
             .collect();
 
+        // if the column replacement wasn't made (because col doesn't currently exist) add the new
+        // column to the batch
         if !col_exists {
             selection.push(new_col);
         }
@@ -265,14 +283,12 @@ impl OtapBatchEngine {
 
         // build the plan for everything not selected by the if statement
         let root_plan = exec_ctx.root_batch_plan()?;
-        let mut next_branch_plan = root_plan
-            .join(
-                filtered_plan.build()?,
-                JoinType::LeftAnti,
-                (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
-                None,
-            )
-            .unwrap();
+        let mut next_branch_plan = root_plan.join(
+            filtered_plan.build()?,
+            JoinType::LeftAnti,
+            (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+            None,
+        )?;
 
         // handle all the `else if`s
         for i in 1..branches.len() {
@@ -390,8 +406,7 @@ impl ExecutionContext {
         Ok(self.curr_plan.clone())
     }
 
-    // TODO - give this a less fear-inducing name than scan?
-    pub fn scan_batch(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
+    pub fn scan_batch_plan(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
         if let Some(rb) = self.curr_batch.get(payload_type) {
             // TODO would there be anything gained by registering this table on the execution context
             // and just reusing it? Probably save at least:
@@ -399,19 +414,23 @@ impl ExecutionContext {
             // - the arc allocation
             // - cloning the record batch (more vec/arc allocations internally)
 
-            let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]]).unwrap();
+            let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
             let table_source = provider_as_source(Arc::new(table_provider));
             let logical_plan = LogicalPlanBuilder::scan(
                 // TODO could avoid allocation here?
                 format!("{:?}", payload_type).to_ascii_lowercase(),
                 table_source,
                 None,
-            )
-            .unwrap();
+            )?;
 
             Ok(logical_plan)
         } else {
-            todo!("handle payload type missing");
+            Err(Error::InvalidBatchError {
+                reason: format!(
+                    "cannot plan to scan batch {:?}. it is not present in OTAP batch",
+                    payload_type
+                ),
+            })
         }
     }
 
@@ -446,8 +465,16 @@ impl ColumnAccessor {
             ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => Ok(
                 Self::Attributes(attrs_identifier, attr_key.get_value().to_string()),
             ),
-            _ => {
-                todo!("handle invalid attribute key")
+
+            // TODO: handle users accessing attributes in a different way, like for example from a variable,
+            // function result, etc.
+            expr => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "unsupported attributes key. currently only static string key name is supported. received {:?}",
+                        expr
+                    ),
+                });
             }
         }
     }
@@ -470,8 +497,13 @@ impl ColumnAccessor {
                     )),
                 }
             }
-            _ => {
-                todo!("handle invalid struct field name")
+            expr => {
+                return Err(Error::InvalidPipelineError {
+                    reason: format!(
+                        "unsupported nested struct column definition for struct {}. received {:?}",
+                        struct_column_name, expr
+                    ),
+                });
             }
         }
     }
@@ -503,8 +535,10 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                     value => Ok(Self::ColumnName(value.to_string())),
                 }
             }
-            _ => {
-                todo!("handle invalid attr expression")
+            expr => {
+                return Err(Error::InvalidPipelineError {
+                    reason: format!("unsupported column definition. received {:?}", expr),
+                });
             }
         }
     }
@@ -516,7 +550,7 @@ async fn filter_attrs_for_root(
     payload_type: ArrowPayloadType,
 ) -> Result<()> {
     if exec_ctx.curr_batch.get(payload_type).is_some() {
-        let attrs_table_scan = exec_ctx.scan_batch(payload_type)?;
+        let attrs_table_scan = exec_ctx.scan_batch_plan(payload_type)?;
         let root_table_scan = exec_ctx.root_batch_plan()?;
 
         let logical_plan = attrs_table_scan
