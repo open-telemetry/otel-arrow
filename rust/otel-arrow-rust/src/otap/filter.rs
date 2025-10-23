@@ -1,11 +1,19 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::{ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, StringArray};
-use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, StringArray, UInt16Array,
+};
+use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 
+use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use crate::schema::consts;
 use serde::Deserialize;
+use snafu::{OptionExt, ResultExt};
+use std::collections::HashSet;
+use std::sync::Arc;
 pub mod logs;
 
 /// MatchType describes how we should match the String values provided
@@ -63,7 +71,11 @@ pub fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
     arrow::compute::and_kleene(a, &valid).expect("can combine two columns with equal length") // nulls become false; trues stay true
 }
 
-///
+/// regex_match_column() takes a string column and a regex expression. The function
+/// determines what type the string column is either string array or a dictionary
+/// array and then applys a regex expression onto it, returns the corresponding boolean
+/// array.
+/// Returns an error if string column is not a utf8, dictionary(uint8, utf8), or dictionary(uint16, utf8)
 pub fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
     match src.data_type() {
         DataType::Utf8 => {
@@ -72,58 +84,181 @@ pub fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
                 .downcast_ref::<StringArray>()
                 .expect("array can be downcast to StringArray");
 
-            return Ok(
+            Ok(
                 arrow::compute::regexp_is_match_scalar(string_array, regex, None)
                     .expect("can apply match string column with regexp scalar"),
-            );
+            )
         }
 
         DataType::Dictionary(key, val) => {
             match (key.as_ref(), val.as_ref()) {
                 (&DataType::UInt8, &DataType::Utf8) => {
-                    regex_is_match_for_dict::<UInt8Type>(src, regex)
+                    let dict_arr = src
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can cast to dictionary array uint8type");
+
+                    // get string from values
+                    // safety: we've checked the type
+                    let string_values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("can cast to string type");
+                    // regex check against the values
+                    let val_filt =
+                        arrow::compute::regexp_is_match_scalar(string_values, regex, None)
+                            .expect("can compare string value column to string regex scalar");
+                    // now we need to map to the keys
+                    let mut key_filt = BooleanBuilder::with_capacity(dict_arr.len());
+                    for key in dict_arr.keys() {
+                        if let Some(k) = key {
+                            key_filt.append_value(val_filt.value(k as usize));
+                        } else {
+                            key_filt.append_value(false);
+                        }
+                    }
+                    Ok(key_filt.finish())
                 }
                 (&DataType::UInt16, &DataType::Utf8) => {
-                    regex_is_match_for_dict::<UInt16Type>(src, regex)
+                    let dict_arr = src
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can cast to dictionary array uint16type");
+
+                    // get string from values
+                    // safety: we've checked the type
+                    let string_values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("can cast to string type");
+                    // regex check against the values
+                    let val_filt =
+                        arrow::compute::regexp_is_match_scalar(string_values, regex, None)
+                            .expect("can compare string value column to string regex scalar");
+                    // now we need to map to the keys
+                    let mut key_filt = BooleanBuilder::with_capacity(dict_arr.len());
+                    for key in dict_arr.keys() {
+                        if let Some(k) = key {
+                            key_filt.append_value(val_filt.value(k as usize));
+                        } else {
+                            key_filt.append_value(false);
+                        }
+                    }
+                    Ok(key_filt.finish())
                 }
                 _ => {
                     // return error not correct column type
-                    panic!("imps");
+                    Err(error::UnsupportedStringDictKeyTypeSnafu {
+                        data_type: *key.clone(),
+                    }
+                    .build())
                 }
             }
         }
         _ => {
             // return error not correct column type
-            panic!("impossible");
+            Err(error::UnsupportedStringColumnTypeSnafu {
+                data_type: src.data_type().clone(),
+            }
+            .build())
         }
     }
 }
 
-// todo return errors instead of expect here
-fn regex_is_match_for_dict<K: ArrowDictionaryKeyType>(
-    src: &ArrayRef,
-    regex: &str,
+/// build_uint16_id_filter() takes a id_set which contains ids we want to remove and the id_column that
+/// the set of id's should map to. The function then iterates through the ids and builds a filter
+/// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
+/// that contain those ids
+/// This will return an error if the column is not DataType::UInt16
+pub fn build_uint16_id_filter(
+    id_column: &Arc<dyn Array>,
+    id_set: HashSet<u16>,
 ) -> Result<BooleanArray> {
-    let dict_arr = src
-        .as_any()
-        .downcast_ref::<DictionaryArray<K>>()
-        .expect("can cast to type");
+    if (id_column.len() >= 2000) && ((id_set.len() as f64 / id_column.len() as f64) <= 0.1) {
+        let mut combined_id_filter = BooleanArray::new_null(id_column.len());
+        // build id filter using the id hashset
+        for id in id_set {
+            let id_scalar = UInt16Array::new_scalar(id);
+            let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
+                .expect("can compare uint16 id column with uint16 scalar");
+            combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
+                .context(error::ColumnLengthMismatchSnafu)?;
+        }
 
-    // get string from values
-    // safety: we've checked the type
-    let string_values = dict_arr
-        .values()
+        Ok(combined_id_filter)
+    } else {
+        // convert id to something we can iterate through
+        // iterate through and check if id is in the id_set if so then we append true to boolean builder if not then false
+        let uint16_id_array = id_column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                name: consts::ID,
+                actual: id_column.data_type().clone(),
+                expect: DataType::UInt16,
+            })?;
+
+        let mut id_filter = BooleanBuilder::new();
+        for uint16_id in uint16_id_array {
+            match uint16_id {
+                Some(uint16) => {
+                    id_filter.append_value(id_set.contains(&uint16));
+                }
+                None => {
+                    id_filter.append_value(false);
+                }
+            }
+        }
+
+        Ok(id_filter.finish())
+    }
+}
+
+/// get_uint16_ids() takes the id_column from a record batch and the corresponding filter
+/// and applies it to extract all ids that match and then returns the set of ids.
+/// This will return an error if the column is not DataType::UInt16
+pub fn get_uint16_ids(
+    id_column: &Arc<dyn Array>,
+    filter: &BooleanArray,
+    column_type: &str,
+) -> Result<HashSet<u16>> {
+    // get ids being removed
+    // error out herre
+    let filtered_ids =
+        arrow::compute::filter(id_column, filter).context(error::ColumnLengthMismatchSnafu)?;
+
+    // downcast id and get unique values
+    let filtered_ids = filtered_ids
         .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("can cast to type");
-    // regex check against the values
-    let val_filt = arrow::compute::regexp_is_match_scalar(string_values, regex, None).expect("");
-    Ok(val_filt)
-    // let key_filt = BooleanBuilder::with_capacity(dict_arr.len());
-    // for key in dict_arr.keys() {
-    //     if let Some(k) = key {
-    //         key_filter.append_value(val_filt.value(k as usize));
-    //     }
-    // }
-    // Ok(key_filt.finish())
+        .downcast_ref::<UInt16Array>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: column_type,
+            actual: filtered_ids.data_type().clone(),
+            expect: DataType::UInt16,
+        })?;
+    Ok(filtered_ids.iter().flatten().collect())
+}
+
+/// apply_filter() takes a payload, payload_type, and filter and uses the payload type
+/// to extract the record_batch then applys the filter and updates the payload with the
+/// new record batch.
+/// This function will error out if the record batch doesn't exist or the filter column length
+/// doesn't match the record batch column length
+pub fn apply_filter(
+    payload: &mut OtapArrowRecords,
+    payload_type: ArrowPayloadType,
+    filter: &BooleanArray,
+) -> Result<()> {
+    let record_batch =
+        payload
+            .get(payload_type)
+            .with_context(|| error::RecordBatchNotFoundSnafu {
+                payload_type
+            })?;
+    let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
+        .context(error::ColumnLengthMismatchSnafu)?;
+    payload.set(payload_type, filtered_record_batch);
+    Ok(())
 }

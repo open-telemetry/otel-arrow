@@ -41,7 +41,7 @@ mimalloc-rust.workspace = true
 [workspace.dependencies]
 
 arrayvec = "0.7.6"
-arrow = "56.1"
+arrow = { version = "56.1", features=["prettyprint"] }
 arrow-ipc = { version = "56.1", features=["zstd"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"

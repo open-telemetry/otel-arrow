@@ -11,19 +11,18 @@ use crate::arrays::{
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
-use crate::otap::filter::{AnyValue, KeyValue, MatchType, nulls_to_false, regex_match_column};
-use crate::proto::consts::field_num::resource;
+use crate::otap::filter::{
+    AnyValue, KeyValue, MatchType, apply_filter, build_uint16_id_filter, get_uint16_ids,
+    nulls_to_false, regex_match_column,
+};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::array::{
-    Array, BooleanArray, BooleanBuilder, Float64Array, Int32Array, Int64Array, StringArray,
-    UInt16Array,
+    Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
 };
-use arrow::datatypes::DataType;
 use serde::Deserialize;
 use snafu::{OptionExt, ResultExt};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 /// struct that describes the overall requirements to use in order to filter logs
 #[derive(Debug, Clone, Deserialize)]
@@ -128,38 +127,22 @@ impl LogFilter {
                 log_attr_filter,
             )?;
 
-        // get the record batches we are going to filter
-        let resource_attrs = logs_payload
-            .get(ArrowPayloadType::ResourceAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
-        let log_records = logs_payload
-            .get(ArrowPayloadType::Logs)
-            .context(error::LogRecordNotFoundSnafu)?;
-        let log_attrs = logs_payload
-            .get(ArrowPayloadType::LogAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        apply_filter(
+            &mut logs_payload,
+            ArrowPayloadType::Logs,
+            &log_record_filter,
+        )?;
 
-        // apply filters to the logs
-        let filtered_resource_attrs =
-            arrow::compute::filter_record_batch(resource_attrs, &resource_attr_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
-        let filtered_log_records =
-            arrow::compute::filter_record_batch(log_records, &log_record_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
-        let filtered_log_attrs = arrow::compute::filter_record_batch(log_attrs, &log_attr_filter)
-            .context(error::ColumnLengthMismatchSnafu)?;
-
-        logs_payload.set(ArrowPayloadType::ResourceAttrs, filtered_resource_attrs);
-        logs_payload.set(ArrowPayloadType::Logs, filtered_log_records);
-        logs_payload.set(ArrowPayloadType::LogAttrs, filtered_log_attrs);
+        if let Some(filter) = resource_attr_filter {
+            apply_filter(&mut logs_payload, ArrowPayloadType::ResourceAttrs, &filter)?;
+        }
 
         if let Some(filter) = scope_attr_filter {
-            let scope_attrs = logs_payload
-                .get(ArrowPayloadType::ScopeAttrs)
-                .context(error::LogRecordNotFoundSnafu)?;
-            let filtered_scope_attrs = arrow::compute::filter_record_batch(scope_attrs, &filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
-            logs_payload.set(ArrowPayloadType::ScopeAttrs, filtered_scope_attrs);
+            apply_filter(&mut logs_payload, ArrowPayloadType::ScopeAttrs, &filter)?;
+        }
+
+        if let Some(filter) = log_attr_filter {
+            apply_filter(&mut logs_payload, ArrowPayloadType::LogAttrs, &filter)?;
         }
 
         Ok(logs_payload)
@@ -214,14 +197,14 @@ impl LogFilter {
                 let resource_attr_parent_ids_column =
                     get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
 
-                let resource_attr_parent_ids_filtered = self.get_ids(
+                let resource_attr_parent_ids_filtered = get_uint16_ids(
                     resource_attr_parent_ids_column,
                     &resource_attr_filter,
                     consts::PARENT_ID,
                 )?;
 
                 // create filter to remove these ids from log_record
-                let log_record_resource_ids_filter = self.build_id_filter(
+                let log_record_resource_ids_filter = build_uint16_id_filter(
                     log_record_resource_ids_column,
                     resource_attr_parent_ids_filtered,
                 )?;
@@ -252,13 +235,13 @@ impl LogFilter {
                     get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
 
                 // repeat with ids from log_attrs
-                let log_attr_parent_ids_filtered = self.get_ids(
+                let log_attr_parent_ids_filtered = get_uint16_ids(
                     log_attr_parent_ids_column,
                     &log_attr_filter,
                     consts::PARENT_ID,
                 )?;
                 let log_record_ids_filter =
-                    self.build_id_filter(log_record_ids_column, log_attr_parent_ids_filtered)?;
+                    build_uint16_id_filter(log_record_ids_column, log_attr_parent_ids_filtered)?;
                 log_record_filter =
                     arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
                         .context(error::ColumnLengthMismatchSnafu)?;
@@ -283,9 +266,9 @@ impl LogFilter {
                 get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
 
             let log_record_ids_filtered =
-                self.get_ids(log_record_ids_column, &log_record_filter, consts::ID)?;
+                get_uint16_ids(log_record_ids_column, &log_record_filter, consts::ID)?;
             let log_attr_parent_ids_filter =
-                self.build_id_filter(log_attr_parent_ids_column, log_record_ids_filtered)?;
+                build_uint16_id_filter(log_attr_parent_ids_column, log_record_ids_filtered)?;
 
             Some(
                 arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
@@ -301,14 +284,16 @@ impl LogFilter {
         {
             let resource_attr_parent_ids_column =
                 get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
-            let log_record_resource_ids_filtered = self.get_ids(
+            let log_record_resource_ids_filtered = get_uint16_ids(
                 log_record_resource_ids_column,
                 &log_record_filter,
                 consts::ID,
             )?;
 
-            let resource_attr_parent_ids_filter =
-                self.build_id_filter(scope_attr_parent_ids_column, log_record_scope_ids_filtered)?;
+            let resource_attr_parent_ids_filter = build_uint16_id_filter(
+                resource_attr_parent_ids_column,
+                log_record_resource_ids_filtered,
+            )?;
             Some(
                 arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
                     .context(error::ColumnLengthMismatchSnafu)?,
@@ -321,8 +306,11 @@ impl LogFilter {
             let scope_attr_parent_ids_column =
                 get_required_array(scope_attrs_record_batch, consts::PARENT_ID)?;
             let log_record_scope_ids_filtered =
-                self.get_ids(log_record_scope_ids_column, &log_record_filter, consts::ID)?;
-            Some(self.build_id_filter(scope_attr_parent_ids_column, log_record_scope_ids_filtered)?)
+                get_uint16_ids(log_record_scope_ids_column, &log_record_filter, consts::ID)?;
+            Some(build_uint16_id_filter(
+                scope_attr_parent_ids_column,
+                log_record_scope_ids_filtered,
+            )?)
         } else {
             None
         };
@@ -330,88 +318,9 @@ impl LogFilter {
         Ok((
             updated_resource_attr_filter,
             scope_attr_filter,
-            updated_log_record_filter,
+            log_record_filter,
             updated_log_attr_filter,
         ))
-    }
-
-    /// get_ids() takes the id_column from a record batch and the corresponding filter
-    /// and applies it to extract all ids that match and then returns the set of ids.
-    fn get_ids(
-        &self,
-        id_column: &Arc<dyn Array>,
-        filter: &BooleanArray,
-        column_type: &str,
-    ) -> Result<HashSet<u16>> {
-        // get ids being removed
-        // error out herre
-        let filtered_ids =
-            arrow::compute::filter(id_column, filter).context(error::ColumnLengthMismatchSnafu)?;
-
-        // downcast id and get unique values
-        let filtered_ids = filtered_ids
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: column_type,
-                actual: filtered_ids.data_type().clone(),
-                expect: DataType::UInt16,
-            })?;
-        Ok(filtered_ids.iter().flatten().collect())
-    }
-
-    /// build_id_filter() takes a id_set which contains ids we want to remove and the id_column that
-    /// the set of id's should map to. The function then iterates through the ids and builds a filter
-    /// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
-    /// that contain those ids
-    fn build_id_filter(
-        &self,
-        id_column: &Arc<dyn Array>,
-        id_set: HashSet<u16>,
-    ) -> Result<BooleanArray> {
-        if (id_column.len() >= 2000) && ((id_set.len() as f64 / id_column.len() as f64) <= 0.1) {
-            let mut combined_id_filter = BooleanArray::new_null(id_column.len());
-            // build id filter using the id hashset
-            for id in id_set {
-                let id_scalar = UInt16Array::new_scalar(id);
-                let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
-                    .expect("can compare uint16 id column with uint16 scalar");
-                combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
-                    .context(error::ColumnLengthMismatchSnafu)?;
-            }
-            // make sure there are no null values before we invert
-            // combined_id_filter = nulls_to_false(&combined_id_filter);
-            // // inverse because these are the ids we want to remove
-            // // not is safe please see https://docs.rs/arrow/latest/arrow/compute/fn.not.html
-            // Ok(arrow::compute::not(&combined_id_filter).expect("not doesn't fail"))
-
-            Ok(combined_id_filter)
-        } else {
-            // convert id to something we can iterate through
-            // iterate through and check if id is in the id_set if so then we append true to boolean builder if not then false
-            let uint16_id_array = id_column
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                    name: consts::ID,
-                    actual: id_column.data_type().clone(),
-                    expect: DataType::UInt16,
-                })?;
-
-            let mut id_filter = BooleanBuilder::new();
-            for uint16_id in uint16_id_array {
-                match uint16_id {
-                    Some(uint16) => {
-                        id_filter.append_value(id_set.contains(&uint16));
-                    }
-                    None => {
-                        id_filter.append_value(false);
-                    }
-                }
-            }
-
-            Ok(id_filter.finish())
-        }
     }
 }
 
@@ -591,16 +500,8 @@ impl LogMatchProperties {
         // filter out ids that don't fully match
         ids_counted.retain(|_key, value| *value >= required_ids_count);
 
-        // build filter around the ids
-        let mut filter = BooleanArray::new_null(num_rows);
-        for (id, _) in ids_counted {
-            let id_scalar = UInt16Array::new_scalar(id);
-            let id_filter = arrow::compute::kernels::cmp::eq(&parent_id_column, &id_scalar)
-                .expect("can compare uint16 id column to uint16 scalar");
-            filter = arrow::compute::or_kleene(&filter, &id_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
-        }
-        Ok(nulls_to_false(&filter))
+        // return filter built with the ids
+        build_uint16_id_filter(parent_id_column, ids_counted.into_keys().collect())
     }
 
     /// Creates a booleanarray that will filter a log record record batch based on the
@@ -858,16 +759,9 @@ impl LogMatchProperties {
             .downcast_ref::<UInt16Array>()
             .expect("array can be downcast into UInt16Array");
         let ids: HashSet<u16> = ids.iter().flatten().collect();
-        // build filter around the ids
-        let mut filter = BooleanArray::new_null(num_rows);
-        for id in ids {
-            let id_scalar = UInt16Array::new_scalar(id);
-            let id_filter = arrow::compute::kernels::cmp::eq(&parent_id_column, &id_scalar)
-                .expect("can compare uint16 id column to uint16 scalar");
-            filter = arrow::compute::or_kleene(&filter, &id_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
-        }
-        Ok(nulls_to_false(&filter))
+
+        // build filter around the ids and return the filter
+        build_uint16_id_filter(parent_id_column, ids)
     }
 }
 

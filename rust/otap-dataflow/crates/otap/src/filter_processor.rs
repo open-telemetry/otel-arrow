@@ -110,7 +110,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let filtered_arrow_records: OtapArrowRecords = match signal {
                     SignalType::Metrics => {
                         // ToDo: Add support for metrics
-                        return Ok(());
+                        arrow_records
                     }
                     SignalType::Logs => {
                         self.config
@@ -128,7 +128,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                     SignalType::Traces => {
                         // ToDo: Add support for traces
-                        return Ok(());
+                        arrow_records
                     }
                 };
                 effect_handler
@@ -165,6 +165,12 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
+
+    use crate::pdata::OtapPayload;
+    use arrow::array::{Array, DictionaryArray, UInt16Array};
+    use arrow::datatypes::UInt16Type;
+    use otel_arrow_rust::otap::OtapArrowRecords;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
     /// Validation closure that checks the outputted data
     fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -452,6 +458,218 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(scenario_strict())
+            .validate(validation_procedure());
+    }
+
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario_regex() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>>
+    {
+        move |mut ctx| {
+            Box::pin(async move {
+                // send log message
+                let logs_data = LogsData::new(vec![
+                    ResourceLogs::build(Resource::build(vec![
+                        KeyValue::new("version", AnyValue::new_string("2.0")),
+                        KeyValue::new(
+                            "service.name",
+                            AnyValue::new_string("payments-checkout-service"),
+                        ),
+                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                        // Use "production" to exercise regex ^prod(uction)?$
+                        KeyValue::new("deployment.environment", AnyValue::new_string("production")),
+                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                        KeyValue::new("team", AnyValue::new_string("payments")),
+                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                    ]))
+                    .scope_logs(vec![
+                        ScopeLogs::build(
+                            InstrumentationScope::build("library")
+                                .version("scopev1")
+                                .finish(),
+                        )
+                        .log_records(vec![
+                            // Log A: WARN with string body; attributes include int/float/bool
+                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("rest")),
+                                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
+                                    KeyValue::new("feature_flag", AnyValue::new_bool(true)),
+                                    KeyValue::new("load", AnyValue::new_double(0.73)),
+                                    KeyValue::new("items_count", AnyValue::new_int(2)),
+                                ])
+                                .body(AnyValue::new_string("ok checkout #1"))
+                                .finish(),
+                            // Log B: ERROR with numeric (double) body; attributes include int/float/bool
+                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("svc")),
+                                    KeyValue::new("retryable", AnyValue::new_bool(false)),
+                                    KeyValue::new("attempt", AnyValue::new_int(3)),
+                                    KeyValue::new("error_rate", AnyValue::new_double(0.02)),
+                                ])
+                                .body(AnyValue::new_double(12.5))
+                                .finish(),
+                        ])
+                        .finish(),
+                    ])
+                    .finish(),
+                ]);
+
+                //convert logsdata to otappdata
+                let mut bytes = vec![];
+                logs_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_logs_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(otlp_logs_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                let received_logs_data = &msgs[0];
+                let (_, payload) = received_logs_data.clone().into_parts();
+                let otlp_bytes: OtlpProtoBytes = payload
+                    .try_into()
+                    .expect("failed to convert to OtlpProtoBytes");
+                let received_logs_data = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                        .expect("failed to decode logs into logsdata"),
+                    _ => panic!("expected logs type"),
+                };
+
+                let expected_logs_data = LogsData::new(vec![
+                    ResourceLogs::build(Resource::build(vec![
+                        KeyValue::new("version", AnyValue::new_string("2.0")),
+                        KeyValue::new(
+                            "service.name",
+                            AnyValue::new_string("payments-checkout-service"),
+                        ),
+                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                        KeyValue::new("deployment.environment", AnyValue::new_string("production")),
+                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                        KeyValue::new("team", AnyValue::new_string("payments")),
+                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                    ]))
+                    .scope_logs(vec![
+                        ScopeLogs::build(
+                            InstrumentationScope::build("library")
+                                .version("scopev1")
+                                .finish(),
+                        )
+                        .log_records(vec![
+                            // Kept: WARN with string body
+                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("rest")),
+                                    KeyValue::new("http.status_code", AnyValue::new_int(200)),
+                                    KeyValue::new("feature_flag", AnyValue::new_bool(true)),
+                                    KeyValue::new("load", AnyValue::new_double(0.73)),
+                                    KeyValue::new("items_count", AnyValue::new_int(2)),
+                                ])
+                                .body(AnyValue::new_string("ok checkout #1"))
+                                .finish(),
+                            // Kept: ERROR with numeric body
+                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                                .attributes(vec![
+                                    KeyValue::new("component", AnyValue::new_string("svc")),
+                                    KeyValue::new("retryable", AnyValue::new_bool(false)),
+                                    KeyValue::new("attempt", AnyValue::new_int(3)),
+                                    KeyValue::new("error_rate", AnyValue::new_double(0.02)),
+                                ])
+                                .body(AnyValue::new_double(12.5))
+                                .finish(),
+                        ])
+                        .finish(),
+                    ])
+                    .finish(),
+                ]);
+                assert_eq!(received_logs_data, expected_logs_data);
+            })
+        }
+    }
+
+    #[test]
+    fn test_filter_processor_logs_regex() {
+        let test_runtime = TestRuntime::new();
+
+        let include_props = LogMatchProperties::new(
+            MatchType::Regexp,
+            vec![
+                KeyValueFilter::new(
+                    "deployment.environment".to_string(),
+                    AnyValueFilter::String(r"^prod(uction)?$".to_string()),
+                ),
+                KeyValueFilter::new(
+                    "service.name".to_string(),
+                    AnyValueFilter::String(r".*checkout.*".to_string()),
+                ),
+            ],
+            Vec::new(), // record_attributes
+            vec![r"^(WARN|ERROR)$".to_string()],
+            Some(LogSeverityNumberMatchProperties::new(13, false)), // WARN+
+            vec![
+                AnyValueFilter::String(r"^ok.*".to_string()), // matches "ok checkout #1"
+                AnyValueFilter::Double(12.5),                 // matches numeric body 12.5 exactly
+            ],
+        );
+
+        let exclude_props = LogMatchProperties::new(
+            MatchType::Regexp,
+            vec![KeyValueFilter::new(
+                "deployment.environment".to_string(),
+                AnyValueFilter::String(r"^stag.*".to_string()),
+            )],
+            vec![
+                KeyValueFilter::new(
+                    "component".to_string(),
+                    AnyValueFilter::String(r"^(db|cache)$".to_string()),
+                ),
+                // Also test boolean attribute exclusion: drop if retryable == true
+                KeyValueFilter::new("retryable".to_string(), AnyValueFilter::Boolean(true)),
+            ],
+            vec![r"^DEBUG$".to_string()],
+            None,
+            vec![
+                AnyValueFilter::String(r"^DELETE .+".to_string()),
+                AnyValueFilter::String(r"^heartbeat$".to_string()),
+                AnyValueFilter::Double(3.14),
+            ],
+        );
+        let log_filter = LogFilter::new(
+            include_props,
+            exclude_props,
+            Vec::new(), // log_record ignored
+        );
+
+        let config = Config::new(log_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_regex())
             .validate(validation_procedure());
     }
 }
