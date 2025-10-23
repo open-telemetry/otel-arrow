@@ -168,8 +168,7 @@ jobs:
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
               benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
-              # False on all but last instance
-              auto-push: false
+              auto-push: true
               save-data-file: true
 
           - name: Update benchmark data and deploy to GitHub Pages
@@ -181,10 +180,11 @@ jobs:
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
               benchmark-data-dir-path: "docs/benchmarks/nightly/backpressure"
-              # True on last instance to trigger deployment
               auto-push: true
               save-data-file: true
 
+          - name: Push benchmark result
+            run: git push 'https://you:${{ secrets.GITHUB_TOKEN }}@github.com/you/repo-name.git' benchmarks:benchmarks
           - name: Add benchmark link to job summary
             run: |
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
