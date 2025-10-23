@@ -75,6 +75,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        result_dir: "nightly_backpressure"
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
@@ -82,6 +83,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        result_dir: "nightly_backpressure"
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
@@ -90,6 +92,7 @@ tests:
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
   #     variables:
+  #       result_dir: "nightly_backpressure"
   #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otap
@@ -97,6 +100,7 @@ tests:
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
   #     variables:
+  #       result_dir: "nightly_backpressure"
   #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otlp.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otlp
