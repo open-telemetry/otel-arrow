@@ -5,21 +5,19 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
-use arrow::util::pretty::print_batches;
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
-    PipelineExpression, ScalarExpression, SetTransformExpression, SourceScalarExpression,
+    PipelineExpression, ScalarExpression, SetTransformExpression,
     StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
-use datafusion::common::{Column, JoinType};
+use datafusion::common::JoinType;
 use datafusion::datasource::provider_as_source;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::prelude::SessionContext;
 
-use datafusion::sql::sqlparser::keywords::ROW;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
@@ -30,11 +28,12 @@ use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAM
 use crate::error::{Error, Result};
 use crate::filter::Filter;
 
+#[derive(Default)]
 pub struct OtapBatchEngine {}
 
 impl OtapBatchEngine {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 
     pub async fn process(
@@ -47,7 +46,7 @@ impl OtapBatchEngine {
         let mut exec_ctx = ExecutionContext::try_new(otap_batch.clone())?;
 
         for data_expr in pipeline.get_expressions() {
-            self.process_data_expr(data_expr, &mut exec_ctx).await?;
+            self.plan_data_expr(&mut exec_ctx, data_expr).await?;
         }
 
         // apply the plan:
@@ -55,7 +54,7 @@ impl OtapBatchEngine {
         // TODO at some point we may want to think more carefully about where to apply the plan.
         // currently it's always happening at the end, buts maybe it could happen in
         // process_data_expr depending on the expression?
-
+        //
         // TODO can we avoid the clone here by deconstructing the execution context?
         // it's needed b/c below we call root_batch_payload_type() and `build()` moves the plan
         let plan = exec_ctx.curr_plan.clone().build().unwrap();
@@ -69,7 +68,8 @@ impl OtapBatchEngine {
             .unwrap();
 
         let result = if batches.len() > 0 {
-            // TODO not sure concat_batches is necessary here as there should only be one batch
+            // TODO not sure concat_batches is necessary here as there should only be one batch. 
+            // need to double check if any repartitioning happens that could cause multiple batches
             let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
 
             // remove the ROW_ID col
@@ -99,11 +99,10 @@ impl OtapBatchEngine {
         Ok(exec_ctx.curr_batch)
     }
 
-    // TODO this method has a different signature than the others. make it consistent
-    async fn process_data_expr(
+    async fn plan_data_expr(
         &mut self,
-        data_expr: &DataExpression,
         exec_ctx: &mut ExecutionContext,
+        data_expr: &DataExpression,
     ) -> Result<()> {
         match data_expr {
             DataExpression::Discard(discard) => {
@@ -112,7 +111,7 @@ impl OtapBatchEngine {
                         // we do opposite of the discard predicate. e.g. keep what would be discarded
                         // note: this is effectively where we're handling the "where" clause of OPL
                         LogicalExpression::Not(not_expr) => {
-                            self.apply_filter(exec_ctx, not_expr.get_inner_expression())
+                            self.plan_filter(exec_ctx, not_expr.get_inner_expression())
                                 .await?;
                         }
                         _ => todo!("handle invalid discard predicate"),
@@ -121,10 +120,10 @@ impl OtapBatchEngine {
             }
 
             DataExpression::Transform(TransformExpression::Set(set_expr)) => {
-                self.apply_set_transform(exec_ctx, set_expr).await?;
+                self.plan_set_field(exec_ctx, set_expr).await?;
             }
             DataExpression::Conditional(conditional_expr) => {
-                self.apply_conditional(exec_ctx, conditional_expr).await?
+                self.plan_conditional(exec_ctx, conditional_expr).await?
             }
             _ => {
                 todo!()
@@ -133,7 +132,7 @@ impl OtapBatchEngine {
         Ok(())
     }
 
-    async fn apply_filter(
+    async fn plan_filter(
         &mut self,
         exec_ctx: &mut ExecutionContext,
         predicate: &LogicalExpression,
@@ -154,7 +153,7 @@ impl OtapBatchEngine {
         Ok(())
     }
 
-    async fn apply_set_transform(
+    async fn plan_set_field(
         &mut self,
         exec_ctx: &mut ExecutionContext,
         set: &SetTransformExpression,
@@ -218,7 +217,7 @@ impl OtapBatchEngine {
         Ok(())
     }
 
-    async fn apply_conditional(
+    async fn plan_conditional(
         &mut self,
         exec_ctx: &mut ExecutionContext,
         conditional_expr: &ConditionalDataExpression,
@@ -228,7 +227,7 @@ impl OtapBatchEngine {
         // handle if branch
         let (if_cond, if_data_exprs) = &branches[0];
         let mut if_exec_ctx = exec_ctx.clone();
-        self.apply_filter(&mut if_exec_ctx, if_cond).await?;
+        self.plan_filter(&mut if_exec_ctx, if_cond).await?;
 
         // save the filtered_plan
         let filtered_plan = if_exec_ctx.root_batch_plan()?;
@@ -236,11 +235,14 @@ impl OtapBatchEngine {
         // apply the data expressions inside the if plan
         for data_expr in if_data_exprs {
             // note: Box::pin here is required for recursion in async
-            Box::pin(self.process_data_expr(data_expr, &mut if_exec_ctx)).await?;
+            Box::pin(self.plan_data_expr(&mut if_exec_ctx, data_expr)).await?;
         }
 
+        let mut result_plan = if_exec_ctx.curr_plan;
+        
+        // build the plan for everything not selected by the if statement
         let root_plan = exec_ctx.root_batch_plan()?;
-        let next_branch_plan = root_plan
+        let mut next_branch_plan = root_plan
             .join(
                 filtered_plan.build().unwrap(),
                 JoinType::LeftAnti,
@@ -249,7 +251,37 @@ impl OtapBatchEngine {
             )
             .unwrap();
 
-        // TODO handle branches for else if
+        // handle all the `else if`s
+        for i in 1..branches.len() {
+            let (else_if_cond, else_if_data_exprs) = &branches[i];
+            let mut else_if_exec_ctx = exec_ctx.clone();
+            else_if_exec_ctx.curr_plan = next_branch_plan.clone();
+            
+            // apply the filter steps to everything not selected in the if
+            self.plan_filter(&mut else_if_exec_ctx, else_if_cond).await?;
+
+            // save the filter plan
+            let filtered_plan = else_if_exec_ctx.root_batch_plan()?;
+
+            // apply the data expressions to rows that matches the else if condition
+            for data_expr in else_if_data_exprs {
+                Box::pin(self.plan_data_expr(&mut else_if_exec_ctx, data_expr)).await?;
+            }
+
+            // update the result to union the results of the `if` branch with the results of this
+            // `else if` branch
+            result_plan = result_plan.union(else_if_exec_ctx.curr_plan.build().unwrap()).unwrap();
+            
+            // the next branch will receive everything that didn't match the previous branches
+            // and also didn't match this branch's conditions
+            next_branch_plan = next_branch_plan
+                .join(filtered_plan.build().unwrap(),
+                    JoinType::LeftAnti,
+                    (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+                    None,
+                )
+                .unwrap();
+        }
 
         // handle the else branch
         let else_plan = match conditional_expr.get_default_branch() {
@@ -258,7 +290,7 @@ impl OtapBatchEngine {
                 let mut else_exec_ctx = exec_ctx.clone();
                 else_exec_ctx.curr_plan = next_branch_plan;
                 for data_expr in else_data_exprs {
-                    Box::pin(self.process_data_expr(data_expr, &mut else_exec_ctx)).await?;
+                    Box::pin(self.plan_data_expr(&mut else_exec_ctx, data_expr)).await?;
                 }
                 else_exec_ctx.curr_plan
             }
@@ -269,8 +301,7 @@ impl OtapBatchEngine {
             }
         };
 
-        let result_plan = if_exec_ctx
-            .curr_plan
+        let result_plan = result_plan
             .union(else_plan.build().unwrap())
             .unwrap();
 
@@ -564,6 +595,10 @@ mod test {
     struct IfElseExpressions {
         if_condition: &'static str,
         if_branch: &'static str,
+        
+        // tuples here are (condition, branch data exprs)
+        else_ifs: Vec<(&'static str, &'static str)>,
+
         else_branch: Option<&'static str>,
     }
 
@@ -573,6 +608,13 @@ mod test {
             let if_branch_data_exprs = parse_to_data_exprs(self.if_branch);
             let mut if_expr_builder =
                 ConditionalDataExpressionBuilder::from_if(if_condition, if_branch_data_exprs);
+
+            for (condition, branch) in self.else_ifs {
+                if_expr_builder = if_expr_builder.with_else_if(
+                    parse_to_condition(condition), 
+                    parse_to_data_exprs(branch)
+                );
+            }
 
             if_expr_builder = match self.else_branch {
                 Some(branch) => if_expr_builder.with_else(parse_to_data_exprs(branch)),
@@ -605,6 +647,7 @@ mod test {
         let if_expr = IfElseExpressions {
             if_condition: "severity_text == \"INFO\"",
             if_branch: "extend severity_text = \"DEBUG\"",
+            else_ifs: vec![],
             else_branch: None,
         };
 
@@ -649,6 +692,7 @@ mod test {
         let if_expr = IfElseExpressions {
             if_condition: "severity_text == \"INFO\"",
             if_branch: "extend severity_text = \"DEBUG\"",
+            else_ifs: vec![],
             else_branch: Some("extend severity_text = \"ERROR\""),
         };
 
@@ -666,6 +710,10 @@ mod test {
                 severity_text: "WARN".into(),
                 ..Default::default()
             },
+            LogRecord {
+                severity_text: "TRACE".into(),
+                ..Default::default()
+            }
         ]);
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
@@ -689,4 +737,59 @@ mod test {
         let expected = vec!["DEBUG".to_string(), "ERROR".to_string()];
         assert_eq!(severity_column, expected);
     }
+
+    #[tokio::test]
+    async fn test_simple_if_else_if() {
+        let if_expr = IfElseExpressions {
+            if_condition: "severity_text == \"INFO\"",
+            if_branch: "extend severity_text = \"DEBUG\"",
+            else_ifs: vec![(
+                "severity_text == \"WARN\"",
+                "extend severity_text = \"ERROR\"",
+            )],
+            else_branch: Some("extend severity_text = \"TRACE\""),
+        };
+
+        let pipeline_expr = PipelineExpressionBuilder::new("")
+            .with_expressions(vec![if_expr.to_data_expr()])
+            .build()
+            .unwrap();
+
+        let log_records = logs_to_export_req(vec![
+            LogRecord {
+                severity_text: "INFO".into(), // -> DEBUG
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(), // -> ERROR
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "DEBUG".into(), // -> TRACE
+                ..Default::default()
+            }
+        ]);
+
+        let result = apply_to_logs(log_records, pipeline_expr).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        print_batches(&[logs_rb.clone()]).unwrap();
+
+        let severity_column = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            // TODO need to fix the issue where the dict column gets replaced by a String column
+            // .downcast_ref::<DictionaryArray<UInt8Type>>()
+            // .unwrap()
+            // .downcast_dict::<StringArray>()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| s.map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+
+        let expected = vec!["DEBUG".to_string(), "ERROR".to_string(), "TRACE".to_string()];
+        assert_eq!(severity_column, expected);
+    }
+
 }
