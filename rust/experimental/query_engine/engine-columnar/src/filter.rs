@@ -449,13 +449,19 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
 
 #[cfg(test)]
 mod test {
+    use data_engine_kql_parser::{KqlParser, Parser};
+    use otap_df_otap::encoder::encode_logs_otap_batch;
+    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use prost::Message;
 
+    use crate::engine::OtapBatchEngine;
     use crate::test::{logs_to_export_req, run_logs_test};
 
     #[tokio::test]
@@ -1029,5 +1035,77 @@ mod test {
             ["3"].iter().map(|i| i.to_string()).collect(),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn filter_updates_attributes() {
+        let export_req = ExportLogsServiceRequest {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "resource_schema1".to_string(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("r_attr1", AnyValue::new_string("v1"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope1".to_string(),
+                            attributes: vec![KeyValue::new("s_attr1", AnyValue::new_string("v1"))],
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            event_name: "1".to_string(),
+                            attributes: vec![KeyValue::new("l_attr1", AnyValue::new_string("v1"))],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                },
+                ResourceLogs {
+                    schema_url: "resource_schema1".to_string(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("r_attr2", AnyValue::new_string("v1"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope1".to_string(),
+                            attributes: vec![KeyValue::new("s_attr2", AnyValue::new_string("v1"))],
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            event_name: "2".to_string(),
+                            attributes: vec![KeyValue::new("l_attr2", AnyValue::new_string("v1"))],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+
+        let mut bytes = vec![];
+        export_req.encode(&mut bytes).unwrap();
+        let logs_view = RawLogsData::new(&bytes);
+        let input = encode_logs_otap_batch(&logs_view).unwrap();
+        let mut engine = OtapBatchEngine::new();
+
+        let result = engine
+            .process(
+                &KqlParser::parse("logs | where event_name == \"1\"").unwrap(),
+                &input,
+            )
+            .await
+            .unwrap();
+
+        for payload_type in [
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::ResourceAttrs,
+        ] {
+            let expected = input.get(payload_type).unwrap().slice(0, 1);
+            let attrs_rb = result.get(payload_type).unwrap();
+            assert_eq!(attrs_rb, &expected)
+        }
     }
 }
