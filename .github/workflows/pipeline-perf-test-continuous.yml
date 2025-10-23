@@ -85,6 +85,11 @@ jobs:
             name: benchmark-results-pipeline
             path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
 
+        - name: Add benchmark link to job summary
+          run: |
+            echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+
     update-benchmarks:
         runs-on: ubuntu-24.04
         needs: [pipeline-perf-test]
@@ -129,3 +134,8 @@ jobs:
               benchmark-data-dir-path: "docs/benchmarks/continuous"
               auto-push: true
               save-data-file: true
+
+          - name: Add benchmark link to job summary
+            run: |
+              echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY

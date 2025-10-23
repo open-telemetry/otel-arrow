@@ -90,13 +90,13 @@ tests:
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
   #     variables:
-  #       engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otap.yaml
+  #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otap
   # - name: OTAP-ATTR-OTLP
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
   #     variables:
-  #       engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otlp.yaml
+  #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otlp.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otlp
