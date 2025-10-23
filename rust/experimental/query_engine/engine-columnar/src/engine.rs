@@ -286,6 +286,9 @@ impl OtapBatchEngine {
 
         // build the plan for everything not selected by the if statement
         let root_plan = exec_ctx.root_batch_plan()?;
+
+        // TODO -- if the filter condition didn't have joins, we could probably
+        // actually just use a `not(filter_cond)` here and avoid the join
         let mut next_branch_plan = root_plan.join(
             filtered_plan.build()?,
             JoinType::LeftAnti,
@@ -317,6 +320,8 @@ impl OtapBatchEngine {
 
             // the next branch will receive everything that didn't match the previous branches
             // and also didn't match this branch's conditions
+            // TODO -- if the filter condition didn't have joins, we could probably
+            // actually just use a `not(filter_cond)` here and avoid the join
             next_branch_plan = next_branch_plan.join(
                 filtered_plan.build()?,
                 JoinType::LeftAnti,
