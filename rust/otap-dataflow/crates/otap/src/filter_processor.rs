@@ -503,6 +503,7 @@ mod tests {
                                     KeyValue::new("load", AnyValue::new_double(0.73)),
                                     KeyValue::new("items_count", AnyValue::new_int(2)),
                                 ])
+                                .severity_text("WARN")
                                 .body(AnyValue::new_string("ok checkout #1"))
                                 .finish(),
                             // Log B: ERROR with numeric (double) body; attributes include int/float/bool
@@ -513,6 +514,7 @@ mod tests {
                                     KeyValue::new("attempt", AnyValue::new_int(3)),
                                     KeyValue::new("error_rate", AnyValue::new_double(0.02)),
                                 ])
+                                .severity_text("ERROR")
                                 .body(AnyValue::new_double(12.5))
                                 .finish(),
                         ])
@@ -579,6 +581,7 @@ mod tests {
                                     KeyValue::new("load", AnyValue::new_double(0.73)),
                                     KeyValue::new("items_count", AnyValue::new_int(2)),
                                 ])
+                                .severity_text("WARN")
                                 .body(AnyValue::new_string("ok checkout #1"))
                                 .finish(),
                             // Kept: ERROR with numeric body
@@ -589,6 +592,7 @@ mod tests {
                                     KeyValue::new("attempt", AnyValue::new_int(3)),
                                     KeyValue::new("error_rate", AnyValue::new_double(0.02)),
                                 ])
+                                .severity_text("ERROR")
                                 .body(AnyValue::new_double(12.5))
                                 .finish(),
                         ])

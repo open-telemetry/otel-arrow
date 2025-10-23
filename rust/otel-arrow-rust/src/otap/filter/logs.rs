@@ -525,10 +525,17 @@ impl LogMatchProperties {
             };
             let mut severity_texts_filter = BooleanArray::new_null(num_rows);
             for severity_text in &self.severity_texts {
-                let severity_text_scalar = StringArray::new_scalar(severity_text);
-                let severity_text_filter =
-                    arrow::compute::kernels::cmp::eq(&severity_texts_column, &severity_text_scalar)
-                        .expect("can compare string severity text column to string scalar");
+                let severity_text_filter = match self.match_type {
+                    MatchType::Regexp => regex_match_column(severity_texts_column, severity_text)?,
+                    MatchType::Strict => {
+                        let severity_text_scalar = StringArray::new_scalar(severity_text);
+                        arrow::compute::kernels::cmp::eq(
+                            &severity_texts_column,
+                            &severity_text_scalar,
+                        )
+                        .expect("can compare string severity text column to string scalar")
+                    }
+                };
                 severity_texts_filter =
                     arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
                         .context(error::ColumnLengthMismatchSnafu)?;

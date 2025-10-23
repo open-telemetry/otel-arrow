@@ -251,12 +251,9 @@ pub fn apply_filter(
     payload_type: ArrowPayloadType,
     filter: &BooleanArray,
 ) -> Result<()> {
-    let record_batch =
-        payload
-            .get(payload_type)
-            .with_context(|| error::RecordBatchNotFoundSnafu {
-                payload_type
-            })?;
+    let record_batch = payload
+        .get(payload_type)
+        .with_context(|| error::RecordBatchNotFoundSnafu { payload_type })?;
     let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
         .context(error::ColumnLengthMismatchSnafu)?;
     payload.set(payload_type, filtered_record_batch);

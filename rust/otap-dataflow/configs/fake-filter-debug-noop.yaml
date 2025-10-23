@@ -63,7 +63,7 @@ nodes:
           - noop
         dispatch_strategy: round_robin
     config:
-      verbosity: basic
+      verbosity: detailed
       mode: signal
   noop:
     kind: exporter
