@@ -18,6 +18,7 @@ pub trait Parser {
     ) -> Result<PipelineExpression, Vec<ParserError>>;
 }
 
+#[derive(Clone)]
 pub struct ParserOptions {
     pub(crate) source_map_schema: Option<ParserMapSchema>,
     pub(crate) summary_map_schema: Option<ParserMapSchema>,
@@ -51,6 +52,14 @@ impl ParserOptions {
         }
 
         self
+    }
+
+    pub fn get_source_map_schema(&self) -> Option<&ParserMapSchema> {
+        self.source_map_schema.as_ref()
+    }
+
+    pub fn get_summary_map_schema(&self) -> Option<&ParserMapSchema> {
+        self.summary_map_schema.as_ref()
     }
 }
 

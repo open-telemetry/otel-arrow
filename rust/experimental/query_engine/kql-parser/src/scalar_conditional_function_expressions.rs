@@ -202,7 +202,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             println!("Testing: {input}");
 
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );

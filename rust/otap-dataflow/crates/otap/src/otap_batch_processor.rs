@@ -865,13 +865,17 @@ mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::create_otap_batch_processor;
-    use super::test_helpers; // module for from_config
-    use super::test_helpers::{logs_record_with_n_entries, one_trace_record};
+    use super::test_helpers::{
+        from_config, logs_record_with_n_entries, one_metric_record, one_trace_record,
+    };
+    use super::*;
     use super::{Config, OTAP_BATCH_PROCESSOR_URN, OtapBatchProcessor};
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
-    use crate::pdata::OtapPdata;
+    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use otap_df_config::PipelineGroupId;
+    use otap_df_config::PipelineId;
     use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+    use otap_df_config::pipeline::PipelineConfig;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
@@ -881,11 +885,14 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::otap::OtapArrowRecords;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::ops::Add;
     use std::sync::Arc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
+    use tokio::time::sleep;
 
     #[test]
     fn test_factory_preserves_node_user_config_ports() {
@@ -893,8 +900,8 @@ mod tests {
         let registry = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry.clone());
         let pipeline_ctx = controller_ctx.pipeline_context_with(
-            otap_df_config::PipelineGroupId::from("g".to_string()),
-            otap_df_config::PipelineId::from("p".to_string()),
+            PipelineGroupId::from("g".to_string()),
+            PipelineId::from("p".to_string()),
             0,
             0,
         );
@@ -930,7 +937,7 @@ mod tests {
     // See crates/telemetry-macros/README.md ("Define a metric set"): if a metric field name is not
     // overridden, the field identifier is converted by replacing '_' with '.'.
     // Example: consumed_items_traces => consumed.items.traces
-    fn get_metric(map: &std::collections::HashMap<&'static str, u64>, snake_case: &str) -> u64 {
+    fn get_metric(map: &HashMap<&'static str, u64>, snake_case: &str) -> u64 {
         let dotted = snake_case.replace('_', ".");
         map.get(dotted.as_str())
             .copied()
@@ -949,9 +956,6 @@ mod tests {
 
     #[test]
     fn test_internal_telemetry_collects_and_reports() {
-        use serde_json::json;
-        use std::time::Duration;
-
         let test_rt = TestRuntime::new();
         let registry = test_rt.metrics_registry();
         let reporter = test_rt.metrics_reporter();
@@ -959,8 +963,8 @@ mod tests {
         // Create a MetricSet for the batch processor using a PipelineContext bound to the registry
         let controller_ctx = ControllerContext::new(registry.clone());
         let pipeline_ctx = controller_ctx.pipeline_context_with(
-            otap_df_config::PipelineGroupId::from("test-group".to_string()),
-            otap_df_config::PipelineId::from("test-pipeline".to_string()),
+            PipelineGroupId::from("test-group".to_string()),
+            PipelineId::from("test-pipeline".to_string()),
             0,
             0,
         );
@@ -1036,8 +1040,6 @@ mod tests {
 
         // Validate aggregated metrics are present and sensible
         validation.validate(|_vctx| async move {
-            use std::collections::HashMap;
-            use tokio::time::{Duration, sleep};
 
             // Poll the registry until the collector has accumulated the snapshot
             let mut map: HashMap<&'static str, u64> = HashMap::new();
@@ -1092,7 +1094,7 @@ mod tests {
         let cfg = json!({"send_batch_size": 1000, "timeout": "100ms"});
         let processor_config = ProcessorConfig::new("otap_batch_test");
         let node = test_node(processor_config.name.clone());
-        let result = test_helpers::from_config(node, &cfg, &processor_config);
+        let result = from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1106,7 +1108,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test2");
         let node = test_node(processor_config.name.clone());
-        let result = test_helpers::from_config(node, &cfg, &processor_config);
+        let result = from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1118,7 +1120,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test3");
         let node = test_node(processor_config.name.clone());
-        let result = test_helpers::from_config(node, &cfg, &processor_config);
+        let result = from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -1133,7 +1135,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_test_card");
         let node = test_node(processor_config.name.clone());
-        let res = test_helpers::from_config(node, &cfg, &processor_config);
+        let res = from_config(node, &cfg, &processor_config);
         assert!(res.is_ok());
         // Ensure deserialization keeps the value
         let mut parsed: Config = serde_json::from_value(cfg).unwrap();
@@ -1146,16 +1148,12 @@ mod tests {
         });
         let proc_cfg = ProcessorConfig::new("norm");
         let node = test_node(proc_cfg.name.clone());
-        let wrapper_res = test_helpers::from_config(node, &cfg2, &proc_cfg);
+        let wrapper_res = from_config(node, &cfg2, &proc_cfg);
         assert!(wrapper_res.is_ok());
     }
 
     #[test]
     fn test_flush_before_append_when_exceeding_max() {
-        use crate::pdata::OtapPdata;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-
         let cfg = json!({
             "send_batch_size": 2, // match max to isolate max-boundary behavior
             "send_batch_max_size": 2,
@@ -1164,8 +1162,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_max1");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1193,8 +1190,6 @@ mod tests {
                 "no flush expected after third until shutdown"
             );
 
-            use otap_df_engine::control::NodeControlMsg;
-            use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
@@ -1215,10 +1210,6 @@ mod tests {
 
     #[test]
     fn test_timer_does_not_flush_if_below_threshold() {
-        use crate::pdata::OtapPdata;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-
         let cfg = json!({
             "send_batch_size": 1000, // large so count threshold won't trigger
             "send_batch_max_size": 1000,
@@ -1227,8 +1218,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_timer_flush");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1242,7 +1232,6 @@ mod tests {
             assert_eq!(emitted.len(), 0, "no flush expected before timer");
 
             // Send a timer tick -> should NOT flush because thresholds were not crossed
-            use otap_df_engine::control::NodeControlMsg;
             ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
                 .await
                 .expect("timer tick");
@@ -1259,10 +1248,6 @@ mod tests {
 
     #[test]
     fn test_immediate_flush_on_max_reached() {
-        use crate::pdata::OtapPdata;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-
         let cfg = json!({
             "send_batch_size": 1,
             "send_batch_max_size": 1, // reaching max on first push triggers immediate flush-after-push
@@ -1271,8 +1256,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_max2");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1286,8 +1270,6 @@ mod tests {
                 "single item should flush immediately when max=1"
             );
 
-            use otap_df_engine::control::NodeControlMsg;
-            use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
@@ -1312,7 +1294,7 @@ mod tests {
         });
         let proc_cfg = ProcessorConfig::new("norm-max");
         let node = test_node(proc_cfg.name.clone());
-        let res = test_helpers::from_config(node.clone(), &cfg, &proc_cfg);
+        let res = from_config(node.clone(), &cfg, &proc_cfg);
         assert!(res.is_ok());
 
         // Missing max -> defaults to unlimited (0)
@@ -1320,16 +1302,12 @@ mod tests {
             "send_batch_size": 9,
             "timeout": "200ms"
         });
-        let res2 = test_helpers::from_config(node, &cfg2, &proc_cfg);
+        let res2 = from_config(node, &cfg2, &proc_cfg);
         assert!(res2.is_ok());
     }
 
     #[test]
     fn test_drop_non_convertible_metrics_bytes() {
-        use crate::pdata::{OtapPdata, OtlpProtoBytes};
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-
         let cfg = json!({
             "send_batch_size": 1,
             "send_batch_max_size": 10,
@@ -1338,8 +1316,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_drop_non_convertible");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1360,12 +1337,6 @@ mod tests {
 
     #[test]
     fn test_non_convertible_metrics_bytes_dropped_on_shutdown() {
-        use crate::pdata::{OtapPdata, OtlpProtoBytes};
-        use otap_df_engine::control::NodeControlMsg;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use std::time::Duration;
-
         let cfg = json!({
             "send_batch_size": 10,
             "send_batch_max_size": 10,
@@ -1374,8 +1345,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_drop_on_shutdown");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1400,10 +1370,6 @@ mod tests {
 
     #[test]
     fn test_no_split_for_single_oversize_record_guard() {
-        use crate::pdata::OtapPdata;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-
         // Configure: oversize single record relative to limits; guard prevents splitting
         let cfg = json!({
             "send_batch_size": 3,
@@ -1413,8 +1379,7 @@ mod tests {
         let processor_config = ProcessorConfig::new("otap_batch_test_no_split_guard");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
@@ -1443,8 +1408,6 @@ mod tests {
             );
 
             // Shutdown should not produce any additional items (nothing buffered)
-            use otap_df_engine::control::NodeControlMsg;
-            use std::time::Duration;
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Instant::now().add(Duration::from_millis(TEST_SHUTDOWN_DEADLINE_MS)),
                 reason: TEST_SHUTDOWN_REASON.into(),
@@ -1461,16 +1424,8 @@ mod tests {
 
         validation.validate(|_vctx| async move {});
     }
-}
-
-#[cfg(test)]
-mod batching_smoke_tests {
-    use super::test_helpers::{one_metric_record, one_trace_record};
-    use super::*;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
     // Test constants for batching smoke tests
-
     #[test]
     #[ignore = "upstream-batching-bug"]
     // NOTE: Validates cross-signal partitioning and expected row totals.
@@ -1520,14 +1475,6 @@ mod batching_smoke_tests {
         assert_eq!(total_metrics_rows, 2, "expected two metric rows total");
         assert_eq!(total_traces_rows, 3, "expected three trace rows total");
     }
-}
-
-#[cfg(test)]
-mod timer_flush_behavior_tests {
-    use super::*;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use serde_json::json;
 
     // TODO: Add a positive-path test that simulates a size-triggered split leaving
     // a small remainder in the buffer, and assert that a subsequent TimerTick
@@ -1547,20 +1494,19 @@ mod timer_flush_behavior_tests {
         });
         let processor_config = ProcessorConfig::new("otap_timer_no_remainder");
         let test_rt = TestRuntime::new();
-        let node = otap_df_engine::testing::test_node(processor_config.name.clone());
-        let proc =
-            test_helpers::from_config(node, &cfg, &processor_config).expect("proc from config");
+        let node = test_node(processor_config.name.clone());
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
 
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
             // First push: 1 row -> below thresholds, nothing emitted
-            let pdata1 = OtapPdata::new_default(test_helpers::one_trace_record().into());
+            let pdata1 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata1)).await.expect("p1");
             assert!(ctx.drain_pdata().await.is_empty());
 
             // Second push: another 1 row -> rows=2 triggers size flush, fully drained (no remainder)
-            let pdata2 = OtapPdata::new_default(test_helpers::one_trace_record().into());
+            let pdata2 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata2)).await.expect("p2");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
@@ -1570,11 +1516,10 @@ mod timer_flush_behavior_tests {
             );
 
             // Third push: 1 row, below thresholds -> timer should NOT flush (dirty cleared on size flush)
-            let pdata3 = OtapPdata::new_default(test_helpers::one_trace_record().into());
+            let pdata3 = OtapPdata::new_default(one_trace_record().into());
             ctx.process(Message::PData(pdata3)).await.expect("p3");
             assert!(ctx.drain_pdata().await.is_empty());
 
-            use otap_df_engine::control::NodeControlMsg;
             ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
                 .await
                 .expect("timer");
@@ -1587,5 +1532,85 @@ mod timer_flush_behavior_tests {
         });
 
         validation.validate(|_vctx| async move {});
+    }
+
+    #[test]
+    fn test_batch_with_out_port() {
+        let id = PipelineId::from("batch-with-out-port".to_string());
+        let group_id = PipelineGroupId::from("batch".to_string());
+        let pipeline = PipelineConfig::from_yaml(
+            group_id.clone(),
+            id.clone(),
+            r#"settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - proc
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_batch_size: 1000
+        signals_per_second: 1000
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+  proc:
+    kind: processor
+    plugin_urn: "urn:otap:processor:batch"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config: {}
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:perf:exporter"
+    config:
+      frequency: 1000
+      cpu_usage: false
+      mem_usage: false
+      disk_usage: false
+      io_usage: false
+"#,
+        )
+        .unwrap();
+
+        let metrics = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics);
+        let pipeline_ctx = controller_ctx.pipeline_context_with(group_id, id, 0, 0);
+
+        let runtime = super::super::OTAP_PIPELINE_FACTORY
+            .build(pipeline_ctx, pipeline)
+            .unwrap();
+
+        assert!(runtime.node_count() > 0, "pipeline should contain nodes");
+
+        // Verify presence of batch processor
+        let mut found = false;
+        for i in 0..runtime.node_count() {
+            if let Some(node) = runtime.get_node(i) {
+                let uc = node.user_config();
+                if uc.kind == NodeKind::Processor
+                    && uc.plugin_urn.as_ref() == "urn:otap:processor:batch"
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            found,
+            "expected a batch processor node (urn:otap:processor:batch)"
+        );
     }
 }
