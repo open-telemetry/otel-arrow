@@ -851,4 +851,56 @@ mod test {
         ];
         assert_eq!(severity_column, expected);
     }
+
+    #[tokio::test]
+    async fn test_filter_after_update() {
+        let if_expr = IfElseExpressions {
+            if_condition: "severity_text == \"INFO\"",
+            if_branch: "extend severity_text = \"DEBUG\"",
+            else_ifs: vec![],
+            else_branch: None,
+        };
+
+        let filter_expr = parse_to_data_exprs("where severity_text == \"DEBUG\"")[0].clone();
+
+        let pipeline_expr = PipelineExpressionBuilder::new("")
+            .with_expressions(vec![if_expr.into_data_expr(), filter_expr])
+            .build()
+            .unwrap();
+
+        let log_records = logs_to_export_req(vec![
+            LogRecord {
+                severity_text: "INFO".into(), // -> DEBUG
+                event_name: "1".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(), // no change
+                event_name: "2".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "DEBUG".into(), // no change
+                event_name: "3".into(),
+                ..Default::default()
+            },
+        ]);
+
+        let result = apply_to_logs(log_records, pipeline_expr).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        let event_name_column = logs_rb
+            .column_by_name(consts::EVENT_NAME)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| s.map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+
+        let expected = vec!["1".to_string(), "3".to_string()];
+        assert_eq!(event_name_column, expected);
+    }
 }
