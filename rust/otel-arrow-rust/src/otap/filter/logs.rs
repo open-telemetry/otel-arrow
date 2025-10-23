@@ -12,17 +12,18 @@ use crate::arrays::{
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
 use crate::otap::filter::{
-    AnyValue, KeyValue, MatchType, apply_filter, build_uint16_id_filter, default_match_type,
-    get_uint16_ids, nulls_to_false, regex_match_column,
+    AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
+    build_uint16_id_filter, default_match_type, get_uint16_ids, nulls_to_false, regex_match_column,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::array::{
     Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
 };
+use arrow::buffer::BooleanBuffer;
 use serde::Deserialize;
 use snafu::{OptionExt, ResultExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// struct that describes the overall requirements to use in order to filter logs
 #[derive(Debug, Clone, Deserialize)]
@@ -227,7 +228,7 @@ impl LogFilter {
                     return Ok((
                         None,
                         None,
-                        vec![false; log_record_filter.len()].into(),
+                        BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
                         None,
                     ));
                 }
@@ -258,7 +259,7 @@ impl LogFilter {
                     return Ok((
                         None,
                         None,
-                        vec![false; log_record_filter.len()].into(),
+                        BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
                         None,
                     ));
                 }
@@ -382,7 +383,9 @@ impl LogMatchProperties {
         let resource_attrs = match logs_payload.get(ArrowPayloadType::ResourceAttrs) {
             Some(record_batch) => {
                 if self.resource_attributes.is_empty() {
-                    return Ok(vec![true; record_batch.num_rows()].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                        record_batch.num_rows(),
+                    )));
                 }
                 record_batch
             }
@@ -390,10 +393,14 @@ impl LogMatchProperties {
                 // if there is no record batch then
                 // if we didn't plan to match any resource attributes -> allow all values through
                 if self.resource_attributes.is_empty() {
-                    return Ok(vec![true].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                        NO_RECORD_BATCH_FILTER_SIZE,
+                    )));
                 } else {
                     // if we did match on resource attributes then there are no attributes to match
-                    return Ok(vec![false].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_unset(
+                        NO_RECORD_BATCH_FILTER_SIZE,
+                    )));
                 }
             }
         };
@@ -401,6 +408,7 @@ impl LogMatchProperties {
         let num_rows = resource_attrs.num_rows();
         let mut attributes_filter = BooleanArray::new_null(num_rows);
         let key_column = get_required_array(resource_attrs, consts::ATTRIBUTE_KEY)?;
+
         // generate the filter for this record_batch
         for attribute in &self.resource_attributes {
             // match on key
@@ -425,6 +433,7 @@ impl LogMatchProperties {
                 }
                 AnyValue::Int(value) => {
                     let int_column = resource_attrs.column_by_name(consts::ATTRIBUTE_INT);
+
                     // check if column exists if not then there is no resource that has this attribute so we can return a all false boolean array
                     match int_column {
                         Some(column) => {
@@ -435,7 +444,7 @@ impl LogMatchProperties {
                                 .expect("can compare i64 value column to i64 scalar")
                         }
                         None => {
-                            return Ok(vec![false; num_rows].into());
+                            return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                         }
                     }
                 }
@@ -450,7 +459,7 @@ impl LogMatchProperties {
                                 .expect("can compare f64 value column to f64 scalar")
                         }
                         None => {
-                            return Ok(vec![false; num_rows].into());
+                            return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                         }
                     }
                 }
@@ -465,13 +474,13 @@ impl LogMatchProperties {
                                 .expect("can compare bool value column to bool scalar")
                         }
                         None => {
-                            return Ok(vec![false; num_rows].into());
+                            return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                         }
                     }
                 }
                 _ => {
                     // ToDo add keyvalue, array, and bytes
-                    return Ok(vec![false; num_rows].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                 }
             };
             // build filter that checks for both matching key and value filter
@@ -497,12 +506,11 @@ impl LogMatchProperties {
             .downcast_ref::<UInt16Array>()
             .expect("array can be downcast to UInt16Array");
         // remove null values
-        let ids: Vec<u16> = ids.iter().flatten().collect();
-        let mut ids_counted: HashMap<u16, usize> = HashMap::new();
+        let mut ids_counted: HashMap<u16, usize> = HashMap::with_capacity(ids.len());
         // since we require that all the resource attributes match we use the count of the ids extracted to determine a full match
         // a full match should meant that the amount of times a id appears is equal the number of resource attributes we want to match on
-        for &id in &ids {
-            *ids_counted.entry(id).or_insert(0) += 1;
+        for id in ids.iter().flatten() {
+            *ids_counted.entry(id).or_default() += 1;
         }
 
         let required_ids_count = self.resource_attributes.len();
@@ -522,14 +530,14 @@ impl LogMatchProperties {
             .context(error::LogRecordNotFoundSnafu)?;
         let num_rows = log_records.num_rows();
         // create filter for severity texts
-        let mut filter: BooleanArray = vec![true; num_rows].into();
+        let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_set(num_rows));
         if !&self.severity_texts.is_empty() {
             // get he severity text column
             let severity_texts_column = match log_records.column_by_name(consts::SEVERITY_TEXT) {
                 Some(column) => column,
                 None => {
                     // any columns that don't exist means we can't match so we default to all false boolean array
-                    return Ok(vec![false; num_rows].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                 }
             };
             let mut severity_texts_filter = BooleanArray::new_null(num_rows);
@@ -642,7 +650,7 @@ impl LogMatchProperties {
             let severity_number_column = match log_records.column_by_name(consts::SEVERITY_NUMBER) {
                 Some(column) => column,
                 None => {
-                    return Ok(vec![false; num_rows].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
                 }
             };
 
@@ -684,7 +692,7 @@ impl LogMatchProperties {
         let log_attrs = match logs_payload.get(ArrowPayloadType::LogAttrs) {
             Some(record_batch) => {
                 if self.record_attributes.is_empty() {
-                    return Ok(vec![true; record_batch.num_rows()].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_set(record_batch.num_rows())));
                 }
                 record_batch
             }
@@ -692,10 +700,14 @@ impl LogMatchProperties {
                 // if there is no record batch then
                 // if we didn't plan to match any record attributes -> allow all values through
                 if self.record_attributes.is_empty() {
-                    return Ok(vec![true].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                        NO_RECORD_BATCH_FILTER_SIZE,
+                    )));
                 } else {
                     // if we did match on record attributes then there are no attributes to match
-                    return Ok(vec![false].into());
+                    return Ok(BooleanArray::from(BooleanBuffer::new_unset(
+                        NO_RECORD_BATCH_FILTER_SIZE,
+                    )));
                 }
             }
         };
@@ -788,14 +800,7 @@ impl LogMatchProperties {
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
         let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
 
-        let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
-            .context(error::ColumnLengthMismatchSnafu)?;
-        let ids = ids
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .expect("array can be downcast into UInt16Array");
-        let ids: HashSet<u16> = ids.iter().flatten().collect();
-
+        let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
         // build filter around the ids and return the filter
         build_uint16_id_filter(parent_id_column, ids)
     }

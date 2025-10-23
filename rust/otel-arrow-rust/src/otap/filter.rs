@@ -20,6 +20,11 @@ pub mod logs;
 // ToDo: determine optimimal numbers
 const ID_COLUMN_LENGTH_MIN_THRESHOLD: usize = 2000;
 const IDS_PERCENTAGE_MAX_THRESHOLD: f64 = 0.1;
+
+// default boolean array length to use for filter if there is no record batch set
+// when attempting to build a filter for a optional record batch
+const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
+
 /// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
