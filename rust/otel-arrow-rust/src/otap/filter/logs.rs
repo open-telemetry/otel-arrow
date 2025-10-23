@@ -692,7 +692,9 @@ impl LogMatchProperties {
         let log_attrs = match logs_payload.get(ArrowPayloadType::LogAttrs) {
             Some(record_batch) => {
                 if self.record_attributes.is_empty() {
-                    return Ok(BooleanArray::from(BooleanBuffer::new_set(record_batch.num_rows())));
+                    return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                        record_batch.num_rows(),
+                    )));
                 }
                 record_batch
             }
