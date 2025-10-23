@@ -411,7 +411,6 @@ impl TryFrom<CallData> for RetryState {
 
 impl RetryProcessor {
     /// Creates a new RetryProcessor with metrics registered via PipelineContext
-    #[must_use]
     pub fn with_pipeline_ctx(
         pipeline_ctx: PipelineContext,
         config: RetryConfig,
