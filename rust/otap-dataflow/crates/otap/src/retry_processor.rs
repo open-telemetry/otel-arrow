@@ -140,10 +140,14 @@ impl RetryConfig {
                 }
 
                 delays.push(Duration::from_secs_f64(this_d));
+                total_elapsed += this_d;
+                count += 1;
+            } else {
+                // Remaining intervals are identical: divide, round up.
+                let remain = limit_total_elapsed - total_elapsed;
+                count += ((remain + max_interval) / max_interval).ceil() as usize;
+                break;
             }
-
-            total_elapsed += this_d;
-            count += 1;
         }
 
         Ok((count, delays))
