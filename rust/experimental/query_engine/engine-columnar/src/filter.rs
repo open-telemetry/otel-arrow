@@ -90,7 +90,7 @@ impl Filter {
                     })
                 } else {
                     Ok(Self {
-                        filter_expr: not_filter.filter_expr.map(|expr| not(expr)),
+                        filter_expr: not_filter.filter_expr.map(not),
                         join: None,
                     })
                 }
@@ -908,7 +908,6 @@ mod test {
                         }],
                         ..Default::default()
                     }],
-                    ..Default::default()
                 },
                 ResourceLogs {
                     schema_url: "resource_schema2".to_string(),
@@ -926,7 +925,6 @@ mod test {
                         }],
                         ..Default::default()
                     }],
-                    ..Default::default()
                 },
             ],
         };
@@ -980,7 +978,6 @@ mod test {
                         ],
                         ..Default::default()
                     }],
-                    ..Default::default()
                 },
                 ResourceLogs {
                     schema_url: "resource_schema2".to_string(),
@@ -1016,7 +1013,6 @@ mod test {
                             ..Default::default()
                         },
                     ],
-                    ..Default::default()
                 },
             ],
         };

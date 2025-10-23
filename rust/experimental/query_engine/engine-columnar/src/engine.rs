@@ -66,7 +66,7 @@ impl OtapBatchEngine {
             .collect()
             .await?;
 
-        let result = if batches.len() > 0 {
+        let result = if !batches.is_empty() {
             // TODO not sure concat_batches is necessary here as there should only be one batch.
             // need to double check if any repartitioning happens that could cause multiple batches
             // safety: this shouldn't fail because all the batches should have same schema
@@ -165,7 +165,7 @@ impl OtapBatchEngine {
         exec_ctx: &mut ExecutionContext,
         predicate: &LogicalExpression,
     ) -> Result<()> {
-        let filter = Filter::try_from_predicate(&exec_ctx, predicate)?;
+        let filter = Filter::try_from_predicate(exec_ctx, predicate)?;
         let mut root_plan = exec_ctx.root_batch_plan()?;
         if let Some(expr) = filter.filter_expr {
             root_plan = root_plan.filter(expr)?;
@@ -254,9 +254,7 @@ impl OtapBatchEngine {
             selection.push(new_col);
         }
 
-        let select_exprs = selection
-            .into_iter()
-            .map(|expr| SelectExpr::Expression(expr));
+        let select_exprs = selection.into_iter().map(SelectExpr::Expression);
 
         exec_ctx.curr_plan = root_plan.project(select_exprs)?;
 
@@ -296,8 +294,8 @@ impl OtapBatchEngine {
         )?;
 
         // handle all the `else if`s
-        for i in 1..branches.len() {
-            let (else_if_cond, else_if_data_exprs) = &branches[i];
+        for branch in branches.iter().skip(1) {
+            let (else_if_cond, else_if_data_exprs) = &branch;
             let mut else_if_exec_ctx = exec_ctx.clone();
             else_if_exec_ctx.curr_plan = next_branch_plan.clone();
 
@@ -350,7 +348,6 @@ impl OtapBatchEngine {
         Ok(())
     }
 
-    // tODO implementation of this is not correct
     async fn filter_attrs_for_root(
         &self,
         exec_ctx: &mut ExecutionContext,
@@ -393,7 +390,7 @@ impl OtapBatchEngine {
                 .collect()
                 .await?;
 
-            let result = if batches.len() > 0 {
+            let result = if !batches.is_empty() {
                 // safety: this shouldn't fail unless batches don't have matching schemas, but they
                 // will b/c datafusion enforces this
                 concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches")
@@ -422,7 +419,7 @@ impl ExecutionContext {
             OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
             _ => {
                 return Err(Error::NotYetSupportedError {
-                    message: format!("Only logs signal type is currently supported"),
+                    message: "Only logs signal type is currently supported".into(),
                 });
             }
         };
@@ -456,11 +453,9 @@ impl ExecutionContext {
     pub fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
         match self.curr_batch {
             OtapArrowRecords::Logs(_) => Ok(ArrowPayloadType::Logs),
-            _ => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!("Only logs signal type is currently supported"),
-                });
-            }
+            _ => Err(Error::NotYetSupportedError {
+                message: "Only logs signal type is currently supported".into(),
+            }),
         }
     }
 
@@ -502,7 +497,7 @@ impl ExecutionContext {
                 // TODO - eventually we might need to loosen the assumption that this is
                 // a column on the root batch
                 if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()?) {
-                    rb.column_by_name(&column_name).is_some()
+                    rb.column_by_name(column_name).is_some()
                 } else {
                     // it'd be unusual if the root batch didn't exit
                     false
@@ -530,14 +525,12 @@ impl ColumnAccessor {
 
             // TODO: handle users accessing attributes in a different way, like for example from a variable,
             // function result, etc.
-            expr => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
-                        "unsupported attributes key. currently only static string key name is supported. received {:?}",
-                        expr
-                    ),
-                });
-            }
+            expr => Err(Error::NotYetSupportedError {
+                message: format!(
+                    "unsupported attributes key. currently only static string key name is supported. received {:?}",
+                    expr
+                ),
+            }),
         }
     }
 
@@ -559,14 +552,12 @@ impl ColumnAccessor {
                     )),
                 }
             }
-            expr => {
-                return Err(Error::InvalidPipelineError {
-                    reason: format!(
-                        "unsupported nested struct column definition for struct {}. received {:?}",
-                        struct_column_name, expr
-                    ),
-                });
-            }
+            expr => Err(Error::InvalidPipelineError {
+                reason: format!(
+                    "unsupported nested struct column definition for struct {}. received {:?}",
+                    struct_column_name, expr
+                ),
+            }),
         }
     }
 }
@@ -597,11 +588,9 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                     value => Ok(Self::ColumnName(value.to_string())),
                 }
             }
-            expr => {
-                return Err(Error::InvalidPipelineError {
-                    reason: format!("unsupported column definition. received {:?}", expr),
-                });
-            }
+            expr => Err(Error::InvalidPipelineError {
+                reason: format!("unsupported column definition. received {:?}", expr),
+            }),
         }
     }
 }
@@ -680,7 +669,7 @@ mod test {
     }
 
     impl IfElseExpressions {
-        fn to_data_expr(self) -> DataExpression {
+        fn into_data_expr(self) -> DataExpression {
             let if_condition = parse_to_condition(self.if_condition);
             let if_branch_data_exprs = parse_to_data_exprs(self.if_branch);
             let mut if_expr_builder =
@@ -714,7 +703,7 @@ mod test {
     fn parse_to_data_exprs(pipeline_exprs: &str) -> Vec<DataExpression> {
         let pipeline_expr = KqlParser::parse(&format!("i |{}", pipeline_exprs)).unwrap();
         let pipeline_exprs = pipeline_expr.get_expressions();
-        return pipeline_exprs.to_vec();
+        pipeline_exprs.to_vec()
     }
 
     #[tokio::test]
@@ -727,7 +716,7 @@ mod test {
         };
 
         let pipeline_expr = PipelineExpressionBuilder::new("")
-            .with_expressions(vec![if_expr.to_data_expr()])
+            .with_expressions(vec![if_expr.into_data_expr()])
             .build()
             .unwrap();
 
@@ -771,7 +760,7 @@ mod test {
         };
 
         let pipeline_expr = PipelineExpressionBuilder::new("")
-            .with_expressions(vec![if_expr.to_data_expr()])
+            .with_expressions(vec![if_expr.into_data_expr()])
             .build()
             .unwrap();
 
@@ -820,7 +809,7 @@ mod test {
         };
 
         let pipeline_expr = PipelineExpressionBuilder::new("")
-            .with_expressions(vec![if_expr.to_data_expr()])
+            .with_expressions(vec![if_expr.into_data_expr()])
             .build()
             .unwrap();
 
