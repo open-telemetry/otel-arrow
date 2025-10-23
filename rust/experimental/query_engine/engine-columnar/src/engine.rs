@@ -656,6 +656,42 @@ mod test {
         }
     }
 
+    #[tokio::test]
+    async fn test_simple_extend_multiple_columns() {
+        let log_records = logs_to_export_req(vec![LogRecord {
+            severity_text: "INFO".into(),
+            ..Default::default()
+        }]);
+
+        let kql = "logs | extend severity_text = \"WARN\" | extend event_name = \"test\"";
+        let pipeline = KqlParser::parse_with_options(kql, ParserOptions::default()).unwrap();
+
+        let result = apply_to_logs(log_records, pipeline).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+
+        let severity_text = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        for t in severity_text.iter() {
+            assert_eq!(t, Some("WARN"))
+        }
+
+        let event_name = logs_rb
+            .column_by_name(consts::EVENT_NAME)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        for t in event_name.iter() {
+            assert_eq!(t, Some("test"))
+        }
+    }
+
     // TODO the KQL parser doesn't yet support our if/else syntax, so to build a pipeline with
     // this type of expression in it, we need to cheese it
     struct IfElseExpressions {
