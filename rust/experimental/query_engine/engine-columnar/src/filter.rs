@@ -44,11 +44,11 @@ impl Filter {
                 let join = match (left_filter.join, right_filter.join) {
                     (Some(left_join), Some(right_join)) => {
                         let mut plan = exec_ctx.root_batch_plan()?;
-                        plan = left_join.join_to_plan(plan);
-                        plan = right_join.join_to_plan(plan);
+                        plan = left_join.join_to_plan(plan)?;
+                        plan = right_join.join_to_plan(plan)?;
 
                         Some(FilteringJoin {
-                            logical_plan: plan.build().unwrap(),
+                            logical_plan: plan.build()?,
                             join_type: JoinType::LeftSemi,
                             condition: FilteringJoinCondition::MatchingColumnPairs(
                                 ROW_NUMBER_COL,
@@ -88,30 +88,27 @@ impl Filter {
                     (Some(left_join), Some(right_join)) => {
                         let mut left_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr).unwrap();
+                            left_plan = left_plan.filter(filter_expr)?;
                         }
-                        left_plan = left_join.join_to_plan(left_plan);
+                        left_plan = left_join.join_to_plan(left_plan)?;
 
                         let mut right_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr).unwrap();
+                            right_plan = right_plan.filter(filter_expr)?;
                         }
-                        right_plan = right_join.join_to_plan(right_plan);
+                        right_plan = right_join.join_to_plan(right_plan)?;
 
                         Ok(Self {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union(right_plan.build().unwrap())
-                                    .unwrap()
+                                    .union(right_plan.build()?)?
                                     .distinct_on(
                                         vec![col(ROW_NUMBER_COL)],
                                         vec![col(ROW_NUMBER_COL)],
                                         None,
-                                    )
-                                    .unwrap()
-                                    .build()
-                                    .unwrap(),
+                                    )?
+                                    .build()?,
                                 join_type: JoinType::LeftSemi,
                                 condition: FilteringJoinCondition::MatchingColumnPairs(
                                     ROW_NUMBER_COL,
@@ -124,13 +121,13 @@ impl Filter {
                     (Some(left_join), None) => {
                         let mut left_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr).unwrap();
+                            left_plan = left_plan.filter(filter_expr)?;
                         }
-                        left_plan = left_join.join_to_plan(left_plan);
+                        left_plan = left_join.join_to_plan(left_plan)?;
 
                         let mut right_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr).unwrap();
+                            right_plan = right_plan.filter(filter_expr)?;
                         } else {
                             todo!("would this be invalid?")
                         }
@@ -139,16 +136,13 @@ impl Filter {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union(right_plan.build().unwrap())
-                                    .unwrap()
+                                    .union(right_plan.build()?)?
                                     .distinct_on(
                                         vec![col(ROW_NUMBER_COL)],
                                         vec![col(ROW_NUMBER_COL)],
                                         None,
-                                    )
-                                    .unwrap()
-                                    .build()
-                                    .unwrap(),
+                                    )?
+                                    .build()?,
                                 join_type: JoinType::LeftSemi,
                                 condition: FilteringJoinCondition::MatchingColumnPairs(
                                     ROW_NUMBER_COL,
@@ -161,31 +155,28 @@ impl Filter {
                     (None, Some(right_join)) => {
                         let mut left_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr).unwrap();
+                            left_plan = left_plan.filter(filter_expr)?;
                         } else {
                             todo!("would this be invalid?")
                         }
 
                         let mut right_plan = exec_ctx.root_batch_plan()?;
                         if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr).unwrap();
+                            right_plan = right_plan.filter(filter_expr)?;
                         }
-                        right_plan = right_join.join_to_plan(right_plan);
+                        right_plan = right_join.join_to_plan(right_plan)?;
 
                         Ok(Self {
                             filter_expr: None,
                             join: Some(FilteringJoin {
                                 logical_plan: left_plan
-                                    .union(right_plan.build().unwrap())
-                                    .unwrap()
+                                    .union(right_plan.build()?)?
                                     .distinct_on(
                                         vec![col(ROW_NUMBER_COL)],
                                         vec![col(ROW_NUMBER_COL)],
                                         None,
-                                    )
-                                    .unwrap()
-                                    .build()
-                                    .unwrap(),
+                                    )?
+                                    .build()?,
                                 join_type: JoinType::LeftSemi,
                                 condition: FilteringJoinCondition::MatchingColumnPairs(
                                     ROW_NUMBER_COL,
@@ -213,14 +204,14 @@ impl Filter {
                 if let Some(not_join) = not_filter.join {
                     let mut plan = exec_ctx.root_batch_plan()?;
                     if let Some(filter_expr) = not_filter.filter_expr {
-                        plan = plan.filter(filter_expr).unwrap();
+                        plan = plan.filter(filter_expr)?;
                     }
 
-                    plan = not_join.join_to_plan(plan);
+                    plan = not_join.join_to_plan(plan)?;
                     Ok(Self {
                         filter_expr: None,
                         join: Some(FilteringJoin {
-                            logical_plan: plan.build().unwrap(),
+                            logical_plan: plan.build()?,
                             join_type: JoinType::LeftAnti,
                             condition: FilteringJoinCondition::MatchingColumnPairs(
                                 ROW_NUMBER_COL,
@@ -321,9 +312,8 @@ impl Filter {
                                 AttributesIdentifier::Root => ArrowPayloadType::LogAttrs,
                                 AttributesIdentifier::NonRoot(payload_type) => payload_type,
                             };
-                            let attrs_filter = exec_ctx
-                                .scan_batch(attrs_payload_type)?
-                                .filter(and(
+                            let attrs_filter =
+                                exec_ctx.scan_batch_plan(attrs_payload_type)?.filter(and(
                                     binary_expr(
                                         col(consts::ATTRIBUTE_KEY),
                                         operator,
@@ -334,8 +324,7 @@ impl Filter {
                                         operator,
                                         try_static_scalar_to_literal(&static_scalar)?,
                                     ),
-                                ))
-                                .unwrap();
+                                ))?;
 
                             let join_condition = match attrs_payload_type {
                                 ArrowPayloadType::ResourceAttrs => FilteringJoinCondition::Filter(
@@ -356,7 +345,7 @@ impl Filter {
                             Ok(Self {
                                 filter_expr: None,
                                 join: Some(FilteringJoin {
-                                    logical_plan: attrs_filter.build().unwrap(),
+                                    logical_plan: attrs_filter.build()?,
                                     join_type: JoinType::LeftSemi,
                                     condition: join_condition,
                                 }),
@@ -387,20 +376,19 @@ enum FilteringJoinCondition {
 }
 
 impl FilteringJoin {
-    pub fn join_to_plan(self, plan_builder: LogicalPlanBuilder) -> LogicalPlanBuilder {
-        match self.condition {
-            FilteringJoinCondition::MatchingColumnPairs(left_col, right_col) => plan_builder
-                .join(
-                    self.logical_plan,
-                    self.join_type,
-                    (vec![left_col], vec![right_col]),
-                    None,
-                )
-                .unwrap(),
-            FilteringJoinCondition::Filter(join_filter_expr) => plan_builder
-                .join_on(self.logical_plan, self.join_type, [join_filter_expr])
-                .unwrap(),
-        }
+    pub fn join_to_plan(self, plan_builder: LogicalPlanBuilder) -> Result<LogicalPlanBuilder> {
+        Ok(match self.condition {
+            FilteringJoinCondition::MatchingColumnPairs(left_col, right_col) => plan_builder.join(
+                self.logical_plan,
+                self.join_type,
+                (vec![left_col], vec![right_col]),
+                None,
+            )?,
+
+            FilteringJoinCondition::Filter(join_filter_expr) => {
+                plan_builder.join_on(self.logical_plan, self.join_type, [join_filter_expr])?
+            }
+        })
     }
 }
 

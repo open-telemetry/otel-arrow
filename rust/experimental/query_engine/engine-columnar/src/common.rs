@@ -10,6 +10,7 @@ use otel_arrow_rust::schema::consts;
 
 use crate::error::Result;
 
+#[derive(Debug)]
 pub enum ColumnAccessor {
     ColumnName(String),
 
@@ -22,6 +23,7 @@ pub enum ColumnAccessor {
 }
 
 /// Identifier of a batch of attributes
+#[derive(Debug)]
 pub enum AttributesIdentifier {
     /// Attributes for the root record type. E.g. LogAttrs for a batch of log records
     Root,
