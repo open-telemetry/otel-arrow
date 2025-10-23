@@ -141,7 +141,7 @@ fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .expect("can cast to string type");
-                    // regex check against the values
+                    // since we use a scalar here we don't have to worry a column length mismatch when we compare string values to regexp
                     let val_filt =
                         arrow::compute::regexp_is_match_scalar(string_values, regex, None)
                             .expect("can compare string value column to string regex scalar");
@@ -191,6 +191,7 @@ fn build_uint16_id_filter(
         // build id filter using the id hashset
         for id in id_set {
             let id_scalar = UInt16Array::new_scalar(id);
+            // since we use a scalar here we don't have to worry a column length mismatch when we compare
             let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
                 .expect("can compare uint16 id column with uint16 scalar");
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)

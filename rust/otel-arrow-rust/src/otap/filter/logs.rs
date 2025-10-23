@@ -405,7 +405,7 @@ impl LogMatchProperties {
         for attribute in &self.resource_attributes {
             // match on key
             let key_scalar = StringArray::new_scalar(attribute.key.clone());
-
+            // since we use a scalar here we don't have to worry a column length mismatch when we compare
             let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
                 .expect("can compare string key column to string scalar");
             // and match on value
@@ -417,6 +417,7 @@ impl LogMatchProperties {
                         MatchType::Regexp => regex_match_column(string_column, value)?,
                         MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                 .expect("can compare string value column to string scalar")
                         }
@@ -428,6 +429,8 @@ impl LogMatchProperties {
                     match int_column {
                         Some(column) => {
                             let value_scalar = Int64Array::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare i64 value column to i64 scalar")
                         }
@@ -441,6 +444,8 @@ impl LogMatchProperties {
                     match double_column {
                         Some(column) => {
                             let value_scalar = Float64Array::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare f64 value column to f64 scalar")
                         }
@@ -454,6 +459,8 @@ impl LogMatchProperties {
                     match bool_column {
                         Some(column) => {
                             let value_scalar = BooleanArray::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare bool value column to bool scalar")
                         }
@@ -531,6 +538,8 @@ impl LogMatchProperties {
                     MatchType::Regexp => regex_match_column(severity_texts_column, severity_text)?,
                     MatchType::Strict => {
                         let severity_text_scalar = StringArray::new_scalar(severity_text);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                         arrow::compute::kernels::cmp::eq(
                             &severity_texts_column,
                             &severity_text_scalar,
@@ -563,6 +572,8 @@ impl LogMatchProperties {
                             MatchType::Regexp => regex_match_column(string_column, value)?,
                             MatchType::Strict => {
                                 let value_scalar = StringArray::new_scalar(value);
+                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                                 arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                     .expect("can compare string value column to string scalar")
                             }
@@ -573,6 +584,8 @@ impl LogMatchProperties {
                         match int_column {
                             Some(column) => {
                                 let value_scalar = Int64Array::new_scalar(*value);
+                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                                 arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                     .expect("can compare i64 value column to i64 scalar")
                             }
@@ -586,6 +599,8 @@ impl LogMatchProperties {
                         match double_column {
                             Some(column) => {
                                 let value_scalar = Float64Array::new_scalar(*value);
+                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                                 arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                     .expect("can compare f64 value column to f64 scalar")
                             }
@@ -599,6 +614,8 @@ impl LogMatchProperties {
                         match bool_column {
                             Some(column) => {
                                 let value_scalar = BooleanArray::new_scalar(*value);
+                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                                 arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                     .expect("can compare bool value column to bool scalar")
                             }
@@ -633,11 +650,15 @@ impl LogMatchProperties {
             let min_severity_number = severity_number_properties.min;
             let min_severity_scalar = Int32Array::new_scalar(min_severity_number);
             let mut severity_numbers_filter =
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                 arrow::compute::kernels::cmp::gt_eq(&severity_number_column, &min_severity_scalar)
                     .expect("can compare i32 severity number column to i32 scalar");
             // update the filter if we allow unknown
             if severity_number_properties.match_undefined {
                 let unknown_severity_scalar = Int32Array::new_scalar(0);
+                // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
                 let unknown_severity_number_filter = arrow::compute::kernels::cmp::eq(
                     &severity_number_column,
                     &unknown_severity_scalar,
@@ -689,6 +710,8 @@ impl LogMatchProperties {
         for attribute in &self.record_attributes {
             // match on key
             let key_scalar = StringArray::new_scalar(attribute.key.clone());
+            // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
             let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
                 .expect("can compare string key column to string scalar");
             // match on value
@@ -701,6 +724,7 @@ impl LogMatchProperties {
                         MatchType::Regexp => regex_match_column(string_column, value)?,
                         MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
                                 .expect("can compare string value column to string scalar")
                         }
@@ -711,6 +735,7 @@ impl LogMatchProperties {
                     match int_column {
                         Some(column) => {
                             let value_scalar = Int64Array::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare i64 value column to i64 scalar")
                         }
@@ -724,6 +749,7 @@ impl LogMatchProperties {
                     match double_column {
                         Some(column) => {
                             let value_scalar = Float64Array::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare f64 value column to f64 scalar")
                         }
@@ -737,6 +763,7 @@ impl LogMatchProperties {
                     match bool_column {
                         Some(column) => {
                             let value_scalar = BooleanArray::new_scalar(*value);
+                            // since we use a scalar here we don't have to worry a column length mismatch when we compare
                             arrow::compute::kernels::cmp::eq(&column, &value_scalar)
                                 .expect("can compare bool value column to bool scalar")
                         }
