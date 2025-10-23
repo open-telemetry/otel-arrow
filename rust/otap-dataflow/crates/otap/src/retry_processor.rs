@@ -44,32 +44,137 @@ pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct RetryConfig {
     /// Initial retry interval in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    #[serde(default = "default_initial_interval")]
     pub initial_interval: Duration,
 
     /// Maximum retry interval in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    #[serde(default = "default_max_interval")]
     pub max_interval: Duration,
 
     /// Maximum elapsed time in seconds.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
+    #[serde(default = "default_max_elapsed_time")]
     pub max_elapsed_time: Duration,
 
     /// Multiplier for the retry interval.
+    #[serde(default = "default_multiplier")]
     pub multiplier: f64,
+}
+
+// These defaults are copied from the Collector (exporterhelper) retry sender.
+
+const fn default_max_interval() -> Duration {
+    Duration::from_secs(30)
+}
+
+const fn default_initial_interval() -> Duration {
+    Duration::from_secs(5)
+}
+
+const fn default_max_elapsed_time() -> Duration {
+    Duration::from_secs(300)
+}
+
+const fn default_multiplier() -> f64 {
+    1.5
+}
+
+/// This prevents absurd configurations due to very small multipliers
+/// or very long max_elapsed_time. There will be an error indicating to
+/// raise the multiplier or increase initial_interval, etc.
+const fn hard_retry_growth_limit() -> usize {
+    1000
 }
 
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            initial_interval: Duration::from_secs(5),
-            max_interval: Duration::from_secs(30),
-            max_elapsed_time: Duration::from_secs(300),
-            multiplier: 1.5,
+            max_interval: default_max_interval(),
+            initial_interval: default_initial_interval(),
+            max_elapsed_time: default_max_elapsed_time(),
+            multiplier: default_multiplier(),
         }
+    }
+}
+
+impl RetryConfig {
+    /// Computes the maximum retry count by simulation. The configuration
+    /// combines exponential growth with a limit, making it difficult tnnnno
+    /// reach a closed form. Returns the retry-count limit and vector of
+    /// durations; note that the vector length covers only the exponential
+    /// portion, subsequent retries use max_interval.
+    fn compute_retry_delays(config: &RetryConfig) -> Result<(usize, Vec<Duration>), ConfigError> {
+        let mut count = 0;
+        let mut delays: Vec<Duration> = Vec::new();
+        let mut total_elapsed = 0.0;
+        let mut accum_multiplier = 1.0;
+
+        let single_multiplier = config.multiplier;
+        let initial_interval = config.initial_interval.as_secs_f64();
+        let max_interval = config.max_interval.as_secs_f64();
+        let limit_total_elapsed = config.max_elapsed_time.as_secs_f64();
+
+        loop {
+            let mult_d = accum_multiplier * initial_interval;
+            let use_mult = mult_d < max_interval;
+            let this_d = if use_mult { mult_d } else { max_interval };
+
+            if this_d + total_elapsed >= limit_total_elapsed {
+                break;
+            }
+
+            if use_mult {
+                accum_multiplier *= single_multiplier;
+
+                let limit = hard_retry_growth_limit();
+                if delays.len() >= limit {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error:
+                            "retry growth: limit {limit}: raise multiplier or modify an interval"
+                                .into(),
+                    });
+                }
+
+                delays.push(Duration::from_secs_f64(this_d));
+            }
+
+            total_elapsed += this_d;
+            count += 1;
+        }
+
+        Ok((count, delays))
+    }
+
+    /// Checks the parameters and returns pre-computed (retry limit,
+    /// growth-phase delays vector)
+    fn validate_retries(&self) -> Result<(usize, Vec<Duration>), ConfigError> {
+        if self.multiplier < 1.0 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "multiplier must be >= 1".into(),
+            });
+        }
+        if self.max_interval == Duration::from_secs(0) {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "max_interval cannot be zero".into(),
+            });
+        }
+        if self.initial_interval == Duration::from_secs(0) {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "initial_interval cannot be zero".into(),
+            });
+        }
+        if self.max_elapsed_time == Duration::from_secs(0) {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "max_elapsed_time cannot be zero".into(),
+            });
+        }
+        let (retry_limit, delays) = Self::compute_retry_delays(self)?;
+
+        Ok((retry_limit, delays))
     }
 }
 
@@ -231,12 +336,12 @@ pub fn create_retry_processor(
         }
     })?;
 
-    let router = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config);
+    let retry = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config)?;
 
     let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
 
     Ok(ProcessorWrapper::local(
-        router,
+        retry,
         node,
         user_config,
         processor_config,
@@ -307,16 +412,20 @@ impl TryFrom<CallData> for RetryState {
 impl RetryProcessor {
     /// Creates a new RetryProcessor with metrics registered via PipelineContext
     #[must_use]
-    pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: RetryConfig) -> Self {
+    pub fn with_pipeline_ctx(
+        pipeline_ctx: PipelineContext,
+        config: RetryConfig,
+    ) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<RetryProcessorMetrics>();
 
-        let (retry_limit, delays) = internal::compute_retry_delays(&config);
-        Self {
+        let (retry_limit, delays) = config.validate_retries()?;
+
+        Ok(Self {
             retry_limit,
             delays,
             config,
             metrics,
-        }
+        })
     }
 
     async fn handle_ack(
@@ -529,54 +638,13 @@ impl RetryProcessor {
         let metrics: MetricSet<RetryProcessorMetrics> =
             handle.register(otap_df_telemetry::testing::EmptyAttributes());
 
-        let (retry_limit, delays) = internal::compute_retry_delays(&config);
+        let (retry_limit, delays) = config.validate_retries().expect("valid");
         Self {
             retry_limit,
             delays,
             config,
             metrics,
         }
-    }
-}
-
-mod internal {
-    use super::*;
-
-    /// Computes the maximum retry count by simulation. The configuration
-    /// combines exponential growth with a limit, making it difficult tnnnno
-    /// reach a closed form. Returns the retry-count limit and vector of
-    /// durations; note that the vector length covers only the exponential
-    /// portion, subsequent retries use max_interval.
-    pub fn compute_retry_delays(config: &RetryConfig) -> (usize, Vec<Duration>) {
-        let mut count = 0;
-        let mut delays: Vec<Duration> = Vec::new();
-        let mut total_elapsed = 0.0;
-        let mut accum_multiplier = 1.0;
-
-        let single_multiplier = config.multiplier;
-        let initial_interval = config.initial_interval.as_secs_f64();
-        let max_interval = config.max_interval.as_secs_f64();
-        let limit_total_elapsed = config.max_elapsed_time.as_secs_f64();
-
-        loop {
-            let mult_d = accum_multiplier * initial_interval;
-            let use_mult = mult_d < max_interval;
-            let this_d = if use_mult { mult_d } else { max_interval };
-
-            if this_d + total_elapsed >= limit_total_elapsed {
-                break;
-            }
-
-            if use_mult {
-                accum_multiplier *= single_multiplier;
-                delays.push(Duration::from_secs_f64(this_d));
-            }
-
-            total_elapsed += this_d;
-            count += 1
-        }
-
-        (count, delays)
     }
 }
 
@@ -600,13 +668,7 @@ mod test {
 
     #[test]
     fn test_default_config() {
-        let cfg: RetryConfig = serde_json::from_value(json!({
-            "initial_interval": 5.0,
-            "max_interval": 30.0,
-            "max_elapsed_time": 300.0,
-            "multiplier": 1.5,
-        }))
-        .unwrap();
+        let cfg: RetryConfig = serde_json::from_value(json!({})).unwrap();
         assert_eq!(cfg, RetryConfig::default());
     }
 
@@ -628,6 +690,54 @@ mod test {
                 multiplier: 1.999,
             }
         );
+    }
+
+    #[test]
+    fn test_invalid_config() {
+        for (value, expect) in vec![
+            (
+                json!({
+                    "initial_interval": 0,
+                }),
+                "initial",
+            ),
+            (
+                json!({
+                    "max_interval": 0,
+                }),
+                "max",
+            ),
+            (
+                json!({
+                    "max_elapsed_time": 0,
+                }),
+                "elapsed",
+            ),
+            (
+                json!({
+                    "multiplier": 0.75,
+                }),
+                "multiplier",
+            ),
+            (
+                json!({
+                    "initial_interval": 1.0,
+                    "max_interval": 1000000,
+                    "max_elapsed_time": 10000000,
+                    "multiplier": 1.0001,
+                }),
+                "retry growth",
+            ),
+        ] {
+            let res = serde_json::from_value::<RetryConfig>(value)
+                .unwrap()
+                .validate_retries();
+            let err = res.expect_err("has error");
+            assert!(
+                err.to_string().contains(expect),
+                "{err:?} should contain {expect}"
+            );
+        }
     }
 
     /// Creates a test pipeline context for testing
