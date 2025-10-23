@@ -7,22 +7,23 @@ use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use arrow::util::pretty::print_batches;
 use data_engine_expressions::{
-    DataExpression, LogicalExpression, PipelineExpression, ScalarExpression,
-    StaticScalarExpression, StringValue, ValueAccessor,
+    DataExpression, LogicalExpression, MutableValueExpression, PipelineExpression,
+    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+    StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
-use datafusion::common::JoinType;
+use datafusion::common::{Column, JoinType};
 use datafusion::datasource::provider_as_source;
 use datafusion::functions_window::expr_fn::row_number;
-use datafusion::logical_expr::LogicalPlanBuilder;
-use datafusion::physical_plan::displayable;
+use datafusion::logical_expr::select_expr::SelectExpr;
+use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::prelude::SessionContext;
 
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
 
-use crate::common::{AttributesIdentifier, ColumnAccessor};
+use crate::common::{AttributesIdentifier, ColumnAccessor, try_static_scalar_to_literal};
 use crate::consts::ROW_NUMBER_COL;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
@@ -31,6 +32,10 @@ use crate::filter::Filter;
 pub struct OtapBatchEngine {}
 
 impl OtapBatchEngine {
+    pub fn new() -> Self {
+        Self {}
+    }
+
     pub async fn process(
         &mut self,
         pipeline: &PipelineExpression,
@@ -112,6 +117,10 @@ impl OtapBatchEngine {
                     }
                 }
             }
+
+            DataExpression::Transform(TransformExpression::Set(set_expr)) => {
+                self.apply_set_transform(exec_ctx, set_expr).await?;
+            }
             _ => {
                 todo!()
             }
@@ -136,6 +145,70 @@ impl OtapBatchEngine {
 
         // update the current plan now that filters are applied
         exec_ctx.curr_plan = root_plan;
+
+        Ok(())
+    }
+
+    async fn apply_set_transform(
+        &mut self,
+        exec_ctx: &mut ExecutionContext,
+        set: &SetTransformExpression,
+    ) -> Result<()> {
+        // TODO here we're setting the column from a literal, which is not quite correct.
+        // ideally, we'd want to figure out if this column can be dictionary encoded, and if so
+        // what is the minimum key size, and use the dict builder to compute the column value.
+        //
+        // TODO also handle the case where we're setting an optional column to null, in which case
+        // it's possible we could drop the column.
+        let source_expr = match set.get_source() {
+            ScalarExpression::Static(static_scalar) => try_static_scalar_to_literal(static_scalar)?,
+            _ => {
+                todo!("handle other/invalid sources")
+            }
+        };
+
+        let column_name = match set.get_destination() {
+            MutableValueExpression::Source(source) => {
+                let column_accessor = ColumnAccessor::try_from(source.get_value_accessor())?;
+                match column_accessor {
+                    ColumnAccessor::ColumnName(column_name) => column_name,
+                    _ => {
+                        todo!("handle unsupported set target")
+                    }
+                }
+            }
+            _ => {
+                todo!("handle unsupported target definition")
+            }
+        };
+
+        let root_plan = exec_ctx.root_batch_plan()?;
+        let new_col = source_expr.alias(&column_name);
+        let mut col_exists = false;
+
+        let mut selection: Vec<Expr> = root_plan
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.name() == &column_name {
+                    col_exists = true;
+                    new_col.clone()
+                } else {
+                    col(field.name())
+                }
+            })
+            .collect();
+
+        if !col_exists {
+            selection.push(new_col);
+        }
+
+        let select_exprs = selection
+            .into_iter()
+            .map(|expr| SelectExpr::Expression(expr));
+
+        exec_ctx.curr_plan = root_plan.project(select_exprs).unwrap();
 
         Ok(())
     }
@@ -351,4 +424,61 @@ async fn filter_attrs_for_root(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::array::StringArray;
+    use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
+    use otel_arrow_rust::proto::opentelemetry::{arrow::v1::ArrowPayloadType, logs::v1::LogRecord};
+    use otel_arrow_rust::schema::consts;
+
+    use crate::test::{apply_to_logs, logs_to_export_req};
+
+    #[tokio::test]
+    async fn test_simple_extend_new_column() {
+        let log_records = logs_to_export_req(vec![LogRecord {
+            ..Default::default()
+        }]);
+
+        let kql = "logs | extend severity_text = \"WARN\"";
+        let pipeline = KqlParser::parse_with_options(kql, ParserOptions::default()).unwrap();
+
+        let result = apply_to_logs(log_records, pipeline).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+
+        let severity_text = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for t in severity_text.iter() {
+            assert_eq!(t, Some("WARN"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_simple_extend_replace_column() {
+        let log_records = logs_to_export_req(vec![LogRecord {
+            severity_text: "INFO".into(),
+            ..Default::default()
+        }]);
+
+        let kql = "logs | extend severity_text = \"WARN\"";
+        let pipeline = KqlParser::parse_with_options(kql, ParserOptions::default()).unwrap();
+
+        let result = apply_to_logs(log_records, pipeline).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+
+        let severity_text = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for t in severity_text.iter() {
+            assert_eq!(t, Some("WARN"))
+        }
+    }
 }
