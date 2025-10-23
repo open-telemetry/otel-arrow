@@ -577,7 +577,7 @@ mod tests {
                                 ])
                                 .severity_text("WARN")
                                 .body(AnyValue::new_string("ok checkout #1"))
-                                .finish(),  
+                                .finish(),
                         ])
                         .finish(),
                     ])
