@@ -4,7 +4,7 @@ Status: **WIP**
 
 This crate will contain the implementation of the filter processor.
 For reference please the golang version of the filter processor.
-(GoLang Filter Processor)[https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/filterprocessor/README.md]
+[GoLang Filter Processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/filterprocessor/README.md)
 
 ## Example Config
 

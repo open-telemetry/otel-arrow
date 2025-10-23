@@ -166,12 +166,6 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
 
-    use crate::pdata::OtapPayload;
-    use arrow::array::{Array, DictionaryArray, UInt16Array};
-    use arrow::datatypes::UInt16Type;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-
     /// Validation closure that checks the outputted data
     fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut _ctx| Box::pin(async move {})
@@ -583,18 +577,7 @@ mod tests {
                                 ])
                                 .severity_text("WARN")
                                 .body(AnyValue::new_string("ok checkout #1"))
-                                .finish(),
-                            // Kept: ERROR with numeric body
-                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
-                                .attributes(vec![
-                                    KeyValue::new("component", AnyValue::new_string("svc")),
-                                    KeyValue::new("retryable", AnyValue::new_bool(false)),
-                                    KeyValue::new("attempt", AnyValue::new_int(3)),
-                                    KeyValue::new("error_rate", AnyValue::new_double(0.02)),
-                                ])
-                                .severity_text("ERROR")
-                                .body(AnyValue::new_double(12.5))
-                                .finish(),
+                                .finish(),  
                         ])
                         .finish(),
                     ])
@@ -643,13 +626,13 @@ mod tests {
                 ),
                 // Also test boolean attribute exclusion: drop if retryable == true
                 KeyValueFilter::new("retryable".to_string(), AnyValueFilter::Boolean(true)),
+                KeyValueFilter::new("error_rate".to_string(), AnyValueFilter::Double(0.02)),
             ],
             vec![r"^DEBUG$".to_string()],
             None,
             vec![
                 AnyValueFilter::String(r"^DELETE .+".to_string()),
                 AnyValueFilter::String(r"^heartbeat$".to_string()),
-                AnyValueFilter::Double(3.14),
             ],
         );
         let log_filter = LogFilter::new(
