@@ -11,11 +11,13 @@ use crate::arrays::{
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{self, Result};
-use crate::otap::filter::{AnyValue, KeyValue, MatchType, nulls_to_false};
+use crate::otap::filter::{AnyValue, KeyValue, MatchType, nulls_to_false, regex_match_column};
+use crate::proto::consts::field_num::resource;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
+    Array, BooleanArray, BooleanBuilder, Float64Array, Int32Array, Int64Array, StringArray,
+    UInt16Array,
 };
 use arrow::datatypes::DataType;
 use serde::Deserialize;
@@ -170,31 +172,24 @@ impl LogFilter {
     fn sync_up_filters(
         &self,
         logs_payload: &OtapArrowRecords,
-        mut resource_attr_filter: BooleanArray,
+        resource_attr_filter: BooleanArray,
         mut log_record_filter: BooleanArray,
-        mut log_attr_filter: BooleanArray,
+        log_attr_filter: BooleanArray,
     ) -> Result<(
-        BooleanArray,
+        Option<BooleanArray>,
         Option<BooleanArray>,
         BooleanArray,
-        BooleanArray,
+        Option<BooleanArray>,
     )> {
         // get the record batches we are going to filter
-        let resource_attrs = logs_payload
-            .get(ArrowPayloadType::ResourceAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        let resource_attrs = logs_payload.get(ArrowPayloadType::ResourceAttrs);
         let log_records = logs_payload
             .get(ArrowPayloadType::Logs)
             .context(error::LogRecordNotFoundSnafu)?;
-        let log_attrs = logs_payload
-            .get(ArrowPayloadType::LogAttrs)
-            .context(error::LogRecordNotFoundSnafu)?;
+        let log_attrs = logs_payload.get(ArrowPayloadType::LogAttrs);
         let scope_attrs = logs_payload.get(ArrowPayloadType::ScopeAttrs);
 
-        // get the id columns from each record batch
-        let resource_attr_parent_ids_column =
-            get_required_array(resource_attrs, consts::PARENT_ID)?;
-        let log_attr_parent_ids_column = get_required_array(log_attrs, consts::PARENT_ID)?;
+        // get the id columns from record batch
         let log_record_ids_column = get_required_array(log_records, consts::ID)?;
         let log_record_resource_ids_column =
             get_required_array_from_struct_array_from_record_batch(
@@ -208,95 +203,135 @@ impl LogFilter {
             consts::ID,
         )?;
 
-        // starting with the resource_attr
-        // -> get ids being removed
-        // -> map ids to resource_ids in log_record
-        // -> create filter to remove those resource_ids
-        // -> update log_record filter
+        // optional record batch
+        match resource_attrs {
+            Some(resource_attrs_record_batch) => {
+                // starting with the resource_attr
+                // -> get ids of filtered attributes
+                // -> map ids to resource_ids in log_record
+                // -> create filter to require these resource_ids
+                // -> update log_record filter
+                let resource_attr_parent_ids_column =
+                    get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
 
-        let inverse_resource_attr_filter =
-            arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+                let resource_attr_parent_ids_filtered = self.get_ids(
+                    resource_attr_parent_ids_column,
+                    &resource_attr_filter,
+                    consts::PARENT_ID,
+                )?;
 
-        // get set of ids that are being removed from resource_attr
-        let resource_attr_parent_ids_removed = self.get_ids(
-            resource_attr_parent_ids_column,
-            &inverse_resource_attr_filter,
-            consts::PARENT_ID,
-        )?;
+                // create filter to remove these ids from log_record
+                let log_record_resource_ids_filter = self.build_id_filter(
+                    log_record_resource_ids_column,
+                    resource_attr_parent_ids_filtered,
+                )?;
 
-        // create filter to remove these ids from log_record
-        let log_record_resource_ids_filter = self.build_id_filter(
-            log_record_resource_ids_column,
-            resource_attr_parent_ids_removed,
-            true,
-        )?;
+                // update the log_record_filter
+                log_record_filter =
+                    arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
+                        .context(error::ColumnLengthMismatchSnafu)?;
+                // apply current logic
+            }
+            None => {
+                if resource_attr_filter.true_count() == 0 {
+                    // the configuration required certain resource_attributes but found none so we can return early
+                    // remove all elements as nothing matches
+                    return Ok((
+                        None,
+                        None,
+                        vec![false; log_record_filter.len()].into(),
+                        None,
+                    ));
+                }
+            }
+        }
 
-        // update the log_record_filter
-        log_record_filter =
-            arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+        match log_attrs {
+            Some(log_attrs_record_batch) => {
+                let log_attr_parent_ids_column =
+                    get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
 
-        // repeat with ids from log_attrs
-        let inverse_log_attr_filter =
-            arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
-        let log_attr_parent_ids_removed = self.get_ids(
-            log_attr_parent_ids_column,
-            &inverse_log_attr_filter,
-            consts::PARENT_ID,
-        )?;
-        let log_record_ids_filter =
-            self.build_id_filter(log_record_ids_column, log_attr_parent_ids_removed, true)?;
-        log_record_filter = arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
-            .context(error::ColumnLengthMismatchSnafu)?;
+                // repeat with ids from log_attrs
+                let log_attr_parent_ids_filtered = self.get_ids(
+                    log_attr_parent_ids_column,
+                    &log_attr_filter,
+                    consts::PARENT_ID,
+                )?;
+                let log_record_ids_filter =
+                    self.build_id_filter(log_record_ids_column, log_attr_parent_ids_filtered)?;
+                log_record_filter =
+                    arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
+                        .context(error::ColumnLengthMismatchSnafu)?;
+            }
+            None => {
+                if log_attr_filter.true_count() == 0 {
+                    // the configuration required certain resource_attributes but found none so we can return early
+                    // remove all elements as nothing matches
+                    return Ok((
+                        None,
+                        None,
+                        vec![false; log_record_filter.len()].into(),
+                        None,
+                    ));
+                }
+            }
+        }
 
         // now using the updated log_record_filter we need to update the rest of the filers
-        let inverse_log_record_filter =
-            arrow::compute::not(&log_record_filter).expect("not doesn't fail");
-        let log_record_ids_removed = self.get_ids(
-            log_record_ids_column,
-            &inverse_log_record_filter,
-            consts::ID,
-        )?;
-        let log_attr_parent_ids_filter =
-            self.build_id_filter(log_attr_parent_ids_column, log_record_ids_removed, true)?;
-        log_attr_filter = arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
-            .context(error::ColumnLengthMismatchSnafu)?;
+        let updated_log_attr_filter = if let Some(log_attrs_record_batch) = log_attrs {
+            let log_attr_parent_ids_column =
+                get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
+
+            let log_record_ids_filtered =
+                self.get_ids(log_record_ids_column, &log_record_filter, consts::ID)?;
+            let log_attr_parent_ids_filter =
+                self.build_id_filter(log_attr_parent_ids_column, log_record_ids_filtered)?;
+
+            Some(
+                arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
+                    .context(error::ColumnLengthMismatchSnafu)?,
+            )
+        } else {
+            None
+        };
 
         // part 4: clean up resource attrs
 
-        let log_record_resource_ids_kept = self.get_ids(
-            log_record_resource_ids_column,
-            &log_record_filter,
-            consts::ID,
-        )?;
-        let resource_attr_parent_ids_filter = self.build_id_filter(
-            resource_attr_parent_ids_column,
-            log_record_resource_ids_kept,
-            false,
-        )?;
-        resource_attr_filter =
-            arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+        let updated_resource_attr_filter = if let Some(resource_attrs_record_batch) = resource_attrs
+        {
+            let resource_attr_parent_ids_column =
+                get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
+            let log_record_resource_ids_filtered = self.get_ids(
+                log_record_resource_ids_column,
+                &log_record_filter,
+                consts::ID,
+            )?;
+
+            let resource_attr_parent_ids_filter =
+                self.build_id_filter(scope_attr_parent_ids_column, log_record_scope_ids_filtered)?;
+            Some(
+                arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
+                    .context(error::ColumnLengthMismatchSnafu)?,
+            )
+        } else {
+            None
+        };
 
         let scope_attr_filter = if let Some(scope_attrs_record_batch) = scope_attrs {
             let scope_attr_parent_ids_column =
                 get_required_array(scope_attrs_record_batch, consts::PARENT_ID)?;
-            let log_record_scope_ids_kept =
+            let log_record_scope_ids_filtered =
                 self.get_ids(log_record_scope_ids_column, &log_record_filter, consts::ID)?;
-            Some(self.build_id_filter(
-                scope_attr_parent_ids_column,
-                log_record_scope_ids_kept,
-                false,
-            )?)
+            Some(self.build_id_filter(scope_attr_parent_ids_column, log_record_scope_ids_filtered)?)
         } else {
             None
         };
 
         Ok((
-            resource_attr_filter,
+            updated_resource_attr_filter,
             scope_attr_filter,
-            log_record_filter,
-            log_attr_filter,
+            updated_log_record_filter,
+            updated_log_attr_filter,
         ))
     }
 
@@ -333,27 +368,50 @@ impl LogFilter {
         &self,
         id_column: &Arc<dyn Array>,
         id_set: HashSet<u16>,
-        match_id: bool,
     ) -> Result<BooleanArray> {
-        let mut combined_id_filter = BooleanArray::new_null(id_column.len());
-        // build id filter using the id hashset
-        for id in id_set {
-            let id_scalar = UInt16Array::new_scalar(id);
-            let id_filter = if match_id {
-                arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
-                    .expect("can compare uint16 id column with uint16 scalar")
-            } else {
-                arrow::compute::kernels::cmp::neq(id_column, &id_scalar)
-                    .expect("can compare uint16 id column with uint16 scalar")
-            };
-            combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+        if (id_column.len() >= 2000) && ((id_set.len() as f64 / id_column.len() as f64) <= 0.1) {
+            let mut combined_id_filter = BooleanArray::new_null(id_column.len());
+            // build id filter using the id hashset
+            for id in id_set {
+                let id_scalar = UInt16Array::new_scalar(id);
+                let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
+                    .expect("can compare uint16 id column with uint16 scalar");
+                combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
+                    .context(error::ColumnLengthMismatchSnafu)?;
+            }
+            // make sure there are no null values before we invert
+            // combined_id_filter = nulls_to_false(&combined_id_filter);
+            // // inverse because these are the ids we want to remove
+            // // not is safe please see https://docs.rs/arrow/latest/arrow/compute/fn.not.html
+            // Ok(arrow::compute::not(&combined_id_filter).expect("not doesn't fail"))
+
+            Ok(combined_id_filter)
+        } else {
+            // convert id to something we can iterate through
+            // iterate through and check if id is in the id_set if so then we append true to boolean builder if not then false
+            let uint16_id_array = id_column
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                    name: consts::ID,
+                    actual: id_column.data_type().clone(),
+                    expect: DataType::UInt16,
+                })?;
+
+            let mut id_filter = BooleanBuilder::new();
+            for uint16_id in uint16_id_array {
+                match uint16_id {
+                    Some(uint16) => {
+                        id_filter.append_value(id_set.contains(&uint16));
+                    }
+                    None => {
+                        id_filter.append_value(false);
+                    }
+                }
+            }
+
+            Ok(id_filter.finish())
         }
-        // make sure there are no null values before we invert
-        combined_id_filter = nulls_to_false(&combined_id_filter);
-        // inverse because these are the ids we want to remove
-        // not is safe please see https://docs.rs/arrow/latest/arrow/compute/fn.not.html
-        Ok(arrow::compute::not(&combined_id_filter).expect("not doesn't fail"))
     }
 }
 
@@ -442,14 +500,7 @@ impl LogMatchProperties {
                     // get string column
                     let string_column = get_required_array(resource_attrs, consts::ATTRIBUTE_STR)?;
                     match self.match_type {
-                        MatchType::Regexp => {
-                            let string_column = string_column
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .expect("array can be downcast to StringArray");
-                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
-                                .expect("can apply string column to regexp scalar")
-                        }
+                        MatchType::Regexp => regex_match_column(string_column, value)?,
                         MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
@@ -599,15 +650,7 @@ impl LogMatchProperties {
                             consts::ATTRIBUTE_STR,
                         )?;
                         match self.match_type {
-                            MatchType::Regexp => {
-                                let string_column = string_column
-                                    .as_any()
-                                    .downcast_ref::<StringArray>()
-                                    .expect("array can be downcast to StringArray");
-
-                                arrow::compute::regexp_is_match_scalar(string_column, value, None)
-                                    .expect("columns should have equal length")
-                            }
+                            MatchType::Regexp => regex_match_column(string_column, value)?,
                             MatchType::Strict => {
                                 let value_scalar = StringArray::new_scalar(value);
                                 arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
@@ -745,15 +788,7 @@ impl LogMatchProperties {
                     let string_column = get_required_array(log_attrs, consts::ATTRIBUTE_STR)?;
 
                     match self.match_type {
-                        MatchType::Regexp => {
-                            let string_column = string_column
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .expect("array can be downcast to StringArray");
-
-                            arrow::compute::regexp_is_match_scalar(string_column, value, None)
-                                .expect("can apply match string column with regexp scalar")
-                        }
+                        MatchType::Regexp => regex_match_column(string_column, value)?,
                         MatchType::Strict => {
                             let value_scalar = StringArray::new_scalar(value);
                             arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
