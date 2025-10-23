@@ -79,15 +79,11 @@ where
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         mutable_value_expression,
-                        || {
-                            format!(
-                                "Variable with name '{variable_name}' was not found"
-                            )
-                        },
+                        || format!("Variable with name '{variable_name}' was not found"),
                     );
                     return Ok(None);
                 }
-                Ok(v) => v
+                Ok(v) => v,
             };
 
             execution_context.add_diagnostic_if_enabled(
@@ -187,7 +183,9 @@ where
     'b: 'c,
 {
     match selectors.next() {
-        Some(s) => select_from_map_value_mut(execution_context, root_expression, root, s, selectors),
+        Some(s) => {
+            select_from_map_value_mut(execution_context, root_expression, root, s, selectors)
+        }
         None => {
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
