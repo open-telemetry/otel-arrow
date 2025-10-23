@@ -429,73 +429,14 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{DictionaryArray, StringArray};
-    use arrow::datatypes::UInt8Type;
-    use arrow::util::pretty::print_batches;
-    use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
-    use otap_df_otap::encoder::encode_logs_otap_batch;
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use prost::Message;
 
-    use super::*;
-    use crate::engine::OtapBatchEngine;
-
-    async fn run_logs_test(
-        record: ExportLogsServiceRequest,
-        kql_expr: &str,
-
-        // TODO is this kind of a hokey way to validate?
-        expected_event_name: Vec<String>,
-    ) {
-        println!("\n>>>>\nHADLING QUERY:\n  {}\n>>>>", kql_expr);
-
-        let mut bytes = vec![];
-        record.encode(&mut bytes).unwrap();
-        let logs_view = RawLogsData::new(&bytes);
-        let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
-        let mut engine = OtapBatchEngine {};
-        let parser_options = ParserOptions::new();
-        let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
-        let result = engine.process(&pipeline_expr, &otap_batch).await.unwrap();
-        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-
-        print_batches(&[logs_rb.clone()]).unwrap();
-
-        let event_name_col = logs_rb.column_by_name(consts::EVENT_NAME).unwrap();
-
-        let tmp = event_name_col
-            .as_any()
-            .downcast_ref::<DictionaryArray<UInt8Type>>()
-            .unwrap();
-        let tmp2 = tmp.downcast_dict::<StringArray>().unwrap();
-        let mut event_names = tmp2
-            .into_iter()
-            .map(|v| v.unwrap().to_string())
-            .collect::<Vec<_>>();
-        event_names.sort();
-
-        // TODO we should probably check the attributes and other child batches are correct
-
-        assert_eq!(expected_event_name, event_names)
-    }
-
-    fn logs_to_export_req(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        }
-    }
+    use crate::test::{logs_to_export_req, run_logs_test};
 
     #[tokio::test]
     async fn filter_simple() {
