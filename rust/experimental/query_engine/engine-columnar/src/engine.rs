@@ -251,11 +251,27 @@ impl OtapBatchEngine {
 
         // TODO handle branches for else if
 
-        // TODO handle else
+        // handle the else branch
+        let else_plan = match conditional_expr.get_default_branch() {
+            Some(else_data_exprs) => {
+                // apply the pipeline to the leftover data
+                let mut else_exec_ctx = exec_ctx.clone();
+                else_exec_ctx.curr_plan = next_branch_plan;
+                for data_expr in else_data_exprs {
+                    Box::pin(self.process_data_expr(data_expr, &mut else_exec_ctx)).await?;
+                }
+                else_exec_ctx.curr_plan
+            }
+
+            None => {
+                // if there's no else branch, we treat is a noop and just return the leftover data
+                next_branch_plan
+            }
+        };
 
         let result_plan = if_exec_ctx
             .curr_plan
-            .union(next_branch_plan.build().unwrap())
+            .union(else_plan.build().unwrap())
             .unwrap();
 
         println!("result plan = {}", result_plan.clone().build().unwrap());
@@ -483,7 +499,8 @@ async fn filter_attrs_for_root(
 
 #[cfg(test)]
 mod test {
-    use arrow::array::StringArray;
+    use arrow::array::{DictionaryArray, StringArray};
+    use arrow::datatypes::UInt8Type;
     use arrow::util::pretty::print_batches;
     use data_engine_expressions::{
         ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
@@ -554,10 +571,14 @@ mod test {
         fn to_data_expr(self) -> DataExpression {
             let if_condition = parse_to_condition(self.if_condition);
             let if_branch_data_exprs = parse_to_data_exprs(self.if_branch);
-            let if_expr =
-                ConditionalDataExpressionBuilder::from_if(if_condition, if_branch_data_exprs)
-                    .build();
-            DataExpression::Conditional(if_expr)
+            let mut if_expr_builder =
+                ConditionalDataExpressionBuilder::from_if(if_condition, if_branch_data_exprs);
+
+            if_expr_builder = match self.else_branch {
+                Some(branch) => if_expr_builder.with_else(parse_to_data_exprs(branch)),
+                None => if_expr_builder,
+            };
+            DataExpression::Conditional(if_expr_builder.build())
         }
     }
 
@@ -605,6 +626,67 @@ mod test {
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-        print_batches(&[logs_rb.clone()]).unwrap()
+        print_batches(&[logs_rb.clone()]).unwrap();
+
+        let severity_column = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| s.map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+
+        let expected = vec!["DEBUG".to_string(), "WARN".to_string()];
+        assert_eq!(severity_column, expected);
+    }
+
+    #[tokio::test]
+    async fn test_simple_if_else() {
+        let if_expr = IfElseExpressions {
+            if_condition: "severity_text == \"INFO\"",
+            if_branch: "extend severity_text = \"DEBUG\"",
+            else_branch: Some("extend severity_text = \"ERROR\""),
+        };
+
+        let pipeline_expr = PipelineExpressionBuilder::new("")
+            .with_expressions(vec![if_expr.to_data_expr()])
+            .build()
+            .unwrap();
+
+        let log_records = logs_to_export_req(vec![
+            LogRecord {
+                severity_text: "INFO".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(),
+                ..Default::default()
+            },
+        ]);
+
+        let result = apply_to_logs(log_records, pipeline_expr).await;
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        print_batches(&[logs_rb.clone()]).unwrap();
+
+        let severity_column = logs_rb
+            .column_by_name(consts::SEVERITY_TEXT)
+            .unwrap()
+            .as_any()
+            // TODO need to fix the issue where the dict column gets replaced by a String column
+            // .downcast_ref::<DictionaryArray<UInt8Type>>()
+            // .unwrap()
+            // .downcast_dict::<StringArray>()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| s.map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+
+        let expected = vec!["DEBUG".to_string(), "ERROR".to_string()];
+        assert_eq!(severity_column, expected);
     }
 }
