@@ -13,6 +13,7 @@ use data_engine_expressions::{
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
 use datafusion::datasource::provider_as_source;
+use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
@@ -93,16 +94,20 @@ impl OtapBatchEngine {
             .curr_batch
             .set(exec_ctx.root_batch_payload_type()?, result);
 
-        // TODO need re-add this
-        // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
-        // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ResourceAttrs).await?;
-        // filter_attrs_for_root(exec_ctx, ArrowPayloadType::ScopeAttrs).await?;
+        // update the attributes
+        // TODO -- we only need to do this if there was filtering applied to the root batch?
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
+            .await?;
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
+            .await?;
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
+            .await?;
 
         Ok(exec_ctx.curr_batch)
     }
 
     async fn plan_data_expr(
-        &mut self,
+        &self,
         exec_ctx: &mut ExecutionContext,
         data_expr: &DataExpression,
     ) -> Result<()> {
@@ -156,7 +161,7 @@ impl OtapBatchEngine {
     }
 
     async fn plan_filter(
-        &mut self,
+        &self,
         exec_ctx: &mut ExecutionContext,
         predicate: &LogicalExpression,
     ) -> Result<()> {
@@ -177,7 +182,7 @@ impl OtapBatchEngine {
     }
 
     async fn plan_set_field(
-        &mut self,
+        &self,
         exec_ctx: &mut ExecutionContext,
         set: &SetTransformExpression,
     ) -> Result<()> {
@@ -259,7 +264,7 @@ impl OtapBatchEngine {
     }
 
     async fn plan_conditional(
-        &mut self,
+        &self,
         exec_ctx: &mut ExecutionContext,
         conditional_expr: &ConditionalDataExpression,
     ) -> Result<()> {
@@ -344,6 +349,63 @@ impl OtapBatchEngine {
 
         Ok(())
     }
+
+    // tODO implementation of this is not correct
+    async fn filter_attrs_for_root(
+        &self,
+        exec_ctx: &mut ExecutionContext,
+        payload_type: ArrowPayloadType,
+    ) -> Result<()> {
+        if let Some(attrs_rb) = exec_ctx.curr_batch.get(payload_type) {
+            let mut attrs_table_scan = exec_ctx.scan_batch_plan(payload_type)?;
+            let root_table_scan = exec_ctx.root_batch_plan()?.build()?;
+
+            attrs_table_scan = match payload_type {
+                ArrowPayloadType::ResourceAttrs => attrs_table_scan.join_on(
+                    root_table_scan,
+                    JoinType::LeftSemi,
+                    [col(consts::RESOURCE)
+                        .field(consts::ID)
+                        .eq(col(consts::PARENT_ID))],
+                )?,
+
+                ArrowPayloadType::ScopeAttrs => attrs_table_scan.join_on(
+                    root_table_scan,
+                    JoinType::LeftSemi,
+                    [col(consts::SCOPE)
+                        .field(consts::ID)
+                        .eq(col(consts::PARENT_ID))],
+                )?,
+
+                // root attributes
+                _ => attrs_table_scan.join(
+                    root_table_scan,
+                    JoinType::LeftSemi,
+                    (vec![consts::PARENT_ID], vec![consts::ID]),
+                    None,
+                )?,
+            };
+
+            let batches = exec_ctx
+                .session_ctx
+                .execute_logical_plan(attrs_table_scan.build()?)
+                .await?
+                .collect()
+                .await?;
+
+            let result = if batches.len() > 0 {
+                // safety: this shouldn't fail unless batches don't have matching schemas, but they
+                // will b/c datafusion enforces this
+                concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches")
+            } else {
+                RecordBatch::new_empty(attrs_rb.schema())
+            };
+
+            exec_ctx.curr_batch.set(payload_type, result);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -391,7 +453,7 @@ impl ExecutionContext {
         })
     }
 
-    fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
+    pub fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
         match self.curr_batch {
             OtapArrowRecords::Logs(_) => Ok(ArrowPayloadType::Logs),
             _ => {
@@ -544,48 +606,10 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
     }
 }
 
-// tODO implementation of this is not correct
-async fn filter_attrs_for_root(
-    exec_ctx: &mut ExecutionContext,
-    payload_type: ArrowPayloadType,
-) -> Result<()> {
-    if exec_ctx.curr_batch.get(payload_type).is_some() {
-        let attrs_table_scan = exec_ctx.scan_batch_plan(payload_type)?;
-        let root_table_scan = exec_ctx.root_batch_plan()?;
-
-        let logical_plan = attrs_table_scan
-            .join(
-                root_table_scan.build().unwrap(),
-                JoinType::LeftSemi,
-                (vec![consts::PARENT_ID], vec![consts::ID]),
-                None,
-            )
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let batches = exec_ctx
-            .session_ctx
-            .execute_logical_plan(logical_plan)
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        // TODO handle batches empty
-        let result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
-
-        exec_ctx.curr_batch.set(payload_type, result);
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod test {
     use arrow::array::{DictionaryArray, StringArray};
     use arrow::datatypes::UInt8Type;
-    use arrow::util::pretty::print_batches;
     use data_engine_expressions::{
         ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
         PipelineExpressionBuilder,
@@ -720,7 +744,6 @@ mod test {
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-        print_batches(&[logs_rb.clone()]).unwrap();
 
         let severity_column = logs_rb
             .column_by_name(consts::SEVERITY_TEXT)
@@ -765,7 +788,6 @@ mod test {
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-        print_batches(&[logs_rb.clone()]).unwrap();
 
         let severity_column = logs_rb
             .column_by_name(consts::SEVERITY_TEXT)
@@ -819,8 +841,6 @@ mod test {
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-        print_batches(&[logs_rb.clone()]).unwrap();
-
         let severity_column = logs_rb
             .column_by_name(consts::SEVERITY_TEXT)
             .unwrap()

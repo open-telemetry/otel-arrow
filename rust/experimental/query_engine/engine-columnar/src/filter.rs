@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::{LogicalExpression, ScalarExpression, StaticScalarExpression};
+use data_engine_expressions::{
+    LogicalExpression, OrLogicalExpression, ScalarExpression, StaticScalarExpression,
+};
 use datafusion::common::JoinType;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::core::expr_fn::coalesce;
@@ -63,140 +65,7 @@ impl Filter {
                 Ok(Self { filter_expr, join })
             }
 
-            // TODO -- there are two things that might be inefficient in the handling of filters
-            // with or here that we should optimize.
-            //
-            // first case
-            // - when both sides of the or require a join to evaluate, but the same table is what's
-            //   on the right of the join in both branches, instead of joining both tables and
-            //   doing a union/distinct on the result, then joining back to the main table, we can
-            //   just create an `or` filter on the right table and join that back to the parent
-            //
-            // second case:
-            // - basically what we're doing here is evaluating all filters inside both sides of the
-            //   or locally, union/distinct both sides, and join this back to the parent table. But
-            //   if the parent table had some filters applied to it, we could eliminate this join
-            //   by pushing the filters down to the both sides of the or evaluation. This might come
-            //   at the cost of evaluating the filters multiple times however, so need further
-            //   investigation.
-            //
-            LogicalExpression::Or(or_expr) => {
-                let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
-                let right_filter = Self::try_from_predicate(exec_ctx, or_expr.get_right())?;
-
-                match (left_filter.join, right_filter.join) {
-                    (Some(left_join), Some(right_join)) => {
-                        let mut left_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr)?;
-                        }
-                        left_plan = left_join.join_to_plan(left_plan)?;
-
-                        let mut right_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr)?;
-                        }
-                        right_plan = right_join.join_to_plan(right_plan)?;
-
-                        Ok(Self {
-                            filter_expr: None,
-                            join: Some(FilteringJoin {
-                                logical_plan: left_plan
-                                    .union(right_plan.build()?)?
-                                    .distinct_on(
-                                        vec![col(ROW_NUMBER_COL)],
-                                        vec![col(ROW_NUMBER_COL)],
-                                        None,
-                                    )?
-                                    .build()?,
-                                join_type: JoinType::LeftSemi,
-                                condition: FilteringJoinCondition::MatchingColumnPairs(
-                                    ROW_NUMBER_COL,
-                                    ROW_NUMBER_COL,
-                                ),
-                            }),
-                        })
-                    }
-
-                    (Some(left_join), None) => {
-                        let mut left_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr)?;
-                        }
-                        left_plan = left_join.join_to_plan(left_plan)?;
-
-                        let mut right_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr)?;
-                        } else {
-                            todo!("would this be invalid?")
-                        }
-
-                        Ok(Self {
-                            filter_expr: None,
-                            join: Some(FilteringJoin {
-                                logical_plan: left_plan
-                                    .union(right_plan.build()?)?
-                                    .distinct_on(
-                                        vec![col(ROW_NUMBER_COL)],
-                                        vec![col(ROW_NUMBER_COL)],
-                                        None,
-                                    )?
-                                    .build()?,
-                                join_type: JoinType::LeftSemi,
-                                condition: FilteringJoinCondition::MatchingColumnPairs(
-                                    ROW_NUMBER_COL,
-                                    ROW_NUMBER_COL,
-                                ),
-                            }),
-                        })
-                    }
-
-                    (None, Some(right_join)) => {
-                        let mut left_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = left_filter.filter_expr {
-                            left_plan = left_plan.filter(filter_expr)?;
-                        } else {
-                            todo!("would this be invalid?")
-                        }
-
-                        let mut right_plan = exec_ctx.root_batch_plan()?;
-                        if let Some(filter_expr) = right_filter.filter_expr {
-                            right_plan = right_plan.filter(filter_expr)?;
-                        }
-                        right_plan = right_join.join_to_plan(right_plan)?;
-
-                        Ok(Self {
-                            filter_expr: None,
-                            join: Some(FilteringJoin {
-                                logical_plan: left_plan
-                                    .union(right_plan.build()?)?
-                                    .distinct_on(
-                                        vec![col(ROW_NUMBER_COL)],
-                                        vec![col(ROW_NUMBER_COL)],
-                                        None,
-                                    )?
-                                    .build()?,
-                                join_type: JoinType::LeftSemi,
-                                condition: FilteringJoinCondition::MatchingColumnPairs(
-                                    ROW_NUMBER_COL,
-                                    ROW_NUMBER_COL,
-                                ),
-                            }),
-                        })
-                    }
-
-                    (None, None) => match (left_filter.filter_expr, right_filter.filter_expr) {
-                        (Some(left_filter), Some(right_filter)) => Ok(Self {
-                            filter_expr: Some(or(left_filter, right_filter)),
-                            join: None,
-                        }),
-                        _ => {
-                            todo!("How does this happen?")
-                        }
-                    },
-                }
-            }
+            LogicalExpression::Or(or_expr) => Self::try_from_or_expr(exec_ctx, or_expr),
 
             LogicalExpression::Not(not_expr) => {
                 let not_filter =
@@ -220,14 +89,10 @@ impl Filter {
                         }),
                     })
                 } else {
-                    if let Some(expr) = not_filter.filter_expr {
-                        Ok(Self {
-                            filter_expr: Some(not(expr)),
-                            join: None,
-                        })
-                    } else {
-                        todo!("invalid?")
-                    }
+                    Ok(Self {
+                        filter_expr: not_filter.filter_expr.map(|expr| not(expr)),
+                        join: None,
+                    })
                 }
             }
 
@@ -237,9 +102,149 @@ impl Filter {
                 eq_expr.get_left(),
                 eq_expr.get_right(),
             ),
-            _ => {
-                todo!("unsupported logical expr")
+            expr => Err(Error::NotYetSupportedError {
+                message: format!("filtering predicate {:?}", expr),
+            }),
+        }
+    }
+
+    fn try_from_or_expr(
+        exec_ctx: &ExecutionContext,
+        or_expr: &OrLogicalExpression,
+    ) -> Result<Self> {
+        // TODO -- there are two things that might be inefficient in the handling of filters
+        // with or here that we should optimize.
+        //
+        // first case
+        // - when both sides of the or require a join to evaluate, but the same table is what's
+        //   on the right of the join in both branches, instead of joining both tables and
+        //   doing a union/distinct on the result, then joining back to the main table, we can
+        //   just create an `or` filter on the right table and join that back to the parent
+        //
+        // second case:
+        // - basically what we're doing here is evaluating all filters inside both sides of the
+        //   or locally, union/distinct both sides, and join this back to the parent table. But
+        //   if the parent table had some filters applied to it, we could eliminate this join
+        //   by pushing the filters down to the both sides of the or evaluation. This might come
+        //   at the cost of evaluating the filters multiple times however, so need further
+        //   investigation.
+        //
+
+        let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
+        let right_filter = Self::try_from_predicate(exec_ctx, or_expr.get_right())?;
+
+        match (left_filter.join, right_filter.join) {
+            (Some(left_join), Some(right_join)) => {
+                let mut left_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = left_filter.filter_expr {
+                    left_plan = left_plan.filter(filter_expr)?;
+                }
+                left_plan = left_join.join_to_plan(left_plan)?;
+
+                let mut right_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = right_filter.filter_expr {
+                    right_plan = right_plan.filter(filter_expr)?;
+                }
+                right_plan = right_join.join_to_plan(right_plan)?;
+
+                Ok(Self {
+                    filter_expr: None,
+                    join: Some(FilteringJoin {
+                        logical_plan: left_plan
+                            .union(right_plan.build()?)?
+                            .distinct_on(
+                                vec![col(ROW_NUMBER_COL)],
+                                vec![col(ROW_NUMBER_COL)],
+                                None,
+                            )?
+                            .build()?,
+                        join_type: JoinType::LeftSemi,
+                        condition: FilteringJoinCondition::MatchingColumnPairs(
+                            ROW_NUMBER_COL,
+                            ROW_NUMBER_COL,
+                        ),
+                    }),
+                })
             }
+
+            (Some(left_join), None) => {
+                let mut left_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = left_filter.filter_expr {
+                    left_plan = left_plan.filter(filter_expr)?;
+                }
+                left_plan = left_join.join_to_plan(left_plan)?;
+
+                let mut right_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = right_filter.filter_expr {
+                    right_plan = right_plan.filter(filter_expr)?;
+                }
+
+                Ok(Self {
+                    filter_expr: None,
+                    join: Some(FilteringJoin {
+                        logical_plan: left_plan
+                            .union(right_plan.build()?)?
+                            .distinct_on(
+                                vec![col(ROW_NUMBER_COL)],
+                                vec![col(ROW_NUMBER_COL)],
+                                None,
+                            )?
+                            .build()?,
+                        join_type: JoinType::LeftSemi,
+                        condition: FilteringJoinCondition::MatchingColumnPairs(
+                            ROW_NUMBER_COL,
+                            ROW_NUMBER_COL,
+                        ),
+                    }),
+                })
+            }
+
+            (None, Some(right_join)) => {
+                let mut left_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = left_filter.filter_expr {
+                    left_plan = left_plan.filter(filter_expr)?;
+                }
+
+                let mut right_plan = exec_ctx.root_batch_plan()?;
+                if let Some(filter_expr) = right_filter.filter_expr {
+                    right_plan = right_plan.filter(filter_expr)?;
+                }
+                right_plan = right_join.join_to_plan(right_plan)?;
+
+                Ok(Self {
+                    filter_expr: None,
+                    join: Some(FilteringJoin {
+                        logical_plan: left_plan
+                            .union(right_plan.build()?)?
+                            .distinct_on(
+                                vec![col(ROW_NUMBER_COL)],
+                                vec![col(ROW_NUMBER_COL)],
+                                None,
+                            )?
+                            .build()?,
+                        join_type: JoinType::LeftSemi,
+                        condition: FilteringJoinCondition::MatchingColumnPairs(
+                            ROW_NUMBER_COL,
+                            ROW_NUMBER_COL,
+                        ),
+                    }),
+                })
+            }
+
+            (None, None) => match (left_filter.filter_expr, right_filter.filter_expr) {
+                (Some(left_filter), Some(right_filter)) => Ok(Self {
+                    filter_expr: Some(or(left_filter, right_filter)),
+                    join: None,
+                }),
+                (Some(filter_expr), None) | (None, Some(filter_expr)) => Ok(Self {
+                    filter_expr: Some(filter_expr),
+                    join: None,
+                }),
+                _ => Ok(Self {
+                    filter_expr: None,
+                    join: None,
+                }),
+            },
         }
     }
 
@@ -257,9 +262,12 @@ impl Filter {
                 let left_col_exists = exec_ctx.column_exists(&left_col)?;
                 match left_col {
                     ColumnAccessor::ColumnName(col_name) => match right_arg {
-                        BinaryArg::Column(_) => {
-                            todo!("handle column right arg in binary expr")
-                        }
+                        BinaryArg::Column(right_col) => Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "column on right side of binary expr. received {:?}",
+                                right_col,
+                            ),
+                        }),
                         BinaryArg::Literal(static_scalar) => {
                             let left = if left_col_exists {
                                 col(col_name)
@@ -287,9 +295,12 @@ impl Filter {
                         }
                     },
                     ColumnAccessor::StructCol(struct_col, struct_field) => match right_arg {
-                        BinaryArg::Column(_) => {
-                            todo!("handle column right arg in binary expr");
-                        }
+                        BinaryArg::Column(right_col) => Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "column on right side of binary expr. received {:?}",
+                                right_col,
+                            ),
+                        }),
                         BinaryArg::Literal(static_scalar) => {
                             let left = col(struct_col).field(struct_field);
                             let right = try_static_scalar_to_literal(&static_scalar)?;
@@ -300,16 +311,30 @@ impl Filter {
                         }
                     },
                     ColumnAccessor::Attributes(attrs_identifier, attr_key) => match right_arg {
-                        BinaryArg::Column(_) => {
-                            todo!("handle column right arg in binary expr")
-                        }
+                        BinaryArg::Column(right_col) => Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "column on right side of binary expr. received {:?}",
+                                right_col,
+                            ),
+                        }),
                         BinaryArg::Literal(static_scalar) => {
                             let attr_val_col_name =
                                 try_static_scalar_to_any_val_column(&static_scalar)?;
 
                             let attrs_payload_type = match attrs_identifier {
-                                // TODO - this shouldn't be hard-coded to logs
-                                AttributesIdentifier::Root => ArrowPayloadType::LogAttrs,
+                                AttributesIdentifier::Root => {
+                                    match exec_ctx.root_batch_payload_type()? {
+                                        ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
+                                        ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
+                                        ArrowPayloadType::MultivariateMetrics
+                                        | ArrowPayloadType::UnivariateMetrics => {
+                                            ArrowPayloadType::MetricAttrs
+                                        }
+                                        _ => {
+                                            unreachable!("invalid root payload type")
+                                        }
+                                    }
+                                }
                                 AttributesIdentifier::NonRoot(payload_type) => payload_type,
                             };
                             let attrs_filter =
@@ -354,10 +379,12 @@ impl Filter {
                     },
                 }
             }
-            _ => {
-                // yoda
-                todo!("handle non column left arg in binary expr");
-            }
+            _ => Err(Error::NotYetSupportedError {
+                message: format!(
+                    "expression for left side of binary expr. received {:?}",
+                    left,
+                ),
+            }),
         }
     }
 }
@@ -406,8 +433,13 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
                 BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
             }
             ScalarExpression::Static(static_expr) => BinaryArg::Literal(static_expr.clone()),
-            _ => {
-                todo!("handle invalid scalar expr");
+            expr => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "expression type not yet supported as argument to binary operation. received {:?}",
+                        expr,
+                    ),
+                });
             }
         };
 
@@ -460,11 +492,6 @@ mod test {
 
     #[tokio::test]
     async fn filter_with_predicate_containing_missing_optional_field() {
-        // TODO get rid of logging config .. it's here to get the optimizer output
-        env_logger::builder()
-            .filter(None, log::LevelFilter::Debug)
-            .init();
-
         let export_req = logs_to_export_req(vec![
             LogRecord {
                 event_name: "1".into(),
@@ -586,7 +613,6 @@ mod test {
         .await;
 
         // this query can be resolved by a simple "or" logical on the attrs table
-        // (TODO -- make the optimization this comment describes)
         run_logs_test(
             export_req.clone(),
             "logs | where attributes[\"X\"] == \"Y\" or attributes[\"X\"] == \"Y2\"",
@@ -869,7 +895,6 @@ mod test {
                 ResourceLogs {
                     schema_url: "resource_schema1".to_string(),
                     resource: Some(Resource {
-                        // TODO fill this in
                         ..Default::default()
                     }),
                     scope_logs: vec![ScopeLogs {
@@ -888,7 +913,6 @@ mod test {
                 ResourceLogs {
                     schema_url: "resource_schema2".to_string(),
                     resource: Some(Resource {
-                        // TODO fill this in
                         ..Default::default()
                     }),
                     scope_logs: vec![ScopeLogs {
