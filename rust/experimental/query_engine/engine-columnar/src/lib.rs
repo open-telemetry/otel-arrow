@@ -13,7 +13,6 @@ mod filter;
 mod test {
     use arrow::array::{DictionaryArray, StringArray};
     use arrow::datatypes::UInt8Type;
-    use arrow::util::pretty::print_batches;
     use data_engine_expressions::PipelineExpression;
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use otap_df_otap::encoder::encode_logs_otap_batch;
@@ -43,18 +42,12 @@ mod test {
     pub(crate) async fn run_logs_test(
         record: ExportLogsServiceRequest,
         kql_expr: &str,
-
-        // TODO is this kind of a hokey way to validate?
         expected_event_name: Vec<String>,
     ) {
-        println!("\n>>>>\nHADLING QUERY:\n  {}\n>>>>", kql_expr);
-
         let parser_options = ParserOptions::new();
         let pipeline_expr = KqlParser::parse_with_options(kql_expr, parser_options).unwrap();
         let result = apply_to_logs(record, pipeline_expr).await;
         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-
-        print_batches(&[logs_rb.clone()]).unwrap();
 
         let event_name_col = logs_rb.column_by_name(consts::EVENT_NAME).unwrap();
 
