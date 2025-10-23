@@ -1,4 +1,4 @@
-name: CI 100kLRPS
+name: Nightly - Syslog
 components:
   load-generator:
     deployment:
@@ -71,11 +71,26 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
         backend_receiver_type: otap
   - name: SYSLOG-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
         backend_receiver_type: otlp
+  - name: SYSLOG-CEF-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
+        backend_receiver_type: otlp
+        syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+  - name: SYSLOG-CEF-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
+        backend_receiver_type: otap
+        syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+

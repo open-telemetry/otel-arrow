@@ -1,4 +1,4 @@
-name: CI 100kLRPS
+name: Nightly - Backpressure
 components:
   load-generator:
     deployment:
@@ -75,27 +75,28 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
   - name: OTLP-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
-  - name: OTAP-ATTR-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-  - name: OTAP-ATTR-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otlp
+  # TODO: Enable when wait_for_result support is added to otap receiver
+  # - name: OTAP-ATTR-OTAP
+  #   from_template:
+  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+  #     variables:
+  #       engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otap.yaml
+  #       loadgen_exporter_type: otap
+  #       backend_receiver_type: otap
+  # - name: OTAP-ATTR-OTLP
+  #   from_template:
+  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+  #     variables:
+  #       engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otlp.yaml
+  #       loadgen_exporter_type: otap
+  #       backend_receiver_type: otlp

@@ -1,15 +1,4 @@
 steps:
-  - name: Configure syslog generator with test params
-    action:
-      update_component_strategy:
-        target: load-generator
-        execution:
-          pipeline_perf_loadgen:
-            threads: {{syslog_threads | default(1)}}
-            target_rate: {{syslog_rate | default(5000)}}
-            batch_size:  {{syslog_batch_size | default(100)}}
-            load_type: syslog
-            message_body:  '{{syslog_message | default(None)}}'
   - name: Deploy Backend Engine
     action:
       component_action:
@@ -38,7 +27,7 @@ steps:
               url: http://localhost:8087/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
-  - name: Deploy DF Engine
+  - name: Deploy Dataflow Engine
     action:
       component_action:
         phase: deploy
@@ -51,7 +40,7 @@ steps:
               template_path: '{{engine_config_template}}'
               output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
               variables:
-                backend_hostname: backend-service
+                backend_hostname: 127.0.0.1
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
@@ -65,10 +54,35 @@ steps:
         target: load-generator
     hooks:
       run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              variables:
+                # ----- General settings -----
+                # default_pipeline_ctrl_msg_channel_size: 100
+                # default_node_ctrl_msg_channel_size: 100
+                # default_pdata_channel_size: 100
+                # ----- Receiver traffic config -----
+                # max_batch_size: 1000
+                # signals_per_second: 100000
+                # metric_weight: 0
+                # trace_weight: 0
+                # log_weight: 100
+                # registry_path: "https://github.com/open-telemetry/semantic-conventions.git[model]"
+                # ----- Exporter config -----
+                # loadgen_exporter_type: otap        # Options: otap, otlp, or custom/invalid
+                # engine_hostname: localhost
+                # exporter_port: 4317
+                # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
+                engine_hostname: 127.0.0.1
+                loadgen_exporter_type: '{{loadgen_exporter_type}}'
+
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:5001/metrics
+              url: http://localhost:8085/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Monitor All
@@ -79,11 +93,6 @@ steps:
           - backend-service
           - load-generator
           - df-engine
-  - name: Start Load
-    action:
-      component_action:
-        phase: start
-        target: load-generator
   - name: Wait for data
     action:
       wait:
@@ -102,11 +111,17 @@ steps:
           - record_event:
               name: observation_stop
   # Stop the load generator from sending traffic.
-  - name: Stop Load
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/pipeline-groups/shutdown
+              method: POST
+              headers:
+                "Content-Type": "application/json"
     action:
-      component_action:
-        phase: stop
-        target: load-generator
+      no_op: {}
   # Wait for all items in-flight to transit and ensure metrics are updated.
   - name: Wait For Drain and Reset
     action:

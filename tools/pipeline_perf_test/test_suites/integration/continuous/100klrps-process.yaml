@@ -1,0 +1,68 @@
+name: Demo Suite
+components:
+  load-generator:
+    deployment:
+      process:
+        command: >
+          ../../../otel-arrow/rust/otap-dataflow/target/release/df_engine
+            --core-id-range 1-1
+            --pipeline test_suites/integration/configs/loadgen/config.rendered.yaml
+            --http-admin-bind 127.0.0.1:8085
+    monitoring:
+      process_component: {}
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?reset=false&format=prometheus
+  df-engine:
+    deployment:
+      process:
+        command: >
+          ../../../otel-arrow/rust/otap-dataflow/target/release/df_engine
+            --core-id-range 2-2
+            --pipeline test_suites/integration/configs/engine/config.rendered.yaml
+            --http-admin-bind 127.0.0.1:8086
+    monitoring:
+      process_component: {}
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?reset=false&format=prometheus
+  backend-service:
+    deployment:
+      process:
+        command: >
+          ../../../otel-arrow/rust/otap-dataflow/target/release/df_engine
+            --core-id-range 0-0
+            --pipeline test_suites/integration/configs/backend/config.rendered.yaml
+            --http-admin-bind 127.0.0.1:8087
+    monitoring:
+      process_component: {}
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?reset=false&format=prometheus
+
+tests:
+  - name: OTLP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-process.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+  - name: OTLP-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-process.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otlp-attr-otap.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otap
+  - name: OTAP-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-process.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+  - name: OTAP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-process.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
