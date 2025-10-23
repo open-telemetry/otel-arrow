@@ -9,6 +9,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.44.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.44.0) - 2025-10-23
+
 - Upgrade to v0.137.0 / v1.43.0 of collector dependencies.
   [#1298](https://github.com/open-telemetry/otel-arrow/pull/1298)
 
