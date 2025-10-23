@@ -557,7 +557,10 @@ impl Expression for ReferenceConstantScalarExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Constant(Reference)")?;
         writeln!(f, "{indent}├── ValueType: {:?}", self.get_value_type())?;
-        writeln!(f, "{indent}└── Id: {}", self.get_constant_id())?;
+        writeln!(f, "{indent}├── Id: {}", self.get_constant_id())?;
+        write!(f, "{indent}└── Accessor: ")?;
+        self.accessor
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }
