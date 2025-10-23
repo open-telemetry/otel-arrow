@@ -44,7 +44,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -236,6 +236,11 @@ impl<PData> EffectHandler<PData> {
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         self.core.route_nack(nack, cxf).await
+    }
+
+    /// Delay data.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.delay_data(when, data).await
     }
 
     /// Reports metrics collected by the processor.
