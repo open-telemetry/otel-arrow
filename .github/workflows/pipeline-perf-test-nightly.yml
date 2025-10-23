@@ -3,8 +3,6 @@ permissions:
   contents: read
 
 on:
-    push:
-        branches: [ add_nightly_benchmarks ]
     schedule:
       - cron: '0 10 * * *'  # runs every day at 10 AM UTC
     workflow_dispatch:
@@ -16,8 +14,7 @@ concurrency:
 
 jobs:
     pipeline-perf-test:
-        #runs-on: oracle-bare-metal-64cpu-512gb-x86-64
-        runs-on: ubuntu-latest
+        runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
           uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
@@ -183,8 +180,6 @@ jobs:
               auto-push: true
               save-data-file: true
 
-          - name: Push benchmark result
-            run: git push 'https://you:${{ secrets.GITHUB_TOKEN }}@github.com/you/repo-name.git' benchmarks:benchmarks
           - name: Add benchmark link to job summary
             run: |
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
