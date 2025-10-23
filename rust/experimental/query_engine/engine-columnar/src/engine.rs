@@ -300,7 +300,7 @@ impl ExecutionContext {
         match accessor {
             ColumnAccessor::ColumnName(column_name) => {
                 // TODO - eventually we might need to loosen the assumption that this is
-                // on the root batch?
+                // a column on the root batch
                 if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()) {
                     rb.column_by_name(&column_name).is_some()
                 } else {
@@ -309,7 +309,9 @@ impl ExecutionContext {
                 }
             }
             _ => {
-                // TODO
+                // TODO handle checking if attributes exist and if nested struct columns exist.
+                // For attributes, we might need to change the signature because this might need
+                // to get called with the value column of any AnyValue (e.g. attributes str column)
                 true
             }
         }
@@ -481,4 +483,6 @@ mod test {
             assert_eq!(t, Some("WARN"))
         }
     }
+
+    
 }
