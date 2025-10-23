@@ -263,7 +263,7 @@ impl Filter {
 
         match left_arg {
             BinaryArg::Column(left_col) => {
-                let left_col_exists = exec_ctx.column_exists(&left_col);
+                let left_col_exists = exec_ctx.column_exists(&left_col)?;
                 match left_col {
                     ColumnAccessor::ColumnName(col_name) => match right_arg {
                         BinaryArg::Column(_) => {
