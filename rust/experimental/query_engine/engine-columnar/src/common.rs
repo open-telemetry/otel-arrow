@@ -8,7 +8,7 @@ use datafusion::logical_expr::{Expr, lit};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 #[derive(Debug)]
 pub enum ColumnAccessor {
@@ -40,7 +40,12 @@ pub fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> R
         StaticScalarExpression::Integer(int_val) => lit(int_val.get_value()),
         StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
         _ => {
-            todo!("handle other value types")
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "literal from scalar expression. received {:?}",
+                    static_scalar
+                ),
+            });
         }
     };
 
@@ -58,7 +63,12 @@ pub fn try_static_scalar_to_any_val_column(
         StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
         StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
         _ => {
-            todo!("handle other attribute columns for binary expr")
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "AnyValues values column from scalar literal. received {:?}",
+                    static_scalar
+                ),
+            });
         }
     };
 

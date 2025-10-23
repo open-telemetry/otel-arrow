@@ -102,6 +102,18 @@ impl Filter {
                 eq_expr.get_left(),
                 eq_expr.get_right(),
             ),
+            LogicalExpression::GreaterThan(eq_expr) => Self::try_from_binary_expr(
+                exec_ctx,
+                Operator::Gt,
+                eq_expr.get_left(),
+                eq_expr.get_right(),
+            ),
+            LogicalExpression::GreaterThanOrEqualTo(eq_expr) => Self::try_from_binary_expr(
+                exec_ctx,
+                Operator::GtEq,
+                eq_expr.get_left(),
+                eq_expr.get_right(),
+            ),
             expr => Err(Error::NotYetSupportedError {
                 message: format!("filtering predicate {:?}", expr),
             }),
@@ -276,14 +288,14 @@ impl Filter {
                             };
                             let right = try_static_scalar_to_literal(&static_scalar)?;
                             Ok(Self {
-                                // TODO figure out if `coalesce`` is needed here. this was added to
+                                // TODO figure out if `coalesce` is needed here. this was added to
                                 // cover the case where left_col is not existing, in which case we
                                 // create an expr like: `lit(Null) <operator> lit(<right>)`.
                                 //
                                 // without coalesce, this gets optimized to lit(Bool(null)) by
                                 // [`datafusion::optimizer::ExprSimplifier`] but if we use this
                                 // this in the context of a `not` expr, e.g.
-                                // `not(lit(null) <operator> lit(right))`` this also gets optimized
+                                // `not(lit(null) <operator> lit(right))` this also gets optimized
                                 // to bool(null) even though it should be `true` always if right is
                                 // not null.
                                 filter_expr: Some(coalesce(vec![
@@ -341,7 +353,7 @@ impl Filter {
                                 exec_ctx.scan_batch_plan(attrs_payload_type)?.filter(and(
                                     binary_expr(
                                         col(consts::ATTRIBUTE_KEY),
-                                        operator,
+                                        Operator::Eq,
                                         lit(attr_key),
                                     ),
                                     binary_expr(
@@ -536,6 +548,53 @@ mod test {
             export_req,
             "logs | where not(severity_text == \"WARN\")",
             (1..6).map(|i| format!("{i}")).collect(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_numeric_operators() {
+        let export_req = logs_to_export_req(vec![
+            LogRecord {
+                event_name: "1".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_int(1))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "2".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_int(2))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "3".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_int(3))],
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "4".into(),
+                attributes: vec![KeyValue::new("X", AnyValue::new_int(4))],
+                ..Default::default()
+            },
+        ]);
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where attributes[\"X\"] > 2",
+            vec!["3".into(), "4".into()],
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where attributes[\"X\"] >= 2",
+            vec!["2".into(), "3".into(), "4".into()],
+        )
+        .await;
+
+        run_logs_test(
+            export_req.clone(),
+            "logs | where not(attributes[\"X\"] >= 2)",
+            vec!["1".into()],
         )
         .await;
     }
