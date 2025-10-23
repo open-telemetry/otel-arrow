@@ -176,7 +176,11 @@ impl ConditionalDataExpressionBuilder {
         Self { inner }
     }
 
-    pub fn with_else_if(mut self, condition: LogicalExpression, branch: Vec<DataExpression>) -> Self {
+    pub fn with_else_if(
+        mut self,
+        condition: LogicalExpression,
+        branch: Vec<DataExpression>,
+    ) -> Self {
         self.inner.branches.push((condition, branch));
         self
     }

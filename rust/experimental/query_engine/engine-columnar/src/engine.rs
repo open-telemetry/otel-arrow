@@ -7,8 +7,8 @@ use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
-    PipelineExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
+    PipelineExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression,
+    StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
@@ -68,7 +68,7 @@ impl OtapBatchEngine {
             .unwrap();
 
         let result = if batches.len() > 0 {
-            // TODO not sure concat_batches is necessary here as there should only be one batch. 
+            // TODO not sure concat_batches is necessary here as there should only be one batch.
             // need to double check if any repartitioning happens that could cause multiple batches
             let mut result = concat_batches(batches[0].schema_ref(), &batches).unwrap();
 
@@ -82,14 +82,16 @@ impl OtapBatchEngine {
             // TODO can expect here ..
             let root_batch = exec_ctx
                 .curr_batch
-                .get(exec_ctx.root_batch_payload_type())
-                .unwrap();
+                .get(exec_ctx.root_batch_payload_type()?)
+                .ok_or(Error::InvalidBatchError {
+                    reason: "received OTAP batch missing root RecordBatch".into(),
+                })?;
             RecordBatch::new_empty(root_batch.schema())
         };
 
         exec_ctx
             .curr_batch
-            .set(exec_ctx.root_batch_payload_type(), result);
+            .set(exec_ctx.root_batch_payload_type()?, result);
 
         // TODO need re-add this
         // filter_attrs_for_root(exec_ctx, ArrowPayloadType::LogAttrs).await?;
@@ -114,19 +116,40 @@ impl OtapBatchEngine {
                             self.plan_filter(exec_ctx, not_expr.get_inner_expression())
                                 .await?;
                         }
-                        _ => todo!("handle invalid discard predicate"),
+                        _ => {
+                            return Err(Error::InvalidPipelineError {
+                                reason: format!(
+                                    "expected Discard data expression to contain a Not predicate as root of logical expression tree. Received: {:?}",
+                                    predicate
+                                ),
+                            });
+                        }
                     }
                 }
             }
 
-            DataExpression::Transform(TransformExpression::Set(set_expr)) => {
-                self.plan_set_field(exec_ctx, set_expr).await?;
+            DataExpression::Transform(transform_expr) => {
+                match transform_expr {
+                    TransformExpression::Set(set_expr) => {
+                        self.plan_set_field(exec_ctx, set_expr).await?
+                    }
+
+                    // TODO handle other types of transforms like map reduction, map rename, etc.
+                    expr => {
+                        return Err(Error::NotYetSupportedError {
+                            message: format!("transform operation not yet supported {:?}", expr),
+                        });
+                    }
+                }
             }
             DataExpression::Conditional(conditional_expr) => {
                 self.plan_conditional(exec_ctx, conditional_expr).await?
             }
-            _ => {
-                todo!()
+            DataExpression::Summary(_) => {
+                return Err(Error::InvalidPipelineError {
+                    reason: "Summary type data expressions are not supported by columnar engine"
+                        .into(),
+                });
             }
         }
         Ok(())
@@ -140,7 +163,7 @@ impl OtapBatchEngine {
         let filter = Filter::try_from_predicate(&exec_ctx, predicate)?;
         let mut root_plan = exec_ctx.root_batch_plan()?;
         if let Some(expr) = filter.filter_expr {
-            root_plan = root_plan.filter(expr).unwrap();
+            root_plan = root_plan.filter(expr)?;
         }
 
         if let Some(join) = filter.join {
@@ -212,7 +235,7 @@ impl OtapBatchEngine {
             .into_iter()
             .map(|expr| SelectExpr::Expression(expr));
 
-        exec_ctx.curr_plan = root_plan.project(select_exprs).unwrap();
+        exec_ctx.curr_plan = root_plan.project(select_exprs)?;
 
         Ok(())
     }
@@ -239,12 +262,12 @@ impl OtapBatchEngine {
         }
 
         let mut result_plan = if_exec_ctx.curr_plan;
-        
+
         // build the plan for everything not selected by the if statement
         let root_plan = exec_ctx.root_batch_plan()?;
         let mut next_branch_plan = root_plan
             .join(
-                filtered_plan.build().unwrap(),
+                filtered_plan.build()?,
                 JoinType::LeftAnti,
                 (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
                 None,
@@ -256,9 +279,10 @@ impl OtapBatchEngine {
             let (else_if_cond, else_if_data_exprs) = &branches[i];
             let mut else_if_exec_ctx = exec_ctx.clone();
             else_if_exec_ctx.curr_plan = next_branch_plan.clone();
-            
+
             // apply the filter steps to everything not selected in the if
-            self.plan_filter(&mut else_if_exec_ctx, else_if_cond).await?;
+            self.plan_filter(&mut else_if_exec_ctx, else_if_cond)
+                .await?;
 
             // save the filter plan
             let filtered_plan = else_if_exec_ctx.root_batch_plan()?;
@@ -270,17 +294,16 @@ impl OtapBatchEngine {
 
             // update the result to union the results of the `if` branch with the results of this
             // `else if` branch
-            result_plan = result_plan.union(else_if_exec_ctx.curr_plan.build().unwrap()).unwrap();
-            
+            result_plan = result_plan.union(else_if_exec_ctx.curr_plan.build()?)?;
+
             // the next branch will receive everything that didn't match the previous branches
             // and also didn't match this branch's conditions
-            next_branch_plan = next_branch_plan
-                .join(filtered_plan.build().unwrap(),
-                    JoinType::LeftAnti,
-                    (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
-                    None,
-                )
-                .unwrap();
+            next_branch_plan = next_branch_plan.join(
+                filtered_plan.build()?,
+                JoinType::LeftAnti,
+                (vec![ROW_NUMBER_COL], vec![ROW_NUMBER_COL]),
+                None,
+            )?;
         }
 
         // handle the else branch
@@ -301,13 +324,7 @@ impl OtapBatchEngine {
             }
         };
 
-        let result_plan = result_plan
-            .union(else_plan.build().unwrap())
-            .unwrap();
-
-        println!("result plan = {}", result_plan.clone().build().unwrap());
-
-        exec_ctx.curr_plan = result_plan;
+        exec_ctx.curr_plan = result_plan.union(else_plan.build()?)?;
 
         Ok(())
     }
@@ -322,34 +339,34 @@ pub(crate) struct ExecutionContext {
 
 impl ExecutionContext {
     fn try_new(batch: OtapArrowRecords) -> Result<Self> {
-        // TODO this logic is also duplicated below - wonder should this just be a method on
-        // OtapArrowRecords ?
+        // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
         let root_batch_payload_type = match batch {
             OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
             _ => {
-                todo!("handle other root batches");
+                return Err(Error::NotYetSupportedError {
+                    message: format!("Only logs signal type is currently supported"),
+                });
             }
         };
-        // TODO no unwrap, return error if not exists
-        let root_rb = batch.get(root_batch_payload_type).unwrap();
+        let root_rb = batch
+            .get(root_batch_payload_type)
+            .ok_or(Error::InvalidBatchError {
+                reason: "received OTAP batch missing root RecordBatch".into(),
+            })?;
 
         // TODO this logic is temporarily duplicated from scan_batch until figure out whether it
         // makes more sense to just register everything in session ctx
-        let table_provider =
-            MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]]).unwrap();
+        let table_provider = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
         let table_source = provider_as_source(Arc::new(table_provider));
         let plan = LogicalPlanBuilder::scan(
             format!("{:?}", root_batch_payload_type).to_ascii_lowercase(),
             table_source,
             None,
-        )
-        .unwrap();
+        )?;
 
         // add a row number column
         // TODO comment on why we're doing this
-        let plan = plan
-            .window(vec![row_number().alias(ROW_NUMBER_COL)])
-            .unwrap();
+        let plan = plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
 
         Ok(Self {
             curr_batch: batch,
@@ -358,11 +375,13 @@ impl ExecutionContext {
         })
     }
 
-    fn root_batch_payload_type(&self) -> ArrowPayloadType {
+    fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
         match self.curr_batch {
-            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            OtapArrowRecords::Logs(_) => Ok(ArrowPayloadType::Logs),
             _ => {
-                todo!("handle other root batches");
+                return Err(Error::NotYetSupportedError {
+                    message: format!("Only logs signal type is currently supported"),
+                });
             }
         }
     }
@@ -396,12 +415,12 @@ impl ExecutionContext {
         }
     }
 
-    pub fn column_exists(&self, accessor: &ColumnAccessor) -> bool {
-        match accessor {
+    pub fn column_exists(&self, accessor: &ColumnAccessor) -> Result<bool> {
+        Ok(match accessor {
             ColumnAccessor::ColumnName(column_name) => {
                 // TODO - eventually we might need to loosen the assumption that this is
                 // a column on the root batch
-                if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()) {
+                if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()?) {
                     rb.column_by_name(&column_name).is_some()
                 } else {
                     // it'd be unusual if the root batch didn't exit
@@ -414,7 +433,7 @@ impl ExecutionContext {
                 // to get called with the value column of any AnyValue (e.g. attributes str column)
                 true
             }
-        }
+        })
     }
 }
 
@@ -595,7 +614,7 @@ mod test {
     struct IfElseExpressions {
         if_condition: &'static str,
         if_branch: &'static str,
-        
+
         // tuples here are (condition, branch data exprs)
         else_ifs: Vec<(&'static str, &'static str)>,
 
@@ -610,10 +629,8 @@ mod test {
                 ConditionalDataExpressionBuilder::from_if(if_condition, if_branch_data_exprs);
 
             for (condition, branch) in self.else_ifs {
-                if_expr_builder = if_expr_builder.with_else_if(
-                    parse_to_condition(condition), 
-                    parse_to_data_exprs(branch)
-                );
+                if_expr_builder = if_expr_builder
+                    .with_else_if(parse_to_condition(condition), parse_to_data_exprs(branch));
             }
 
             if_expr_builder = match self.else_branch {
@@ -710,10 +727,6 @@ mod test {
                 severity_text: "WARN".into(),
                 ..Default::default()
             },
-            LogRecord {
-                severity_text: "TRACE".into(),
-                ..Default::default()
-            }
         ]);
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
@@ -767,7 +780,7 @@ mod test {
             LogRecord {
                 severity_text: "DEBUG".into(), // -> TRACE
                 ..Default::default()
-            }
+            },
         ]);
 
         let result = apply_to_logs(log_records, pipeline_expr).await;
@@ -788,8 +801,11 @@ mod test {
             .filter_map(|s| s.map(|s| s.to_string()))
             .collect::<Vec<_>>();
 
-        let expected = vec!["DEBUG".to_string(), "ERROR".to_string(), "TRACE".to_string()];
+        let expected = vec![
+            "DEBUG".to_string(),
+            "ERROR".to_string(),
+            "TRACE".to_string(),
+        ];
         assert_eq!(severity_column, expected);
     }
-
 }
