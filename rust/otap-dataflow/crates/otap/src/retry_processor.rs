@@ -103,7 +103,7 @@ impl Default for RetryConfig {
 
 impl RetryConfig {
     /// Computes the maximum retry count by simulation. The configuration
-    /// combines exponential growth with a limit, making it difficult tnnnno
+    /// combines exponential growth with a limit, making it difficult to
     /// reach a closed form. Returns the retry-count limit and vector of
     /// durations; note that the vector length covers only the exponential
     /// portion, subsequent retries use max_interval.
