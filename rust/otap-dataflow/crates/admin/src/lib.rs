@@ -4,10 +4,10 @@
 //! HTTP server for exposing admin endpoints.
 
 pub mod error;
+mod health;
 mod pipeline;
 mod pipeline_group;
 mod telemetry;
-mod health;
 
 use axum::Router;
 use std::net::SocketAddr;

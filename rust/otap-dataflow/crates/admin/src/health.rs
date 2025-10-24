@@ -24,12 +24,13 @@ pub(crate) fn routes() -> Router<AppState> {
         // Returns a summary of all pipelines and their statuses.
         .route("/status", get(show_status))
         // Returns liveness status.
-        .route("/livez", get(|| async { StatusCode::OK }))
+        .route("/livez", get(livez))
         // Returns readiness status.
-        .route("/readyz", get(|| async { StatusCode::OK }))
+        .route("/readyz", get(readyz))
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatusResponse {
     generated_at: String,
     pipelines: HashMap<PipelineKey, PipelineStatus>,
@@ -38,21 +39,18 @@ pub struct StatusResponse {
 pub async fn show_status(
     State(state): State<AppState>,
 ) -> Result<Json<StatusResponse>, StatusCode> {
-    let snapshot = state.observed_state_store.snapshot();
-    let response = build_status_response(snapshot);
-    Ok(Json(response))
+    Ok(Json(StatusResponse {
+        generated_at: Utc::now().to_rfc3339(),
+        pipelines: state.observed_state_store.snapshot(),
+    }))
 }
 
-fn build_status_response(
-    mut pipelines: HashMap<PipelineKey, PipelineStatus>,
-) -> StatusResponse {
-    // Aggregated phase are computed on-demand.
-    for pipeline_status in pipelines.values_mut() {
-        pipeline_status.infer_agg_phase();
-    }
+pub async fn livez() -> StatusCode {
+    // ToDo
+    StatusCode::OK
+}
 
-    StatusResponse {
-        generated_at: Utc::now().to_rfc3339(),
-        pipelines,
-    }
+pub async fn readyz() -> StatusCode {
+    // ToDo
+    StatusCode::OK
 }

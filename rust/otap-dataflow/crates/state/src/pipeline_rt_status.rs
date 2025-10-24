@@ -3,33 +3,39 @@
 
 //! Observed per-core pipeline runtime status and phase transition logic.
 
+use crate::conditions::{Condition, ConditionKind, ConditionState, ConditionStatus};
 use crate::error::Error;
 use crate::error::Error::InvalidTransition;
 use crate::event::{ErrorEvent as ErrEv, RequestEvent as Req, SuccessEvent as OkEv};
-use crate::event::{EventType, ObservedEvent, ObservedEventRingBuffer};
+use crate::event::{ErrorSummary, EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::{DeletionMode, FailReason, PipelinePhase};
-use crate::store::ts_to_rfc3339;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde::ser::SerializeStruct;
 use std::time::SystemTime;
 
 /// The per-core status of a pipeline runtime.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct PipelineRuntimeStatus {
     /// Current phase of the pipeline instance.
     pub(crate) phase: PipelinePhase,
 
     /// Timestamp of the most recent event/heartbeat received for this core.
-    #[serde(serialize_with = "ts_to_rfc3339")]
-    pub(crate) last_beat: SystemTime,
+    pub(crate) last_heartbeat_time: SystemTime,
 
     /// Latest observed event from this core
-    #[serde(skip_serializing_if = "ObservedEventRingBuffer::is_empty", default)]
     pub(crate) recent_events: ObservedEventRingBuffer,
 
     /// Set when a *graceful* delete has been requested while the pipeline is
     /// actively handling work. The Draining state will transition to Deleting
     /// as soon as we see `Drained` with this flag set.
     pub(crate) delete_pending: bool,
+
+    /// Condition tracking whether the configuration has been accepted.
+    pub(crate) accepted_condition: ConditionState,
+
+    /// Condition tracking whether the core is ready to process telemetry.
+    pub(crate) ready_condition: ConditionState,
 }
 
 /// Outcome of applying an event to the current phase.
@@ -52,19 +58,214 @@ impl Default for PipelineRuntimeStatus {
     fn default() -> Self {
         Self {
             phase: PipelinePhase::Pending,
-            last_beat: SystemTime::now(),
+            last_heartbeat_time: SystemTime::now(),
             recent_events: ObservedEventRingBuffer::new(5),
             delete_pending: false,
+            accepted_condition: ConditionState::new(
+                ConditionStatus::False,
+                Some("Pending".to_string()),
+                Some("Pipeline runtime (core) is awaiting configuration validation.".to_string()),
+                None,
+            ),
+            ready_condition: ConditionState::new(
+                ConditionStatus::False,
+                Some("Pending".to_string()),
+                Some("Pipeline runtime (core) is not ready to process data.".to_string()),
+                None,
+            ),
         }
     }
 }
 
 impl PipelineRuntimeStatus {
     pub(crate) fn apply_event(&mut self, event: ObservedEvent) -> Result<ApplyOutcome, Error> {
+        let timestamp = event.time;
         let outcome = self.apply(event.r#type.clone());
-        self.last_beat = event.time;
+        self.last_heartbeat_time = timestamp;
+        if outcome.is_ok() {
+            self.refresh_conditions(&event);
+        }
         self.recent_events.push(event);
         outcome
+    }
+
+    fn refresh_conditions(&mut self, event: &ObservedEvent) {
+        let timestamp = event.time;
+        match &event.r#type {
+            EventType::Success(OkEv::Admitted) => {
+                let message = event_message(event).or_else(|| {
+                    Some(
+                        "Pipeline runtime (core) configuration validated and accepted.".to_string(),
+                    )
+                });
+                _ = self.accepted_condition.update(
+                    ConditionStatus::True,
+                    Some("ConfigValid".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::Ready) => {
+                let message = event_message(event).or_else(|| {
+                    Some(
+                        "Pipeline runtime (core) is running and ready to process data.".to_string(),
+                    )
+                });
+                _ = self.ready_condition.update(
+                    ConditionStatus::True,
+                    Some("Running".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::UpdateApplied) => {
+                let message = event_message(event).or_else(|| {
+                    Some("Pipeline update applied; core is serving traffic.".to_string())
+                });
+                _ = self.ready_condition.update(
+                    ConditionStatus::True,
+                    Some("UpdateApplied".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::RollbackComplete) => {
+                let message = event_message(event).or_else(|| {
+                    Some("Rollback complete; core restored to last known good.".to_string())
+                });
+                _ = self.ready_condition.update(
+                    ConditionStatus::True,
+                    Some("Running".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::Drained) => {
+                let message = event_message(event).or_else(|| {
+                    Some(
+                        "Pipeline runtime (core) drained; waiting for shutdown or deletion."
+                            .to_string(),
+                    )
+                });
+                _ = self.ready_condition.update(
+                    ConditionStatus::False,
+                    Some("Drained".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::Deleted) => {
+                let message = event_message(event)
+                    .or_else(|| Some("Pipeline runtime (core) resources deleted.".to_string()));
+                let message_clone = message.clone();
+                _ = self.accepted_condition.update(
+                    ConditionStatus::False,
+                    Some("Deleted".to_string()),
+                    message_clone,
+                    timestamp,
+                );
+                _ = self.ready_condition.update(
+                    ConditionStatus::False,
+                    Some("Deleted".to_string()),
+                    message,
+                    timestamp,
+                );
+            }
+            EventType::Success(OkEv::UpdateAdmitted) => {
+                if self.ready_condition.status != ConditionStatus::True {
+                    let message = event_message(event).or_else(|| {
+                        Some(
+                            "Pipeline runtime (core) update admitted and will begin applying."
+                                .to_string(),
+                        )
+                    });
+                    _ = self.ready_condition.update(
+                        ConditionStatus::True,
+                        Some("Updating".to_string()),
+                        message,
+                        timestamp,
+                    );
+                }
+            }
+            EventType::Error(err) => {
+                let (reason, message) = error_reason_and_message(err, event);
+                _ = self.ready_condition.update(
+                    ConditionStatus::False,
+                    Some(reason.clone()),
+                    message.clone(),
+                    timestamp,
+                );
+                if matches!(err, ErrEv::AdmissionError(_) | ErrEv::ConfigRejected(_)) {
+                    _ = self.accepted_condition.update(
+                        ConditionStatus::False,
+                        Some(reason),
+                        message,
+                        timestamp,
+                    );
+                }
+            }
+            EventType::Request(req) => match req {
+                Req::StartRequested => {
+                    let message = event_message(event)
+                        .or_else(|| Some("Start requested; awaiting admission.".to_string()));
+                    _ = self.accepted_condition.update(
+                        ConditionStatus::False,
+                        Some("StartRequested".to_string()),
+                        message,
+                        timestamp,
+                    );
+                }
+                Req::ShutdownRequested => {
+                    let message = event_message(event)
+                        .or_else(|| Some("Shutdown requested; core will drain.".to_string()));
+                    _ = self.ready_condition.update(
+                        ConditionStatus::False,
+                        Some("ShutdownRequested".to_string()),
+                        message,
+                        timestamp,
+                    );
+                }
+                Req::DeleteRequested => {
+                    let message = event_message(event)
+                        .or_else(|| Some("Delete requested; core entering draining.".to_string()));
+                    _ = self.ready_condition.update(
+                        ConditionStatus::False,
+                        Some("DeleteRequested".to_string()),
+                        message,
+                        timestamp,
+                    );
+                }
+                Req::ForceDeleteRequested => {
+                    let message = event_message(event).or_else(|| {
+                        Some("Force delete requested; pipeline runtime (core) will terminate immediately.".to_string())
+                    });
+                    _ = self.ready_condition.update(
+                        ConditionStatus::False,
+                        Some("ForceDeleteRequested".to_string()),
+                        message,
+                        timestamp,
+                    );
+                }
+            },
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn accepted_condition(&self) -> &ConditionState {
+        &self.accepted_condition
+    }
+
+    #[must_use]
+    pub(crate) fn ready_condition(&self) -> &ConditionState {
+        &self.ready_condition
+    }
+
+    #[must_use]
+    pub(crate) fn conditions(&self) -> [Condition; 2] {
+        [
+            Condition::from_state(ConditionKind::Accepted, &self.accepted_condition),
+            Condition::from_state(ConditionKind::Ready, &self.ready_condition),
+        ]
     }
 
     /// Apply a single observed event to this pipeline.
@@ -301,6 +502,61 @@ impl PipelineRuntimeStatus {
     }
 }
 
+fn error_reason_and_message(err: &ErrEv, event: &ObservedEvent) -> (String, Option<String>) {
+    let reason = match err {
+        ErrEv::AdmissionError(_) => "AdmissionError",
+        ErrEv::ConfigRejected(_) => "ConfigRejected",
+        ErrEv::UpdateFailed(_) => "UpdateFailed",
+        ErrEv::RollbackFailed(_) => "RollbackFailed",
+        ErrEv::DrainError(_) => "DrainError",
+        ErrEv::RuntimeError(_) => "RuntimeError",
+        ErrEv::DeleteError(_) => "DeleteError",
+    }
+    .to_string();
+
+    let message = event_message(event).or_else(|| match err {
+        ErrEv::AdmissionError(summary)
+        | ErrEv::ConfigRejected(summary)
+        | ErrEv::UpdateFailed(summary)
+        | ErrEv::RollbackFailed(summary)
+        | ErrEv::DrainError(summary)
+        | ErrEv::RuntimeError(summary)
+        | ErrEv::DeleteError(summary) => summary_message(summary),
+    });
+
+    (reason, message)
+}
+
+fn summary_message(summary: &ErrorSummary) -> Option<String> {
+    match summary {
+        ErrorSummary::Pipeline { message, .. } => Some(message.clone()),
+        ErrorSummary::Node { message, .. } => Some(message.clone()),
+    }
+}
+
+impl Serialize for PipelineRuntimeStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("PipelineRuntimeStatus", 4)?;
+        state.serialize_field("phase", &self.phase)?;
+        let last_heartbeat_time: DateTime<Utc> = self.last_heartbeat_time.into();
+        state.serialize_field("lastHeartbeatTime", &last_heartbeat_time.to_rfc3339())?;
+        let conditions = self.conditions();
+        state.serialize_field("conditions", &conditions)?;
+        state.serialize_field("deletePending", &self.delete_pending)?;
+        if !self.recent_events.is_empty() {
+            state.serialize_field("recentEvents", &self.recent_events)?;
+        }
+        state.end()
+    }
+}
+
+fn event_message(event: &ObservedEvent) -> Option<String> {
+    event.message().map(|s| s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,18 +632,14 @@ mod tests {
     fn deleting_to_deleted_and_error() {
         let mut p = PipelineRuntimeStatus {
             phase: PipelinePhase::Deleting(DeletionMode::Graceful),
-            last_beat: SystemTime::now(),
-            recent_events: ObservedEventRingBuffer::new(5),
-            delete_pending: false,
+            ..PipelineRuntimeStatus::default()
         };
         _ = p.apply(EventType::Success(OkEv::Deleted)).unwrap();
         assert_eq!(p.phase, PipelinePhase::Deleted);
 
         let mut p2 = PipelineRuntimeStatus {
             phase: PipelinePhase::Deleting(DeletionMode::Forced),
-            last_beat: SystemTime::now(),
-            recent_events: ObservedEventRingBuffer::new(5),
-            delete_pending: false,
+            ..PipelineRuntimeStatus::default()
         };
         _ = p2
             .apply(EventType::Error(ErrEv::DeleteError(

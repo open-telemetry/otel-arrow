@@ -4,39 +4,31 @@
 //! Observed pipeline status and aggregation logic per core.
 
 use crate::CoreId;
-use crate::phase::{DeletionMode, FailReason, PipelineAggPhase, PipelinePhase, RejectReason};
+use crate::conditions::{Condition, ConditionKind, ConditionState, ConditionStatus};
+use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
 use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use serde::ser::SerializeStruct;
+use std::collections::HashMap;
+use std::time::SystemTime;
 
 /// Aggregated, controller-synthesized view for a pipeline across all targeted
 /// cores. This is what external APIs will return for `status`.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct PipelineStatus {
-    /// Coarse phase synthesized from all per-core phases.
-    phase: PipelineAggPhase,
-
     /// Per-core details to aid debugging and aggregation.
     pub(crate) cores: HashMap<CoreId, PipelineRuntimeStatus>,
 
-    #[serde(skip)]
     health_policy: HealthPolicy,
 }
 
 impl PipelineStatus {
     pub(crate) fn new(health_policy: HealthPolicy) -> Self {
         Self {
-            phase: PipelineAggPhase::Unknown,
             cores: HashMap::new(),
             health_policy,
         }
-    }
-
-    /// Returns the current aggregated phase of the pipeline.
-    #[must_use]
-    pub fn phase(&self) -> &PipelineAggPhase {
-        &self.phase
     }
 
     /// Returns the current per-core status map.
@@ -45,140 +37,220 @@ impl PipelineStatus {
         &self.cores
     }
 
-    fn counts(&self) -> AggregateCounts {
-        let mut agg = AggregateCounts::default();
-        for c in self.cores.values() {
-            match &c.phase {
-                PipelinePhase::Pending => agg.pending += 1,
-                PipelinePhase::Starting => agg.starting += 1,
-                PipelinePhase::Running => agg.running += 1,
-                PipelinePhase::Updating => agg.updating += 1,
-                PipelinePhase::RollingBack => agg.rolling_back += 1,
-                PipelinePhase::Draining => agg.draining += 1,
-                PipelinePhase::Stopped => agg.stopped += 1,
-                PipelinePhase::Failed(r) => {
-                    agg.failed += 1;
-                    *agg.failed_reasons.entry(*r).or_insert(0) += 1;
-                }
-                PipelinePhase::Deleting(m) => {
-                    agg.deleting += 1;
-                    if matches!(m, DeletionMode::Forced) {
-                        agg.forced_deletes += 1;
-                    }
-                }
-                PipelinePhase::Deleted => agg.deleted += 1,
-                PipelinePhase::Rejected(r) => {
-                    agg.rejected += 1;
-                    *agg.rejected_reasons.entry(*r).or_insert(0) += 1;
-                } // PipelinePhase::Unknown => agg.unknown += 1,
-            }
-        }
-        agg
+    #[must_use]
+    /// Returns the number of cores currently tracked for this pipeline.
+    pub fn total_cores(&self) -> usize {
+        self.cores.len()
     }
 
-    /// Infer the aggregated phase.
-    ///
-    /// Choose a single, meaningful headline phase from the per-core counts.
-    /// Precedence (highest first): Deleted, Deleting, Failed, Rejected, RollingBack, Updating,
-    /// Draining, RunningAll/RunningDegraded, Starting, StoppedAll/StoppedPartial.
-    pub fn infer_agg_phase(&mut self) {
-        let count = self.counts();
-        let total = count.total();
-        let active = count.active();
-        let forced = count.forced_deletes > 0;
-        let top_fail = count
-            .failed_reasons
-            .iter()
-            .max_by_key(|(_, n)| *n)
-            .map(|(r, _)| *r);
-        let top_reject = count
-            .rejected_reasons
-            .iter()
-            .max_by_key(|(_, n)| *n)
-            .map(|(r, _)| *r);
+    #[must_use]
+    /// Returns how many cores are presently in the running phase.
+    pub fn running_cores(&self) -> usize {
+        self.cores
+            .values()
+            .filter(|c| matches!(c.phase, PipelinePhase::Running))
+            .count()
+    }
 
-        if count.deleted == total {
-            self.phase = PipelineAggPhase::Deleted;
-            return;
-        }
-        if count.deleting > 0 {
-            self.phase = PipelineAggPhase::Deleting {
-                forced,
-                remaining: active,
+    #[must_use]
+    /// Returns the aggregated/synthesized pipeline-level conditions.
+    pub fn conditions(&self) -> Vec<Condition> {
+        vec![
+            self.aggregate_accepted_condition(),
+            self.aggregate_ready_condition(),
+        ]
+    }
+
+    fn aggregate_accepted_condition(&self) -> Condition {
+        if self.cores.is_empty() {
+            return Condition {
+                kind: ConditionKind::Accepted,
+                status: ConditionStatus::Unknown,
+                reason: Some("NoPipelineRuntime".to_string()),
+                message: Some("No runtime (core) observed for this pipeline.".to_string()),
+                last_transition_time: None,
             };
-            return;
-        }
-        if count.failed > 0 {
-            self.phase = PipelineAggPhase::Failed {
-                failed: count.failed,
-                running: count.running,
-                top_reason: top_fail,
-            };
-            return;
-        }
-        if count.rejected > 0 {
-            self.phase = PipelineAggPhase::Rejected {
-                rejected: count.rejected,
-                running: count.running,
-                top_reason: top_reject,
-            };
-            return;
-        }
-        if count.rolling_back > 0 {
-            self.phase = PipelineAggPhase::RollingBack {
-                rolling_back: count.rolling_back,
-                running: count.running,
-            };
-            return;
-        }
-        if count.updating > 0 {
-            self.phase = PipelineAggPhase::Updating {
-                updating: count.updating,
-                running: count.running,
-            };
-            return;
-        }
-        if count.draining > 0 {
-            self.phase = PipelineAggPhase::Draining {
-                draining: count.draining,
-                running: count.running,
-            };
-            return;
         }
 
-        if active > 0 && count.running == active {
-            self.phase = PipelineAggPhase::RunningAll;
-            return;
-        }
-        if count.running > 0 && count.running < active {
-            self.phase = PipelineAggPhase::RunningDegraded {
-                running: count.running,
-                total_active: active,
-            };
-            return;
+        let mut latest_false: Option<ConditionState> = None;
+        let mut latest_false_time: Option<SystemTime> = None;
+        let mut any_unknown: Option<ConditionState> = None;
+        let mut latest_true_time: Option<SystemTime> = None;
+
+        for runtime in self.cores.values() {
+            let cond = runtime.accepted_condition().clone();
+            match cond.status {
+                ConditionStatus::True => {
+                    latest_true_time = max_time(latest_true_time, cond.last_transition_time);
+                }
+                ConditionStatus::False => {
+                    if latest_false.is_none()
+                        || is_time_newer(cond.last_transition_time, latest_false_time)
+                    {
+                        latest_false_time = cond.last_transition_time;
+                        latest_false = Some(cond);
+                    }
+                }
+                ConditionStatus::Unknown => {
+                    if any_unknown.is_none()
+                        || is_time_newer(
+                            cond.last_transition_time,
+                            any_unknown.as_ref().and_then(|c| c.last_transition_time),
+                        )
+                    {
+                        any_unknown = Some(cond);
+                    }
+                }
+            }
         }
 
-        if count.pending > 0 || count.starting > 0 {
-            self.phase = PipelineAggPhase::Starting {
-                pending: count.pending,
-                starting: count.starting,
+        if let Some(state) = latest_false {
+            return Condition {
+                kind: ConditionKind::Accepted,
+                status: ConditionStatus::False,
+                reason: state
+                    .reason
+                    .clone()
+                    .or_else(|| Some("NotAccepted".to_string())),
+                message: state.message.clone().or_else(|| {
+                    Some("One or more cores have not accepted the configuration.".to_string())
+                }),
+                last_transition_time: state.last_transition_time,
             };
-            return;
         }
 
-        if active == 0 {
-            self.phase = PipelineAggPhase::Deleted;
-            return;
-        }
-        if count.stopped == active {
-            self.phase = PipelineAggPhase::StoppedAll {
-                stopped: count.stopped,
+        if let Some(state) = any_unknown {
+            return Condition {
+                kind: ConditionKind::Accepted,
+                status: ConditionStatus::Unknown,
+                reason: state.reason.clone().or_else(|| Some("Unknown".to_string())),
+                message: state
+                    .message
+                    .clone()
+                    .or_else(|| Some("Acceptance is unknown for one or more cores.".to_string())),
+                last_transition_time: state.last_transition_time,
             };
-            return;
         }
-        self.phase = PipelineAggPhase::StoppedPartial {
-            stopped: count.stopped,
-            total_active: active,
+
+        Condition {
+            kind: ConditionKind::Accepted,
+            status: ConditionStatus::True,
+            reason: Some("ConfigValid".to_string()),
+            message: Some(
+                "Pipeline configuration validated and resources quota is not exceeded.".to_string(),
+            ),
+            last_transition_time: latest_true_time,
+        }
+    }
+
+    fn aggregate_ready_condition(&self) -> Condition {
+        if self.cores.is_empty() {
+            return Condition {
+                kind: ConditionKind::Ready,
+                status: ConditionStatus::Unknown,
+                reason: Some("NoPipelineRuntime".to_string()),
+                message: Some("No pipeline runtime (core) observed for this pipeline.".to_string()),
+                last_transition_time: None,
+            };
+        }
+
+        let (ready_numer, ready_denom) = self.count_quorum(|c| {
+            c.phase.kind() != PhaseKind::Deleted && self.health_policy.is_ready(c.phase.kind())
+        });
+        let required = required_ready_count(self.health_policy.ready_quorum, ready_denom);
+        let readiness_met = ready_denom > 0 && ready_numer >= required;
+
+        let mut latest_true_time: Option<SystemTime> = None;
+        let mut latest_false: Option<ConditionState> = None;
+        let mut latest_false_time: Option<SystemTime> = None;
+        let mut latest_unknown: Option<ConditionState> = None;
+
+        for runtime in self.cores.values() {
+            let cond = runtime.ready_condition().clone();
+            match cond.status {
+                ConditionStatus::True => {
+                    latest_true_time = max_time(latest_true_time, cond.last_transition_time);
+                }
+                ConditionStatus::False => {
+                    if latest_false.is_none()
+                        || is_time_newer(cond.last_transition_time, latest_false_time)
+                    {
+                        latest_false_time = cond.last_transition_time;
+                        latest_false = Some(cond);
+                    }
+                }
+                ConditionStatus::Unknown => {
+                    if latest_unknown.is_none()
+                        || is_time_newer(
+                            cond.last_transition_time,
+                            latest_unknown.as_ref().and_then(|c| c.last_transition_time),
+                        )
+                    {
+                        latest_unknown = Some(cond);
+                    }
+                }
+            }
+        }
+
+        if readiness_met {
+            return Condition {
+                kind: ConditionKind::Ready,
+                status: ConditionStatus::True,
+                reason: Some("QuorumMet".to_string()),
+                message: Some("Pipeline is ready to receive and process data.".to_string()),
+                last_transition_time: latest_true_time,
+            };
+        }
+
+        if ready_denom == 0 {
+            let last_time = latest_false
+                .as_ref()
+                .and_then(|c| c.last_transition_time)
+                .or_else(|| latest_unknown.as_ref().and_then(|c| c.last_transition_time));
+            return Condition {
+                kind: ConditionKind::Ready,
+                status: ConditionStatus::False,
+                reason: Some("NoActiveCores".to_string()),
+                message: Some("No active cores are available to evaluate readiness.".to_string()),
+                last_transition_time: last_time,
+            };
+        }
+
+        if let Some(state) = latest_false {
+            let message = format!(
+                "Pipeline is not ready; ready quorum {} not met ({} of {} cores ready).",
+                describe_quorum(self.health_policy.ready_quorum, required),
+                ready_numer,
+                ready_denom
+            );
+            return Condition {
+                kind: ConditionKind::Ready,
+                status: ConditionStatus::False,
+                reason: Some("QuorumNotMet".to_string()),
+                message: Some(message),
+                last_transition_time: state.last_transition_time,
+            };
+        }
+
+        if let Some(state) = latest_unknown {
+            return Condition {
+                kind: ConditionKind::Ready,
+                status: ConditionStatus::Unknown,
+                reason: state.reason.clone().or_else(|| Some("Unknown".to_string())),
+                message: state
+                    .message
+                    .clone()
+                    .or_else(|| Some("Readiness is unknown for one or more cores.".to_string())),
+                last_transition_time: state.last_transition_time,
+            };
+        }
+
+        Condition {
+            kind: ConditionKind::Ready,
+            status: ConditionStatus::False,
+            reason: Some("QuorumNotMet".to_string()),
+            message: Some("Pipeline is not ready; reason could not be determined.".to_string()),
+            last_transition_time: None,
         }
     }
 
@@ -239,48 +311,67 @@ fn quorum_satisfied(numer: usize, denom: usize, q: Quorum) -> bool {
     }
 }
 
-/// Counts by coarse phase kind plus failure/deletion details.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct AggregateCounts {
-    pending: usize,
-    starting: usize,
-    running: usize,
-    updating: usize,
-    rolling_back: usize,
-    draining: usize,
-    stopped: usize,
-    failed: usize,
-    rejected: usize,
-    deleting: usize,
-    deleted: usize,
-    forced_deletes: usize,
-    failed_reasons: BTreeMap<FailReason, usize>,
-    rejected_reasons: BTreeMap<RejectReason, usize>,
-    unknown: usize,
+fn max_time(a: Option<SystemTime>, b: Option<SystemTime>) -> Option<SystemTime> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
 }
 
-impl AggregateCounts {
-    fn total(&self) -> usize {
-        self.pending
-            + self.starting
-            + self.running
-            + self.updating
-            + self.rolling_back
-            + self.draining
-            + self.stopped
-            + self.failed
-            + self.deleting
-            + self.deleted
+fn is_time_newer(candidate: Option<SystemTime>, current: Option<SystemTime>) -> bool {
+    match (candidate, current) {
+        (Some(candidate), Some(current)) => candidate > current,
+        (Some(_), None) => true,
+        _ => false,
     }
-    fn active(&self) -> usize {
-        self.total() - self.deleted
+}
+
+fn required_ready_count(quorum: Quorum, denom: usize) -> usize {
+    match quorum {
+        Quorum::All => denom,
+        Quorum::AtLeast(n) => n.min(denom),
+        Quorum::Percent(p) => {
+            if denom == 0 {
+                0
+            } else {
+                (denom * usize::from(p)).div_ceil(100)
+            }
+        }
+    }
+}
+
+fn describe_quorum(quorum: Quorum, required: usize) -> String {
+    match quorum {
+        Quorum::All => "all cores ready".to_string(),
+        Quorum::AtLeast(n) => format!("at least {n} cores ready"),
+        Quorum::Percent(p) => format!("{p}% of cores ready (>= {required})"),
+    }
+}
+
+impl Serialize for PipelineStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("PipelineStatus", 5)?;
+        let conditions = self.conditions();
+        state.serialize_field("conditions", &conditions)?;
+        state.serialize_field("totalCores", &self.total_cores())?;
+        state.serialize_field("runningCores", &self.running_cores())?;
+        state.serialize_field("cores", &self.cores)?;
+        state.end()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conditions::{ConditionKind, ConditionState, ConditionStatus};
+    use crate::phase::FailReason;
     use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
 
     fn runtime(phase: PipelinePhase) -> PipelineRuntimeStatus {
         PipelineRuntimeStatus {
@@ -291,32 +382,40 @@ mod tests {
 
     fn new_status(policy: HealthPolicy) -> PipelineStatus {
         PipelineStatus {
-            phase: PipelineAggPhase::Unknown,
             cores: HashMap::new(),
             health_policy: policy,
         }
     }
 
-    #[test]
-    fn infer_agg_phase_prioritizes_deleting_with_forced_flag() {
-        let policy = HealthPolicy::default();
-        let mut status = new_status(policy);
-        _ = status
-            .cores
-            .insert(0, runtime(PipelinePhase::Deleting(DeletionMode::Forced)));
-        _ = status
-            .cores
-            .insert(1, runtime(PipelinePhase::Failed(FailReason::DrainError)));
+    fn runtime_with_conditions(
+        phase: PipelinePhase,
+        accepted_status: ConditionStatus,
+        ready_status: ConditionStatus,
+        accepted_reason: Option<&str>,
+        ready_reason: Option<&str>,
+        accepted_time: Option<SystemTime>,
+        ready_time: Option<SystemTime>,
+    ) -> PipelineRuntimeStatus {
+        PipelineRuntimeStatus {
+            phase,
+            accepted_condition: ConditionState::new(
+                accepted_status,
+                accepted_reason.map(|s| s.to_string()),
+                None::<String>,
+                accepted_time,
+            ),
+            ready_condition: ConditionState::new(
+                ready_status,
+                ready_reason.map(|s| s.to_string()),
+                None::<String>,
+                ready_time,
+            ),
+            ..Default::default()
+        }
+    }
 
-        status.infer_agg_phase();
-
-        assert_eq!(
-            status.phase(),
-            &PipelineAggPhase::Deleting {
-                forced: true,
-                remaining: 2,
-            }
-        );
+    fn ts(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
     }
 
     #[test]
@@ -361,5 +460,96 @@ mod tests {
         _ = status.cores.insert(1, runtime(PipelinePhase::Updating));
 
         assert!(!status.readiness());
+    }
+
+    #[test]
+    fn aggregated_accept_condition_false_if_any_core_not_accepted() {
+        let policy = HealthPolicy::default();
+        let mut status = new_status(policy);
+        _ = status.cores.insert(
+            0,
+            runtime_with_conditions(
+                PipelinePhase::Running,
+                ConditionStatus::True,
+                ConditionStatus::True,
+                Some("ConfigValid"),
+                Some("Running"),
+                Some(ts(10)),
+                Some(ts(10)),
+            ),
+        );
+        _ = status.cores.insert(
+            1,
+            runtime_with_conditions(
+                PipelinePhase::Pending,
+                ConditionStatus::False,
+                ConditionStatus::False,
+                Some("Pending"),
+                Some("Initializing"),
+                Some(ts(20)),
+                Some(ts(20)),
+            ),
+        );
+
+        let accepted = status
+            .conditions()
+            .into_iter()
+            .find(|c| matches!(c.kind, ConditionKind::Accepted))
+            .expect("missing Accepted condition");
+
+        assert_eq!(accepted.status, ConditionStatus::False);
+        assert_eq!(accepted.reason.as_deref(), Some("Pending"));
+        assert_eq!(accepted.last_transition_time, Some(ts(20)));
+    }
+
+    #[test]
+    fn aggregated_ready_condition_reports_quorum_not_met() {
+        let policy = HealthPolicy {
+            live_if: vec![PhaseKind::Running],
+            ready_if: vec![PhaseKind::Running],
+            live_quorum: Quorum::AtLeast(1),
+            ready_quorum: Quorum::All,
+        };
+        let mut status = new_status(policy);
+        _ = status.cores.insert(
+            0,
+            runtime_with_conditions(
+                PipelinePhase::Running,
+                ConditionStatus::True,
+                ConditionStatus::True,
+                Some("ConfigValid"),
+                Some("Running"),
+                Some(ts(5)),
+                Some(ts(5)),
+            ),
+        );
+        _ = status.cores.insert(
+            1,
+            runtime_with_conditions(
+                PipelinePhase::Failed(FailReason::RuntimeError),
+                ConditionStatus::True,
+                ConditionStatus::False,
+                Some("ConfigValid"),
+                Some("RuntimeError"),
+                Some(ts(6)),
+                Some(ts(12)),
+            ),
+        );
+
+        let ready = status
+            .conditions()
+            .into_iter()
+            .find(|c| matches!(c.kind, ConditionKind::Ready))
+            .expect("missing Ready condition");
+
+        assert_eq!(ready.status, ConditionStatus::False);
+        assert_eq!(ready.reason.as_deref(), Some("QuorumNotMet"));
+        assert!(
+            ready
+                .message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("not ready"))
+        );
+        assert_eq!(ready.last_transition_time, Some(ts(12)));
     }
 }

@@ -53,9 +53,10 @@ struct ShutdownResponse {
 pub async fn show_status(
     State(state): State<AppState>,
 ) -> Result<Json<PipelineGroupsStatusResponse>, StatusCode> {
-    let snapshot = state.observed_state_store.snapshot();
-    let response = build_status_response(snapshot);
-    Ok(Json(response))
+    Ok(Json(PipelineGroupsStatusResponse {
+        generated_at: Utc::now().to_rfc3339(),
+        pipelines: state.observed_state_store.snapshot(),
+    }))
 }
 
 async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
@@ -88,19 +89,5 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
                 errors: Some(errors),
             }),
         )
-    }
-}
-
-fn build_status_response(
-    mut pipelines: HashMap<PipelineKey, PipelineStatus>,
-) -> PipelineGroupsStatusResponse {
-    // Aggregated phase are computed on-demand.
-    for pipeline_status in pipelines.values_mut() {
-        pipeline_status.infer_agg_phase();
-    }
-
-    PipelineGroupsStatusResponse {
-        generated_at: Utc::now().to_rfc3339(),
-        pipelines,
     }
 }
