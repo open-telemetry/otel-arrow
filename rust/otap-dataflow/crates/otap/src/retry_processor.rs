@@ -12,6 +12,8 @@
 //! - Backoff multiplier
 //! ```
 
+// ToDo: Consider adding a jitter mechanism.
+
 use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;
@@ -40,22 +42,39 @@ use std::time::{Duration, Instant, SystemTime};
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
 
-/// Configuration for the retry processor. Modeled on
+/// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
+///
+/// The calculated delay is:
+///
+///   min(max_interval, initial_interval * multiplier.pow(retry_number))
+///
+/// Retries will be attempted until max_elapsed_time has passed
+/// from the initial attempt.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryConfig {
-    /// Initial retry interval in seconds.
+    /// Initial retry interval in seconds. This is how long the
+    /// first delay will be following the first NACK response.
+    /// This interval is multiplied by the multiplier on subsequent
+    /// retries, until it exceeds max_interval.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     #[serde(default = "default_initial_interval")]
     pub initial_interval: Duration,
 
-    /// Maximum retry interval in seconds.
+    /// Maximum retry interval in seconds. This is a limit on
+    /// individual delays in the retry processor following a single
+    /// NACK failure. Prevents exponential growth when the initial
+    /// interval times the exponentiated multiplier reaches this
+    /// value.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     #[serde(default = "default_max_interval")]
     pub max_interval: Duration,
 
-    /// Maximum elapsed time in seconds.
+    /// Maximum elapsed time in seconds.  This is the maximum elapsed
+    /// wall time for the entire request, beginning when the retry
+    /// processor first sees it. Retries will not be scheduled if they
+    /// would begin after this many seconds from the start.
     #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
     #[serde(default = "default_max_elapsed_time")]
     pub max_elapsed_time: Duration,
@@ -368,7 +387,10 @@ struct RetryState {
     /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
     retries: u64,
 
-    /// Deadline for the retry operation.
+    /// Deadline for the retry operation.  Note this is an f64 because
+    /// it's the only 64-bit value we can get that is lossless. The
+    /// SystemTime::as_millis() and other APIs for integer fractional
+    /// seconds return u128.
     deadline: f64,
 
     /// Item count
