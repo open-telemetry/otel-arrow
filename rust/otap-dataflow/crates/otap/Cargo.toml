@@ -26,6 +26,7 @@ object_store.workspace = true
 otel-arrow-rust.workspace = true
 parquet.workspace = true
 thiserror = { workspace = true }
+serde_with = { workspace = true }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true }
 simdutf8 = { workspace = true }
