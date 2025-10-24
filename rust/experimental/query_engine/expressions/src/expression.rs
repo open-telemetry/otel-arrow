@@ -12,6 +12,10 @@ pub trait Expression: Debug {
     fn get_query_location(&self) -> &QueryLocation;
 
     fn get_name(&self) -> &'static str;
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, _indent: &str) -> std::fmt::Result {
+        writeln!(f, "{self:?}")
+    }
 }
 
 #[derive(Debug, Clone, Eq)]

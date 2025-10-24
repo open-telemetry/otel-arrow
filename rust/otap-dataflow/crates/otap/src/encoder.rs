@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata_views::views::{
+use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
@@ -133,6 +133,7 @@ where
                 spans.append_span_id(span.span_id().copied().unwrap_or_default())?;
                 spans.append_trace_state(span.trace_state());
                 spans.append_parent_span_id(span.parent_span_id().copied())?;
+                spans.append_flags(span.flags());
                 spans.append_name(span.name().unwrap_or_default());
                 spans.append_kind(Some(span.kind()));
                 spans.append_dropped_attributes_count(Some(span.dropped_attributes_count()));
@@ -171,6 +172,7 @@ where
                     links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
                     links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
+                    links.append_flags(link.flags());
 
                     for kv in link.attributes() {
                         link_attrs.append_parent_id(&curr_link_id);
@@ -302,7 +304,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 for log_record in log_records_slice {
@@ -311,7 +314,8 @@ where
                             .as_ref()
                             .expect("LogRecord should not be None")
                             .observed_time_unix_nano()
-                            .map(|v| v as i64),
+                            .map(|v| v as i64)
+                            .unwrap_or(0),
                     );
                 }
                 logs.append_schema_url_n(scope_schema_url, logs_count);
@@ -362,6 +366,15 @@ where
                             .expect("LogRecord should not be None")
                             .span_id(),
                     )?;
+                }
+
+                for log_record in log_records_slice {
+                    logs.append_event_name(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .event_name(),
+                    );
                 }
 
                 for log_record in log_records_slice {
@@ -501,27 +514,35 @@ where
     if let Some(val) = kv.value() {
         match val.value_type() {
             ValueType::String => {
-                attribute_rb_builder.append_str(val.as_string().expect("value to be string"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_str(val.as_string().expect("value to be string"));
             }
-            ValueType::Int64 => {
-                attribute_rb_builder.append_int(val.as_int64().expect("value to be int64"))
-            }
+            ValueType::Int64 => attribute_rb_builder
+                .any_values_builder
+                .append_int(val.as_int64().expect("value to be int64")),
             ValueType::Double => {
-                attribute_rb_builder.append_double(val.as_double().expect("value to be double"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_double(val.as_double().expect("value to be double"));
             }
             ValueType::Bool => {
-                attribute_rb_builder.append_bool(val.as_bool().expect("value to be bool"));
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_bool(val.as_bool().expect("value to be bool"));
             }
-            ValueType::Bytes => {
-                attribute_rb_builder.append_bytes(val.as_bytes().expect("value to be bytes"))
-            }
+            ValueType::Bytes => attribute_rb_builder
+                .any_values_builder
+                .append_bytes(val.as_bytes().expect("value to be bytes")),
             ValueType::Array => {
                 let mut serialized_values = vec![];
                 cbor::serialize_any_values(
                     val.as_array().expect("value to be array"),
                     &mut serialized_values,
                 )?;
-                attribute_rb_builder.append_slice(&serialized_values)
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_slice(&serialized_values)
             }
             ValueType::KeyValueList => {
                 let mut serialized_value = vec![];
@@ -529,14 +550,16 @@ where
                     val.as_kvlist().expect("value is kvlist"),
                     &mut serialized_value,
                 )?;
-                attribute_rb_builder.append_map(&serialized_value);
+                attribute_rb_builder
+                    .any_values_builder
+                    .append_map(&serialized_value);
             }
             ValueType::Empty => {
-                attribute_rb_builder.append_empty();
+                attribute_rb_builder.any_values_builder.append_empty();
             }
         }
     } else {
-        attribute_rb_builder.append_empty();
+        attribute_rb_builder.any_values_builder.append_empty();
     }
 
     Ok(())
@@ -838,6 +861,7 @@ where
                             ehdp.append_flags(ehdp_view.flags().into_inner());
                             ehdp.append_min(ehdp_view.min());
                             ehdp.append_max(ehdp_view.max());
+                            ehdp.append_zero_threshold(ehdp_view.zero_threshold());
 
                             for exemplar in ehdp_view.exemplars() {
                                 append_exemplar(
@@ -953,10 +977,11 @@ mod test {
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
 
-    use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-    use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
-    use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
-    use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
+    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
+    use otel_arrow_rust::otlp::ProtoBuffer;
+    use otel_arrow_rust::otlp::attributes::AttributeValueType;
+    use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
@@ -964,12 +989,14 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::SpanFlags;
     use otel_arrow_rust::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
         status::StatusCode,
     };
     use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
@@ -2060,6 +2087,7 @@ mod test {
                 Field::new("flags", DataType::UInt32, false),
                 Field::new("min", DataType::Float64, true),
                 Field::new("max", DataType::Float64, true),
+                Field::new("zero_threshold", DataType::Float64, true),
             ])),
             vec![
                 // id
@@ -2088,6 +2116,8 @@ mod test {
                 Arc::new(Float64Array::from_iter(vec![Some(4.0)])),
                 // max
                 Arc::new(Float64Array::from_iter(vec![Some(44.0)])),
+                // zero threshold
+                Arc::new(Float64Array::from_iter(vec![Some(-1.1)])),
             ],
         )
         .unwrap();
@@ -2358,10 +2388,14 @@ mod test {
                         .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
                         .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
                         .severity_text("Info")
-                        .attributes(vec![KeyValue::new(
-                            "log_attr1",
-                            AnyValue::new_string("log_val_1"),
-                        )])
+                        .attributes(vec![
+                            KeyValue::new("log_attr1", AnyValue::new_string("log_val_1")),
+                            // test some realistic attrs with special characters & whitespaces..
+                            KeyValue::new("syslog_type", AnyValue::new_string("syslog rfc3164")),
+                            KeyValue::new("az.service_request_id", AnyValue::new_string("00000000-0000-0000-0000-000000000000")),
+                            KeyValue::new("cloud.resource_id", AnyValue::new_string("/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>")),
+
+                        ])
                         .dropped_attributes_count(3u32)
                         .flags(LogRecordFlags::TraceFlagsMask)
                         .body(AnyValue::new_string("log_body"))
@@ -2476,7 +2510,7 @@ mod test {
                     "body",
                     DataType::Struct(
                         vec![
-                            Field::new("type", DataType::UInt8, true),
+                            Field::new("type", DataType::UInt8, false),
                             Field::new(
                                 "str",
                                 DataType::Dictionary(
@@ -2492,6 +2526,11 @@ mod test {
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, false),
                 Field::new("flags", DataType::UInt32, true),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -2621,7 +2660,7 @@ mod test {
                 // body
                 Arc::new(StructArray::new(
                     vec![
-                        Field::new("type", DataType::UInt8, true),
+                        Field::new("type", DataType::UInt8, false),
                         Field::new(
                             "str",
                             DataType::Dictionary(
@@ -2647,6 +2686,11 @@ mod test {
                 Arc::new(UInt32Array::from(vec![
                     LogRecordFlags::TraceFlagsMask as u32,
                 ])) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event1"])),
+                )),
             ],
         )
         .unwrap();
@@ -2740,17 +2784,26 @@ mod test {
                 ),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt16Array::from_iter_values(vec![0,0,0,0])),
                 Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from_iter_values(vec![0]),
-                    Arc::new(StringArray::from_iter_values(vec!["log_attr1"])),
+                    UInt8Array::from_iter_values(vec![0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "log_attr1", "syslog_type", "az.service_request_id", "cloud.resource_id"
+                        ])),
                 )),
                 Arc::new(UInt8Array::from_iter_values(vec![
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
                 ])),
                 Arc::new(DictionaryArray::<UInt16Type>::new(
-                    UInt16Array::from_iter_values(vec![0]),
-                    Arc::new(StringArray::from_iter_values(vec!["log_val_1"])),
+                    UInt16Array::from_iter_values(vec![0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "log_val_1", "syslog rfc3164",
+                        "00000000-0000-0000-0000-000000000000", 
+                        "/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>"
+                    ])),
                 )),
             ],
         )
@@ -2954,6 +3007,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 Arc::new(StructArray::from(vec![
@@ -3010,6 +3068,11 @@ mod test {
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["event"])),
                 )) as ArrayRef,
             ],
         )
@@ -3138,6 +3201,11 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
+                Field::new(
+                    "event_name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
             ])),
             vec![
                 // id
@@ -3198,6 +3266,11 @@ mod test {
                     UInt8Array::from(vec![0, 1, 0]),
                     Arc::new(Int32Array::from(vec![5, 9, 5])),
                 )) as ArrayRef,
+                // event_name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 0, 0]),
+                    Arc::new(StringArray::from(vec!["event"])),
+                )),
             ],
         )
         .unwrap();
@@ -3329,7 +3402,7 @@ mod test {
 
         let expected_body = StructArray::try_new(
             vec![
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(
                     consts::ATTRIBUTE_STR,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
@@ -3454,6 +3527,7 @@ mod test {
         )
         .unwrap();
 
+        assert_eq!(body_column.fields(), expected_body.fields());
         assert_eq!(body_column, &expected_body);
 
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
@@ -3461,17 +3535,22 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
+
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))
@@ -3697,17 +3776,21 @@ mod test {
         assert_eq!(logs_attrs, &expected_attrs);
 
         // check the serialized values are what is expected
-        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        let mut proto_buf = ProtoBuffer::new();
+        proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
+        let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_array,
+            deserialized_array.value,
             Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![AnyValue::new_bool(true)]
             }))
         );
 
-        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        proto_buf.clear();
+        proto_encode_cbor_bytes(&expected_serialized_kvs, &mut proto_buf).unwrap();
+        let deserialized_kvs = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
-            deserialized_kvs,
+            deserialized_kvs.value,
             Some(any_value::Value::KvlistValue(KeyValueList {
                 values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
             }))
@@ -3726,6 +3809,42 @@ mod test {
         let mut logs_data_bytes = vec![];
         logs_data.encode(&mut logs_data_bytes).unwrap();
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
+    }
+
+    #[test]
+    fn test_encode_logs_batch_length_counts_rows() {
+        use otel_arrow_rust::otap::OtapArrowRecords;
+        use otel_arrow_rust::proto::opentelemetry::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue,
+        };
+        use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+        };
+        use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+
+        // Build logs with at least one attribute per record so log ids are set
+        let logs: Vec<LogRecord> = (0..3)
+            .map(|i| {
+                LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}"))
+                    .attributes(vec![KeyValue::new("k", AnyValue::new_string("v"))])
+                    .finish()
+            })
+            .collect();
+
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("lib"))
+                        .log_records(logs)
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+
+        let rec = encode_logs_otap_batch(&logs_data).expect("encode logs");
+        assert!(matches!(rec, OtapArrowRecords::Logs(_)));
+        let n = rec.batch_length();
+        assert!(n >= 3, "expected at least 3 log rows, got {n}");
     }
 
     fn _generate_traces_data_all_fields() -> TracesData {
@@ -3764,6 +3883,7 @@ mod test {
                     .trace_state("some_state")
                     .end_time_unix_nano(1999u64)
                     .parent_span_id(a_parent_span_id.to_vec())
+                    .flags(SpanFlags::TraceFlagsMask)
                     .dropped_attributes_count(7u32)
                     .dropped_events_count(11u32)
                     .dropped_links_count(29u32)
@@ -3787,6 +3907,7 @@ mod test {
                                 "link_attr1",
                                 AnyValue::new_string("hello"),
                             )])
+                            .flags(255u32)
                             .finish(),
                     ])
                     .finish(),
@@ -3882,6 +4003,7 @@ mod test {
                     true,
                 ),
                 Field::new("parent_span_id", DataType::FixedSizeBinary(8), true),
+                Field::new("flags", DataType::UInt32, true),
                 Field::new(
                     "name",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -4040,6 +4162,8 @@ mod test {
                     )
                     .unwrap(),
                 ),
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -4159,6 +4283,7 @@ mod test {
                     true,
                 ),
                 Field::new("dropped_attributes_count", DataType::UInt32, true),
+                Field::new("flags", DataType::UInt32, true),
             ])),
             vec![
                 // id
@@ -4188,6 +4313,8 @@ mod test {
                 )) as ArrayRef,
                 // dropped_attributes_count
                 Arc::new(UInt32Array::from(vec![567])) as ArrayRef,
+                // flags
+                Arc::new(UInt32Array::from_iter_values([255])),
             ],
         )
         .unwrap();

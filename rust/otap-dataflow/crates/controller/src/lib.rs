@@ -17,16 +17,26 @@
 //! - TODO: Monitoring
 //! - TODO: Support pipeline groups
 
+use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
+use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::node::NodeKind;
 use otap_df_config::{
-    PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
+    PipelineGroupId, PipelineId,
+    pipeline::PipelineConfig,
+    pipeline_group::{CoreAllocation, Quota},
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::error::Error as EngineError;
+use otap_df_state::DeployedPipelineKey;
+use otap_df_state::event::{ErrorSummary, ObservedEvent};
+use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
@@ -61,12 +71,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline: PipelineConfig,
         quota: Quota,
         admin_settings: HttpAdminSettings,
-    ) -> Result<(), error::Error> {
-        // Initialize a global metrics system and reporter.
+    ) -> Result<(), Error> {
+        // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
+        let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
+        let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         // Start the metrics aggregation
         let metrics_registry = metrics_system.registry();
@@ -75,31 +88,29 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 metrics_system.run(cancellation_token)
             })?;
 
+        // Start the observed state store background task
+        let obs_state_join_handle =
+            spawn_thread_local_task("observed-state-store", move |cancellation_token| {
+                obs_state_store.run(cancellation_token)
+            })?;
+
+        // Start one thread per requested core
         // Get available CPU cores for pinning
-        let all_core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| error::Error::CoreDetectionUnavailable)?;
-
-        // Determine the number of CPU cores available and requested
-        // If quota.num_cores is 0, use all available cores
-        // If quota.num_cores is greater than available cores, use the minimum
-        // If quota.num_cores is less than available cores, use the requested number
-        let num_cpu_cores = all_core_ids.len();
-        let num_requested_cores = if quota.num_cores == 0 {
-            num_cpu_cores
-        } else {
-            quota.num_cores.min(num_cpu_cores)
-        };
-
-        let requested_cores = all_core_ids
-            .into_iter()
-            .take(num_requested_cores)
-            .collect::<Vec<_>>();
-
-        // Start one thread per core
+        let requested_cores = Self::select_cores_for_quota(
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
+            quota,
+        )?;
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
+        // ToDo [LQ] Support multiple pipeline groups in the future.
+
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id: core_id.id,
+            };
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
                 pipeline
                     .pipeline_settings()
@@ -118,20 +129,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let metrics_reporter = metrics_reporter.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
+            let obs_evt_reporter = obs_evt_reporter.clone();
             let handle = thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
                     Self::run_pipeline_thread(
+                        pipeline_key,
                         core_id,
                         pipeline_config,
                         pipeline_factory,
                         pipeline_handle,
+                        obs_evt_reporter,
                         metrics_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                     )
                 })
-                .map_err(|e| error::Error::ThreadSpawnError {
+                .map_err(|e| Error::ThreadSpawnError {
                     thread_name: thread_name.clone(),
                     source: e,
                 })?;
@@ -145,24 +159,60 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Start the admin HTTP server
         let admin_server_handle =
             spawn_thread_local_task("http-admin", move |cancellation_token| {
+                // Convert the concrete senders to trait objects for the admin crate
+                let admin_senders: Vec<
+                    std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>,
+                > = ctrl_msg_senders
+                    .into_iter()
+                    .map(|sender| {
+                        std::sync::Arc::new(sender)
+                            as std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>
+                    })
+                    .collect();
+
                 otap_df_admin::run(
                     admin_settings,
-                    ctrl_msg_senders,
+                    obs_state_handle,
+                    admin_senders,
                     metrics_registry,
                     cancellation_token,
                 )
             })?;
 
         // Wait for all pipeline threads to finish and collect their results
-        let mut results = Vec::with_capacity(threads.len());
+        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
         for (thread_name, thread_id, core_id, handle) in threads {
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id,
+            };
             match handle.join() {
-                Ok(result) => {
-                    results.push(result);
+                Ok(Ok(_)) => {
+                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
+                }
+                Ok(Err(e)) => {
+                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "Pipeline encountered a runtime error.",
+                        err_summary,
+                    ));
+                    results.push(Err(e));
                 }
                 Err(e) => {
+                    let err_summary = ErrorSummary::Pipeline {
+                        error_kind: "panic".into(),
+                        message: "The pipeline panicked during execution.".into(),
+                        source: Some(format!("{e:?}")),
+                    };
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "The pipeline panicked during execution.",
+                        err_summary,
+                    ));
                     // Thread join failed, handle the error
-                    return Err(error::Error::ThreadPanic {
+                    return Err(Error::ThreadPanic {
                         thread_name,
                         thread_id,
                         core_id,
@@ -172,34 +222,85 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        // In this project phase (alpha), we just print the results of the pipelines and park the
-        // main thread indefinitely. This is useful for debugging and demonstration purposes.
-        // We can for example use the shutdown endpoint and still inspect the metrics.
         // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.
-        // ToDo Maintain an internal Global Observed State that will exposed by the admin endpoints and use by a reconciler to orchestrate pipeline updates.
-        #[allow(clippy::dbg_macro)] // Use for demonstration purposes (temp)
-        {
-            dbg!(&results);
-        }
+
+        // In this project phase (alpha), we park the main thread indefinitely. This is useful for
+        // debugging and demonstration purposes. The following admin endpoints can be used to
+        // inspect the observed state and metrics while the pipelines are running.
         thread::park();
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
+        obs_state_join_handle.shutdown_and_join()?;
 
         Ok(())
     }
 
+    /// Selects which CPU cores to use based on the given quota configuration.
+    fn select_cores_for_quota(
+        mut available_core_ids: Vec<CoreId>,
+        quota: Quota,
+    ) -> Result<Vec<CoreId>, Error> {
+        available_core_ids.sort_by_key(|c| c.id);
+
+        match quota.core_allocation {
+            CoreAllocation::AllCores => Ok(available_core_ids),
+            CoreAllocation::CoreCount { count } => {
+                let count = if count == 0 {
+                    available_core_ids.len()
+                } else {
+                    count.min(available_core_ids.len())
+                };
+                Ok(available_core_ids.into_iter().take(count).collect())
+            }
+            CoreAllocation::CoreRange { start, end } => {
+                // Validate range
+                if start > end {
+                    return Err(Error::InvalidCoreRange {
+                        start,
+                        end,
+                        message: "Start of range is greater than end".to_owned(),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    });
+                }
+
+                // Filter cores in range
+                let selected: Vec<_> = available_core_ids
+                    .into_iter()
+                    .filter(|c| c.id >= start && c.id <= end)
+                    .collect();
+
+                if selected.is_empty() {
+                    return Err(Error::InvalidCoreRange {
+                        start,
+                        end,
+                        message: "No available cores in the specified range".to_owned(),
+                        available: core_affinity::get_core_ids()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|c| c.id)
+                            .collect(),
+                    });
+                }
+
+                Ok(selected)
+            }
+        }
+    }
+
     /// Runs a single pipeline in the current thread.
     fn run_pipeline_thread(
-        core_id: core_affinity::CoreId,
+        pipeline_key: DeployedPipelineKey,
+        core_id: CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_handle: PipelineContext,
+        obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
-    ) -> Result<Vec<()>, error::Error> {
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+    ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
@@ -207,18 +308,216 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // ToDo Add a warning here once logging is implemented.
         }
 
+        obs_evt_reporter.report(ObservedEvent::admitted(
+            pipeline_key.clone(),
+            Some("Pipeline admission successful.".to_owned()),
+        ));
+
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
             .build(pipeline_handle, pipeline_config.clone())
-            .map_err(|e| error::Error::PipelineRuntimeError {
+            .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
+
+        obs_evt_reporter.report(ObservedEvent::ready(
+            pipeline_key.clone(),
+            Some("Pipeline initialization successful.".to_owned()),
+        ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
             .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
-            .map_err(|e| error::Error::PipelineRuntimeError {
+            .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
+    }
+}
+
+fn error_summary_from_gen(error: &Error) -> ErrorSummary {
+    match error {
+        Error::PipelineRuntimeError { source } => {
+            if let Some(engine_error) = source.downcast_ref::<EngineError>() {
+                error_summary_from(engine_error)
+            } else {
+                ErrorSummary::Pipeline {
+                    error_kind: "runtime".into(),
+                    message: source.to_string(),
+                    source: None,
+                }
+            }
+        }
+        _ => ErrorSummary::Pipeline {
+            error_kind: "runtime".into(),
+            message: error.to_string(),
+            source: None,
+        },
+    }
+}
+
+fn error_summary_from(err: &EngineError) -> ErrorSummary {
+    match err {
+        EngineError::ReceiverError {
+            receiver,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: receiver.name.to_string(),
+            node_kind: NodeKind::Receiver,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        EngineError::ProcessorError {
+            processor,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: processor.name.to_string(),
+            node_kind: NodeKind::Processor,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        EngineError::ExporterError {
+            exporter,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: exporter.name.to_string(),
+            node_kind: NodeKind::Exporter,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        _ => ErrorSummary::Pipeline {
+            error_kind: err.variant_name(),
+            message: err.to_string(),
+            source: None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn available_core_ids() -> Vec<CoreId> {
+        vec![
+            CoreId { id: 0 },
+            CoreId { id: 1 },
+            CoreId { id: 2 },
+            CoreId { id: 3 },
+            CoreId { id: 4 },
+            CoreId { id: 5 },
+            CoreId { id: 6 },
+            CoreId { id: 7 },
+        ]
+    }
+
+    fn to_ids(v: &[CoreId]) -> Vec<usize> {
+        v.iter().map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn select_all_cores_by_default() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::AllCores,
+        };
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn select_limited_by_num_cores() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreCount { count: 4 },
+        };
+        let available_core_ids = available_core_ids();
+        let result =
+            Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
+        assert_eq!(result.len(), 4);
+        let expected_ids: Vec<usize> = available_core_ids
+            .into_iter()
+            .take(4)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn select_with_valid_single_core_range() {
+        let available_core_ids = available_core_ids();
+        let first_id = available_core_ids[0].id;
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreRange {
+                start: first_id,
+                end: first_id,
+            },
+        };
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![first_id]);
+    }
+
+    #[test]
+    fn select_with_valid_multi_core_range() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreRange { start: 2, end: 5 },
+        };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn select_with_inverted_range_errors() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreRange { start: 2, end: 1 },
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreRange { start, end, .. } => {
+                assert_eq!(start, 2);
+                assert_eq!(end, 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_out_of_bounds_range_errors() {
+        let start = 100;
+        let end = 110;
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreRange { start, end },
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreRange {
+                start: s, end: e, ..
+            } => {
+                assert_eq!(s, start);
+                assert_eq!(e, end);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_zero_count_uses_all_cores() {
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreCount { count: 0 },
+        };
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 }

@@ -16,7 +16,7 @@ pub(crate) fn parse_query(
 ) -> Result<PipelineExpression, Vec<ParserError>> {
     let mut errors = Vec::new();
 
-    let mut state = ParserState::new_with_options(query, options);
+    let state = ParserState::new_with_options(query, options);
 
     let parse_result = KqlPestParser::parse(Rule::query, query);
 
@@ -70,22 +70,34 @@ pub(crate) fn parse_query(
                             let mut scalar = s.get_source().clone();
 
                             if let ScalarExpression::Static(s) = scalar {
-                                state.push_constant(name, s)
+                                state.push_constant(name, s);
                             } else {
-                                match scalar.try_resolve_static(
+                                let c = match scalar.try_resolve_static(
                                     &state.get_pipeline().get_resolution_scope(),
                                 ) {
                                     Ok(Some(ResolvedStaticScalarExpression::Computed(s))) => {
-                                        state.push_constant(name, s)
+                                        Some(s)
                                     }
                                     Ok(Some(
                                         ResolvedStaticScalarExpression::FoldEligibleReference(s),
-                                    )) => state.push_constant(name, s.clone()),
+                                    )) => Some(s.clone()),
                                     Ok(None)
                                     | Ok(Some(ResolvedStaticScalarExpression::Reference(_))) => {
+                                        None
+                                    }
+                                    Err(e) => {
+                                        errors.push((&e).into());
+                                        continue;
+                                    }
+                                };
+
+                                match c {
+                                    Some(c) => {
+                                        state.push_constant(name, c);
+                                    }
+                                    None => {
                                         state.push_global_variable(name, scalar);
                                     }
-                                    Err(e) => errors.push((&e).into()),
                                 }
                             }
 
@@ -272,6 +284,7 @@ mod tests {
                         QueryLocation::new_fake(),
                         ValueType::Integer,
                         0,
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -301,6 +314,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 ValueType::String,
                                 1,
+                                ValueAccessor::new(),
                             )),
                         ]),
                     )),

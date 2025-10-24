@@ -21,6 +21,33 @@ use parquet::file::properties::WriterProperties;
 use super::config::WriterOptions;
 use super::partition::PartitionAttribute;
 
+/// Aggregated stats returned by a write/flush cycle. Useful for internal telemetry and tests.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WriteStats {
+    /// Number of new file writers created during this write call (one per newly encountered
+    /// payload type/partition prefix). A proxy for file creations.
+    pub files_created: u64,
+    /// Number of Parquet writers closed during this cycle (files flushed and made visible).
+    pub files_closed: u64,
+    /// Total number of rows appended to file writers in this write call (not necessarily flushed yet).
+    pub rows_written: u64,
+    /// Number of writers scheduled for flush because they reached the target rows per file threshold.
+    pub flush_scheduled_max_rows: u64,
+    /// Number of writers scheduled for flush because they exceeded the age threshold.
+    pub flush_scheduled_max_age: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct FlushScheduleStats {
+    scheduled_max_rows: u64,
+    scheduled_max_age: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct FlushAttemptStats {
+    files_closed: u64,
+}
+
 pub struct WriteBatch<'a> {
     pub batch_id: i64,
     pub otap_batch: &'a OtapArrowRecords,
@@ -76,23 +103,28 @@ impl WriterManager {
         }
     }
 
-    pub async fn write(&mut self, writes: &[WriteBatch<'_>]) -> Result<(), ParquetError> {
+    pub async fn write(&mut self, writes: &[WriteBatch<'_>]) -> Result<WriteStats, ParquetError> {
+        let mut stats = WriteStats::default();
         for write in writes {
             // schedule the writes for each payload type for this signal
             for payload_type in write.otap_batch.allowed_payload_types() {
                 if let Some(record_batch) = write.otap_batch.get(*payload_type) {
-                    self.schedule_write_batch(
+                    let created = self.schedule_write_batch(
                         write.batch_id,
                         *payload_type,
                         record_batch,
                         write.partition_attributes,
-                    )
+                    );
+                    if created {
+                        stats.files_created += 1;
+                    }
                 }
             }
         }
 
         // write the scheduled batches to the files
-        self.write_scheduled().await?;
+        let rows_written_total = self.write_scheduled().await?;
+        stats.rows_written += rows_written_total as u64;
 
         // if we can determine after the write process that any files should be flushed
         // (e.g. if they've exceeded max size), we'll try to flush them immediately
@@ -100,32 +132,40 @@ impl WriterManager {
         // Note: the files might not actually get flushed if they have child rows that
         // aren't scheduled to be flushed. In this case, we won't continue appending to
         // these files, but we won't flush them until after the children are flushed.
-        self.schedule_flushes();
-        self.attempt_flush_scheduled().await?;
+        let schedule_stats = self.schedule_flushes();
+        stats.flush_scheduled_max_rows += schedule_stats.scheduled_max_rows;
+        stats.flush_scheduled_max_age += schedule_stats.scheduled_max_age;
 
-        Ok(())
+        let attempt_stats = self.attempt_flush_scheduled().await?;
+        stats.files_closed += attempt_stats.files_closed;
+
+        Ok(stats)
     }
 
-    /// Write all the scheduled writes to the files concurrently
-    async fn write_scheduled(&mut self) -> Result<(), ParquetError> {
-        _ = self
+    /// Write all the scheduled writes to the files concurrently, returning the total rows written
+    async fn write_scheduled(&mut self) -> Result<usize, ParquetError> {
+        let total_rows_written = self
             .curr_writer_for_prefix
             .values_mut()
             .map(|fw| fw.write_scheduled())
             .collect::<FuturesUnordered<_>>()
-            .try_collect::<Vec<_>>()
+            .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
             .await?;
 
-        Ok(())
+        Ok(total_rows_written)
     }
 
+    /// Schedules the record batch for a given signal to be written. If there's not already a file writer
+    /// for the given partition/payload type, a new one will be created.
+    ///
+    /// Returns boolean true/false indicating whether a new file writer was created.
     fn schedule_write_batch(
         &mut self,
         batch_id: i64,
         payload_type: ArrowPayloadType,
         record_batch: &RecordBatch,
         partition_attributes: Option<&[PartitionAttribute]>,
-    ) {
+    ) -> bool {
         let path_prefix = format!(
             "{}/{}",
             payload_type.as_str_name().to_lowercase(),
@@ -133,10 +173,12 @@ impl WriterManager {
         );
 
         // get the current writer for the path, or create a new one
+        let mut created = false;
         let file_writer = match self.curr_writer_for_prefix.entry(path_prefix) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let full_path = format!("{}/{}", e.key(), generate_filename());
+                created = true;
                 e.insert(FileWriter::new(
                     payload_type,
                     new_parquet_arrow_writer(
@@ -155,16 +197,27 @@ impl WriterManager {
             self.unflushed_batches_state
                 .incr_unflushed_write(batch_id, payload_type);
         }
+
+        created
     }
 
-    pub fn schedule_flushes(&mut self) {
+    fn schedule_flushes(&mut self) -> FlushScheduleStats {
+        let mut scheduled_max_rows = 0u64;
+        let mut scheduled_max_age = 0u64;
+
         // collect the keys of writers that should flush
-        let keys_to_flush: Vec<String> = self
+        let keys_to_flush: Vec<(String, bool)> = self
             .curr_writer_for_prefix
             .iter()
             .filter_map(|(key, fw)| {
                 if self.should_flush(fw) {
-                    Some(key.clone())
+                    // Determine reason: rows vs age
+                    let reason_rows = if let Some(target) = self.options.target_rows_per_file {
+                        fw.rows_written >= target
+                    } else {
+                        false
+                    };
+                    Some((key.clone(), reason_rows))
                 } else {
                     None
                 }
@@ -172,10 +225,20 @@ impl WriterManager {
             .collect();
 
         // remove them from the map and move into scheduled_flushes
-        for key in keys_to_flush {
+        for (key, reason_rows) in keys_to_flush {
             if let Some(writer) = self.curr_writer_for_prefix.remove(&key) {
+                if reason_rows {
+                    scheduled_max_rows += 1;
+                } else {
+                    scheduled_max_age += 1;
+                }
                 self.pending_file_flushes.push(writer);
             }
+        }
+
+        FlushScheduleStats {
+            scheduled_max_rows,
+            scheduled_max_age,
         }
     }
 
@@ -200,9 +263,10 @@ impl WriterManager {
     ///
     /// To force everything to flush, you can call `flush_all` method, which will schedule
     /// all the current writers for flushing and then flush them all.
-    async fn attempt_flush_scheduled(&mut self) -> Result<(), ParquetError> {
+    async fn attempt_flush_scheduled(&mut self) -> Result<FlushAttemptStats, ParquetError> {
         let mut flushable = Vec::new();
         let mut requeue = Vec::new();
+        let mut files_closed = 0u64;
 
         loop {
             for file_writer in self.pending_file_flushes.drain(..) {
@@ -228,15 +292,17 @@ impl WriterManager {
                 );
             }
 
+            let closed_now = flushable.len() as u64;
             _ = flushable
                 .drain(..)
                 .map(|fw| fw.writer.close())
                 .collect::<FuturesUnordered<_>>()
                 .try_collect::<Vec<_>>()
                 .await?;
+            files_closed += closed_now;
         }
 
-        Ok(())
+        Ok(FlushAttemptStats { files_closed })
     }
 
     /// This method flushes all the current writers, ensuring that all files are closed and
@@ -245,16 +311,24 @@ impl WriterManager {
         for (_, writer) in self.curr_writer_for_prefix.drain() {
             self.pending_file_flushes.push(writer);
         }
-        self.attempt_flush_scheduled().await
+        let _ = self.attempt_flush_scheduled().await?;
+        Ok(())
     }
 
     /// If this [`WriterManager`] was configured with `[WriterOptions::flush_when_older_than`],
     /// then this method wil flush any current writers with rows older than this threshold.
-    pub async fn flush_aged_beyond_threshold(&mut self) -> Result<(), ParquetError> {
+    pub async fn flush_aged_beyond_threshold(&mut self) -> Result<WriteStats, ParquetError> {
         // schedule flushes -- this will put every writer whose age is older than the threshold
         // into the pending queue
-        self.schedule_flushes();
-        self.attempt_flush_scheduled().await
+        let schedule_stats = self.schedule_flushes();
+        let attempt_stats = self.attempt_flush_scheduled().await?;
+        Ok(WriteStats {
+            files_created: 0,
+            rows_written: 0,
+            flush_scheduled_max_rows: schedule_stats.scheduled_max_rows,
+            flush_scheduled_max_age: schedule_stats.scheduled_max_age,
+            files_closed: attempt_stats.files_closed,
+        })
     }
 }
 
@@ -318,13 +392,15 @@ impl FileWriter {
         self.scheduled_batches.push(record_batch.clone());
     }
 
-    async fn write_scheduled(&mut self) -> Result<(), ParquetError> {
+    async fn write_scheduled(&mut self) -> Result<usize, ParquetError> {
         let drained_batches: Vec<_> = self.scheduled_batches.drain(..).collect();
+        let mut rows = 0usize;
         for batch in drained_batches {
+            rows += batch.num_rows();
             self.write(batch).await?;
         }
 
-        Ok(())
+        Ok(rows)
     }
 
     async fn write(&mut self, record_batch: RecordBatch) -> Result<(), ParquetError> {
@@ -416,6 +492,14 @@ mod test {
         OtapArrowRecords::Logs(from_record_messages(record_messages))
     }
 
+    fn sum_rows(batch: &OtapArrowRecords) -> u64 {
+        batch
+            .allowed_payload_types()
+            .iter()
+            .filter_map(|pt| batch.get(*pt).map(|rb| rb.num_rows() as u64))
+            .sum()
+    }
+
     #[tokio::test]
     async fn test_simple_single_batch_write_all_logs() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -427,10 +511,12 @@ mod test {
         let otap_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
             SimpleDataGenOptions::default(),
         ));
-        writer
+        let stats = writer
             .write(&[WriteBatch::new(0, &otap_batch, None)])
             .await
             .unwrap();
+        let expected_rows = sum_rows(&otap_batch);
+        assert_eq!(stats.rows_written, expected_rows);
 
         // check that the files aren't flushed
         let mut files = Vec::new();
@@ -498,13 +584,15 @@ mod test {
             },
         ));
 
-        writer
+        let stats = writer
             .write(&[
                 WriteBatch::new(0, &batch1, None),
                 WriteBatch::new(1, &batch2, None),
             ])
             .await
             .unwrap();
+        let expected_rows = sum_rows(&batch1) + sum_rows(&batch2);
+        assert_eq!(stats.rows_written, expected_rows);
 
         writer.flush_all().await.unwrap();
 
@@ -589,13 +677,15 @@ mod test {
             },
         ];
 
-        writer
+        let stats = writer
             .write(&[
                 WriteBatch::new(0, &partition1_batch, Some(partition1_attrs.as_slice())),
                 WriteBatch::new(1, &partition2_batch, Some(partition2_attrs.as_slice())),
             ])
             .await
             .unwrap();
+        let expected_rows = sum_rows(&partition1_batch) + sum_rows(&partition2_batch);
+        assert_eq!(stats.rows_written, expected_rows);
 
         // write all the files
         writer.flush_all().await.unwrap();
@@ -674,13 +764,16 @@ mod test {
             },
         ));
 
-        writer
+        let stats = writer
             .write(&[
                 WriteBatch::new(0, &batch1, None),
                 WriteBatch::new(1, &batch2, None),
             ])
             .await
             .unwrap();
+        let expected_rows = sum_rows(&batch1) + sum_rows(&batch2);
+        assert_eq!(stats.rows_written, expected_rows);
+        assert!(stats.flush_scheduled_max_rows > 0);
 
         for payload_type in [
             ArrowPayloadType::Logs,
@@ -747,13 +840,15 @@ mod test {
                 ..Default::default()
             },
         ));
-        writer
+        let stats = writer
             .write(&[
                 WriteBatch::new(0, &batch1, None),
                 WriteBatch::new(1, &batch2, None),
             ])
             .await
             .unwrap();
+        let expected_rows = sum_rows(&batch1) + sum_rows(&batch2);
+        assert_eq!(stats.rows_written, expected_rows);
 
         // at this point resource & scope attributes should have flushed, but the
         // log attributes won't have (because there's only one buffered log record).
@@ -842,14 +937,16 @@ mod test {
                 ..Default::default()
             },
         ));
-        writer
+        let stats0 = writer
             .write(&[WriteBatch::new(0, &batch0, None)])
             .await
             .unwrap();
-        writer
+        assert_eq!(stats0.rows_written, sum_rows(&batch0));
+        let stats1 = writer
             .write(&[WriteBatch::new(1, &batch1, None)])
             .await
             .unwrap();
+        assert_eq!(stats1.rows_written, sum_rows(&batch1));
 
         // At this point, the log writer has enough rows to flush but there are rows in this file
         // that are associated with log attributes, whose writer doesn't have enough rows to flush
@@ -872,10 +969,11 @@ mod test {
                 ..Default::default()
             },
         ));
-        writer
+        let stats2 = writer
             .write(&[WriteBatch::new(2, &batch2, None)])
             .await
             .unwrap();
+        assert_eq!(stats2.rows_written, sum_rows(&batch2));
 
         // now enough rows are in the attrs record batch that it can be written
         for payload_type in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 /// Root configuration for the pipeline engine.
 /// Contains engine-level settings and all pipeline groups.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     /// Settings that apply to the entire engine instance.
     pub settings: EngineSettings,
@@ -23,6 +24,7 @@ pub struct EngineConfig {
 
 /// Global settings for the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EngineSettings {
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
@@ -33,6 +35,7 @@ pub struct EngineSettings {
 
 /// Configuration for the telemetry metrics system.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetrySettings {
     /// The size of the reporting channel.
     #[serde(default = "default_reporting_channel_size")]
@@ -44,6 +47,7 @@ pub struct TelemetrySettings {
 
 /// Configuration for the HTTP admin endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HttpAdminSettings {
     /// The address to bind the HTTP server to (e.g., "127.0.0.1:8080").
     #[serde(default = "default_bind_address")]

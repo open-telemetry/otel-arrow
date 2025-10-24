@@ -193,7 +193,7 @@ pub struct ExponentialHistogramDataPoint {
 pub mod exponential_histogram_data_point {
     #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets")]
     #[derive(crate::pdata::otlp::Message)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Buckets {
         #[prost(sint32, tag="1")]
         pub offset: i32,

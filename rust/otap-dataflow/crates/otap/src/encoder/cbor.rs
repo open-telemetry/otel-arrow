@@ -3,11 +3,11 @@
 
 use std::io::Write;
 
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use serde::ser::{SerializeMap, SerializeSeq, Serializer};
+use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
+use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
-use crate::encoder::error::Result;
+use crate::encoder::error::{Error, Result};
 
 /// Adapter for serializing AnyValueView using Serde
 struct AnyValueSerializerWrapper<T>(pub T);
@@ -49,8 +49,10 @@ where
 {
     match source.value_type() {
         ValueType::String => {
-            let s = source.as_string().expect("expected string");
-            serializer.serialize_str(s)
+            let s_bytes = source.as_string().expect("expected string");
+            let s_str = simdutf8::basic::from_utf8(s_bytes)
+                .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
+            serializer.serialize_str(s_str)
         }
         ValueType::Bool => {
             let b = source.as_bool().expect("expected bool");
@@ -82,9 +84,11 @@ where
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
                 let key = kv.key();
+                let key_str = simdutf8::basic::from_utf8(key)
+                    .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
                 match kv.value() {
-                    Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-                    None => map.serialize_entry(&key, &Option::<()>::None)?,
+                    Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+                    None => map.serialize_entry(&key_str, &Option::<()>::None)?,
                 }
             }
             map.end()
@@ -103,9 +107,12 @@ where
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
         let key = kv.key();
+        let key_str = simdutf8::basic::from_utf8(key).map_err(|e| Error::CborError {
+            error: format!("Invalid UTF-8: {e}"),
+        })?;
         match kv.value() {
-            Some(v) => map.serialize_entry(&key, &AnyValueSerializerWrapper(v))?,
-            None => map.serialize_entry(&key, &Option::<()>::None)?,
+            Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
+            None => map.serialize_entry(&key_str, &Option::<()>::None)?,
         }
     }
     SerializeMap::end(map)?;
@@ -116,14 +123,16 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_pdata_views::otlp::proto::common::{ObjAny, ObjKeyValue};
-    use otap_df_pdata_views::otlp::proto::wrappers::Wraps;
+    use otap_df_pdata::views::otlp::proto::common::{ObjAny, ObjKeyValue};
+    use otap_df_pdata::views::otlp::proto::wrappers::Wraps;
+    use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::{
-        otlp::attributes::cbor::decode_pcommon_val,
+        otlp::attributes::cbor::proto_encode_cbor_bytes,
         proto::opentelemetry::common::v1::{
             AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
         },
     };
+    use prost::Message;
 
     #[test]
     fn test_round_trip_anyvals() {
@@ -143,13 +152,13 @@ mod test {
                 any_value::Value::BytesValue(vec![1, 2, 3]),
             ),
             (
-                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(-1)]),
+                AnyValue::new_array(vec![AnyValue::new_bool(false), AnyValue::new_int(1)]),
                 any_value::Value::ArrayValue(ArrayValue::new(vec![
                     AnyValue {
                         value: Some(any_value::Value::BoolValue(false)),
                     },
                     AnyValue {
-                        value: Some(any_value::Value::IntValue(-1)),
+                        value: Some(any_value::Value::IntValue(1)),
                     },
                 ])),
             ),
@@ -182,9 +191,11 @@ mod test {
             serialize_any_values(vec![ObjAny::new(&source)].into_iter(), &mut serialized_val)
                 .unwrap();
 
-            let result = decode_pcommon_val(&serialized_val).unwrap();
+            let mut proto_buffer = ProtoBuffer::new();
+            proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
+            let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(
-                result,
+                result.value,
                 Some(any_value::Value::ArrayValue(ArrayValue::new(vec![
                     AnyValue {
                         value: Some(expected)
@@ -250,9 +261,11 @@ mod test {
             )
             .unwrap();
 
-            let result = decode_pcommon_val(&serialized_val).unwrap();
+            let mut proto_buffer = ProtoBuffer::new();
+            proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
+            let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(
-                result,
+                result.value,
                 Some(any_value::Value::KvlistValue(KeyValueList {
                     values: expected.clone()
                 }))

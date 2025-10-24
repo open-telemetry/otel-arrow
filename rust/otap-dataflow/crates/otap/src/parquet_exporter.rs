@@ -24,11 +24,13 @@ use crate::parquet_exporter::schema::transform_to_known_schema;
 use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
+use crate::metrics::ExporterPDataMetrics;
+use crate::parquet_exporter::metrics::ParquetExporterMetrics;
 use async_trait::async_trait;
 use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
@@ -38,16 +40,19 @@ use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
 mod error;
 mod idgen;
+mod metrics;
 mod object_store;
 mod partition;
 mod schema;
@@ -59,6 +64,8 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
+    pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
+    io_metrics: Option<MetricSet<ParquetExporterMetrics>>,
 }
 
 /// Declares the Parquet exporter as a local exporter factory
@@ -86,12 +93,18 @@ impl ParquetExporter {
     /// construct a new instance of the `ParquetExporter`
     #[must_use]
     pub fn new(config: config::Config) -> Self {
-        Self { config }
+        // NOTE: This constructor does not register metrics because it lacks a PipelineContext.
+        // Prefer using from_config in the factory path so metrics are properly wired.
+        Self {
+            config,
+            pdata_metrics: None,
+            io_metrics: None,
+        }
     }
 
     /// construct a new instance from the configuration object
     pub fn from_config(
-        _pipeline: PipelineContext,
+        pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
         let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -100,22 +113,56 @@ impl ParquetExporter {
             }
         })?;
 
-        Ok(ParquetExporter { config })
+        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let io_metrics = pipeline_ctx.register_metrics::<ParquetExporterMetrics>();
+
+        Ok(ParquetExporter {
+            config,
+            pdata_metrics: Some(pdata_metrics),
+            io_metrics: Some(io_metrics),
+        })
+    }
+
+    fn terminal_state(
+        deadline: Instant,
+        pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
+        io_metrics: Option<MetricSet<ParquetExporterMetrics>>,
+    ) -> TerminalState {
+        let mut snapshots = Vec::new();
+
+        if let Some(metrics) = &pdata_metrics {
+            if metrics.needs_flush() {
+                snapshots.push(metrics.snapshot());
+            }
+        }
+
+        if let Some(metrics) = &io_metrics {
+            if metrics.needs_flush() {
+                snapshots.push(metrics.snapshot());
+            }
+        }
+
+        TerminalState::new(deadline, snapshots)
     }
 }
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        let object_store =
-            object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
+    ) -> Result<TerminalState, Error> {
+        let exporter_id = effect_handler.exporter_id();
+        let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Configuration,
                 error: format!("error initializing object store {e}"),
-            })?;
+                source_detail,
+            }
+        })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
@@ -136,6 +183,11 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 .await?;
         }
 
+        // Start periodic telemetry collection (internal metrics)
+        let telemetry_cancel_handle = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
         let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
@@ -143,16 +195,45 @@ impl Exporter<OtapPdata> for ParquetExporter {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                    let flush_aged_result = writer.flush_aged_beyond_threshold().await;
-                    if let Err(e) = flush_aged_result {
-                        // TODO - this is not the error handling we want long term.  eventually we
-                        // should have the concept of retryable & non-retryable errors and use Nack
-                        //  message + a Retry processor to handle this gracefully
-                        // https://github.com/open-telemetry/otel-arrow/issues/504
-                        return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
-                            error: format!("Parquet write failed: {e}"),
-                        });
+                    match writer.flush_aged_beyond_threshold().await {
+                        Ok(stats) => {
+                            if let Some(io) = self.io_metrics.as_mut() {
+                                if stats.flush_scheduled_max_rows > 0 {
+                                    io.flush_scheduled_max_rows
+                                        .add(stats.flush_scheduled_max_rows);
+                                }
+                                if stats.flush_scheduled_max_age > 0 {
+                                    io.flush_scheduled_max_age
+                                        .add(stats.flush_scheduled_max_age);
+                                }
+                                if stats.files_closed > 0 {
+                                    io.files_closed.add(stats.files_closed);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // TODO - this is not the error handling we want long term.  eventually we
+                            // should have the concept of retryable & non-retryable errors and use Nack
+                            //  message + a Retry processor to handle this gracefully
+                            // https://github.com/open-telemetry/otel-arrow/issues/504
+                            let source_detail = format_error_sources(&e);
+                            return Err(Error::ExporterError {
+                                exporter: effect_handler.exporter_id(),
+                                kind: ExporterErrorKind::Transport,
+                                error: format!("Parquet write failed: {e}"),
+                                source_detail,
+                            });
+                        }
+                    }
+                }
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    if let Some(metrics) = self.pdata_metrics.as_mut() {
+                        _ = metrics_reporter.report(metrics);
+                    }
+                    if let Some(metrics) = self.io_metrics.as_mut() {
+                        _ = metrics_reporter.report(metrics);
                     }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
@@ -164,40 +245,79 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
-                    let mut timeout = Delay::new(deadline).fuse();
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
-                    return futures::select! {
+                    // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
+                    let cancel_fut = async {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        futures::future::pending::<()>().await
+                    }
+                    .fuse();
+                    pin_mut!(cancel_fut);
+
+                    return futures::select_biased! {
+                        _ = cancel_fut => unreachable!(),
                         _timeout = timeout => Err(Error::IoError {
-                                node: effect_handler.exporter_id(),
+                                node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             }),
-                        _ = flush_all => Ok(()),
+                        _ = flush_all => Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics)),
                     };
                 }
 
                 Message::PData(pdata) => {
-                    let mut otap_batch: OtapArrowRecords = pdata.try_into()?;
+                    // Capture signal type before moving pdata into try_from
+                    let signal_type = pdata.signal_type();
+
+                    // Note: context is not used
+                    let (_context, payload) = pdata.into_parts();
+
+                    // Mark as consumed for this signal
+                    if let Some(metrics) = self.pdata_metrics.as_mut() {
+                        metrics.inc_consumed(signal_type);
+                    }
+
+                    let mut otap_batch: OtapArrowRecords =
+                        payload.try_into().inspect_err(|_| {
+                            if let Some(metrics) = self.pdata_metrics.as_mut() {
+                                metrics.inc_failed(signal_type);
+                            }
+                        })?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
                     if let Err(e) = id_gen_result {
+                        // mark failure before returning
+                        if let Some(metrics) = self.pdata_metrics.as_mut() {
+                            metrics.inc_failed(signal_type);
+                        }
                         // TODO - this is not the error handling we want long term.
                         // eventually we should have the concept of retryable & non-retryable errors and
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
+                        let source_detail = format_error_sources(&e);
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
                             error: format!("ID Generation failed: {e}"),
+                            source_detail,
                         });
                     }
 
                     // ensure the batches has the schema the parquet writer expects
                     transform_to_known_schema(&mut otap_batch).map_err(|e| {
+                        // mark failure before returning
+                        if let Some(metrics) = self.pdata_metrics.as_mut() {
+                            metrics.inc_failed(signal_type);
+                        }
                         // TODO - Ack/Nack instead of returning error
+                        let source_detail = format_error_sources(&e);
                         Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
                             error: format!("Schema transformation failed: {e}"),
+                            source_detail,
                         }
                     })?;
 
@@ -222,17 +342,50 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         })
                         .collect::<Vec<_>>();
                     batch_id += 1;
-                    let write_result = writer.write(&writes).await;
-                    if let Err(e) = write_result {
-                        // TODO - this is not the error handling we want long term.
-                        // eventually we should have the concept of retryable & non-retryable errors and
-                        // use Nack message + a Retry processor to handle this gracefully
-                        // https://github.com/open-telemetry/otel-arrow/issues/504
-                        return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_id(),
-                            error: format!("Parquet write failed: {e}"),
-                        });
-                    };
+                    match writer.write(&writes).await {
+                        Ok(stats) => {
+                            // successful write
+                            if let Some(metrics) = self.pdata_metrics.as_mut() {
+                                metrics.inc_exported(signal_type);
+                            }
+                            if let Some(io) = self.io_metrics.as_mut() {
+                                if stats.files_created > 0 {
+                                    io.files_created.add(stats.files_created);
+                                }
+                                if stats.files_closed > 0 {
+                                    io.files_closed.add(stats.files_closed);
+                                }
+                                if stats.rows_written > 0 {
+                                    io.rows_written.add(stats.rows_written);
+                                }
+                                if stats.flush_scheduled_max_rows > 0 {
+                                    io.flush_scheduled_max_rows
+                                        .add(stats.flush_scheduled_max_rows);
+                                }
+                                if stats.flush_scheduled_max_age > 0 {
+                                    io.flush_scheduled_max_age
+                                        .add(stats.flush_scheduled_max_age);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // mark failure before returning
+                            if let Some(metrics) = self.pdata_metrics.as_mut() {
+                                metrics.inc_failed(signal_type);
+                            }
+                            // TODO - this is not the error handling we want long term.
+                            // eventually we should have the concept of retryable & non-retryable errors and
+                            // use Nack message + a Retry processor to handle this gracefully
+                            // https://github.com/open-telemetry/otel-arrow/issues/504
+                            let source_detail = format_error_sources(&e);
+                            return Err(Error::ExporterError {
+                                exporter: effect_handler.exporter_id(),
+                                kind: ExporterErrorKind::Transport,
+                                error: format!("Parquet write failed: {e}"),
+                                source_detail,
+                            });
+                        }
+                    }
                 }
 
                 _ => {
@@ -257,8 +410,8 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 
 #[cfg(test)]
 mod test {
-    use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
+    use std::ops::Add;
 
     use super::*;
 
@@ -285,6 +438,8 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otel_arrow_rust::schema::consts;
@@ -296,20 +451,25 @@ mod test {
 
     fn logs_scenario(
         num_rows: usize,
-        shutdown_timeout: Duration,
+        shutdown_timeout: Instant,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                let otap_batch = OtapArrowBytes::ArrowLogs(
-                    fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                        num_rows,
-                        ..Default::default()
-                    }),
-                );
+                let mut consumer = Consumer::default();
+                let otap_batch = consumer
+                    .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                        SimpleDataGenOptions {
+                            num_rows,
+                            ..Default::default()
+                        },
+                    ))
+                    .unwrap();
 
-                ctx.send_pdata(otap_batch.into())
-                    .await
-                    .expect("Failed to send  logs message");
+                ctx.send_pdata(OtapPdata::new_default(
+                    OtapArrowRecords::Logs(from_record_messages(otap_batch)).into(),
+                ))
+                .await
+                .expect("Failed to send  logs message");
 
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
@@ -354,7 +514,7 @@ mod test {
                     let pdata1 = fixtures::create_single_logs_pdata_with_attrs(attrs1);
                     ctx.send_pdata(pdata1).await.unwrap();
 
-                    // this should generate a an attributes column with type Dict<u8, String>
+                    // this should generate an attributes column with type Dict<u8, String>
                     let pdata2 = fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
                         key: "attr1".to_string(),
                         value: Some(AnyValue {
@@ -377,7 +537,7 @@ mod test {
                             }),
                         })
                     }
-                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3);
+                    let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
                     let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
@@ -405,11 +565,12 @@ mod test {
                         ArrowPayloadType::LogAttrs,
                         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
                     );
-                    ctx.send_pdata(otap_batch.into()).await.unwrap();
-
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
+
+                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -448,6 +609,7 @@ mod test {
                             key: "strkey".to_string(),
                             value: Some(AnyValue::new_string("terry")),
                         }])
+                        .payload()
                         .try_into()
                         .unwrap();
 
@@ -456,6 +618,7 @@ mod test {
                             key: "intkey".to_string(),
                             value: Some(AnyValue::new_int(418)),
                         }])
+                        .payload()
                         .try_into()
                         .unwrap();
 
@@ -464,12 +627,19 @@ mod test {
                     let batch2_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap();
                     assert_ne!(batch1_attrs.schema(), batch2_attrs.schema());
 
-                    ctx.send_pdata(batch1.into()).await.unwrap();
-                    ctx.send_pdata(batch2.into()).await.unwrap();
-
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                    ctx.send_pdata(OtapPdata::new_default(batch1.into()))
                         .await
                         .unwrap();
+                    ctx.send_pdata(OtapPdata::new_default(batch2.into()))
+                        .await
+                        .unwrap();
+
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(200)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -479,7 +649,7 @@ mod test {
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 2).await;
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 2).await;
                 })
-            })
+            });
     }
 
     async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
@@ -579,7 +749,10 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(
+                num_rows,
+                Instant::now().add(Duration::from_secs(1)),
+            ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     assert!(exporter_result.is_ok());
@@ -662,7 +835,10 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(
+                num_rows,
+                Instant::now().add(Duration::from_secs(1)),
+            ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     assert!(exporter_result.is_ok());
@@ -709,7 +885,8 @@ mod test {
         let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, _) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
 
         exporter
             .set_pdata_receiver(test_node(exporter_config.name.clone()), pdata_rx)
@@ -717,9 +894,14 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn send_messages(
@@ -734,24 +916,31 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    // a pretty big batch
-                    num_rows: 48,
-                    ..Default::default()
-                }),
-            )
-            .into();
-            pdata_tx.send(otap_batch).await.unwrap();
+            let logs_data = Consumer::default()
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        // a pretty big batch
+                        num_rows: 48,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
 
-            let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    num_rows: 1,
-                    ..Default::default()
-                }),
-            )
-            .into();
-            let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch))
+                .await
+                .unwrap();
+
+            let logs_data = Consumer::default()
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows: 1,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data));
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
@@ -761,7 +950,10 @@ mod test {
                     .unwrap(),
             );
 
-            pdata_tx.send(otap_batch2.into()).await.unwrap();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch2.into()))
+                .await
+                .unwrap();
 
             // wait for the log_attrs table to exist
             try_wait_table_exists(base_dir, ArrowPayloadType::LogAttrs, Duration::from_secs(5))
@@ -785,7 +977,7 @@ mod test {
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(1),
+                    deadline: Instant::now().add(Duration::from_secs(1)),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -850,16 +1042,21 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
         }
 
         async fn run_test(
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver,
+            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {
@@ -882,13 +1079,21 @@ mod test {
 
             // have the parquet writer queue a batch to be written
             let num_rows = 5;
-            let otap_batch = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    num_rows,
-                    ..Default::default()
-                }),
-            );
-            pdata_tx.send(otap_batch.into()).await.unwrap();
+
+            let mut consumer = Consumer::default();
+            let otap_batch = consumer
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch.into()))
+                .await
+                .unwrap();
 
             // wait some time but not as long as the old age threshold, then send a timer tick
             _ = sleep(Duration::from_millis(50)).await;
@@ -922,7 +1127,7 @@ mod test {
 
             ctrl_tx
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_millis(10),
+                    deadline: Instant::now().add(Duration::from_millis(10)),
                     reason: "shutting down".into(),
                 })
                 .await
@@ -949,6 +1154,79 @@ mod test {
     }
 
     #[test]
+    fn test_starts_telemetry_timer() {
+        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::testing::test_node;
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let (rt, _) = setup_test_runtime();
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let _pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+        let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+
+        exporter
+            .set_pdata_receiver(test_node("exp"), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+        ) -> Result<(), Error> {
+            let (_metrics_rx, metrics_reporter) =
+                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
+        }
+
+        let (_exporter_result, _ignored) = rt.block_on(async move {
+            tokio::join!(start_exporter(exporter, pipeline_ctrl_msg_tx), async move {
+                // Expect StartTelemetryTimer quickly after startup
+                let msg = tokio::time::timeout(Duration::from_millis(1500), async {
+                    pipeline_ctrl_msg_rx.recv().await
+                })
+                .await
+                .expect("timed out waiting for StartTelemetryTimer")
+                .expect("pipeline ctrl channel closed");
+
+                match msg {
+                    PipelineControlMsg::StartTelemetryTimer { duration, .. } => {
+                        assert_eq!(duration, Duration::from_secs(1));
+                    }
+                    other => panic!("Expected StartTelemetryTimer, got {other:?}"),
+                }
+
+                // Shutdown exporter to end the test
+                let _ = control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now(),
+                        reason: "done".into(),
+                    })
+                    .await;
+            })
+        });
+    }
+
+    #[test]
     fn test_traces() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -967,24 +1245,32 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowTraces(
-            fixtures::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                traces_options: Some(Default::default()),
-                ..Default::default()
-            }),
-        );
+
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_trace_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    traces_options: Some(Default::default()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(200)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1028,24 +1314,31 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowMetrics(
-            fixtures::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                metrics_options: Some(Default::default()),
-                ..Default::default()
-            }),
-        );
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_metrics_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    metrics_options: Some(Default::default()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into())
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(Duration::from_millis(1000), "test completed")
-                        .await
-                        .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(1000)),
+                        "test completed",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1080,6 +1373,145 @@ mod test {
     }
 
     #[test]
+    fn test_collect_telemetry_reports_metrics() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::testing::test_node;
+        use serde_json::json;
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+
+        // Telemetry system: registry + reporter + background collector
+        let metrics_system = otap_df_telemetry::MetricsSystem::default();
+        let registry = metrics_system.registry();
+        let reporter = metrics_system.reporter();
+
+        // Build exporter with metrics via from_config
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
+            .with_node_context(
+                "parquet_exporter".into(),
+                otap_df_config::node::NodeKind::Exporter,
+            );
+
+        let exporter_impl =
+            ParquetExporter::from_config(pipeline_ctx, &json!({ "base_uri": base_dir })).unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter_impl,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let (rt, local) = setup_test_runtime();
+        let control_sender = exporter.control_sender();
+
+        // pdata channel
+        let (pdata_tx_ch, pdata_rx_ch) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx_ch));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx_ch));
+        exporter
+            .set_pdata_receiver(test_node("exp"), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        // Keep pipeline ctrl receiver alive
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
+        ) -> Result<(), Error> {
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .await
+                .map(|_| ())
+        }
+
+        async fn drive_test(
+            control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            pdata_tx: Sender<OtapPdata>,
+            reporter: otap_df_telemetry::reporter::MetricsReporter,
+        ) {
+            // Send minimal pdata to increment pdata metrics (consumed)
+            let logs = Consumer::default()
+                .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows: 1,
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs)).into();
+            pdata_tx
+                .send(OtapPdata::new_default(otap_batch))
+                .await
+                .unwrap();
+
+            // Allow exporter loop to process pdata before collecting telemetry
+            // Control messages are prioritized over pdata; without this short delay, the
+            // CollectTelemetry message could be handled first and report zeros.
+            sleep(Duration::from_millis(50)).await;
+
+            // Trigger telemetry collection
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter.clone(),
+                })
+                .await
+                .unwrap();
+
+            // Give collector a little time to process
+            sleep(Duration::from_millis(50)).await;
+
+            // Then shutdown
+            let _ = control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "done".into(),
+                })
+                .await;
+        }
+
+        // Run everything on the local task set, including the metrics collector
+        let _ = rt.block_on(local.run_until(async move {
+            // Start collector in background
+            let _handle = tokio::task::spawn_local(metrics_system.run_collection_loop());
+
+            tokio::join!(
+                start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
+                drive_test(control_sender, pdata_tx, reporter.clone()),
+            )
+        }));
+
+        // Inspect registry to ensure exporter.pdata registered counters were reported
+        let mut saw_exporter_pdata = false;
+        let mut any_positive = false;
+        registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == "exporter.pdata" {
+                saw_exporter_pdata = true;
+                for (_field, value) in iter {
+                    if value > 0 {
+                        any_positive = true;
+                    }
+                }
+            }
+        });
+        assert!(
+            saw_exporter_pdata,
+            "expected exporter.pdata metric set to be registered"
+        );
+        assert!(
+            any_positive,
+            "expected at least one exporter.pdata counter > 0"
+        );
+    }
+
+    #[test]
     fn test_handles_null_ids() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1098,19 +1530,20 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch = OtapArrowBytes::ArrowLogs(
-            fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                num_rows,
-                with_main_record_attrs: false,
-                with_resource_attrs: false,
-                with_scope_attrs: false,
-                ..Default::default()
-            }),
-        );
-
+        let mut consumer = Consumer::default();
+        let otap_batch = consumer
+            .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows,
+                    with_main_record_attrs: false,
+                    with_resource_attrs: false,
+                    with_scope_attrs: false,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
         // replace the logs ID column with nulls
-        let pdata: OtapPdata = otap_batch.into();
-        let mut otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let (schema, mut columns, _) = logs.clone().into_parts();
         columns[schema.index_of(consts::ID).unwrap()] = Arc::new(UInt16Array::new_null(num_rows));
@@ -1123,10 +1556,15 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(otap_batch.into()).await.unwrap();
-                    ctx.send_shutdown(Duration::from_millis(1000), "test complete")
+                    ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
+                    ctx.send_shutdown(
+                        Instant::now().add(Duration::from_millis(1000)),
+                        "test complete",
+                    )
+                    .await
+                    .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1134,6 +1572,6 @@ mod test {
                     assert!(exporter_result.is_ok());
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
                 })
-            })
+            });
     }
 }

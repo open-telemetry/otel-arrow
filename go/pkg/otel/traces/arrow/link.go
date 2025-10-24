@@ -40,6 +40,7 @@ var (
 		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Dictionary8), Nullable: true},
 		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8), Nullable: true},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
+		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	}, nil)
 )
 
@@ -56,6 +57,7 @@ type (
 		sib  *builder.FixedSizeBinaryBuilder // `span_id` builder
 		tsb  *builder.StringBuilder          // `trace_state` builder
 		dacb *builder.Uint32Builder          // `dropped_attributes_count` builder
+		fb   *builder.Uint32Builder          // `flags` builder
 
 		accumulator *LinkAccumulator
 		attrsAccu   *acommon.Attributes32Accumulator
@@ -72,6 +74,7 @@ type (
 		TraceState             string
 		Attributes             pcommon.Map
 		DroppedAttributesCount uint32
+		Flags                  uint32
 	}
 
 	// LinkAccumulator is an accumulator for links that is used to sort links
@@ -118,6 +121,7 @@ func (b *LinkBuilder) init() {
 	b.sib = b.builder.FixedSizeBinaryBuilder(constants.SpanId)
 	b.tsb = b.builder.StringBuilder(constants.TraceState)
 	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
+	b.fb = b.builder.Uint32Builder(constants.Flags)
 }
 
 func (b *LinkBuilder) SetAttributesAccumulator(accu *acommon.Attributes32Accumulator) {
@@ -212,6 +216,7 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 		b.tsb.AppendNonEmpty(link.TraceState)
 
 		b.dacb.AppendNonZero(link.DroppedAttributesCount)
+		b.fb.Append(uint32(link.Flags))
 	}
 
 	record, err = b.builder.NewRecord()
@@ -262,6 +267,7 @@ func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice) erro
 			TraceState:             link.TraceState().AsRaw(),
 			Attributes:             link.Attributes(),
 			DroppedAttributesCount: link.DroppedAttributesCount(),
+			Flags:                  link.Flags(),
 		})
 	}
 

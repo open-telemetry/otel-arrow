@@ -5,23 +5,24 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
+use crate::fake_data_generator::config::{Config, OTLPSignal};
+use crate::fake_data_generator::fake_signal::{
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
+};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::{OTAP_RECEIVER_FACTORIES, pdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
-use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal};
-use otap_df_otlp::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-};
-use otap_df_otlp::fake_signal_receiver::metrics::FakeSignalReceiverMetrics;
 use otap_df_telemetry::metrics::MetricSet;
 use prost::{EncodeError, Message};
 use serde_json::Value;
@@ -29,8 +30,18 @@ use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
 use weaver_forge::registry::ResolvedRegistry;
 
+pub mod attributes;
+/// allows the user to configure their fake signal receiver
+pub mod config;
+/// provides the fake signal with fake data
+pub mod fake_data;
+/// generates fake signals for the receiver to emit
+pub mod fake_signal;
+/// fake signal metrics implementation
+pub mod metrics;
+
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -92,7 +103,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
         let registry = self
@@ -100,7 +111,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             .get_registry()
             .map_err(|err| Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error: err,
+                source_detail: String::new(),
             })?;
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -126,9 +139,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }) => {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
-                        Ok(NodeControlMsg::Shutdown {..}) => {
-                            // ToDo: add proper deadline function
-                            break;
+                        Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
+                            return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -156,9 +168,12 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             }
                         }
                         Err(e) => {
+                            let source_detail = format_error_sources(&e);
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
-                                error: e.to_string()
+                                kind: ReceiverErrorKind::Other,
+                                error: e.to_string(),
+                                source_detail,
                             });
                         }
                     }
@@ -167,8 +182,6 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
             }
         }
-        //Exit event loop
-        Ok(())
     }
 }
 
@@ -219,7 +232,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
@@ -260,7 +275,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
@@ -298,7 +315,9 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
@@ -387,15 +406,15 @@ impl TryFrom<OTLPSignal> for OtapPdata {
         Ok(match value {
             OTLPSignal::Logs(logs_data) => {
                 logs_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportLogsRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
             OTLPSignal::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportMetricsRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
             OTLPSignal::Traces(trace_data) => {
                 trace_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportTracesRequest(bytes).into()
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
     }
@@ -405,6 +424,7 @@ impl TryFrom<OTLPSignal> for OtapPdata {
 mod tests {
     use super::*;
 
+    use crate::fake_data_generator::config::{Config, OTLPSignal, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -412,7 +432,6 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, TrafficConfig};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
@@ -436,8 +455,10 @@ mod tests {
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
-            let otlp_bytes: OtlpProtoBytes =
-                value.try_into().expect("can convert signal to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = value
+                .payload()
+                .try_into()
+                .expect("can convert signal to otlp bytes");
             match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                     Self::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
@@ -460,7 +481,7 @@ mod tests {
                 // wait for the scenario to finish running
                 sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(std::time::Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })

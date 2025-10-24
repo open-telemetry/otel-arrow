@@ -1,62 +1,352 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::{collections::HashMap, sync::LazyLock};
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{iterators::Pair, pratt_parser::*};
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression, scalar_array_function_expressions::*,
+    Rule, logical_expressions::to_logical_expression, scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
+    scalar_logical_function_expressions::*, scalar_mathematical_function_expressions::*,
+    scalar_parse_function_expressions::*, scalar_primitive_expressions::*,
     scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
 };
+
+static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
+    use Assoc::*;
+    use Rule::*;
+
+    // Lowest precedence first
+    PrattParser::new()
+        // or
+        .op(Op::infix(or_token, Left))
+        // and
+        .op(Op::infix(and_token, Left))
+        // == !=
+        .op(Op::infix(equals_token, Left)
+            | Op::infix(equals_insensitive_token, Left)
+            | Op::infix(not_equals_token, Left)
+            | Op::infix(not_equals_insensitive_token, Left))
+        // <= >= < >
+        .op(Op::infix(less_than_or_equal_to_token, Left)
+            | Op::infix(greater_than_or_equal_to_token, Left)
+            | Op::infix(less_than_token, Left)
+            | Op::infix(greater_than_token, Left))
+        // contains & has
+        .op(Op::infix(not_contains_cs_token, Left)
+            | Op::infix(not_contains_token, Left)
+            | Op::infix(not_has_cs_token, Left)
+            | Op::infix(not_has_token, Left)
+            | Op::infix(contains_cs_token, Left)
+            | Op::infix(contains_token, Left)
+            | Op::infix(has_cs_token, Left)
+            | Op::infix(has_token, Left))
+        // in
+        .op(Op::infix(not_in_insensitive_token, Left)
+            | Op::infix(not_in_token, Left)
+            | Op::infix(in_insensitive_token, Left)
+            | Op::infix(in_token, Left))
+        // matches
+        .op(Op::infix(matches_regex_token, Left))
+        // + -
+        .op(Op::infix(plus_token, Left) | Op::infix(minus_token, Left))
+        // * / %
+        .op(Op::infix(multiply_token, Left)
+            | Op::infix(divide_token, Left)
+            | Op::infix(modulo_token, Left))
+
+    // ^ ** (right-associative)
+    //.op(Op::infix(power, Right))
+});
 
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
-    let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
+    PRATT_PARSER
+        .map_primary(|primary| match primary.as_rule() {
+            Rule::scalar_unary_expression => parse_scalar_unary_expression(primary, scope),
+            Rule::scalar_expression => parse_scalar_expression(primary, scope),
+            Rule::scalar_list_expression => {
+                let location = to_query_location(&primary);
 
-    let scalar = match scalar_rule.as_rule() {
-        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
-        Rule::real_expression => ScalarExpression::Static(parse_real_expression(scalar_rule)?),
-        Rule::datetime_expression => {
-            ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
+                let mut values = Vec::new();
+
+                for rule in primary.into_inner() {
+                    let scalar = parse_scalar_expression(rule, scope)?;
+
+                    values.push(scalar);
+                }
+
+                Ok(ScalarExpression::Collection(
+                    CollectionScalarExpression::List(ListScalarExpression::new(location, values)),
+                ))
+            }
+            _ => panic!("Unexpected rule in scalar_expression: {primary}"),
+        })
+        .map_infix(|lhs, op, rhs| {
+            let location = to_query_location(&op);
+            let lhs = lhs?;
+            let rhs = rhs?;
+
+            Ok(match op.as_rule() {
+                Rule::equals_token => ScalarExpression::Logical(
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        location, lhs, rhs, false,
+                    ))
+                    .into(),
+                ),
+
+                Rule::equals_insensitive_token => ScalarExpression::Logical(
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        location, lhs, rhs, true,
+                    ))
+                    .into(),
+                ),
+
+                Rule::not_equals_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            location, lhs, rhs, false,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::not_equals_insensitive_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            location, lhs, rhs, true,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::greater_than_token => ScalarExpression::Logical(
+                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                        location, lhs, rhs,
+                    ))
+                    .into(),
+                ),
+
+                Rule::greater_than_or_equal_to_token => ScalarExpression::Logical(
+                    LogicalExpression::GreaterThanOrEqualTo(
+                        GreaterThanOrEqualToLogicalExpression::new(location, lhs, rhs),
+                    )
+                    .into(),
+                ),
+
+                Rule::less_than_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::GreaterThanOrEqualTo(
+                            GreaterThanOrEqualToLogicalExpression::new(location, lhs, rhs),
+                        ),
+                    ))
+                    .into(),
+                ),
+
+                Rule::less_than_or_equal_to_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                            location, lhs, rhs,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::matches_regex_token => ScalarExpression::Logical(
+                    LogicalExpression::Matches(MatchesLogicalExpression::new(location, lhs, rhs))
+                        .into(),
+                ),
+
+                Rule::not_contains_cs_token | Rule::not_has_cs_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::Contains(ContainsLogicalExpression::new(
+                            location, lhs, rhs, false,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::not_contains_token | Rule::not_has_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::Contains(ContainsLogicalExpression::new(
+                            location, lhs, rhs, true,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::contains_cs_token | Rule::has_cs_token => ScalarExpression::Logical(
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        location, lhs, rhs, false,
+                    ))
+                    .into(),
+                ),
+
+                Rule::contains_token | Rule::has_token => ScalarExpression::Logical(
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        location, lhs, rhs, true,
+                    ))
+                    .into(),
+                ),
+
+                Rule::not_in_insensitive_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::Contains(ContainsLogicalExpression::new(
+                            location, rhs, lhs, true,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::not_in_token => ScalarExpression::Logical(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        location.clone(),
+                        LogicalExpression::Contains(ContainsLogicalExpression::new(
+                            location, rhs, lhs, false,
+                        )),
+                    ))
+                    .into(),
+                ),
+
+                Rule::in_insensitive_token => ScalarExpression::Logical(
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        location, rhs, lhs, true,
+                    ))
+                    .into(),
+                ),
+
+                Rule::in_token => ScalarExpression::Logical(
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        location, rhs, lhs, false,
+                    ))
+                    .into(),
+                ),
+
+                Rule::and_token => ScalarExpression::Logical(
+                    LogicalExpression::And(AndLogicalExpression::new(
+                        location,
+                        to_logical_expression(lhs, scope)?,
+                        to_logical_expression(rhs, scope)?,
+                    ))
+                    .into(),
+                ),
+
+                Rule::or_token => ScalarExpression::Logical(
+                    LogicalExpression::Or(OrLogicalExpression::new(
+                        location,
+                        to_logical_expression(lhs, scope)?,
+                        to_logical_expression(rhs, scope)?,
+                    ))
+                    .into(),
+                ),
+
+                Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(
+                    BinaryMathematicalScalarExpression::new(location, lhs, rhs),
+                )),
+
+                Rule::divide_token => ScalarExpression::Math(MathScalarExpression::Divide(
+                    BinaryMathematicalScalarExpression::new(location, lhs, rhs),
+                )),
+
+                Rule::modulo_token => ScalarExpression::Math(MathScalarExpression::Modulus(
+                    BinaryMathematicalScalarExpression::new(location, lhs, rhs),
+                )),
+
+                Rule::plus_token => ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(location, lhs, rhs),
+                )),
+
+                Rule::minus_token => ScalarExpression::Math(MathScalarExpression::Subtract(
+                    BinaryMathematicalScalarExpression::new(location, lhs, rhs),
+                )),
+
+                _ => panic!("Unexpected rule in scalar_expression: {op}"),
+            })
+        })
+        .parse(scalar_expression_rule.into_inner())
+}
+
+pub(crate) fn parse_scalar_unary_expression(
+    scalar_unary_expression_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = scalar_unary_expression_rule.into_inner().next().unwrap();
+
+    Ok(match rule.as_rule() {
+        Rule::type_unary_expressions => {
+            ScalarExpression::Static(parse_type_unary_expressions(rule)?)
         }
-        Rule::time_expression => ScalarExpression::Static(parse_timespan_expression(scalar_rule)?),
-        Rule::conditional_expression => parse_conditional_expression(scalar_rule, scope)?,
-        Rule::case_expression => parse_case_expression(scalar_rule, scope)?,
-        Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, scope)?,
-        Rule::tostring_expression => parse_tostring_expression(scalar_rule, scope)?,
-        Rule::toint_expression => parse_toint_expression(scalar_rule, scope)?,
-        Rule::tobool_expression => parse_tobool_expression(scalar_rule, scope)?,
-        Rule::tofloat_expression => parse_tofloat_expression(scalar_rule, scope)?,
-        Rule::tolong_expression => parse_tolong_expression(scalar_rule, scope)?,
-        Rule::toreal_expression => parse_toreal_expression(scalar_rule, scope)?,
-        Rule::todouble_expression => parse_todouble_expression(scalar_rule, scope)?,
-        Rule::todatetime_expression => parse_todatetime_expression(scalar_rule, scope)?,
-        Rule::totimespan_expression => parse_totimespan_expression(scalar_rule, scope)?,
-        Rule::strlen_expression => parse_strlen_expression(scalar_rule, scope)?,
-        Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, scope)?,
-        Rule::substring_expression => parse_substring_expression(scalar_rule, scope)?,
-        Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, scope)?,
-        Rule::strcat_expression => parse_strcat_expression(scalar_rule, scope)?,
-        Rule::strcat_delim_expression => parse_strcat_delim_expression(scalar_rule, scope)?,
-        Rule::array_concat_expression => parse_array_concat_expression(scalar_rule, scope)?,
-        Rule::true_literal | Rule::false_literal => {
-            ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
+        Rule::get_type_expression => {
+            let location = to_query_location(&rule);
+
+            let scalar = parse_scalar_expression(rule.into_inner().next().unwrap(), scope)?;
+
+            let type_map_id = match scope.get_constant_id("@type_map") {
+                Some(id) => id.0,
+                None => {
+                    let mut type_map: HashMap<Box<str>, StaticScalarExpression> = HashMap::new();
+                    for value_type in ValueType::get_value_types() {
+                        let item = match value_type {
+                            ValueType::Array => ("Array", "array"),
+                            ValueType::Boolean => ("Boolean", "bool"),
+                            ValueType::DateTime => ("DateTime", "datetime"),
+                            ValueType::Double => ("Double", "real"),
+                            ValueType::Integer => ("Integer", "long"),
+                            ValueType::Map => ("Map", "dictionary"),
+                            ValueType::Null => ("Null", "null"),
+                            ValueType::Regex => ("Regex", "regex"),
+                            ValueType::String => ("String", "string"),
+                            ValueType::TimeSpan => ("TimeSpan", "timespan"),
+                        };
+                        type_map.insert(
+                            item.0.into(),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                location.clone(),
+                                item.1,
+                            )),
+                        );
+                    }
+                    scope.push_constant(
+                        "@type_map",
+                        StaticScalarExpression::Map(MapScalarExpression::new(
+                            location.clone(),
+                            type_map,
+                        )),
+                    )
+                }
+            };
+
+            let get_type =
+                ScalarExpression::GetType(GetTypeScalarExpression::new(location.clone(), scalar));
+
+            // Note: We register a lookup into the type map to translate expression ValueType into KQL type
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                location,
+                ValueType::Map,
+                type_map_id,
+                ValueAccessor::new_with_selectors(vec![get_type]),
+            ))
         }
-        Rule::double_literal => {
-            ScalarExpression::Static(parse_standard_double_literal(scalar_rule, None)?)
-        }
-        Rule::integer_literal => {
-            ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
-        }
-        Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
-        Rule::negate_expression => parse_negate_expression(scalar_rule, scope)?,
-        Rule::bin_expression => parse_bin_expression(scalar_rule, scope)?,
-        Rule::now_expression => parse_now_expression(scalar_rule, scope)?,
+        Rule::conditional_unary_expressions => parse_conditional_unary_expressions(rule, scope)?,
+        Rule::conversion_unary_expressions => parse_conversion_unary_expressions(rule, scope)?,
+        Rule::string_unary_expressions => parse_string_unary_expressions(rule, scope)?,
+        Rule::parse_unary_expressions => parse_parse_unary_expressions(rule, scope)?,
+        Rule::array_unary_expressions => parse_array_unary_expressions(rule, scope)?,
+        Rule::math_unary_expressions => parse_math_unary_expressions(rule, scope)?,
+        Rule::temporal_unary_expressions => parse_temporal_unary_expressions(rule, scope)?,
+        Rule::logical_unary_expressions => parse_logical_unary_expressions(rule, scope)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
@@ -64,23 +354,158 @@ pub(crate) fn parse_scalar_expression(
             // [scalar], [scalar]) evaluated as iff([logical],
             // accessor(some_constant1), accessor(some_constant2)) can safely
             // fold to iff([logical], String("constant1"), String("constant2")).
-            parse_accessor_expression(scalar_rule, scope, true)?
+            parse_accessor_expression(rule, scope, true)?
         }
-        Rule::scalar_expression => parse_scalar_expression(scalar_rule, scope)?,
-        Rule::logical_expression => {
-            let l = parse_logical_expression(scalar_rule, scope)?;
+        Rule::scalar_expression => parse_scalar_expression(rule, scope)?,
+        _ => panic!("Unexpected rule in scalar_unary_expression: {rule}"),
+    })
+}
 
-            if let LogicalExpression::Scalar(s) = l {
-                s
-            } else {
-                ScalarExpression::Logical(l.into())
-            }
+pub(crate) fn try_resolve_identifier(
+    scalar_expression: &ScalarExpression,
+    scope: &dyn ParserScope,
+) -> Result<Option<Vec<Box<str>>>, ParserError> {
+    let r = match scalar_expression {
+        ScalarExpression::Attached(a) => {
+            parse_identifier_from_accessor(a.get_name().get_value(), a.get_value_accessor(), scope)
         }
-        Rule::arithmetic_expression => parse_arithmetic_expression(scalar_rule, scope)?,
-        _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
+        ScalarExpression::Constant(c) => {
+            let name = scope
+                .get_constant_name(c.get_constant_id())
+                .expect("Constant not found")
+                .0;
+
+            parse_identifier_from_accessor(name.as_ref(), c.get_value_accessor(), scope)
+        }
+        ScalarExpression::Source(s) => {
+            parse_identifier_from_accessor("source", s.get_value_accessor(), scope)
+        }
+        ScalarExpression::Variable(v) => {
+            parse_identifier_from_accessor(v.get_name().get_value(), v.get_value_accessor(), scope)
+        }
+        ScalarExpression::Math(m) => match m {
+            MathScalarExpression::Add(_) => Ok(None),
+            MathScalarExpression::Bin(b) => try_resolve_identifier(b.get_left_expression(), scope),
+            MathScalarExpression::Ceiling(u) => {
+                try_resolve_identifier(u.get_value_expression(), scope)
+            }
+            MathScalarExpression::Divide(_) => Ok(None),
+            MathScalarExpression::Floor(u) => {
+                try_resolve_identifier(u.get_value_expression(), scope)
+            }
+            MathScalarExpression::Modulus(_) => Ok(None),
+            MathScalarExpression::Multiply(_) => Ok(None),
+            MathScalarExpression::Negate(_) => Ok(None),
+            MathScalarExpression::Subtract(_) => Ok(None),
+        },
+        ScalarExpression::Convert(c) => match c {
+            ConvertScalarExpression::Boolean(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::DateTime(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::Double(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::Integer(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::String(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+            ConvertScalarExpression::TimeSpan(c) => {
+                try_resolve_identifier(c.get_inner_expression(), scope)
+            }
+        },
+        ScalarExpression::Case(_) => Ok(None),
+        ScalarExpression::Coalesce(_) => Ok(None),
+        ScalarExpression::Collection(_) => Ok(None),
+        ScalarExpression::Conditional(_) => Ok(None),
+        ScalarExpression::Temporal(_) => Ok(None),
+        ScalarExpression::Length(l) => {
+            if let Some(mut i) = try_resolve_identifier(l.get_inner_expression(), scope)? {
+                i.insert(0, "len".into());
+                return Ok(Some(i));
+            }
+
+            Ok(None)
+        }
+        ScalarExpression::Logical(_) => Ok(None),
+        ScalarExpression::Parse(_) => Ok(None),
+        ScalarExpression::Slice(_) => Ok(None),
+        ScalarExpression::Static(_) => Ok(None),
+        ScalarExpression::Text(_) => Ok(None),
+        ScalarExpression::GetType(g) => {
+            if let Some(mut i) = try_resolve_identifier(g.get_value(), scope)? {
+                i.insert(0, "type".into());
+                return Ok(Some(i));
+            }
+
+            Ok(None)
+        }
     };
 
-    Ok(scalar)
+    if let Ok(Some(mut identifier)) = r {
+        // Note: The identifier path may contain source.[default_map_key]. We always
+        // remove "source" and then remove the default_map_key if the mode is
+        // enabled.
+        if let Some("source") = identifier.first().map(|v| v.as_ref()) {
+            identifier.remove(0);
+
+            if let Some(schema) = scope.get_source_schema()
+                && let Some((key, _)) = schema.get_default_map()
+                && let Some(first) = identifier.first().map(|v| v.as_ref())
+                && key == first
+            {
+                identifier.remove(0);
+            }
+        }
+        return Ok(Some(identifier));
+    }
+
+    r
+}
+
+fn parse_identifier_from_accessor(
+    root: &str,
+    value_accessor: &ValueAccessor,
+    scope: &dyn ParserScope,
+) -> Result<Option<Vec<Box<str>>>, ParserError> {
+    let mut identifier: Vec<Box<str>> = vec![root.into()];
+    for selector in value_accessor.get_selectors() {
+        match selector {
+            ScalarExpression::Static(s) => match s.to_value() {
+                Value::String(s) => {
+                    identifier.push(s.get_value().into());
+                }
+                Value::Integer(i) => {
+                    identifier.push(format!("{}", i.get_value()).into());
+                }
+                _ => {
+                    return Ok(None);
+                }
+            },
+            ScalarExpression::Constant(c) => {
+                let name = scope
+                    .get_constant_name(c.get_constant_id())
+                    .expect("Constant not found")
+                    .0;
+
+                if let Some(mut i) =
+                    parse_identifier_from_accessor(name.as_ref(), c.get_value_accessor(), scope)?
+                {
+                    identifier.append(&mut i);
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(identifier))
 }
 
 #[cfg(test)]
@@ -653,5 +1078,87 @@ mod tests {
                 ),
             )),
         );
+    }
+
+    #[test]
+    fn test_parse_scalar_expression_precedence() {
+        let run_test = |input: &str, expected: &str| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            println!("{expression:?}");
+
+            let pipeline = state.get_pipeline();
+
+            let resolved_expression = expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            if let Some(s) = resolved_expression {
+                assert_eq!(expected, s.as_ref().to_value().to_string());
+            } else {
+                panic!()
+            }
+        };
+
+        run_test("true or false and false", "true");
+        run_test("(true or false) and false", "false");
+        run_test("1 > 0 + 1", "false");
+        run_test("1 > 0 + 1 == false", "true");
+        run_test("1 + 0 == true", "true");
+        run_test("0!=1 and 1!=0", "true");
+    }
+
+    #[test]
+    fn test_parse_get_type_scalar_expression() {
+        let run_test_success = |input: &str, expected: &str| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let mut scalar = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            let pipeline = state.get_pipeline();
+
+            let actual = scalar
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    expected
+                ))
+                .to_value(),
+                actual.unwrap().as_ref().to_value()
+            );
+        };
+
+        run_test_success("gettype(dynamic([0, 1, 2]))", "array");
+
+        run_test_success("gettype(true)", "bool");
+
+        run_test_success("gettype(datetime(10/21/2025))", "datetime");
+
+        run_test_success("gettype(real(1.18))", "real");
+
+        run_test_success("gettype(18)", "long");
+
+        run_test_success("gettype(dynamic({'key1':1}))", "dictionary");
+
+        run_test_success("gettype(int(null))", "null");
+
+        run_test_success("gettype(parse_regex('.*'))", "regex");
+
+        run_test_success("gettype('hello world')", "string");
+
+        run_test_success("gettype(1m)", "timespan");
     }
 }

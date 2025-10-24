@@ -6,34 +6,176 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{ArrowPrimitiveType, RecordBatch},
+    array::{ArrayRef, ArrowPrimitiveType, RecordBatch},
     datatypes::{Field, Schema},
     error::ArrowError,
 };
 
 use crate::{
     encode::record::array::{
-        ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, BinaryArrayBuilder,
-        Float64ArrayBuilder, Int64ArrayBuilder, PrimitiveArrayBuilder, StringArrayBuilder,
-        UInt8ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryOptions,
+        ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayAppendStr, ArrayOptions,
+        BinaryArrayBuilder, Float64ArrayBuilder, Int64ArrayBuilder, PrimitiveArrayBuilder,
+        StringArrayBuilder, UInt8ArrayBuilder, binary_to_utf8_array,
+        boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
+        dictionary::DictionaryOptions,
     },
-    otlp::attributes::parent_id::ParentId,
+    otlp::attributes::{AttributeValueType, parent_id::ParentId},
     schema::{FieldExt, consts},
-};
-use crate::{
-    encode::record::array::{ArrayAppendSlice, boolean::BooleanBuilderOptions},
-    otlp::attributes::store::AttributeValueType,
 };
 
 /// Record batch builder for attributes
-pub struct AttributesRecordBatchBuilder<T>
+pub struct AttributesRecordBatchBuilder<T: ParentId + AttributesRecordBatchBuilderConstructorHelper>
+{
+    keys: BinaryArrayBuilder,
+    parent_id: PrimitiveArrayBuilder<T::ArrayType>,
+
+    /// builder for attribute values
+    pub any_values_builder: AnyValuesRecordsBuilder,
+}
+
+impl<T> AttributesRecordBatchBuilder<T>
 where
     T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
-    parent_id: PrimitiveArrayBuilder<T::ArrayType>,
+    /// create a new instance of [`AttributesRecordBatchBuilder`]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            keys: BinaryArrayBuilder::new(ArrayOptions {
+                optional: false,
+                dictionary_options: Some(DictionaryOptions::dict8()),
+                ..Default::default()
+            }),
+            parent_id: PrimitiveArrayBuilder::new(T::parent_id_array_options()),
+            any_values_builder: AnyValuesRecordsBuilder::new(),
+        }
+    }
+
+    /// Append the parent ID to the builder for the parent_id array
+    pub fn append_parent_id(
+        &mut self,
+        val: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+    ) {
+        self.parent_id.append_value(val);
+    }
+
+    /// Append the attribute key to the builder for this array
+    pub fn append_key(&mut self, val: &[u8]) {
+        self.keys.append_slice(val);
+    }
+
+    /// Finish this builder and produce the resulting RecordBatch
+    pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
+        let mut columns = vec![];
+        let mut fields = vec![];
+
+        if let Some(array) = self.parent_id.finish() {
+            fields.push(
+                Field::new(consts::PARENT_ID, array.data_type().clone(), false)
+                    .with_plain_encoding(),
+            );
+
+            columns.push(array);
+        }
+
+        if let Some(array) = self.keys.finish() {
+            let array = binary_to_utf8_array(&array)?;
+            fields.push(Field::new(
+                consts::ATTRIBUTE_KEY,
+                array.data_type().clone(),
+                false,
+            ));
+            columns.push(array);
+        }
+
+        self.any_values_builder.finish(&mut columns, &mut fields)?;
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    }
+}
+
+/// Record batch builder for attributes where the key column is pre-validated string.
+//
+// Ordinarily, it would be better to use [`AttributesRecordBatchBuilder`] when constructing OTAP
+// batches for attributes where the keys are not known ahead of time and we're receiving them as
+// an array of arbitrary bytes (e.g. from OTLP proto bytes). The reason this is usually better is
+// because we can delay UTF validation until we construct the array.
+//
+// However, in some cases the keys may be known ahead of time, in which case, it makes more sense
+// to put them directly into a StringArrayBuilder instead of putting them into a BinaryArrayBuilder
+// and validate UTF-8 lazily
+pub struct StrKeysAttributesRecordBatchBuilder<
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+> {
     keys: StringArrayBuilder,
+    parent_id: PrimitiveArrayBuilder<T::ArrayType>,
+
+    /// builder for attribute values
+    pub any_values_builder: AnyValuesRecordsBuilder,
+}
+
+impl<T> StrKeysAttributesRecordBatchBuilder<T>
+where
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+{
+    /// create a new instance of [`AttributesRecordBatchBuilder`]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            keys: StringArrayBuilder::new(ArrayOptions {
+                optional: false,
+                dictionary_options: Some(DictionaryOptions::dict8()),
+                ..Default::default()
+            }),
+            parent_id: PrimitiveArrayBuilder::new(T::parent_id_array_options()),
+            any_values_builder: AnyValuesRecordsBuilder::new(),
+        }
+    }
+
+    /// Append the parent ID to the builder for the parent_id array
+    pub fn append_parent_id(
+        &mut self,
+        val: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+    ) {
+        self.parent_id.append_value(val);
+    }
+
+    /// Append the attribute key to the builder for this array
+    pub fn append_key(&mut self, val: &str) {
+        self.keys.append_str(val);
+    }
+
+    /// Finish this builder and produce the resulting RecordBatch
+    pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
+        let mut columns = vec![];
+        let mut fields = vec![];
+
+        if let Some(array) = self.parent_id.finish() {
+            fields.push(
+                Field::new(consts::PARENT_ID, array.data_type().clone(), false)
+                    .with_plain_encoding(),
+            );
+
+            columns.push(array);
+        }
+
+        if let Some(array) = self.keys.finish() {
+            fields.push(Field::new(
+                consts::ATTRIBUTE_KEY,
+                array.data_type().clone(),
+                false,
+            ));
+            columns.push(array);
+        }
+
+        self.any_values_builder.finish(&mut columns, &mut fields)?;
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    }
+}
+
+/// Record batch builder for arrays representing AnyValue
+pub struct AnyValuesRecordsBuilder {
     value_type: UInt8ArrayBuilder,
-    string_value: StringArrayBuilder,
+    string_value: BinaryArrayBuilder,
     int_value: Int64ArrayBuilder,
     double_value: Float64ArrayBuilder,
     bool_value: AdaptiveBooleanArrayBuilder,
@@ -48,26 +190,17 @@ where
     pending_ser_nulls: usize,
 }
 
-impl<T> AttributesRecordBatchBuilder<T>
-where
-    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
-{
+impl AnyValuesRecordsBuilder {
     /// Create a new instance of `AttributesRecordBatchBuilder`
     #[must_use]
     pub fn new() -> Self {
         Self {
-            parent_id: PrimitiveArrayBuilder::new(T::parent_id_array_options()),
-            keys: StringArrayBuilder::new(ArrayOptions {
-                optional: false,
-                dictionary_options: Some(DictionaryOptions::dict8()),
-                ..Default::default()
-            }),
             value_type: UInt8ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
                 ..Default::default()
             }),
-            string_value: StringArrayBuilder::new(ArrayOptions {
+            string_value: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict16()),
                 ..Default::default()
@@ -102,21 +235,8 @@ where
         }
     }
 
-    /// Append the parent ID to the builder for the parent_id array
-    pub fn append_parent_id(
-        &mut self,
-        val: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
-    ) {
-        self.parent_id.append_value(val);
-    }
-
-    /// Append the attribute key to the builder for this array
-    pub fn append_key(&mut self, val: &str) {
-        self.keys.append_str(val);
-    }
-
     /// Append a string value to the body.
-    pub fn append_str(&mut self, val: &str) {
+    pub fn append_str(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Str as u8));
 
@@ -125,7 +245,7 @@ where
             self.string_value.append_nulls(self.pending_string_nulls);
             self.pending_string_nulls = 0;
         }
-        self.string_value.append_str(val);
+        self.string_value.append_slice(val);
 
         // Increment pending nulls for all other arrays
         self.pending_int_nulls += 1;
@@ -269,31 +389,43 @@ where
         self.pending_ser_nulls += 1;
     }
 
+    /// Fill arrays with nulls to ensure they all have the same length and maintain correct ordering
+    fn fill_missing_nulls(&mut self) {
+        // Simply append any remaining pending nulls to each array
+        if self.pending_string_nulls > 0 {
+            self.string_value.append_nulls(self.pending_string_nulls);
+            self.pending_string_nulls = 0;
+        }
+        if self.pending_int_nulls > 0 {
+            self.int_value.append_nulls(self.pending_int_nulls);
+            self.pending_int_nulls = 0;
+        }
+        if self.pending_double_nulls > 0 {
+            self.double_value.append_nulls(self.pending_double_nulls);
+            self.pending_double_nulls = 0;
+        }
+        if self.pending_bool_nulls > 0 {
+            self.bool_value.append_nulls(self.pending_bool_nulls);
+            self.pending_bool_nulls = 0;
+        }
+        if self.pending_bytes_nulls > 0 {
+            self.bytes_value.append_nulls(self.pending_bytes_nulls);
+            self.pending_bytes_nulls = 0;
+        }
+        if self.pending_ser_nulls > 0 {
+            self.ser_value.append_nulls(self.pending_ser_nulls);
+            self.pending_ser_nulls = 0;
+        }
+    }
+
     /// Finish this builder and produce the resulting RecordBatch
-    pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
+    pub fn finish(
+        &mut self,
+        columns: &mut Vec<ArrayRef>,
+        fields: &mut Vec<Field>,
+    ) -> Result<(), ArrowError> {
         // Ensure all arrays have the same length by bulk appending nulls where needed
         self.fill_missing_nulls();
-
-        let mut columns = vec![];
-        let mut fields = vec![];
-
-        if let Some(array) = self.parent_id.finish() {
-            fields.push(
-                Field::new(consts::PARENT_ID, array.data_type().clone(), false)
-                    .with_plain_encoding(),
-            );
-
-            columns.push(array);
-        }
-
-        if let Some(array) = self.keys.finish() {
-            fields.push(Field::new(
-                consts::ATTRIBUTE_KEY,
-                array.data_type().clone(),
-                false,
-            ));
-            columns.push(array);
-        }
 
         if let Some(array) = self.value_type.finish() {
             fields.push(Field::new(
@@ -305,6 +437,7 @@ where
         }
 
         if let Some(array) = self.string_value.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::ATTRIBUTE_STR,
                 array.data_type().clone(),
@@ -358,39 +491,8 @@ where
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        Ok(())
     }
-
-    /// Fill arrays with nulls to ensure they all have the same length and maintain correct ordering
-    fn fill_missing_nulls(&mut self) {
-        // Simply append any remaining pending nulls to each array
-        if self.pending_string_nulls > 0 {
-            self.string_value.append_nulls(self.pending_string_nulls);
-            self.pending_string_nulls = 0;
-        }
-        if self.pending_int_nulls > 0 {
-            self.int_value.append_nulls(self.pending_int_nulls);
-            self.pending_int_nulls = 0;
-        }
-        if self.pending_double_nulls > 0 {
-            self.double_value.append_nulls(self.pending_double_nulls);
-            self.pending_double_nulls = 0;
-        }
-        if self.pending_bool_nulls > 0 {
-            self.bool_value.append_nulls(self.pending_bool_nulls);
-            self.pending_bool_nulls = 0;
-        }
-        if self.pending_bytes_nulls > 0 {
-            self.bytes_value.append_nulls(self.pending_bytes_nulls);
-            self.pending_bytes_nulls = 0;
-        }
-        if self.pending_ser_nulls > 0 {
-            self.ser_value.append_nulls(self.pending_ser_nulls);
-            self.pending_ser_nulls = 0;
-        }
-    }
-
-    // Helper methods are no longer needed since we track counts directly
 }
 
 impl<T> Default for AttributesRecordBatchBuilder<T>

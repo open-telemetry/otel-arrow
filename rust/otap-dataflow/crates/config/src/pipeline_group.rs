@@ -13,6 +13,7 @@ use std::collections::HashMap;
 /// Configuration for a single pipeline group.
 /// Contains group-specific settings and all its pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineGroupConfig {
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
@@ -75,14 +76,36 @@ impl Default for PipelineGroupConfig {
 
 /// Pipeline group quota configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Quota {
-    /// Number of CPU cores to use for this pipeline group.
-    /// If set to 0, it will use all available cores.
-    /// If set to a value greater than 0, it will use that many cores.
-    #[serde(default = "default_num_cores")]
-    pub num_cores: usize,
+    /// CPU core allocation strategy for this pipeline group.
+    #[serde(default)]
+    pub core_allocation: CoreAllocation,
 }
 
-fn default_num_cores() -> usize {
-    0 // Default to using all available cores
+/// Defines how CPU cores should be allocated for pipeline execution.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CoreAllocation {
+    /// Use all available CPU cores.
+    AllCores,
+    /// Use a specific number of CPU cores (starting from core 0).
+    /// If the requested number exceeds available cores, use all available cores.
+    CoreCount {
+        /// Number of cores to use. If 0, uses all available cores.
+        count: usize,
+    },
+    /// Use a specific range of CPU core IDs (inclusive).
+    CoreRange {
+        /// Start core ID (inclusive).
+        start: usize,
+        /// End core ID (inclusive).
+        end: usize,
+    },
+}
+
+impl Default for CoreAllocation {
+    fn default() -> Self {
+        Self::AllCores
+    }
 }

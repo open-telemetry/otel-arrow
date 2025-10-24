@@ -1,89 +1,265 @@
 # Performance Test Framework for Telemetry Pipeline
 
+## Overview
+
+This framework provides a modular, extensible way to
+**benchmark end-to-end telemetry pipelines**.
+It allows developers, platform engineers, and observability vendors to:
+
+- Spin up configurable pipeline topologies.
+- Run structured performance tests with repeatable workflows.
+- Observe and report on system behavior under various load and deployment scenarios.
+- Automate benchmarking at scale using CI/CD systems or local environments.
+
+The framework has evolved from simple load tests to a
+**strategy-driven orchestration engine** with first-class support for
+**component lifecycle management**, **test hooks**, **dynamic configuration**,
+and **automated reporting**.
+
+---
+
 ## Goals
 
-1. Run performance benchmarks across a full telemetry pipeline - including
-   OpenTelemetry SDK clients, Collector(s), and an ingestion backend, supporting
-   the needs of [OTel Arrow
-   Phase2](../../docs/phase2-design.md).
-2. Allow easy customization of pipeline components (e.g., swapping processors,
-   modifying Collector config, etc.).
-3. Be designed in a way that the framework itself can be forked and reused by
-   vendors and other users - similar to how OpenTelemetry Demo is adopted by the
-   community for vendor-specific customization.
+1. Run performance benchmarks across a full telemetry pipeline - from
+  OpenTelemetry SDK clients, through Collectors, to ingestion backends.
+2. Enable easy customization and reconfiguration of pipeline components without
+  changing the test harness itself.
+3. Provide a flexible orchestration model with lifecycle hooks, error handling,
+  and reporting.
+4. Allow community and vendors to fork and adapt the framework for their own use
+  cases.
+5. Support both lightweight local runs and scalable, automated performance test environments.
 
-## High-Level Components
+---
 
-### System Under Test
+## High-Level Architecture
 
-- Starts with the latest OTel Collector image and evolves to support
-  - Custom Collector builds and config variations
-  - Multi-instance topologies via Docker Compose or Kubernetes
+A **test suite** defines all elements of a performance test in YAML: components,
+deployment and execution strategies, monitoring, test scenarios, and reporting
+hooks.
+The orchestrator runs these suites, coordinating setup, execution, teardown, and
+data collection.
+
+### Core Concepts
+
+| Concept              | Purpose                                                              |
+|-----------------------|-----------------------------------------------------------------------|
+| **Components**        | Services or tools under test (e.g., load generators, collectors, backends). |
+| **Strategies**        | Plugin-based behaviors for deployment, execution, monitoring, and configuration. |
+| **Tests**             | Ordered scenarios made up of steps that deploy, start, monitor, load, and tear down components. |
+| **Hooks**             | Extensible automation points at suite, scenario, step, or component level. |
+| **Reports**           | Post-test analysis of throughput, latency, resource usage, and trends. |
+| **Error Handling**    | Flexible retry and continuation behavior for resilient test execution. |
+
+---
+
+## System Components
 
 ### Load Generator
 
-- Initially, a basic script for load generation, later extended to:
-  - Use language-specific OpenTelemetry SDKs
-  - Integrate load gen tools like Locust or custom telemetry generators
+- Pluggable execution strategies.
+- Runs as a Docker container or process.
+- Supports configurable load profiles (threads, batch sizes, endpoints).
 
-### Ingestion Service / Backend
+### Telemetry Collector
 
-- Options include:
-  - Null Sink (i.e., drop everything)
-  - A fake service that drops telemetry but tracks counts.
-  - A real backend for validating full pipeline integrity (vendor forks may
-    leverage this)
+- Runs latest OpenTelemetry Collector builds or custom versions.
+- Configurable via mounted configs or dynamic reconfiguration mid-test.
+- Supports multi-instance topologies (agent, sidecar, centralized).
 
-### Orchestrator
+### Backend / Ingestion Service
 
-- Responsible for:
-  - Spinning up and tearing down the pipeline
-  - Measuring throughput, loss rate, and system metrics (CPU, memory, disk etc.)
-- Can be written using Python for portability and ease of scripting
+- Multiple options:
+  - Null sink (drop everything)
+  - Fake service with telemetry counters
+  - Real vendor backends for end-to-end validation
 
-### Reporting
+---
 
-- Tracks historical results across test runs, enabling:
-  - Trend analysis
-  - Nightly benchmark runs on few well-defined scenarios
+## Orchestrator
 
-## Example scenarios
+The **orchestrator** is responsible for coordinating the entire test lifecycle:
 
-Listing a few examples, not in any particular order:
+- Deploying and tearing down components
+- Starting and stopping load and monitoring
+- Applying hooks and runtime strategy reconfigurations
+- Handling errors and retries gracefully
+- Emitting structured events for reporting
 
-- OTel Arrow developers can use the framework to measure the improvements OTAP
-  brings over OTLP under various scenarios.
-- A user has a K8S workload to which they want to add OTel Collector based
-  pipeline, and they can use the framework to predict how much capacity they
-  should plan for for a given expected volume/load.
-- An observability vendor can evaluate how their backend performs when receiving
-  data through different collector configurations, helping them optimize their
-  ingest pipelines and provide guidance to customers.
-- Platform engineers can benchmark different collector topologies (e.g.,
-  agent-per-node vs. sidecar vs. centralized deployment) to identify the most
-  efficient architecture for their environment's scale and requirements.
+This enables reproducible and automated benchmark runs across varied scenarios.
+
+---
+
+## Strategies
+
+All component behaviors are defined via pluggable **strategies**:
+
+- **Configuration** - optional pre-deployment configuration logic (templating,
+  remote fetch, etc.)
+- **Deployment** - how a component is launched (Docker, process, Kubernetes)
+- **Execution** - what it does during the test (e.g., send telemetry)
+- **Monitoring** - how its metrics are observed (Prometheus, Docker stats, etc.)
+
+Strategies can be swapped or updated dynamically during a test, enabling advanced
+scenarios such as A/B testing collector configurations.
+
+---
+
+## Monitoring
+
+The framework supports multiple monitoring strategies per component.
+Examples include:
+
+- **`docker_component`**: resource usage from container runtime (CPU, memory, etc.)
+- **`prometheus`**: scraping custom metrics endpoints
+
+Monitoring can be started and stopped at controlled phases, and
+**observation windows** can be defined using recorded events.
+
+---
+
+## Test Scenarios
+
+Tests are defined as ordered scenarios that can:
+
+- Deploy and configure components
+- Start monitoring and load generation
+- Wait for steady state
+- Reconfigure components at runtime
+- Tear down the environment
+
+Each step can define its own **hooks**, error handling, and timing.
+This allows fine-grained control over complex test flows.
+
+---
+
+## Hooks and Automation
+
+Hooks can be attached to:
+
+- **Suite** - before or after all tests (e.g., global reporting)
+- **Scenario** - before or after a single test scenario
+- **Step** - pre/post logic for individual actions
+- **Component** - during deployment, start, stop, etc.
+
+Hooks can:
+
+- Run setup or cleanup logic
+- Emit events
+- Trigger external systems
+- Record metrics or logs
+- Handle errors gracefully (`on_error` configuration)
+
+---
+
+## Reporting
+
+The framework generates structured reports from collected metrics and events:
+
+- **`pipeline_perf_report`** - throughput and telemetry pipeline performance
+- **`process_report`** - resource utilization (CPU, memory, etc.) for specific components
+
+Reports can be output to the console or other destinations and are typically
+defined in suite-level post hooks.
+
+---
+
+## Error Handling
+
+Tests can be resilient by configuring error handling at any level:
+
+- Automatic retries with configurable delays
+- Optional continuation on failure
+- Consistent behavior across hooks, steps, and component phases
+
+This is particularly useful in distributed or flaky test environments.
+
+---
 
 ## Deployment Environments
 
-The framework is planned to be easily accessible, allowing anyone to clone the
-repository and run benchmarks locally, whether using the existing configurations
-or applying custom modifications. Additionally, nightly or on-demand performance
-tests can be executed on dedicated performance testing machines managed by the
-OpenTelemetry organization using GitHub Actions. Over time, the framework can
-support large-scale testing by enabling deployments in cloud environments.
+- **Local**: Clone the repo and run a test suite on a workstation using Docker.
+- **CI/CD**: Run nightly or scheduled benchmarks on GitHub Actions or other runners.
+- **Cloud**: Scale tests out to larger environments for stress and capacity planning.
 
-## Plan for Iterative Development
+---
 
-Given perf benchmarking can be a very extensive project with large scope, we'd
-like to start with small steps and iterate quickly based on feedback.
+## Example Use Cases
 
-We will begin with a basic load test that uses OTel Collector's latest release,
-later adding ability to 'bring-you-own', where users can use a custom built
-Collector or leverage OTAP pipelines or customize the config etc.
+- **Protocol evaluation**: Compare OTLP vs. OTAP under varying loads.
+- **Capacity planning**: Estimate required Collector resources for a given
+  telemetry volume.
+- **Vendor benchmarking**: Evaluate backend ingestion performance under
+  different pipeline topologies.
+- **Architecture testing**: Compare agent vs. sidecar vs. centralized deployment
+  models.
 
-Then expand to:
+---
 
-- Adding pluggable load generators, such as language-specific OpenTelemetry SDKs
-or tools like Locust.
-- Supporting various ingestion services, including fake services for telemetry
-tracking or real backends for full pipeline validation.
+## Roadmap
+
+The framework is actively evolving:
+
+- Expanded configuration templating and remote fetch support
+- Additional monitoring and reporting plugins
+- Support for mixed telemetry signals and distributed topologies
+- Automated baseline comparison and regression tracking
+
+---
+
+## Getting Started
+
+1. Clone the repository.
+2. Write a test suite YAML defining components, tests, and hooks - or use one of
+    the existing suites.
+3. Run the orchestrator to execute the suite locally or in CI.
+4. View performance reports and metrics.
+
+Suites in the test_suites directory include detailed setup and execution
+instructions. Generally applicable instructions for the continuous integration suite
+are provided below for reference.
+
+### Run Test Suites
+
+#### Pre-Reqs (first time)
+
+Ensure you are in the otel-arrow/tools/pipeline_perf_test directory, then:
+
+```shell
+# Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r orchestrator/requirements.txt
+```
+
+#### Run The Orchestrator
+
+Ensure you are in the otel-arrow/tools/pipeline_perf_test directory, then:
+
+```shell
+python ./orchestrator/run_orchestrator.py --debug --config ./test_suites/integration/continuous/100klrps-docker.yaml
+```
+
+```shell
+$ python ./orchestrator/run_orchestrator.py --help
+
+usage: run_orchestrator.py [-h] --config CONFIG [--debug] [--otlp-endpoint OTLP_ENDPOINT] [--export-traces] [--export-metrics] [--docker.no-build]
+
+Test Orchestration Framework CLI
+
+options:
+  -h, --help            show this help message and exit
+  --config, -c CONFIG   Path to test suite YAML config.
+  --debug               Enable debug mode (verbose output, etc.).
+
+OTLP Export:
+  --otlp-endpoint OTLP_ENDPOINT
+                        OTLP exporter endpoint (e.g., http://localhost:4317)
+  --export-traces       Enable OpenTelemetry tracing to external otlp endpoint
+  --export-metrics      Enable OpenTelemetry metrics export to external otlp endpoint
+
+Docker Options:
+  --docker.no-build     Skip build of Docker containers.
+```

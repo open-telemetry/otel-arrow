@@ -1,0 +1,50 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+  default_node_ctrl_msg_channel_size: {{ default_node_ctrl_msg_channel_size | default(100) }}
+  default_pdata_channel_size: {{ default_pdata_channel_size | default(100) }}
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_batch_size: {{ max_batch_size | default(1000) }}
+        signals_per_second: {{ signals_per_second | default(100000) }}
+        metric_weight: {{ metric_weight | default(0) }}
+        trace_weight: {{ trace_weight | default(0) }}
+        log_weight: {{ log_weight | default(100) }}
+      registry_path: {{ registry_path | default("https://github.com/open-telemetry/semantic-conventions.git[model]") }}
+
+{%- set exporter_type = loadgen_exporter_type | default("otap") %}
+{%- set engine_host = engine_hostname | default("localhost") %}
+{%- set exporter_port = exporter_port | default(4317) %}
+{%- if exporter_type == "otap" -%}
+  {% set plugin_urn = "urn:otel:otap:exporter" %}
+  {% set compression = compression_method | default("zstd") %}
+{%- elif exporter_type == "otlp" -%}
+  {% set plugin_urn = "urn:otel:otlp:exporter" %}
+  {% set compression = compression_method | default("gzip") %}
+{%- else -%}
+  {% set plugin_urn = "urn:unknown:receiver:" ~ exporter_type %}
+{%- endif -%}
+
+  exporter:
+    kind: exporter
+    plugin_urn: "{{ plugin_urn }}"
+    config:
+      {%- if exporter_type in ["otap", "otlp"] %}
+      grpc_endpoint: "http://{{ engine_host }}:{{ exporter_port }}"
+      compression_method: {{ compression }}
+      {% else %}
+      error: "Unknown loadgen_exporter_type: {{ exporter_type }}"
+      {% endif %}
+      {% if loadgen_exporter_type == "otap" %}
+      arrow:
+        payload_compression: none
+      {% endif %}

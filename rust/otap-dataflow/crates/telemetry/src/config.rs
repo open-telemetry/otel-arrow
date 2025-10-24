@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// Configuration for the telemetry metrics system.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The size of the reporting channel.
     pub reporting_channel_size: usize,

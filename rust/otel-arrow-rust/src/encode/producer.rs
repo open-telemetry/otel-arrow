@@ -5,11 +5,13 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
-use std::{collections::HashMap, io::Cursor};
+use std::io::Cursor;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
+use arrow_ipc::CompressionType;
+use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions};
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
@@ -19,20 +21,22 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 
 /// handles serializing the stream of record batches for some payload type
 struct StreamProducer {
-    payload_type: ArrowPayloadType,
     stream_writer: StreamWriter<Cursor<Vec<u8>>>,
     schema_id: i64,
 }
 
 impl StreamProducer {
-    fn try_new(payload_type: ArrowPayloadType, schema: SchemaRef, schema_id: i64) -> Result<Self> {
+    fn try_new(
+        schema: SchemaRef,
+        schema_id: i64,
+        ipc_write_options: IpcWriteOptions,
+    ) -> Result<Self> {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
-        let stream_writer =
-            StreamWriter::try_new(cursor, &schema).context(error::BuildStreamWriterSnafu)?;
+        let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options)
+            .context(error::BuildStreamWriterSnafu)?;
 
         Ok(Self {
-            payload_type,
             stream_writer,
             schema_id,
         })
@@ -50,23 +54,102 @@ impl StreamProducer {
     }
 }
 
+const PAYLOAD_TYPE_COUNT: usize = 28; // 28 variants total
+
+// Compile-time lookup table for O(1) conversion
+const PAYLOAD_TYPE_TO_INDEX: [Option<u8>; 46] = {
+    let mut table = [None; 46];
+    table[0] = Some(0); // Unknown
+    table[1] = Some(1); // ResourceAttrs
+    table[2] = Some(2); // ScopeAttrs
+    table[10] = Some(3); // UnivariateMetrics
+    table[11] = Some(4); // NumberDataPoints
+    table[12] = Some(5); // SummaryDataPoints
+    table[13] = Some(6); // HistogramDataPoints
+    table[14] = Some(7); // ExpHistogramDataPoints
+    table[15] = Some(8); // NumberDpAttrs
+    table[16] = Some(9); // SummaryDpAttrs
+    table[17] = Some(10); // HistogramDpAttrs
+    table[18] = Some(11); // ExpHistogramDpAttrs
+    table[19] = Some(12); // NumberDpExemplars
+    table[20] = Some(13); // HistogramDpExemplars
+    table[21] = Some(14); // ExpHistogramDpExemplars
+    table[22] = Some(15); // NumberDpExemplarAttrs
+    table[23] = Some(16); // HistogramDpExemplarAttrs
+    table[24] = Some(17); // ExpHistogramDpExemplarAttrs
+    table[25] = Some(18); // MultivariateMetrics
+    table[26] = Some(19); // MetricAttrs
+    table[30] = Some(20); // Logs
+    table[31] = Some(21); // LogAttrs
+    table[40] = Some(22); // Spans
+    table[41] = Some(23); // SpanAttrs
+    table[42] = Some(24); // SpanEvents
+    table[43] = Some(25); // SpanLinks
+    table[44] = Some(26); // SpanEventAttrs
+    table[45] = Some(27); // SpanLinkAttrs
+    table
+};
+
+impl ArrowPayloadType {
+    #[inline]
+    const fn to_index(self) -> usize {
+        // Safety: Generated enum values are always mapped in the `PAYLOAD_TYPE_TO_INDEX` table.
+        PAYLOAD_TYPE_TO_INDEX[self as usize]
+            .expect("`PAYLOAD_TYPE_TO_INDEX` should cover all ArrowPayloadType variants")
+            as usize
+    }
+}
+
+/// Storage for a stream producer with its schema ID
+struct ProducerEntry {
+    schema_id: String,
+    producer: StreamProducer,
+}
+
 /// Produces OTAP `BatchArrowRecords` from OTAP Batches
 pub struct Producer {
     next_batch_id: i64,
     next_schema_id: i64,
-    stream_producers: HashMap<String, StreamProducer>,
+    stream_producers: [Option<ProducerEntry>; PAYLOAD_TYPE_COUNT],
     schema_id_builder: SchemaIdBuilder,
+    ipc_write_options: IpcWriteOptions,
+}
+
+/// Options for creating [`Producer`]
+pub struct ProducerOptions {
+    /// compression method for IPC batches. default = zstd
+    pub ipc_compression: Option<CompressionType>,
+}
+
+impl Default for ProducerOptions {
+    fn default() -> Self {
+        Self {
+            ipc_compression: Some(CompressionType::ZSTD),
+        }
+    }
 }
 
 impl Producer {
     /// create a new instance of `Producer`
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_options(ProducerOptions::default())
+    }
+
+    /// create a new instance of `Producer` with the given options for the IPC stream writer
+    #[must_use]
+    pub fn new_with_options(options: ProducerOptions) -> Self {
         Self {
             next_batch_id: 0,
             next_schema_id: 0,
-            stream_producers: HashMap::new(),
+            stream_producers: [const { None }; PAYLOAD_TYPE_COUNT],
             schema_id_builder: SchemaIdBuilder::new(),
+            ipc_write_options: IpcWriteOptions::default()
+                .with_dictionary_handling(DictionaryHandling::Delta)
+                // safety: this will only fail if the writer options's metadata version has been
+                // configured to version before V5, which we're not doing here.
+                .try_with_compression(options.ipc_compression)
+                .expect("can configure compression"),
         }
     }
 
@@ -87,25 +170,37 @@ impl Producer {
 
             let schema = record_batch.schema();
             let schema_id = self.schema_id_builder.build_id(&schema);
-            let stream_producer = match self.stream_producers.get_mut(schema_id) {
-                None => {
+            let idx = payload_type.to_index();
+            let stream_producer = match &mut self.stream_producers[idx] {
+                Some(entry) if entry.schema_id == schema_id => {
+                    // Schema hasn't changed, use existing producer
+                    &mut entry.producer
+                }
+                _ => {
+                    // Schema changed or no producer yet, create new one
+                    let payload_schema_id = self.next_schema_id;
+                    self.next_schema_id += 1;
+
+                    let new_producer = StreamProducer::try_new(
+                        schema,
+                        payload_schema_id,
+                        self.ipc_write_options.clone(),
+                    )?;
+
                     // cleanup previous stream producer if any that have the same ArrowPayloadType.
                     // The reasoning is that if we have a new schema ID (i.e. schema change) we
                     // should no longer use the previous stream producer for this PayloadType as
                     // schema changes are only additive.
-                    self.stream_producers
-                        .retain(|_, v| v.payload_type != *payload_type);
-                    let payload_schema_id = self.next_schema_id;
-                    self.next_schema_id += 1;
-                    self.stream_producers
-                        .entry(schema_id.to_string())
-                        .or_insert(StreamProducer::try_new(
-                            *payload_type,
-                            schema,
-                            payload_schema_id,
-                        )?)
+                    self.stream_producers[idx] = Some(ProducerEntry {
+                        schema_id: schema_id.to_string(),
+                        producer: new_producer,
+                    });
+
+                    &mut self.stream_producers[idx]
+                        .as_mut()
+                        .expect("ProducerEntry should exist")
+                        .producer
                 }
-                Some(s) => s,
             };
 
             let serialized_rb = stream_producer.serialize_batch(record_batch)?;
@@ -138,7 +233,7 @@ impl Default for Producer {
 mod test {
     use crate::Consumer;
     use crate::otap::{Logs, from_record_messages};
-    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::otlp::attributes::AttributeValueType;
     use crate::schema::{FieldExt, consts};
 
     use super::*;
@@ -289,5 +384,95 @@ mod test {
         .unwrap();
 
         assert_eq!(result_attrs, &expected_rb);
+    }
+
+    #[test]
+    fn test_all_arrow_payload_types_have_valid_index() {
+        // This function will fail to compile if new variants are added to ArrowPayloadType
+        // without being included in this match statement
+        // Anytime a new variant is added, it must be added to the `PAYLOAD_TYPE_TO_INDEX` table
+        const fn exhaustive_check(payload_type: ArrowPayloadType) -> usize {
+            // The match must be exhaustive - compiler will error if any variant is missing
+            match payload_type {
+                ArrowPayloadType::Unknown => 0,
+                ArrowPayloadType::ResourceAttrs => 1,
+                ArrowPayloadType::ScopeAttrs => 2,
+                ArrowPayloadType::UnivariateMetrics => 3,
+                ArrowPayloadType::NumberDataPoints => 4,
+                ArrowPayloadType::SummaryDataPoints => 5,
+                ArrowPayloadType::HistogramDataPoints => 6,
+                ArrowPayloadType::ExpHistogramDataPoints => 7,
+                ArrowPayloadType::NumberDpAttrs => 8,
+                ArrowPayloadType::SummaryDpAttrs => 9,
+                ArrowPayloadType::HistogramDpAttrs => 10,
+                ArrowPayloadType::ExpHistogramDpAttrs => 11,
+                ArrowPayloadType::NumberDpExemplars => 12,
+                ArrowPayloadType::HistogramDpExemplars => 13,
+                ArrowPayloadType::ExpHistogramDpExemplars => 14,
+                ArrowPayloadType::NumberDpExemplarAttrs => 15,
+                ArrowPayloadType::HistogramDpExemplarAttrs => 16,
+                ArrowPayloadType::ExpHistogramDpExemplarAttrs => 17,
+                ArrowPayloadType::MultivariateMetrics => 18,
+                ArrowPayloadType::MetricAttrs => 19,
+                ArrowPayloadType::Logs => 20,
+                ArrowPayloadType::LogAttrs => 21,
+                ArrowPayloadType::Spans => 22,
+                ArrowPayloadType::SpanAttrs => 23,
+                ArrowPayloadType::SpanEvents => 24,
+                ArrowPayloadType::SpanLinks => 25,
+                ArrowPayloadType::SpanEventAttrs => 26,
+                ArrowPayloadType::SpanLinkAttrs => 27,
+                // No wildcard pattern - compiler will error if new variants are added
+            }
+        }
+
+        // Test each variant
+        for variant in [
+            ArrowPayloadType::Unknown,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::UnivariateMetrics,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::MultivariateMetrics,
+            ArrowPayloadType::MetricAttrs,
+            ArrowPayloadType::Logs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::Spans,
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+        ] {
+            let expected_index = exhaustive_check(variant);
+            let actual_index = variant.to_index();
+
+            assert_eq!(
+                actual_index, expected_index,
+                "ArrowPayloadType::{:?} index mismatch",
+                variant
+            );
+
+            // Verify index is within bounds
+            assert!(
+                actual_index < PAYLOAD_TYPE_COUNT,
+                "Index {} for ArrowPayloadType::{:?} exceeds PAYLOAD_TYPE_COUNT",
+                actual_index,
+                variant
+            );
+        }
     }
 }

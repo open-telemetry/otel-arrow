@@ -4,7 +4,9 @@
 //! Pipeline configuration specification.
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
+use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+use crate::observed_state::ObservedStateSettings;
 use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,7 @@ use std::sync::Arc;
 ///
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
     ///
@@ -60,6 +63,7 @@ pub enum PipelineType {
 }
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineSettings {
     /// The default size of the node control message channels.
     /// These channels are used for sending control messages by the pipeline engine to nodes.
@@ -74,6 +78,14 @@ pub struct PipelineSettings {
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
+
+    /// Observed state settings.
+    #[serde(default)]
+    pub observed_state: ObservedStateSettings,
+
+    /// Health policy.
+    #[serde(default)]
+    pub health_policy: HealthPolicy,
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -92,6 +104,8 @@ impl Default for PipelineSettings {
             default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
             default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
+            observed_state: ObservedStateSettings::default(),
+            health_policy: HealthPolicy::default(),
         }
     }
 }

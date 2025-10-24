@@ -1,4 +1,4 @@
 Flask==3.1.2
-grpcio==1.74.0
-opentelemetry-proto==1.36.0
-pydantic==2.11.7
+grpcio==1.75.1
+opentelemetry-proto==1.38.0
+pydantic==2.12.3

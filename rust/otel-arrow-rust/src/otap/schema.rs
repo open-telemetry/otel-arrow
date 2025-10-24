@@ -37,13 +37,9 @@ impl SchemaIdBuilder {
     fn write_schema(&mut self, schema: &Schema) {
         self.sort_buf.clear();
 
-        schema
-            .fields
-            .iter()
-            .enumerate()
-            .for_each(|(i, _)| self.sort_buf.push(i));
+        self.sort_buf.extend(0..schema.fields.len());
         let field_ids = &mut self.sort_buf[0..schema.fields.len()];
-        field_ids.sort_by(|a, b| schema.field(*a).name().cmp(schema.field(*b).name()));
+        field_ids.sort_unstable_by_key(|&i| schema.field(i).name());
 
         for i in 0..schema.fields.len() {
             if i != 0 {
@@ -100,12 +96,9 @@ impl SchemaIdBuilder {
 
             Struct(fields) => {
                 let curr_buff_len = self.sort_buf.len();
-                fields
-                    .iter()
-                    .enumerate()
-                    .for_each(|(i, _)| self.sort_buf.push(i));
+                self.sort_buf.extend(0..fields.len());
                 let field_ids = &mut self.sort_buf[curr_buff_len..(curr_buff_len + fields.len())];
-                field_ids.sort_by(|a, b| fields[*a].name().cmp(fields[*b].name()));
+                field_ids.sort_unstable_by_key(|&i| fields[i].name());
 
                 self.out.push('{');
                 for i in curr_buff_len..self.sort_buf.len() {
@@ -123,9 +116,16 @@ impl SchemaIdBuilder {
 
             Map(field, _) => {
                 self.out.push_str("Map<");
-                self.write_data_type(field.data_type());
-                self.out.push(',');
-                self.write_data_type(field.data_type());
+                if let Struct(fields) = field.data_type() {
+                    if fields.len() == 2 {
+                        // Assume the first field is key type and the second field is value type for simplicity
+                        // arrow-go has similar logic
+                        // See https://github.com/apache/arrow-go/blob/3ae84281674622d33b4617c878e099d13d4a1113/arrow/datatype_nested.go#L593-L596
+                        self.write_data_type(fields[0].data_type());
+                        self.out.push(',');
+                        self.write_data_type(fields[1].data_type());
+                    }
+                }
                 self.out.push('>');
             }
 
@@ -137,15 +137,12 @@ impl SchemaIdBuilder {
                 self.out.push_str(tag);
 
                 let curr_buff_len = self.sort_buf.len();
-                union_fields
-                    .iter()
-                    .enumerate()
-                    .for_each(|(i, _)| self.sort_buf.push(i));
+                self.sort_buf.extend(0..union_fields.len());
                 let field_ids =
                     &mut self.sort_buf[curr_buff_len..(curr_buff_len + union_fields.len())];
 
                 let fields = union_fields.iter().map(|f| f.1).collect::<Vec<_>>();
-                field_ids.sort_by(|a, b| fields[*a].name().cmp(fields[*b].name()));
+                field_ids.sort_unstable_by_key(|&i| fields[i].name());
 
                 self.out.push('{');
                 for i in curr_buff_len..self.sort_buf.len() {
@@ -157,6 +154,7 @@ impl SchemaIdBuilder {
                     self.write_field(field);
                 }
                 self.out.push('}');
+                self.sort_buf.truncate(curr_buff_len);
             }
             _ => panic!("Unsupported datatype: {dt:?}"),
         }
@@ -207,7 +205,65 @@ mod test {
             ),
             Field::new(
                 "map",
-                DataType::Map(Arc::new(Field::new("item", DataType::Utf8, true)), true),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("value", DataType::Utf8, true),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_invalid",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new("value", DataType::Boolean, true),
+                                Field::new("uint8", DataType::UInt8, true),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
+                true,
+            ),
+            Field::new(
+                "map_nested",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Utf8, false),
+                                Field::new(
+                                    "value",
+                                    DataType::List(Arc::new(Field::new(
+                                        "item",
+                                        DataType::UInt16,
+                                        true,
+                                    ))),
+                                    true,
+                                ),
+                            ]
+                            .into(),
+                        ),
+                        true,
+                    )),
+                    true,
+                ),
                 true,
             ),
             Field::new(
@@ -242,7 +298,7 @@ mod test {
                         (3i8, Arc::new(Field::new("su.a", DataType::Int8, true))),
                         (2i8, Arc::new(Field::new("su.b", DataType::Int8, true))),
                     ]),
-                    UnionMode::Dense,
+                    UnionMode::Sparse,
                 ),
                 true,
             ),
@@ -266,7 +322,9 @@ mod test {
             "int8:I8",
             "list:[U8]",
             "map:Map<Str,Str>",
-            "sparse_union:DU{su.a:I8,su.b:I8,su.b:I8}",
+            "map_invalid:Map<>",
+            "map_nested:Map<Str,[U16]>",
+            "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
             "string:Str",
             "struct:{s.a:U8,s.b:U16,s.c:U32}",
             "ts:Tns",
