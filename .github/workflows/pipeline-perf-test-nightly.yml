@@ -1,10 +1,10 @@
-name: Pipeline Performance Tests - Continuous
+name: Pipeline Performance Tests - Nightly
 permissions:
   contents: read
 
 on:
-    push:
-        branches: [ main ]
+    schedule:
+      - cron: '0 10 * * *'  # runs every day at 10 AM UTC
     workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
@@ -74,21 +74,32 @@ jobs:
             pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
             pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
 
-        - name: Run pipeline performance test log suite
+        - name: Run syslog performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/syslog-docker.yaml
 
-        - name: Upload benchmark results for processing
+        - name: Run backpressure performance test log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
+
+        - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
-            name: benchmark-results-pipeline
-            path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
+            name: syslog-nightly-results
+            path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
+
+        - name: Upload backpressure results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: backpressure-nightly-results
+            path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
             echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
 
     update-benchmarks:
         runs-on: ubuntu-24.04
@@ -101,41 +112,75 @@ jobs:
         steps:
           - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-          - name: Download benchmark artifacts
+          - name: Download syslog artifacts
             uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
             with:
-              pattern: benchmark-results-*
+              pattern: syslog-nightly-results*
               merge-multiple: true
-              path: results
+              path: syslog_results
 
-          - name: Consolidate benchmark data
+          - name: Download backpressure artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: backpressure-nightly-results*
+              merge-multiple: true
+              path: backpressure_results
+
+          - name: Consolidate syslog benchmark data
             run: |
               echo "Consolidating benchmark JSON files..."
-              find results -name "*.json" -type f | while read file; do
+              find syslog_results -name "*.json" -type f | while read file; do
                 echo "Processing: $file"
                 cat "$file"
                 echo
               done
 
               # Combine all benchmark JSON files into a single output (find them recursively)
-              find results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output.json
+              find syslog_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > syslog_output.json
 
               echo "Consolidated benchmark data:"
-              cat output.json
+              cat syslog_output.json
+
+          - name: Consolidate backpressure benchmark data
+            run: |
+              echo "Consolidating benchmark JSON files..."
+              find backpressure_results -name "*.json" -type f | while read file; do
+                echo "Processing: $file"
+                cat "$file"
+                echo
+              done
+
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find backpressure_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > backpressure_output.json
+
+              echo "Consolidated benchmark data:"
+              cat backpressure_output.json
+
+          - name: Update benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: syslog_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
+              auto-push: true
+              save-data-file: true
 
           - name: Update benchmark data and deploy to GitHub Pages
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
             with:
               tool: "customSmallerIsBetter"
-              output-file-path: output.json
+              output-file-path: backpressure_output.json
               gh-pages-branch: benchmarks
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous"
+              benchmark-data-dir-path: "docs/benchmarks/nightly/backpressure"
               auto-push: true
               save-data-file: true
 
           - name: Add benchmark link to job summary
             run: |
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
