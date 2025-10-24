@@ -3,7 +3,9 @@
 
 //! Observed per-core pipeline runtime status and phase transition logic.
 
-use crate::conditions::{Condition, ConditionKind, ConditionState, ConditionStatus};
+use crate::conditions::{
+    Condition, ConditionKind, ConditionReason, ConditionState, ConditionStatus,
+};
 use crate::error::Error;
 use crate::error::Error::InvalidTransition;
 use crate::event::{ErrorEvent as ErrEv, RequestEvent as Req, SuccessEvent as OkEv};
@@ -63,13 +65,13 @@ impl Default for PipelineRuntimeStatus {
             delete_pending: false,
             accepted_condition: ConditionState::new(
                 ConditionStatus::False,
-                Some("Pending".to_string()),
+                Some(ConditionReason::Pending),
                 Some("Pipeline runtime (core) is awaiting configuration validation.".to_string()),
                 None,
             ),
             ready_condition: ConditionState::new(
                 ConditionStatus::False,
-                Some("Pending".to_string()),
+                Some(ConditionReason::Pending),
                 Some("Pipeline runtime (core) is not ready to process data.".to_string()),
                 None,
             ),
@@ -100,7 +102,7 @@ impl PipelineRuntimeStatus {
                 });
                 _ = self.accepted_condition.update(
                     ConditionStatus::True,
-                    Some("ConfigValid".to_string()),
+                    Some(ConditionReason::ConfigValid),
                     message,
                     timestamp,
                 );
@@ -113,7 +115,7 @@ impl PipelineRuntimeStatus {
                 });
                 _ = self.ready_condition.update(
                     ConditionStatus::True,
-                    Some("Running".to_string()),
+                    Some(ConditionReason::Running),
                     message,
                     timestamp,
                 );
@@ -124,7 +126,7 @@ impl PipelineRuntimeStatus {
                 });
                 _ = self.ready_condition.update(
                     ConditionStatus::True,
-                    Some("UpdateApplied".to_string()),
+                    Some(ConditionReason::UpdateApplied),
                     message,
                     timestamp,
                 );
@@ -135,7 +137,7 @@ impl PipelineRuntimeStatus {
                 });
                 _ = self.ready_condition.update(
                     ConditionStatus::True,
-                    Some("Running".to_string()),
+                    Some(ConditionReason::Running),
                     message,
                     timestamp,
                 );
@@ -149,7 +151,7 @@ impl PipelineRuntimeStatus {
                 });
                 _ = self.ready_condition.update(
                     ConditionStatus::False,
-                    Some("Drained".to_string()),
+                    Some(ConditionReason::Drained),
                     message,
                     timestamp,
                 );
@@ -160,13 +162,13 @@ impl PipelineRuntimeStatus {
                 let message_clone = message.clone();
                 _ = self.accepted_condition.update(
                     ConditionStatus::False,
-                    Some("Deleted".to_string()),
+                    Some(ConditionReason::Deleted),
                     message_clone,
                     timestamp,
                 );
                 _ = self.ready_condition.update(
                     ConditionStatus::False,
-                    Some("Deleted".to_string()),
+                    Some(ConditionReason::Deleted),
                     message,
                     timestamp,
                 );
@@ -181,7 +183,7 @@ impl PipelineRuntimeStatus {
                     });
                     _ = self.ready_condition.update(
                         ConditionStatus::True,
-                        Some("Updating".to_string()),
+                        Some(ConditionReason::Updating),
                         message,
                         timestamp,
                     );
@@ -210,7 +212,7 @@ impl PipelineRuntimeStatus {
                         .or_else(|| Some("Start requested; awaiting admission.".to_string()));
                     _ = self.accepted_condition.update(
                         ConditionStatus::False,
-                        Some("StartRequested".to_string()),
+                        Some(ConditionReason::StartRequested),
                         message,
                         timestamp,
                     );
@@ -220,7 +222,7 @@ impl PipelineRuntimeStatus {
                         .or_else(|| Some("Shutdown requested; core will drain.".to_string()));
                     _ = self.ready_condition.update(
                         ConditionStatus::False,
-                        Some("ShutdownRequested".to_string()),
+                        Some(ConditionReason::ShutdownRequested),
                         message,
                         timestamp,
                     );
@@ -230,7 +232,7 @@ impl PipelineRuntimeStatus {
                         .or_else(|| Some("Delete requested; core entering draining.".to_string()));
                     _ = self.ready_condition.update(
                         ConditionStatus::False,
-                        Some("DeleteRequested".to_string()),
+                        Some(ConditionReason::DeleteRequested),
                         message,
                         timestamp,
                     );
@@ -241,7 +243,7 @@ impl PipelineRuntimeStatus {
                     });
                     _ = self.ready_condition.update(
                         ConditionStatus::False,
-                        Some("ForceDeleteRequested".to_string()),
+                        Some(ConditionReason::ForceDeleteRequested),
                         message,
                         timestamp,
                     );
@@ -502,17 +504,19 @@ impl PipelineRuntimeStatus {
     }
 }
 
-fn error_reason_and_message(err: &ErrEv, event: &ObservedEvent) -> (String, Option<String>) {
+fn error_reason_and_message(
+    err: &ErrEv,
+    event: &ObservedEvent,
+) -> (ConditionReason, Option<String>) {
     let reason = match err {
-        ErrEv::AdmissionError(_) => "AdmissionError",
-        ErrEv::ConfigRejected(_) => "ConfigRejected",
-        ErrEv::UpdateFailed(_) => "UpdateFailed",
-        ErrEv::RollbackFailed(_) => "RollbackFailed",
-        ErrEv::DrainError(_) => "DrainError",
-        ErrEv::RuntimeError(_) => "RuntimeError",
-        ErrEv::DeleteError(_) => "DeleteError",
-    }
-    .to_string();
+        ErrEv::AdmissionError(_) => ConditionReason::AdmissionError,
+        ErrEv::ConfigRejected(_) => ConditionReason::ConfigRejected,
+        ErrEv::UpdateFailed(_) => ConditionReason::UpdateFailed,
+        ErrEv::RollbackFailed(_) => ConditionReason::RollbackFailed,
+        ErrEv::DrainError(_) => ConditionReason::DrainError,
+        ErrEv::RuntimeError(_) => ConditionReason::RuntimeError,
+        ErrEv::DeleteError(_) => ConditionReason::DeleteError,
+    };
 
     let message = event_message(event).or_else(|| match err {
         ErrEv::AdmissionError(summary)

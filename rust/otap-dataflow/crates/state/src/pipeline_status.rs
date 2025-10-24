@@ -4,7 +4,9 @@
 //! Observed pipeline status and aggregation logic per core.
 
 use crate::CoreId;
-use crate::conditions::{Condition, ConditionKind, ConditionState, ConditionStatus};
+use crate::conditions::{
+    Condition, ConditionKind, ConditionReason, ConditionState, ConditionStatus,
+};
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
 use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
@@ -66,7 +68,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Accepted,
                 status: ConditionStatus::Unknown,
-                reason: Some("NoPipelineRuntime".to_string()),
+                reason: Some(ConditionReason::NoPipelineRuntime),
                 message: Some("No runtime (core) observed for this pipeline.".to_string()),
                 last_transition_time: None,
             };
@@ -108,10 +110,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Accepted,
                 status: ConditionStatus::False,
-                reason: state
-                    .reason
-                    .clone()
-                    .or_else(|| Some("NotAccepted".to_string())),
+                reason: state.reason.clone().or(Some(ConditionReason::NotAccepted)),
                 message: state.message.clone().or_else(|| {
                     Some("One or more cores have not accepted the configuration.".to_string())
                 }),
@@ -123,7 +122,10 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Accepted,
                 status: ConditionStatus::Unknown,
-                reason: state.reason.clone().or_else(|| Some("Unknown".to_string())),
+                reason: state
+                    .reason
+                    .clone()
+                    .or_else(|| Some(ConditionReason::unknown("Unknown"))),
                 message: state
                     .message
                     .clone()
@@ -135,7 +137,7 @@ impl PipelineStatus {
         Condition {
             kind: ConditionKind::Accepted,
             status: ConditionStatus::True,
-            reason: Some("ConfigValid".to_string()),
+            reason: Some(ConditionReason::ConfigValid),
             message: Some(
                 "Pipeline configuration validated and resources quota is not exceeded.".to_string(),
             ),
@@ -148,7 +150,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Ready,
                 status: ConditionStatus::Unknown,
-                reason: Some("NoPipelineRuntime".to_string()),
+                reason: Some(ConditionReason::NoPipelineRuntime),
                 message: Some("No pipeline runtime (core) observed for this pipeline.".to_string()),
                 last_transition_time: None,
             };
@@ -196,7 +198,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Ready,
                 status: ConditionStatus::True,
-                reason: Some("QuorumMet".to_string()),
+                reason: Some(ConditionReason::QuorumMet),
                 message: Some("Pipeline is ready to receive and process data.".to_string()),
                 last_transition_time: latest_true_time,
             };
@@ -210,7 +212,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Ready,
                 status: ConditionStatus::False,
-                reason: Some("NoActiveCores".to_string()),
+                reason: Some(ConditionReason::NoActiveCores),
                 message: Some("No active cores are available to evaluate readiness.".to_string()),
                 last_transition_time: last_time,
             };
@@ -226,7 +228,7 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Ready,
                 status: ConditionStatus::False,
-                reason: Some("QuorumNotMet".to_string()),
+                reason: Some(ConditionReason::QuorumNotMet),
                 message: Some(message),
                 last_transition_time: state.last_transition_time,
             };
@@ -236,7 +238,10 @@ impl PipelineStatus {
             return Condition {
                 kind: ConditionKind::Ready,
                 status: ConditionStatus::Unknown,
-                reason: state.reason.clone().or_else(|| Some("Unknown".to_string())),
+                reason: state
+                    .reason
+                    .clone()
+                    .or_else(|| Some(ConditionReason::unknown("Unknown"))),
                 message: state
                     .message
                     .clone()
@@ -248,7 +253,7 @@ impl PipelineStatus {
         Condition {
             kind: ConditionKind::Ready,
             status: ConditionStatus::False,
-            reason: Some("QuorumNotMet".to_string()),
+            reason: Some(ConditionReason::QuorumNotMet),
             message: Some("Pipeline is not ready; reason could not be determined.".to_string()),
             last_transition_time: None,
         }
@@ -368,7 +373,7 @@ impl Serialize for PipelineStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conditions::{ConditionKind, ConditionState, ConditionStatus};
+    use crate::conditions::{ConditionKind, ConditionReason, ConditionState, ConditionStatus};
     use crate::phase::FailReason;
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
@@ -391,8 +396,8 @@ mod tests {
         phase: PipelinePhase,
         accepted_status: ConditionStatus,
         ready_status: ConditionStatus,
-        accepted_reason: Option<&str>,
-        ready_reason: Option<&str>,
+        accepted_reason: Option<ConditionReason>,
+        ready_reason: Option<ConditionReason>,
         accepted_time: Option<SystemTime>,
         ready_time: Option<SystemTime>,
     ) -> PipelineRuntimeStatus {
@@ -400,13 +405,13 @@ mod tests {
             phase,
             accepted_condition: ConditionState::new(
                 accepted_status,
-                accepted_reason.map(|s| s.to_string()),
+                accepted_reason.clone(),
                 None::<String>,
                 accepted_time,
             ),
             ready_condition: ConditionState::new(
                 ready_status,
-                ready_reason.map(|s| s.to_string()),
+                ready_reason,
                 None::<String>,
                 ready_time,
             ),
@@ -472,8 +477,8 @@ mod tests {
                 PipelinePhase::Running,
                 ConditionStatus::True,
                 ConditionStatus::True,
-                Some("ConfigValid"),
-                Some("Running"),
+                Some(ConditionReason::ConfigValid),
+                Some(ConditionReason::Running),
                 Some(ts(10)),
                 Some(ts(10)),
             ),
@@ -484,8 +489,8 @@ mod tests {
                 PipelinePhase::Pending,
                 ConditionStatus::False,
                 ConditionStatus::False,
-                Some("Pending"),
-                Some("Initializing"),
+                Some(ConditionReason::Pending),
+                Some(ConditionReason::Initializing),
                 Some(ts(20)),
                 Some(ts(20)),
             ),
@@ -498,7 +503,7 @@ mod tests {
             .expect("missing Accepted condition");
 
         assert_eq!(accepted.status, ConditionStatus::False);
-        assert_eq!(accepted.reason.as_deref(), Some("Pending"));
+        assert!(matches!(accepted.reason, Some(ConditionReason::Pending)));
         assert_eq!(accepted.last_transition_time, Some(ts(20)));
     }
 
@@ -517,8 +522,8 @@ mod tests {
                 PipelinePhase::Running,
                 ConditionStatus::True,
                 ConditionStatus::True,
-                Some("ConfigValid"),
-                Some("Running"),
+                Some(ConditionReason::ConfigValid),
+                Some(ConditionReason::Running),
                 Some(ts(5)),
                 Some(ts(5)),
             ),
@@ -529,8 +534,8 @@ mod tests {
                 PipelinePhase::Failed(FailReason::RuntimeError),
                 ConditionStatus::True,
                 ConditionStatus::False,
-                Some("ConfigValid"),
-                Some("RuntimeError"),
+                Some(ConditionReason::ConfigValid),
+                Some(ConditionReason::RuntimeError),
                 Some(ts(6)),
                 Some(ts(12)),
             ),
@@ -543,7 +548,7 @@ mod tests {
             .expect("missing Ready condition");
 
         assert_eq!(ready.status, ConditionStatus::False);
-        assert_eq!(ready.reason.as_deref(), Some("QuorumNotMet"));
+        assert!(matches!(ready.reason, Some(ConditionReason::QuorumNotMet)));
         assert!(
             ready
                 .message
