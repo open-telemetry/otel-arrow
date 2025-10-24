@@ -37,18 +37,16 @@ impl OtapBatchEngine {
         Self::default()
     }
 
-    pub async fn process(
+    pub async fn execute(
         &self,
         pipeline: &PipelineExpression,
         otap_batch: &OtapArrowRecords,
     ) -> Result<OtapArrowRecords> {
         // TODO - revisit the args here and figure out if we need to clone batch, or if the engine
         // can just take an owned reference
-        let mut exec_ctx = ExecutionContext::try_new(otap_batch.clone())?;
+        let mut exec_ctx = ExecutionContext::try_new(otap_batch.clone()).await?;
+        self.plan(&mut exec_ctx, pipeline).await?;
 
-        for data_expr in pipeline.get_expressions() {
-            self.plan_data_expr(&mut exec_ctx, data_expr).await?;
-        }
 
         // apply the plan:
         //
@@ -104,6 +102,14 @@ impl OtapBatchEngine {
             .await?;
 
         Ok(exec_ctx.curr_batch)
+    }
+
+    pub async fn plan(&self, exec_ctx: &mut ExecutionContext, pipeline: &PipelineExpression) -> Result<()> {
+        for data_expr in pipeline.get_expressions() {
+            self.plan_data_expr(exec_ctx, data_expr).await?;
+        }
+
+        Ok(())
     }
 
     async fn plan_data_expr(
@@ -165,7 +171,7 @@ impl OtapBatchEngine {
         exec_ctx: &mut ExecutionContext,
         predicate: &LogicalExpression,
     ) -> Result<()> {
-        let filter = Filter::try_from_predicate(exec_ctx, predicate)?;
+        let filter = Filter::try_from_predicate(exec_ctx, predicate).await?;
         let mut root_plan = exec_ctx.root_batch_plan()?;
         if let Some(expr) = filter.filter_expr {
             root_plan = root_plan.filter(expr)?;
@@ -359,7 +365,7 @@ impl OtapBatchEngine {
         payload_type: ArrowPayloadType,
     ) -> Result<()> {
         if let Some(attrs_rb) = exec_ctx.curr_batch.get(payload_type) {
-            let mut attrs_table_scan = exec_ctx.scan_batch_plan(payload_type)?;
+            let mut attrs_table_scan = exec_ctx.scan_batch_plan(payload_type).await?;
             let root_table_scan = exec_ctx.root_batch_plan()?.build()?;
 
             attrs_table_scan = match payload_type {
@@ -411,14 +417,17 @@ impl OtapBatchEngine {
 }
 
 #[derive(Clone)]
-pub(crate) struct ExecutionContext {
+pub struct ExecutionContext {
     curr_plan: LogicalPlanBuilder,
     curr_batch: OtapArrowRecords,
-    session_ctx: SessionContext,
+    
+    // TODO doesn't maybe need to be pub
+    pub session_ctx: SessionContext,
 }
 
+// TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
-    fn try_new(batch: OtapArrowRecords) -> Result<Self> {
+    pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
         // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
         let root_batch_payload_type = match batch {
             OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
@@ -436,13 +445,21 @@ impl ExecutionContext {
 
         // TODO this logic is temporarily duplicated from scan_batch until figure out whether it
         // makes more sense to just register everything in session ctx
-        let table_provider = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
-        let table_source = provider_as_source(Arc::new(table_provider));
-        let plan = LogicalPlanBuilder::scan(
-            format!("{:?}", root_batch_payload_type).to_ascii_lowercase(),
-            table_source,
-            None,
-        )?;
+        // let table_provider = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
+        // let table_source = provider_as_source(Arc::new(table_provider));
+        // let plan = LogicalPlanBuilder::scan(
+        //     format!("{:?}", root_batch_payload_type).to_ascii_lowercase(),
+        //     table_source,
+        //     None,
+        // )?;
+        let session_ctx = SessionContext::new();
+        
+        let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
+        let table = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
+        session_ctx.register_table(&table_name, Arc::new(table))?;
+
+        let table_df = session_ctx.table(table_name).await?;
+        let plan = LogicalPlanBuilder::from(table_df.logical_plan().clone());
 
         // add a row number column
         // TODO comment on why we're doing this
@@ -453,6 +470,28 @@ impl ExecutionContext {
             curr_plan: plan,
             session_ctx: SessionContext::new(),
         })
+    }
+
+    pub async fn reinit(&mut self, batch: OtapArrowRecords) -> Result<()> {
+        for payload_type in batch.allowed_payload_types() {
+            let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
+            if self.session_ctx.table_exist(&table_name)? {
+                self.session_ctx.deregister_table(&table_name)?;
+            }
+
+            if let Some(rb) = batch.get(*payload_type) {
+                let table_name = format!("{:?}", payload_type).to_lowercase();
+                println!("reregistering table {:?}", table_name);
+                let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
+                self.session_ctx.register_table(&table_name, Arc::new(table))?;
+            }
+        }
+
+        self.curr_batch = batch;
+        let root_plan = self.scan_batch_plan(self.root_batch_payload_type()?).await?;
+        self.curr_plan = root_plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
+
+        Ok(())
     }
 
     pub fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
@@ -468,24 +507,35 @@ impl ExecutionContext {
         Ok(self.curr_plan.clone())
     }
 
-    pub fn scan_batch_plan(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
+    pub async fn scan_batch_plan(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
         if let Some(rb) = self.curr_batch.get(payload_type) {
-            // TODO would there be anything gained by registering this table on the execution context
-            // and just reusing it? Probably save at least:
-            // - the vec allocations
-            // - the arc allocation
-            // - cloning the record batch (more vec/arc allocations internally)
+            // // TODO would there be anything gained by registering this table on the execution context
+            // // and just reusing it? Probably save at least:
+            // // - the vec allocations
+            // // - the arc allocation
+            // // - cloning the record batch (more vec/arc allocations internally)
 
-            let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
-            let table_source = provider_as_source(Arc::new(table_provider));
-            let logical_plan = LogicalPlanBuilder::scan(
-                // TODO could avoid allocation here?
-                format!("{:?}", payload_type).to_ascii_lowercase(),
-                table_source,
-                None,
-            )?;
+            // let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
+            // let table_source = provider_as_source(Arc::new(table_provider));
+            // let logical_plan = LogicalPlanBuilder::scan(
+            //     // TODO could avoid allocation here?
+            //     format!("{:?}", payload_type).to_ascii_lowercase(),
+            //     table_source,
+            //     None,
+            // )?;
 
-            Ok(logical_plan)
+            // TODO make this a method
+            let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
+            if !self.session_ctx.table_exist(&table_name)? {
+                let table_name = format!("{:?}", payload_type).to_lowercase();
+                let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
+                self.session_ctx.register_table(&table_name, Arc::new(table))?;
+            }
+
+            let table_df = self.session_ctx.table(table_name).await?;
+            let plan = LogicalPlanBuilder::from(table_df.logical_plan().clone());
+
+            Ok(plan)
         } else {
             Err(Error::InvalidBatchError {
                 reason: format!(

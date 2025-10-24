@@ -3,6 +3,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod table;
 
 mod common;
 mod consts;
@@ -35,7 +36,7 @@ mod test {
         let logs_view = RawLogsData::new(&bytes);
         let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
         let mut engine = OtapBatchEngine::new();
-        engine.process(&pipeline_expr, &otap_batch).await.unwrap()
+        engine.execute(&pipeline_expr, &otap_batch).await.unwrap()
     }
 
     // TODO this might not be the right abstraction, it only works for filtering

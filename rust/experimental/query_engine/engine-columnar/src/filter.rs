@@ -28,14 +28,14 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn try_from_predicate(
+    pub async fn try_from_predicate(
         exec_ctx: &ExecutionContext,
         predicate: &LogicalExpression,
     ) -> Result<Self> {
         match predicate {
             LogicalExpression::And(and_expr) => {
-                let left_filter = Self::try_from_predicate(exec_ctx, and_expr.get_left())?;
-                let right_filter = Self::try_from_predicate(exec_ctx, and_expr.get_right())?;
+                let left_filter = Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_left())).await?;
+                let right_filter = Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_right())).await?;
 
                 let filter_expr = match (left_filter.filter_expr, right_filter.filter_expr) {
                     (Some(left), Some(right)) => Some(left.and(right)),
@@ -65,11 +65,11 @@ impl Filter {
                 Ok(Self { filter_expr, join })
             }
 
-            LogicalExpression::Or(or_expr) => Self::try_from_or_expr(exec_ctx, or_expr),
+            LogicalExpression::Or(or_expr) => Self::try_from_or_expr(exec_ctx, or_expr).await,
 
             LogicalExpression::Not(not_expr) => {
                 let not_filter =
-                    Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())?;
+                    Box::pin(Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())).await?;
                 if let Some(not_join) = not_filter.join {
                     let mut plan = exec_ctx.root_batch_plan()?;
                     if let Some(filter_expr) = not_filter.filter_expr {
@@ -101,26 +101,26 @@ impl Filter {
                 Operator::Eq,
                 eq_expr.get_left(),
                 eq_expr.get_right(),
-            ),
+            ).await,
             LogicalExpression::GreaterThan(eq_expr) => Self::try_from_binary_expr(
                 exec_ctx,
                 Operator::Gt,
                 eq_expr.get_left(),
                 eq_expr.get_right(),
-            ),
+            ).await,
             LogicalExpression::GreaterThanOrEqualTo(eq_expr) => Self::try_from_binary_expr(
                 exec_ctx,
                 Operator::GtEq,
                 eq_expr.get_left(),
                 eq_expr.get_right(),
-            ),
+            ).await,
             expr => Err(Error::NotYetSupportedError {
                 message: format!("filtering predicate {:?}", expr),
             }),
         }
     }
 
-    fn try_from_or_expr(
+    async fn try_from_or_expr(
         exec_ctx: &ExecutionContext,
         or_expr: &OrLogicalExpression,
     ) -> Result<Self> {
@@ -142,8 +142,8 @@ impl Filter {
         //   investigation.
         //
 
-        let left_filter = Self::try_from_predicate(exec_ctx, or_expr.get_left())?;
-        let right_filter = Self::try_from_predicate(exec_ctx, or_expr.get_right())?;
+        let left_filter = Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_left())).await?;
+        let right_filter = Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_right())).await?;
 
         match (left_filter.join, right_filter.join) {
             (Some(left_join), Some(right_join)) => {
@@ -260,7 +260,7 @@ impl Filter {
         }
     }
 
-    fn try_from_binary_expr(
+    async fn try_from_binary_expr(
         exec_ctx: &ExecutionContext,
         operator: Operator,
         left: &ScalarExpression,
@@ -350,7 +350,7 @@ impl Filter {
                                 AttributesIdentifier::NonRoot(payload_type) => payload_type,
                             };
                             let attrs_filter =
-                                exec_ctx.scan_batch_plan(attrs_payload_type)?.filter(and(
+                                exec_ctx.scan_batch_plan(attrs_payload_type).await?.filter(and(
                                     binary_expr(
                                         col(consts::ATTRIBUTE_KEY),
                                         Operator::Eq,
@@ -1150,7 +1150,7 @@ mod test {
         let mut engine = OtapBatchEngine::new();
 
         let result = engine
-            .process(
+            .execute(
                 &KqlParser::parse("logs | where event_name == \"1\"").unwrap(),
                 &input,
             )
