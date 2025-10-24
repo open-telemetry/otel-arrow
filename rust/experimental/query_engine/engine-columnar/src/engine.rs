@@ -38,7 +38,7 @@ impl OtapBatchEngine {
     }
 
     pub async fn process(
-        &mut self,
+        &self,
         pipeline: &PipelineExpression,
         otap_batch: &OtapArrowRecords,
     ) -> Result<OtapArrowRecords> {

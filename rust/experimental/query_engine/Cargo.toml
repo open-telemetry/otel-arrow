@@ -25,6 +25,7 @@ async-trait = "0.1.88"
 bytes = "1.10.1"
 caseless = "0.2.2"
 chrono = "0.4.41"
+criterion = "0.7.0"
 datafusion = { version = "50.2", default-features = false}
 hex = "0.4.3"
 opentelemetry-proto = "0.31.0"

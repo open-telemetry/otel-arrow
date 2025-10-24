@@ -22,4 +22,10 @@ otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata"}
 otel-arrow-rust = { path = "../../../otel-arrow-rust" }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
 tokio = { version="1", features=["full"] }
+
+
+[[bench]]
+name = "pipeline_exec"
+harness = false
