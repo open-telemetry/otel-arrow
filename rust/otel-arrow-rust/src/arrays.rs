@@ -9,7 +9,7 @@ use arrow::array::{
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, TimeUnit, UInt8Type, UInt16Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Fields, TimeUnit, UInt8Type, UInt16Type,
 };
 use paste::paste;
 use snafu::{OptionExt, ensure};
@@ -176,6 +176,66 @@ pub fn get_required_array<'a>(
     record_batch
         .column_by_name(column_name)
         .context(error::ColumnNotFoundSnafu { name: column_name })
+}
+
+/// Get reference to a struct array that the caller requires to be in the record batch.
+/// If the column is not in the record batch, returns `ColumnNotFound` error
+/// if the column is not a struct array, returns `ColumnDataTypeMismatch` error
+pub fn get_required_struct_array<'a>(
+    record_batch: &'a RecordBatch,
+    column_name: &str,
+) -> error::Result<&'a StructArray> {
+    let struct_arr = record_batch
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })?;
+    struct_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: column_name,
+            actual: struct_arr.data_type().clone(),
+            expect: DataType::Struct(Fields::empty()),
+        })
+}
+
+/// Get reference to array that the caller requires to be in the struct array
+/// If the column is not in the struct array, returns `ColumnNotFound` error
+pub fn get_required_array_from_struct_array<'a>(
+    struct_arr: &'a StructArray,
+    column_name: &str,
+) -> error::Result<&'a ArrayRef> {
+    struct_arr
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })
+}
+
+/// Get reference to array that the caller requires to be in a struct array
+/// in a record batch.
+/// If the column is not in the struct array/record batch, returns `ColumnNotFound` error
+pub fn get_required_array_from_struct_array_from_record_batch<'a>(
+    record_batch: &'a RecordBatch,
+    record_batch_column_name: &str,
+    struct_array_column_name: &str,
+) -> error::Result<&'a ArrayRef> {
+    let struct_arr = record_batch
+        .column_by_name(record_batch_column_name)
+        .context(error::ColumnNotFoundSnafu {
+            name: record_batch_column_name,
+        })?;
+
+    let struct_arr = struct_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: record_batch_column_name,
+            actual: struct_arr.data_type().clone(),
+            expect: DataType::Struct(Fields::empty()),
+        })?;
+    struct_arr
+        .column_by_name(struct_array_column_name)
+        .context(error::ColumnNotFoundSnafu {
+            name: struct_array_column_name,
+        })
 }
 
 trait NullableInt64ArrayAccessor {

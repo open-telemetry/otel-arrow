@@ -11,7 +11,7 @@ use crate::fake_data_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
 use otel_arrow_rust::proto::opentelemetry::{
-    common::v1::{AnyValue, InstrumentationScope},
+    common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
     metrics::v1::{
         AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, MetricsData,
@@ -37,9 +37,12 @@ pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> Tra
     ];
 
     let resources: Vec<ResourceSpans> = vec![
-        ResourceSpans::build(Resource::default())
-            .scope_spans(scopes)
-            .finish(),
+        ResourceSpans::build(Resource::build(vec![KeyValue::new(
+            "fake_data_generator",
+            AnyValue::new_string("v1"),
+        )]))
+        .scope_spans(scopes)
+        .finish(),
     ];
     TracesData::new(resources)
 }
@@ -58,9 +61,12 @@ pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsD
     ];
 
     let resources: Vec<ResourceLogs> = vec![
-        ResourceLogs::build(Resource::default())
-            .scope_logs(scopes)
-            .finish(),
+        ResourceLogs::build(Resource::build(vec![KeyValue::new(
+            "fake_data_generator",
+            AnyValue::new_string("v1"),
+        )]))
+        .scope_logs(scopes)
+        .finish(),
     ];
 
     LogsData::new(resources)
@@ -80,9 +86,12 @@ pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> Me
     ];
 
     let resources: Vec<ResourceMetrics> = vec![
-        ResourceMetrics::build(Resource::default())
-            .scope_metrics(scopes)
-            .finish(),
+        ResourceMetrics::build(Resource::build(vec![KeyValue::new(
+            "fake_data_generator",
+            AnyValue::new_string("v1"),
+        )]))
+        .scope_metrics(scopes)
+        .finish(),
     ];
 
     MetricsData::new(resources)

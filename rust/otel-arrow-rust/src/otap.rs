@@ -19,6 +19,8 @@ use crate::{
 };
 
 pub mod batching;
+/// filter support for the filter processor
+pub mod filter;
 pub mod groups;
 pub mod schema;
 #[allow(missing_docs)]
