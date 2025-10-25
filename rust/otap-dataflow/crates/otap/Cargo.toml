@@ -64,6 +64,9 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 
+data_engine_kql_parser = { path = "../../../experimental/query_engine/kql-parser" }
+data_engine_expressions = { path = "../../../experimental/query_engine/expressions" }
+
 [dev-dependencies]
 flume = { workspace = true }
 portpicker.workspace = true
