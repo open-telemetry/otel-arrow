@@ -20,9 +20,9 @@ ToDo: add metrics, event exporters
 
 Every pipeline core emits Kubernetes-style conditions alongside its phase:
 
-- **Accepted** — `True` once admission/config validation succeeds,
+- **Accepted**: `True` once admission/config validation succeeds,
   `False/Unknown` otherwise.
-- **Ready** — `True` when the core is healthy enough to process telemetry (
+- **Ready**: `True` when the core is healthy enough to process telemetry (
   policy-driven), `False/Unknown` otherwise.
 
 Each condition carries:
@@ -35,7 +35,7 @@ Each condition carries:
 
 Pipeline-level conditions are synthesized from the per-core conditions (
 respecting quorum policies) so API consumers no longer have to infer health from
-legacy “phase” strings.
+legacy "phase" strings.
 
 ### Phases
 
@@ -68,14 +68,14 @@ First-class Kubernetes probes (/livez, /readyz):
 ### Per-core probe mapping (policy-driven)
 
 - ProbePolicy:
-    - live_if: phases considered alive (default: all except `Deleted`).
-    - ready_if: phases considered ready (default: `Running` and optionally
-      `Updating`).
+  - live_if: phases considered alive (default: all except `Deleted`).
+  - ready_if: phases considered ready (default: `Running` and optionally
+    `Updating`).
 
 ### Aggregate probe policy (quorums)
 
 - Quorum: All | AtLeast(n) | Percent(p) (of non-Deleted cores).
 - AggregationPolicy:
-    - core_probe: ProbePolicy
-    - live_quorum (default AtLeast(1))
-    - ready_quorum (default All; popular alternative: Percent(80))
+  - core_probe: ProbePolicy
+  - live_quorum (default AtLeast(1))
+  - ready_quorum (default All; popular alternative: Percent(80))
