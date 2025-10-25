@@ -135,11 +135,11 @@ impl ObservedStateStore {
         let cs = ps
             .cores
             .entry(observed_event.key.core_id)
-            .or_insert(PipelineRuntimeStatus {
+            .or_insert_with(|| PipelineRuntimeStatus {
                 phase: PipelinePhase::Pending,
-                last_beat: observed_event.time,
+                last_heartbeat_time: observed_event.time,
                 recent_events: ObservedEventRingBuffer::new(RECENT_EVENTS_CAPACITY),
-                delete_pending: false,
+                ..Default::default()
             });
         cs.apply_event(observed_event)
     }

@@ -4,6 +4,7 @@
 //! HTTP server for exposing admin endpoints.
 
 pub mod error;
+mod health;
 mod pipeline;
 mod pipeline_group;
 mod telemetry;
@@ -49,6 +50,7 @@ pub async fn run(
     };
 
     let app = Router::new()
+        .merge(health::routes())
         .merge(telemetry::routes())
         .merge(pipeline_group::routes())
         .merge(pipeline::routes())

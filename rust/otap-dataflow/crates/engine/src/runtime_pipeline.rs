@@ -14,6 +14,8 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
+use otap_df_state::DeployedPipelineKey;
+use otap_df_state::reporter::ObservedEventReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -91,6 +93,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
         self,
+        pipeline_key: DeployedPipelineKey,
+        event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
@@ -163,8 +167,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
+                pipeline_key,
                 pipeline_ctrl_msg_rx,
                 control_senders,
+                event_reporter,
                 metrics_reporter,
             );
             manager.run().await

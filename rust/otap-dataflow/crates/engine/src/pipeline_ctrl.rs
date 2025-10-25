@@ -13,6 +13,9 @@
 
 use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
+use otap_df_state::DeployedPipelineKey;
+use otap_df_state::event::{ErrorSummary, ObservedEvent};
+use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -157,6 +160,8 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 /// CollectTelemetry events. It receives Start*/Cancel* requests and emits the
 /// corresponding NodeControlMsg to nodes when timers expire.
 pub struct PipelineCtrlMsgManager<PData> {
+    /// The key identifying the deployed pipeline this manager is responsible for.
+    pipeline_key: DeployedPipelineKey,
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
@@ -167,6 +172,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     telemetry_timers: TimerSet,
     /// Delayed data in activation order.
     delayed_data: BinaryHeap<Delayed<PData>>,
+    /// Event reporter used to report major events influencing the pipeline's behavior.
+    event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
 }
@@ -175,16 +182,20 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
+        pipeline_key: DeployedPipelineKey,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
+        event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
+            pipeline_key,
             pipeline_ctrl_msg_receiver,
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
             delayed_data: BinaryHeap::new(),
+            event_reporter,
             metrics_reporter,
         }
     }
@@ -210,8 +221,19 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
                         PipelineControlMsg::Shutdown { deadline, reason } => {
-                            // ToDo don't ignore the returned errors
-                            _ = self.control_senders.shutdown_receivers(deadline, reason).await;
+                            match self.control_senders.shutdown_receivers(deadline, reason.clone()).await {
+                                Ok(()) => {
+                                    self.event_reporter.report(ObservedEvent::shutdown_requested(self.pipeline_key, Some(reason)))
+                                }
+                                Err(_) => {
+                                    let err_summary = ErrorSummary::Pipeline {
+                                        error_kind: "control".to_owned(),
+                                        message: "Shutdown request failed".to_owned(),
+                                        source: None,
+                                    };
+                                    self.event_reporter.report(ObservedEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
+                                }
+                            }
                             break;
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
@@ -341,6 +363,8 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
+    use otap_df_config::pipeline::PipelineSettings;
+    use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
@@ -379,8 +403,21 @@ mod tests {
         let config = otap_df_telemetry::config::Config::default();
         let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
         let metrics_reporter = metrics_system.reporter();
+        let pipeline_settings = PipelineSettings::default();
+        let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+        let pipeline_key = DeployedPipelineKey {
+            pipeline_group_id: Default::default(),
+            pipeline_id: Default::default(),
+            core_id: 0,
+        };
 
-        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders, metrics_reporter);
+        let manager = PipelineCtrlMsgManager::new(
+            pipeline_key,
+            pipeline_rx,
+            control_senders,
+            observed_state_store.reporter(),
+            metrics_reporter,
+        );
         (manager, pipeline_tx, control_receivers, nodes)
     }
 
@@ -764,10 +801,20 @@ mod tests {
                 // Create a dummy MetricsReporter for testing
                 let (metrics_tx, _metrics_rx) = flume::unbounded();
                 let metrics_reporter = MetricsReporter::new(metrics_tx);
+                let pipeline_settings = PipelineSettings::default();
+                let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+                let pipeline_key = DeployedPipelineKey {
+                    pipeline_group_id: Default::default(),
+                    pipeline_id: Default::default(),
+                    core_id: 0,
+                };
+
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
+                    pipeline_key,
                     pipeline_rx,
                     ControlSenders::new(),
+                    observed_state_store.reporter(),
                     metrics_reporter,
                 );
                 let duration = Duration::from_millis(50);
