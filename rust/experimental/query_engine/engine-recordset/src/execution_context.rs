@@ -125,13 +125,20 @@ impl<'a> ExecutionContextVariables<'a> {
     ) -> Option<Ref<'_, dyn AsStaticValue + 'static>> {
         let vars = self.local_variables.borrow();
 
-        let var = Ref::filter_map(vars, |v| v.get(name));
+        let var = Ref::filter_map(vars, |v| {
+            v.get_static(name)
+                .expect("Static access not supported by underlying map")
+        });
 
         if let Ok(v) = var {
             return Some(v);
         }
 
-        Ref::filter_map(self.global_variables.borrow(), |v| v.get(name)).ok()
+        Ref::filter_map(self.global_variables.borrow(), |v| {
+            v.get_static(name)
+                .expect("Static access not supported by underlying map")
+        })
+        .ok()
     }
 
     #[cfg(test)]

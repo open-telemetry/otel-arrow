@@ -444,6 +444,16 @@ pub(crate) fn try_resolve_identifier(
 
             Ok(None)
         }
+        ScalarExpression::Select(s) => {
+            if let Some(mut value) = try_resolve_identifier(s.get_value(), scope)?
+                && let Some(mut selector) = try_resolve_identifier(s.get_selectors(), scope)?
+            {
+                value.append(&mut selector);
+                return Ok(Some(value));
+            }
+
+            Ok(None)
+        }
     };
 
     if let Ok(Some(mut identifier)) = r {
