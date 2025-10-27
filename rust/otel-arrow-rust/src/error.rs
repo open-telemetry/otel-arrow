@@ -3,8 +3,10 @@
 
 //! Error and result types
 
-use crate::otlp::attributes::AttributeValueType;
 use crate::otlp::metrics::MetricType;
+use crate::{
+    otlp::attributes::AttributeValueType, proto::opentelemetry::arrow::v1::ArrowPayloadType,
+};
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
@@ -30,6 +32,14 @@ pub enum Error {
         name: String,
         expect: DataType,
         actual: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to compare two columns with unequal length"))]
+    ColumnLengthMismatch {
+        #[snafu(source)]
+        source: ArrowError,
         #[snafu(implicit)]
         location: Location,
     },
@@ -189,7 +199,12 @@ pub enum Error {
         #[snafu(implicit)]
         location: Location,
     },
-
+    #[snafu(display("RecordBatch not found: {:?}", payload_type))]
+    RecordBatchNotFound {
+        payload_type: ArrowPayloadType,
+        #[snafu(implicit)]
+        location: Location,
+    },
     #[snafu(display("Log record not found"))]
     LogRecordNotFound {
         #[snafu(implicit)]
