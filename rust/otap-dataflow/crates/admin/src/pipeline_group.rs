@@ -17,14 +17,29 @@ use crate::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_engine::control::PipelineControlMsg;
+use chrono::Utc;
+use otap_df_state::PipelineKey;
+use otap_df_state::pipeline_status::PipelineStatus;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// All the routes for pipeline groups.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+    Router::new()
+        // Returns a summary of all pipelines and their statuses.
+        .route("/pipeline-groups/status", get(show_status))
+        // Shutdown all pipelines in all groups.
+        .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+    // ToDo Global liveness and readiness probes.
+}
+
+#[derive(Serialize)]
+pub struct PipelineGroupsStatusResponse {
+    generated_at: String,
+    pipelines: HashMap<PipelineKey, PipelineStatus>,
 }
 
 /// Response body.
@@ -35,15 +50,23 @@ struct ShutdownResponse {
     errors: Option<Vec<String>>,
 }
 
+pub async fn show_status(
+    State(state): State<AppState>,
+) -> Result<Json<PipelineGroupsStatusResponse>, StatusCode> {
+    let snapshot = state.observed_state_store.snapshot();
+    let response = build_status_response(snapshot);
+    Ok(Json(response))
+}
+
 async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoResponse {
     let errors: Vec<_> = state
         .ctrl_msg_senders
         .iter()
         .filter_map(|sender| {
+            // ToDo configurable shutdown timeout
+            let deadline = Instant::now() + Duration::from_secs(10);
             sender
-                .try_send(PipelineControlMsg::Shutdown {
-                    reason: "admin requested shutdown".to_owned(), // ToDo we probably need to codify reasons in the future
-                })
+                .try_send_shutdown(deadline, "admin requested shutdown".to_owned()) // ToDo we probably need to codify reasons in the future
                 .err()
         })
         .map(|e| e.to_string())
@@ -65,5 +88,19 @@ async fn shutdown_all_pipelines(State(state): State<AppState>) -> impl IntoRespo
                 errors: Some(errors),
             }),
         )
+    }
+}
+
+fn build_status_response(
+    mut pipelines: HashMap<PipelineKey, PipelineStatus>,
+) -> PipelineGroupsStatusResponse {
+    // Aggregated phase are computed on-demand.
+    for pipeline_status in pipelines.values_mut() {
+        pipeline_status.infer_agg_phase();
+    }
+
+    PipelineGroupsStatusResponse {
+        generated_at: Utc::now().to_rfc3339(),
+        pipelines,
     }
 }

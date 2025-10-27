@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_parse_source_assignment_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -136,7 +136,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     pub fn test_parse_let_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -217,7 +217,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );

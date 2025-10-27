@@ -9,7 +9,7 @@ use arrow::array::{
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, TimeUnit, UInt8Type, UInt16Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Fields, TimeUnit, UInt8Type, UInt16Type,
 };
 use paste::paste;
 use snafu::{OptionExt, ensure};
@@ -178,6 +178,66 @@ pub fn get_required_array<'a>(
         .context(error::ColumnNotFoundSnafu { name: column_name })
 }
 
+/// Get reference to a struct array that the caller requires to be in the record batch.
+/// If the column is not in the record batch, returns `ColumnNotFound` error
+/// if the column is not a struct array, returns `ColumnDataTypeMismatch` error
+pub fn get_required_struct_array<'a>(
+    record_batch: &'a RecordBatch,
+    column_name: &str,
+) -> error::Result<&'a StructArray> {
+    let struct_arr = record_batch
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })?;
+    struct_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: column_name,
+            actual: struct_arr.data_type().clone(),
+            expect: DataType::Struct(Fields::empty()),
+        })
+}
+
+/// Get reference to array that the caller requires to be in the struct array
+/// If the column is not in the struct array, returns `ColumnNotFound` error
+pub fn get_required_array_from_struct_array<'a>(
+    struct_arr: &'a StructArray,
+    column_name: &str,
+) -> error::Result<&'a ArrayRef> {
+    struct_arr
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })
+}
+
+/// Get reference to array that the caller requires to be in a struct array
+/// in a record batch.
+/// If the column is not in the struct array/record batch, returns `ColumnNotFound` error
+pub fn get_required_array_from_struct_array_from_record_batch<'a>(
+    record_batch: &'a RecordBatch,
+    record_batch_column_name: &str,
+    struct_array_column_name: &str,
+) -> error::Result<&'a ArrayRef> {
+    let struct_arr = record_batch
+        .column_by_name(record_batch_column_name)
+        .context(error::ColumnNotFoundSnafu {
+            name: record_batch_column_name,
+        })?;
+
+    let struct_arr = struct_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: record_batch_column_name,
+            actual: struct_arr.data_type().clone(),
+            expect: DataType::Struct(Fields::empty()),
+        })?;
+    struct_arr
+        .column_by_name(struct_array_column_name)
+        .context(error::ColumnNotFoundSnafu {
+            name: struct_array_column_name,
+        })
+}
+
 trait NullableInt64ArrayAccessor {
     fn i64_at(&self, idx: usize) -> error::Result<Option<i64>>;
 }
@@ -307,6 +367,15 @@ impl NullableArrayAccessor for ByteArrayAccessor<'_> {
     }
 }
 
+impl<'a> ByteArrayAccessor<'a> {
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Binary(b) => b.slice_at(idx),
+            Self::FixedSizeBinary(b) => b.slice_at(idx),
+        }
+    }
+}
+
 /// Wrapper around an array that might be a dictionary or it might just be an unencoded
 /// array of the base type
 pub enum MaybeDictArrayAccessor<'a, V> {
@@ -397,6 +466,14 @@ where
         }
         .fail()
     }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        match self {
+            Self::Dictionary16(d) => d.is_valid(index),
+            Self::Dictionary8(d) => d.is_valid(index),
+            Self::Native(d) => d.is_valid(index),
+        }
+    }
 }
 
 impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
@@ -413,17 +490,53 @@ where
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
+
+    pub fn null_count(&self) -> usize {
+        match self {
+            Self::Dictionary16(d) => d.null_count(),
+            Self::Dictionary8(d) => d.null_count(),
+            Self::Native(n) => n.null_count(),
+        }
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(bin_arr) => {
+                if bin_arr.is_valid(idx) {
+                    Some(bin_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
     pub fn try_new(arr: &'a ArrayRef, dims: i32) -> error::Result<Self> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
+    }
+
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::Dictionary16(dict) => dict.slice_at(idx),
+            Self::Dictionary8(dict) => dict.slice_at(idx),
+            Self::Native(fsb_arr) => {
+                if fsb_arr.is_valid(idx) {
+                    Some(fsb_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -437,6 +550,20 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
         column_name: &str,
     ) -> error::Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
+    }
+
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        match self {
+            Self::Dictionary16(dict) => dict.str_at(idx),
+            Self::Dictionary8(dict) => dict.str_at(idx),
+            Self::Native(str_arr) => {
+                if str_arr.is_valid(idx) {
+                    Some(str_arr.value(idx))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -483,12 +610,75 @@ where
             None
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn null_count(&self) -> usize {
+        self.inner.null_count()
+    }
+
+    pub fn is_valid(&self, index: usize) -> bool {
+        self.inner.is_valid(index)
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, BinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, FixedSizeBinaryArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, K> DictionaryArrayAccessor<'a, K, StringArray>
+where
+    K: ArrowDictionaryKeyType,
+{
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
+        if self.inner.is_valid(idx) {
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
+            Some(self.value.value(offset))
+        } else {
+            None
+        }
+    }
 }
 
 /// Helper for accessing columns of a struct array
 ///
 /// Methods return various errors into this crate's Error type if
-/// if callers requirments for the struct columns are not met (for
+/// if callers requirements for the struct columns are not met (for
 /// example `ColumnDataTypeMismatchSnafu`)
 pub struct StructColumnAccessor<'a> {
     inner: &'a StructArray,
@@ -569,6 +759,16 @@ impl<'a> StructColumnAccessor<'a> {
         self.inner
             .column_by_name(column_name)
             .map(Int32ArrayAccessor::try_new)
+            .transpose()
+    }
+
+    pub fn int64_column_op(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<Int64ArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(Int64ArrayAccessor::try_new)
             .transpose()
     }
 }

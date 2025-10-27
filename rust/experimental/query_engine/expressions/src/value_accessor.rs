@@ -40,6 +40,10 @@ impl ValueAccessor {
         &self.selectors
     }
 
+    pub fn get_selectors_mut(&mut self) -> &mut [ScalarExpression] {
+        &mut self.selectors
+    }
+
     pub fn insert_selector(&mut self, index: usize, selector: ScalarExpression) {
         self.selectors.insert(index, selector);
     }
@@ -64,6 +68,113 @@ impl ValueAccessor {
             selector.try_resolve_static(scope)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        root: &'a StaticScalarExpression,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
+        let mut s: Vec<ScalarStaticResolutionResult> = self
+            .selectors
+            .iter_mut()
+            .map(|s| s.try_resolve_static(scope))
+            .collect();
+
+        Self::select_from_value(root, &mut s.drain(..))
+    }
+
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        if self.selectors.is_empty() {
+            writeln!(f, "None")?;
+        } else {
+            writeln!(f)?;
+            let last_idx = self.selectors.len() - 1;
+            for (i, e) in self.selectors.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "{indent}└── ")?;
+                    e.fmt_with_indent(f, format!("{indent}    ").as_str())?;
+                } else {
+                    write!(f, "{indent}├── ")?;
+                    e.fmt_with_indent(f, format!("{indent}│   ").as_str())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn select_from_value<'a>(
+        root: &'a StaticScalarExpression,
+        selectors: &mut std::vec::Drain<ScalarStaticResolutionResult<'a>>,
+    ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
+        match selectors.next() {
+            Some(s) => {
+                match s? {
+                    None => Ok(None),
+                    Some(value) => {
+                        let scalar = value.as_ref();
+
+                        let next = match scalar {
+                            StaticScalarExpression::String(map_key) => {
+                                if let StaticScalarExpression::Map(m) = root {
+                                    m.get_values().get(map_key.get_value())
+                                } else {
+                                    return Err(ExpressionError::ValidationFailure(
+                                        scalar.get_query_location().clone(),
+                                        format!(
+                                            "Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value",
+                                            map_key.get_value(),
+                                            root.get_value_type()
+                                        ),
+                                    ));
+                                }
+                            }
+                            StaticScalarExpression::Integer(array_index) => {
+                                if let StaticScalarExpression::Array(a) = root {
+                                    let mut index = array_index.get_value();
+                                    if index < 0 {
+                                        index += a.len() as i64;
+                                    }
+                                    if index < 0 {
+                                        return Err(ExpressionError::ValidationFailure(
+                                            scalar.get_query_location().clone(),
+                                            format!(
+                                                "Array index '{index}' specified in accessor expression is invalid"
+                                            ),
+                                        ));
+                                    } else {
+                                        a.get_values().get(index as usize)
+                                    }
+                                } else {
+                                    return Err(ExpressionError::ValidationFailure(
+                                        scalar.get_query_location().clone(),
+                                        format!(
+                                            "Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value",
+                                            array_index.get_value(),
+                                            root.get_value_type()
+                                        ),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(ExpressionError::ValidationFailure(scalar.get_query_location().clone(), "Unexpected scalar expression encountered in accessor expression".into()));
+                            }
+                        };
+
+                        if let Some(v) = next {
+                            Self::select_from_value(v, selectors)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+            None => Ok(Some(root)),
+        }
     }
 }
 

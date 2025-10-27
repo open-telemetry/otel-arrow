@@ -6,7 +6,9 @@
 //! These utilities are designed to make testing exporters simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::ExporterFactory;
 use crate::config::ExporterConfig;
+use crate::context::{ControllerContext, PipelineContext};
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -18,11 +20,16 @@ use crate::node::NodeWithPDataReceiver;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
@@ -34,6 +41,8 @@ pub struct TestContext<PData> {
     pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
     counters: CtrlMsgCounters,
+    /// Receiver for pipeline control messages
+    pipeline_ctrl_msg_receiver: Option<PipelineCtrlMsgReceiver<PData>>,
 }
 
 impl<PData> Clone for TestContext<PData> {
@@ -42,6 +51,7 @@ impl<PData> Clone for TestContext<PData> {
             control_tx: self.control_tx.clone(),
             pdata_tx: self.pdata_tx.clone(),
             counters: self.counters.clone(),
+            pipeline_ctrl_msg_receiver: None,
         }
     }
 }
@@ -58,6 +68,7 @@ impl<PData> TestContext<PData> {
             control_tx,
             pdata_tx,
             counters,
+            pipeline_ctrl_msg_receiver: None,
         }
     }
 
@@ -65,6 +76,12 @@ impl<PData> TestContext<PData> {
     #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
+    }
+
+    /// Takes the pipeline control message receiver from the context.
+    /// Returns None if already taken.
+    pub fn take_pipeline_ctrl_receiver(&mut self) -> Option<PipelineCtrlMsgReceiver<PData>> {
+        self.pipeline_ctrl_msg_receiver.take()
     }
 
     /// Sends a timer tick control message.
@@ -94,7 +111,7 @@ impl<PData> TestContext<PData> {
     /// Returns an error if the message could not be sent.
     pub async fn send_shutdown(
         &self,
-        deadline: Duration,
+        deadline: Instant,
         reason: &str,
     ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
@@ -136,6 +153,8 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
+    metrics_system: MetricsSystem,
+
     _pd: PhantomData<PData>,
 }
 
@@ -154,7 +173,7 @@ pub struct TestPhase<PData> {
     /// Join handle for the starting the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -168,17 +187,13 @@ pub struct ValidationPhase<PData> {
 
     /// Join handle for the running the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
-
-    // ToDo implement support for pipeline control messages in a future PR.
-    #[allow(unused_variables)]
-    #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
+        let metrics_system = MetricsSystem::default();
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
@@ -188,6 +203,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt,
             local_tasks,
             counter,
+            metrics_system,
             _pd: PhantomData,
         }
     }
@@ -195,6 +211,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the current exporter configuration.
     pub fn config(&self) -> &ExporterConfig {
         &self.config
+    }
+
+    /// Returns a handle to the metrics registry.
+    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+        self.metrics_system.registry()
+    }
+
+    /// Returns a metrics reporter for use in the processor runtime.
+    pub fn metrics_reporter(&self) -> MetricsReporter {
+        self.metrics_system.reporter()
     }
 
     /// Returns the message counter.
@@ -228,9 +254,18 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let run_exporter_handle = self
-            .local_tasks
-            .spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await });
+        let metrics_reporter_start = self.metrics_reporter();
+        let metrics_reporter_terminal = self.metrics_reporter();
+        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+            exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
+                .await
+                .map(|terminal_state| {
+                    for snapshot in terminal_state.into_metrics() {
+                        let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
+                    }
+                })
+        });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -256,18 +291,17 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let context = self.create_context();
+        let mut context = self.create_context();
         let ctx_test = context.clone();
-        self.rt.block_on(async move {
-            f(ctx_test).await;
-        });
+        _ = self.local_tasks.spawn_local(f(ctx_test));
+
+        context.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
 
         ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             context,
             run_exporter_handle: self.run_exporter_handle,
-            pipeline_ctrl_msg_receiver: self.pipeline_ctrl_msg_receiver,
         }
     }
 
@@ -294,21 +328,48 @@ impl<PData> ValidationPhase<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
+    pub fn run_validation<F, Fut, T>(self, future_fn: F) -> T
     where
         F: FnOnce(TestContext<PData>, Result<(), Error>) -> Fut,
         Fut: Future<Output = T>,
     {
-        // First run all the spawned tasks to completion
-        let local_tasks = std::mem::take(&mut self.local_tasks);
-        self.rt.block_on(local_tasks);
+        let ValidationPhase {
+            rt,
+            local_tasks,
+            context,
+            run_exporter_handle,
+        } = self;
 
-        let result = self
-            .rt
-            .block_on(self.run_exporter_handle)
+        // First run all the spawned tasks to completion
+        rt.block_on(local_tasks);
+
+        let result = rt
+            .block_on(run_exporter_handle)
             .expect("failed to join exporter task handle");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(self.context, result))
+        rt.block_on(future_fn(context, result))
     }
+}
+
+/// Creates a test pipeline context for component testing
+#[must_use]
+pub fn create_test_pipeline_context() -> PipelineContext {
+    let metrics_registry = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry);
+    controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
+}
+
+/// Creates an exporter using its factory function with minimal test setup
+pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
+    factory: &ExporterFactory<PData>,
+    config: Value,
+) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error> {
+    let pipeline_ctx = create_test_pipeline_context();
+    let node = test_node("test_exporter".to_string());
+    let mut node_config = NodeUserConfig::new_exporter_config(factory.name);
+    node_config.config = config;
+    let exporter_config = ExporterConfig::new("test_exporter");
+
+    (factory.create)(pipeline_ctx, node, Arc::new(node_config), &exporter_config)
 }

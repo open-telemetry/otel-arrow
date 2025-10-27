@@ -15,14 +15,17 @@
 //! native types. It will handle converting between different builders dynamically  based on the
 //! data which is appended.
 
+use std::sync::Arc;
+
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryBuilder,
-    FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringBuilder,
-    StringDictionaryBuilder,
+    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
+    DictionaryArray, FixedSizeBinaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder,
+    PrimitiveDictionaryBuilder, StringArray, StringBuilder, StringDictionaryBuilder,
 };
 use arrow::datatypes::{
-    DurationNanosecondType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
-    TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
+    UInt64Type,
 };
 use arrow::error::ArrowError;
 use paste::paste;
@@ -113,6 +116,8 @@ pub trait ArrayAppendStr {
     fn append_str(&mut self, value: &str);
 
     /// Append a value of type str to the builder `n` times
+    // TODO delete this down the line if it turns out to never be useful
+    #[allow(dead_code)]
     fn append_str_n(&mut self, value: &str, n: usize);
 }
 
@@ -139,6 +144,9 @@ pub trait CheckedArrayAppendSlice {
     /// append a slice of T to the builder. Note that this does not append an individual
     /// element for each value in the slice, it appends the slice as a single row
     fn append_slice(&mut self, val: &[Self::Native]) -> Result<(), ArrowError>;
+
+    /// append the slice to the builder `n` times
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> Result<(), ArrowError>;
 }
 
 /// Used by the builder to identify the default value of the array that is being built. By default
@@ -609,6 +617,15 @@ where
             retry = { self.append_slice(value) }
         )
     }
+
+    fn append_slice_n(&mut self, value: &[Self::Native], n: usize) -> Result<(), ArrowError> {
+        handle_append_checked!(
+            self,
+            append_slice_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_slice_n(value, n) }
+        )
+    }
 }
 
 impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
@@ -681,11 +698,79 @@ pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanose
 #[allow(dead_code)]
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
+/// Convert an array containing binary data to one which contains UTF-8 Data. This will handle
+/// converting either a native array (e.g. [`BinaryArray`] to [`StringArray`]) or
+/// [`DictionaryArray`]s where the values are [`DataType::Binary`].
+///
+/// Returns an error if the passed source array does not contain binary data.
+pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+    let src_data_type = src.data_type();
+
+    if *src_data_type == DataType::Binary {
+        // safety: we've just checked the data type, so expecting on this cast is safe
+        let binary_arr = src
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .expect("is binary array");
+        return StringArray::try_from_binary(binary_arr.clone())
+            .map(|arr| Arc::new(arr) as ArrayRef);
+    }
+
+    if let DataType::Dictionary(k, v) = src_data_type {
+        match (k.as_ref(), v.as_ref()) {
+            (DataType::UInt8, DataType::Binary) => {
+                return binary_dict_to_utf8_dict_array::<UInt8Type>(src);
+            }
+            (DataType::UInt16, DataType::Binary) => {
+                return binary_dict_to_utf8_dict_array::<UInt16Type>(src);
+            }
+            _ => {
+                // fall through to error case
+            }
+        }
+    }
+
+    Err(ArrowError::InvalidArgumentError(format!(
+        "expected array of type Binary, or dictionary with binary keys. Found {:?}",
+        src.data_type()
+    )))
+}
+
+fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
+    src: &ArrayRef,
+) -> Result<ArrayRef, ArrowError> {
+    let dict_arr = src
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "expected dict array found {:?}",
+                src.data_type()
+            ))
+        })?;
+    let values = dict_arr
+        .values()
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "expected dict with binary values, found {:?}",
+                dict_arr.value_type()
+            ))
+        })?;
+    let new_values = StringArray::try_from_binary(values.clone())?;
+
+    Ok(Arc::new(DictionaryArray::new(
+        dict_arr.keys().clone(),
+        Arc::new(new_values),
+    )))
+}
+
 #[cfg(test)]
 pub mod test {
     use super::*;
 
-    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array};
+    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array, UInt16Array};
     use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -1037,7 +1122,7 @@ pub mod test {
         let dict_values = dict_array
             .values()
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(dict_values.value(0), "foo");
         assert_eq!(dict_values.value(1), "bar");
@@ -1062,10 +1147,7 @@ pub mod test {
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 6);
 
-        let array = result
-            .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
-            .unwrap();
+        let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array.value(0), "");
         assert_eq!(array.value(1), "a");
         assert!(!array.is_valid(2));
@@ -1134,7 +1216,7 @@ pub mod test {
         let dict_values = dict_array
             .values()
             .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
+            .downcast_ref::<BinaryArray>()
             .unwrap();
         assert_eq!(dict_values.value(0), b"foo");
         assert_eq!(dict_values.value(1), b"bar");
@@ -1159,10 +1241,7 @@ pub mod test {
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 6);
 
-        let array = result
-            .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
-            .unwrap();
+        let array = result.as_any().downcast_ref::<BinaryArray>().unwrap();
         assert_eq!(array.value(0), b"");
         assert_eq!(array.value(1), b"a");
         assert!(!array.is_valid(2));
@@ -1211,6 +1290,7 @@ pub mod test {
         assert!(builder.append_slice(&valid_values[0]).is_ok());
         assert!(builder.append_slice(&valid_values[1]).is_ok());
         builder.append_nulls(2);
+        assert!(builder.append_slice_n(&valid_values[1], 2).is_ok());
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -1220,7 +1300,7 @@ pub mod test {
                 Box::new(DataType::FixedSizeBinary(1))
             )
         );
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -1229,7 +1309,17 @@ pub mod test {
         let dict_keys = dict_array.keys();
         assert_eq!(
             dict_keys,
-            &UInt8Array::from_iter(vec![Some(0), Some(1), None, Some(0), Some(1), None, None])
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(1),
+                None,
+                None,
+                Some(1),
+                Some(1)
+            ])
         );
         let dict_values = dict_array
             .values()
@@ -1442,6 +1532,81 @@ pub mod test {
             vec![b"aa".to_vec(), b"bb".to_vec()],
             DataType::FixedSizeBinary(1),
             vec![0],
+        );
+    }
+
+    #[test]
+    fn test_binary_to_utf8_array() {
+        // check native array
+        let input = BinaryArray::from_iter_values([b"a", b"b", b"c"]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(result, &StringArray::from_iter_values(["a", "b", "c"]));
+
+        // check u8 dict
+        let input = DictionaryArray::new(
+            UInt8Array::from_iter_values([0, 1, 2]),
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"])),
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        assert_eq!(
+            result,
+            &DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c"]))
+            )
+        );
+
+        // check u16 dict
+        let input = DictionaryArray::new(
+            UInt16Array::from_iter_values([0, 1, 2]),
+            Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c"])),
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        assert_eq!(
+            result,
+            &DictionaryArray::new(
+                UInt16Array::from_iter_values([0, 1, 2]),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c"]))
+            )
+        );
+
+        // check it returns an error about invalid type
+        let input = UInt8Array::from_iter_values([1, 2, 3]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found UInt8"
+        );
+
+        // check it returns error about invalid dict type
+        let input = DictionaryArray::new(
+            UInt16Array::from_iter_values([0, 0, 0]),
+            Arc::new(StringArray::from_iter_values(["terry"])),
+        );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found Dictionary(UInt16, Utf8)"
+        );
+
+        // check it returns an error for invalid UTF-8
+        let input = BinaryArray::from_iter_values([b"ab", &[0xc3u8, 0x28u8]]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
+        let err = result.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Invalid argument error: Encountered non UTF-8 data: invalid utf-8 sequence of 1 bytes from index 2",
         );
     }
 }

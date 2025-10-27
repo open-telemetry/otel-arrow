@@ -119,6 +119,227 @@ approach** for most components.
 implementations that must interact with libraries requiring `Send` traits, such
 as OTLP Receivers based on Tonic GRPC services.
 
+## Ack/Nack Delivery Mechanism
+
+The engine builds-in a mechanism for returning the success or failure
+of each data request in the pipeline. Components can opt-in to receive
+Ack (positive acknowledgement) or Nack (negative acknowledgement) node
+control messages.
+
+The data layer above the engine is responsible for the physical
+representation of the request context. The engine effect handler and
+the `<PData>` type have a cooperative calling convention, as follows:
+
+1. Caller subscribes for a set of `Interests` before calling `send` on
+   the `&mut PData`.
+2. When notified of Ack or Nack, the component must use `notify_ack`
+   or `notify_nack` on the PData.
+
+Caller subscription state is conceptually a stack of `Interests` with
+routing information (`NodeID`) and user-defined `CallData`.
+
+### Interests
+
+Interests are a 8-bit, `bitflags` crate macro-derived enum:
+
+- `ACKS`: To subscribe to Ack messages
+- `NACKS`: To subscribe to Ack messages
+- `RETURN_DATA`: Request return of the data.
+
+The `RETURN_DATA` interest supports the re-use of request data, if
+desired.
+
+### CallData
+
+The `CallData` type is a small, fixed-size field used to carry
+user-defined data in the caller subscription state. From the engine's
+perspective, `<PData>` is opaque, making the subscription state not
+visible. This has two important implications for the API and calling
+convention.
+
+1. The engine propagates the `PData` type backwards in the pipeline in
+   the node control message using the opaque `Box<PData>`
+2. Methods to construct Ack and Nack messages, which inspect and
+   modify caller subscription state, are traits in the engine crate,
+   implemented in the data layer. Callers will use effect handler
+   extensions, `PData`-aware methods for Ack/Nack subscription and
+   notification.
+
+Because `PData` usually returns without its payload, callers are
+expected save information they want to use about the payload (e.g.,
+number of items, encoded size) before sending messages.
+
+### RETURN_DATA
+
+Since we usually want to drop the memory associated with a request on
+the Ack/Nack return path, the payload is dropped automatically unless
+`Interests::RETURN_DATA` is set.  Either way, the `PData` object
+contains the caller subscription state used on the return path so
+both Ack and Nack contain a non-optional `PData` field.
+
+In both Ack and Nack cases, the use of `RETURN_DATA` is not
+guaranteed. Components should consider the possibility of lost
+Ack/Nack messages in rare circumstances.
+
+### Caller Subscription
+
+When a component acting as a producer sends a `<PData>` message and
+wants to be informed of the outcome via Ack/Nack, it will use a call
+sequence like:
+
+```rust
+use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+
+// Example for a processor
+async fn process(
+    &mut Processor,
+    msg: Message<OtapPdata>,
+    slots:
+    effect: &mut local::EffectHandler<OtapPdata>,
+) -> Result<(), EngineError> {
+    match msg {
+        Message::PData(mut pdata) => {
+            // Subscript to Ack/Nack
+            let call_state = SomeCallData::new(...);
+            effect.subscribe_to(
+                Interests::ACKS|Interests::NACKS,
+                call_state.into(),
+                &mut pdata,
+            );
+            // Send the message
+            effect.send_message(pdata).await
+        }
+        Message::Control(ctrl) => {
+            // See below to handle the Ack/Nack
+        }
+    }
+```
+
+Depending on the caller, there are different ways to construct the
+`CallData`. Some components will be stateless, provided they can fit
+everything they need for Ack/Nack handling into the provided space
+with clonable data. See the OTAP retry processor as an example of this
+approach, which stores a retry count and timestamp in the call data.
+
+Some components will require dedicated space that does not fit the
+calldata pattern, they will have to manage their own state. See the
+`otap_df_otap::accessory::slots::State` structure as an example that
+supports a limited number of slots for user-defined storage with a
+built-in `CallData` type.
+
+### Caller Return
+
+When a component acting as a consumer has finished processing a
+`<PData>` message and wants to inform the next subscriber of the
+outcome via Ack/Nack, it will use a call sequence like:
+
+```rust
+use otap_df_engine::ConsumerEffectHandlerExtension;
+
+// Example for an exporter
+async fn export(
+    &mut Exporter,
+    msg: Message<OtapPdata>,
+    slots:
+    effect: &mut local::EffectHandler<OtapPdata>,
+) -> Result<(), EngineError> {
+    match msg {
+        Message::PData(mut pdata) => {
+            // export the data
+            // send an Ack message
+            effect.notify_ack(AckMsg::new(pdata)).await
+        }
+    ...
+}
+```
+
+Likewise, the `ConsumerEffectHandlerExtension::notify_nack` method
+tells the engine to route a Nack message. The engine never deals
+directly in forming the `AckMsg` and `NackMsg` types, as they contain
+call data "popped" from the caller subscription state. Therefore, the
+`notify_ack` and `notify_nack` extension methods construct the next
+Ack or Nack message using functions that pop subscription frames,
+identify the next subscriber by node ID, place their call data in the
+Ack or Nack, and route the control message.
+
+### Handling Ack and Nack messages
+
+A typical processor with an interest in Ack or Nack will both consume
+and produce Ack/Nack messages. For example:
+
+```rust
+// Example for a processor
+async fn process(
+    &mut Processor,
+    msg: Message<OtapPdata>,
+    slots:
+    effect: &mut local::EffectHandler<OtapPdata>,
+) -> Result<(), EngineError> {
+    match msg {
+        Message::PData(mut pdata) => {
+            // See above to set the call data
+        }
+        Message::Control(ctrl) => {
+            match ctrl {
+                NodeControlMsg::Ack(ack) => {
+                    // Get the call data.
+                    let mycalldata: SomeCallData = ack.calldata.try_into()?;
+
+                    // Do something before returning
+
+                    // Notify the next subscriber
+                    effect.notify_ack(ack).await
+                }
+                NodeControlMsg::Nack(mut nack) => {
+                    // Get the call data.
+                    let mycalldata: SomeCallData = ack.calldata.try_into()?;
+
+                    // Do something before returning
+
+                    // Modify the Nack reason
+                    nack.reason = format!("more info: {}", nack.reason);
+
+                    // Notify the next subscriber
+                    effect.notify_nack(nack).await
+                }
+                // ...
+            }
+        }
+    }
+```
+
+Note that without subscribing to any interest, components are
+completely bypassed on the return path. Caller subscription frames
+that are not used for lack of interest are automatically skipped
+(e.g., an Ack was delivered with only `Interests::NACKS`).
+
+## Graceful Shutdown Sequence
+
+The pipeline engine supports graceful shutdown of pipelines and their nodes.
+When a shutdown is initiated, the engine sends a shutdown control message to
+each receiver in the pipeline. Each receiver is then responsible for handling
+its own shutdown process, which may include:
+
+- Stopping the acceptance of new incoming connections or messages.
+- Waiting for in-flight Ack/Nack messages to be processed by downstream nodes,
+  while observing the shutdown deadline specified in the control message.
+- Cleaning up resources and performing any necessary finalization tasks.
+- Exiting the `start` method with a `TerminalState` optionally containing the
+  latest collected metrics.
+
+When stopping (i.e. at the end of the `start` method), receivers and their
+effect handlers drop the senders of their channels. This triggers the draining
+of the channels by the downstream nodes that consume them. Once a channel is
+fully drained, it returns a shutdown message, causing the corresponding node to
+stop. This process repeats progressively downstream until it reaches the
+exporters, ensuring that all telemetry data and metrics are properly flushed
+before the pipeline fully terminates.
+
+![Graceful Shutdown Sequence](assets/graceful-shutdown.svg)
+
+This shutdown process ensures that ongoing telemetry data processing is
+completed while avoiding data loss and maintaining observability integrity.
+
 ## Testability
 
 All node types, as well as the pipeline engine itself, are designed for isolated

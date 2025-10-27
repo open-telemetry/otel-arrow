@@ -7,7 +7,6 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
-use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
 use otap_df_engine::{
     config::ExporterConfig,
@@ -17,33 +16,33 @@ use otap_df_engine::{
     testing::test_node,
 };
 use otap_df_otap::{
-    grpc::OtapArrowBytes,
     otap_exporter::OTAPExporter,
+    pdata::{Context, OtapPdata},
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
+use otel_arrow_rust::{
+    Consumer,
+    otap::{OtapArrowRecords, from_record_messages},
+    proto::opentelemetry::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
+    },
 };
 
-use otap_df_otlp::{
-    grpc::OTLPData,
-    otlp_exporter::OTLPExporter,
-    proto::opentelemetry::collector::{
-        logs::v1::{
-            ExportLogsServiceRequest, ExportLogsServiceResponse,
-            logs_service_server::{LogsService, LogsServiceServer},
-        },
-        metrics::v1::{
-            ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-            metrics_service_server::{MetricsService, MetricsServiceServer},
-        },
-        trace::v1::{
-            ExportTraceServiceRequest, ExportTraceServiceResponse,
-            trace_service_server::{TraceService, TraceServiceServer},
-        },
+use otap_df_otap::proto::opentelemetry::collector::{
+    logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+        logs_service_server::{LogsService, LogsServiceServer},
+    },
+    metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+        metrics_service_server::{MetricsService, MetricsServiceServer},
+    },
+    trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+        trace_service_server::{TraceService, TraceServiceServer},
     },
 };
 
@@ -62,17 +61,19 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
+use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
-use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::MetricsSystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+use mimalloc_rust::GlobalMiMalloc;
+
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;
@@ -357,28 +358,45 @@ fn bench_exporter(c: &mut Criterion) {
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
         for _ in 0..size {
-            let arrow_traces_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_traces_batch_data = create_batch_arrow_record_helper(
                 TRACES_BATCH_ID,
                 ArrowPayloadType::Spans,
                 message_len,
                 row_size,
             );
-            let arrow_logs_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_logs_batch_data = create_batch_arrow_record_helper(
                 LOGS_BATCH_ID,
                 ArrowPayloadType::Logs,
                 message_len,
                 row_size,
             );
-            let arrow_metrics_batch_data = create_batch_arrow_record_helper(
+            let mut arrow_metrics_batch_data = create_batch_arrow_record_helper(
                 METRICS_BATCH_ID,
                 ArrowPayloadType::UnivariateMetrics,
                 message_len,
                 row_size,
             );
 
-            otap_signals.push(OtapArrowBytes::ArrowTraces(arrow_traces_batch_data));
-            otap_signals.push(OtapArrowBytes::ArrowLogs(arrow_logs_batch_data));
-            otap_signals.push(OtapArrowBytes::ArrowMetrics(arrow_metrics_batch_data));
+            let mut consumer = Consumer::default();
+            let trace_records = OtapArrowRecords::Traces(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_traces_batch_data)
+                    .expect("can consume BAR"),
+            ));
+            let log_records = OtapArrowRecords::Logs(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_logs_batch_data)
+                    .expect("can consume BAR"),
+            ));
+            let metrics_records = OtapArrowRecords::Metrics(from_record_messages(
+                consumer
+                    .consume_bar(&mut arrow_metrics_batch_data)
+                    .expect("can consume BAR"),
+            ));
+
+            otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
+            otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
+            otap_signals.push(OtapPdata::new(Context::default(), metrics_records.into()));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
@@ -401,7 +419,9 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -427,20 +447,20 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
                     for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone().into()).await;
+                        _ = pdata_sender.send(signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -459,7 +479,9 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -486,20 +508,20 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;
@@ -523,7 +545,9 @@ fn bench_exporter(c: &mut Criterion) {
                         "grpc_endpoint": grpc_endpoint,
                     });
                     // Create a proper pipeline context for the benchmark
-                    let metrics_registry_handle = MetricsRegistryHandle::new();
+                    let metrics_system = MetricsSystem::default();
+                    let metrics_registry_handle = metrics_system.registry();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -550,73 +574,19 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx)
+                            .start(node_req_tx, metrics_reporter)
                             .await
-                            .expect("Exporter event loop failed");
+                            .expect("Exporter event loop failed")
                     });
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone().into()).await;
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
-                });
-            },
-        );
-
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otlp_exporter", size),
-            &(otlp_signals, otlp_grpc_port),
-            |b, input| {
-                b.to_async(&rt).iter(|| async {
-                    // create otlp exporter
-                    let exporter_config = ExporterConfig::new("otap_exporter");
-                    let (otlp_signals, otlp_grpc_port) = input;
-                    let grpc_addr = "127.0.0.1";
-                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
-                    let mut exporter = ExporterWrapper::local(
-                        OTLPExporter::new(grpc_endpoint, None),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
-
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
-
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-                    let control_sender = exporter.control_sender();
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(node_req_tx)
-                            .await
-                            .expect("Exporter event loop failed");
-                    });
-
-                    // send signals to the exporter
-                    for otlp_signal in otlp_signals {
-                        _ = pdata_sender.send(otlp_signal.clone()).await;
-                    }
-
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Duration::from_millis(2000),
+                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
                         .await;

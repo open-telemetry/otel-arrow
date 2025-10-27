@@ -88,6 +88,9 @@ class LoadGenConfig(BaseModel):
     body_size: int = Field(
         25, gt=0, description="Size of log message body in characters"
     )
+    message_body: Optional[str] = Field(
+        None, description="Optional static message body content (overrides body_size)"
+    )
     num_attributes: int = Field(2, gt=0, description="Number of attributes per log")
     attribute_value_size: int = Field(
         15, gt=0, description="Size of attribute values in characters"
@@ -127,7 +130,7 @@ class LoadGenerator:
         self.stop_event = threading.Event()
         self.current_config = {}
         self.lock = threading.Lock()
-        self.metrics = {"sent": 0, "failed": 0, "bytes_sent": 0, "late_batches": 0}
+        self.metrics = {"logs_produced": 0, "failed": 0, "bytes_sent": 0, "late_batches": 0}
 
     def generate_random_string(self, length: int) -> str:
         """
@@ -137,16 +140,20 @@ class LoadGenerator:
             random.choice(string.ascii_letters + string.digits) for _ in range(length)
         )
 
-    def create_log_record(
+    def create_otlp_log_record(
         self,
+        message_body: Optional[str] = None,
         body_size: int = 25,
         num_attributes: int = 2,
         attribute_value_size: int = 15,
     ):
         """
-        Create a single OTLP log record with random content.
+        Create a single OTLP log record.
         """
-        log_message = self.generate_random_string(body_size)
+        if message_body is not None:
+            log_message = message_body
+        else:
+            log_message = self.generate_random_string(body_size)
         attributes = [
             common_pb2.KeyValue(
                 key=f"attribute.{i+1}",
@@ -209,7 +216,8 @@ class LoadGenerator:
             print(f"Thread {thread_id} started with no rate limit")
 
         log_batch = [
-            self.create_log_record(
+            self.create_otlp_log_record(
+                message_body=args["message_body"],
                 body_size=args["body_size"],
                 num_attributes=args["num_attributes"],
                 attribute_value_size=args["attribute_value_size"],
@@ -257,7 +265,7 @@ class LoadGenerator:
         if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
             updates = {}
             if total_sent > 0:
-                updates["sent"] = total_sent
+                updates["logs_produced"] = total_sent
                 updates["bytes_sent"] = total_bytes_sent
             if total_failed > 0:
                 updates["failed"] = total_failed
@@ -271,6 +279,7 @@ class LoadGenerator:
         """
         syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
         syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+        syslog_format = str(os.getenv("SYSLOG_FORMAT", "rfc3164"))
 
         # Create TCP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -306,7 +315,9 @@ class LoadGenerator:
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
                 hostname=hostname,
-                body_size=args["body_size"]
+                message_body=args["message_body"],
+                body_size=args["body_size"],
+                header_type=syslog_format
             )
             syslog_batch.append(syslog_message)
 
@@ -357,7 +368,7 @@ class LoadGenerator:
         if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
             updates = {}
             if total_sent > 0:
-                updates["sent"] = total_sent
+                updates["logs_produced"] = total_sent
                 updates["bytes_sent"] = total_bytes_sent
             if total_failed > 0:
                 updates["failed"] = total_failed
@@ -373,6 +384,7 @@ class LoadGenerator:
         """
         syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
         syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+        syslog_format = str(os.getenv("SYSLOG_FORMAT", "rfc3164"))
 
         print(f"Thread {thread_id}: Using UDP transport to syslog server {syslog_server}:{syslog_port}")
 
@@ -407,7 +419,9 @@ class LoadGenerator:
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
                 hostname=hostname,
+                message_body=args["message_body"],
                 body_size=args["body_size"],
+                header_type=syslog_format
             )
             syslog_batch.append(syslog_message)
 
@@ -446,7 +460,7 @@ class LoadGenerator:
         if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
             updates = {}
             if total_sent > 0:
-                updates["sent"] = total_sent
+                updates["logs_produced"] = total_sent
                 updates["bytes_sent"] = total_bytes_sent
             if total_failed > 0:
                 updates["failed"] = total_failed
@@ -460,7 +474,9 @@ class LoadGenerator:
     def create_syslog_message(
         self,
         hostname: str,
+        message_body: Optional[str] = None,
         body_size: int = 25,
+        header_type: str = "rfc3164",  # can be "rfc3164", "rfc5424", or "None"
     ) -> bytes:
         """
         Create a single syslog message with structure similar to OTLP log record.
@@ -469,16 +485,29 @@ class LoadGenerator:
         pri = "<134>"  # local0.info = 16*8+6 = 134
         tag = "loadgen"
 
-        # Generate timestamp (RFC3164 format with space-padded day)
-        utc_time = dt.now(timezone.utc)
-        day = utc_time.day
-        timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
+        if message_body is not None:
+            log_message = message_body
+        else:
+            log_message = self.generate_random_string(body_size)
 
-        # Create log message body (similar to OTLP body)
-        log_message = self.generate_random_string(body_size)
+        # Header generation
+        if header_type == "rfc3164":
+            # Example: <134>Oct 15 14:32:01 hostname loadgen: message
+            utc_time = dt.now(timezone.utc)
+            day = utc_time.day
+            timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
+            header = f"{pri}{timestamp} {hostname} {tag}: "
+        elif header_type == "rfc5424":
+            # Example: <134>2025-10-15T14:32:01Z hostname appname - - - message
+            timestamp = dt.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            header = f"{pri}1 {timestamp} {hostname} {tag} - - - "
+        elif header_type.lower() == "none":
+            header = ""
+        else:
+            raise ValueError("Invalid header_type. Must be 'rfc3164', 'rfc5424', or None.")
 
-        syslog_message = f"{pri}{timestamp} {hostname} {tag}: {log_message}\n"
-        return syslog_message.encode('utf-8')
+        syslog_message = f"{header}{log_message}\n"
+        return syslog_message.encode("utf-8")
 
     def run_loadgen(self, args_dict):
         """
@@ -486,7 +515,7 @@ class LoadGenerator:
         Chooses between OTLP and syslog workers based on configuration.
         """
         with self.lock:
-            self.metrics.update({"sent": 0, "failed": 0, "bytes_sent": 0})
+            self.metrics.update({"logs_produced": 0, "failed": 0, "bytes_sent": 0})
 
         # Determine which worker thread to use based on configuration
         load_type = args_dict.get("load_type", "otlp").lower()
@@ -630,6 +659,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--body-message",
+        type=int,
+        default=get_default_value("message_body"),
+        help=(
+            "Optional static message body to send "
+            f"(default {get_default_value('message_body')})"
+        ),
+    )
+    parser.add_argument(
         "--num-attributes",
         type=int,
         default=get_default_value("num_attributes"),
@@ -701,6 +739,7 @@ def main():
     print(f"- Threads: {args.threads}")
     print(f"- Target Rate: {args.target_rate}")
     print(f"- Log body size: {args.body_size} characters")
+    print(f"- Log body message: {args.message_body}")
     print(f"- Attributes per log: {args.num_attributes}")
     print(f"- Attribute value size: {args.attribute_value_size} characters")
 
@@ -708,6 +747,7 @@ def main():
         body_size=args.body_size,
         num_attributes=args.num_attributes,
         attribute_value_size=args.attribute_value_size,
+        message_body=args.message_body,
         batch_size=args.batch_size,
         threads=args.threads,
         target_rate=args.target_rate,
@@ -723,7 +763,7 @@ def main():
 
     loadgen.stop()
 
-    print(f'LOADGEN_LOGS_SENT: {loadgen.metrics.get("sent", 0)}')
+    print(f'LOADGEN_LOGS_SENT: {loadgen.metrics.get("logs_produced", 0)}')
     print(f'LOADGEN_LOGS_FAILED: {loadgen.metrics.get("failed", 0)}')
     print(f'LOADGEN_BYTES_SENT: {loadgen.metrics.get("bytes_sent", 0)} bytes')
 

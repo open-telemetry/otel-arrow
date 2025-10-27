@@ -11,9 +11,9 @@ use crate::schema::consts;
 use arrow::array::{Array, StructArray};
 
 pub(crate) struct SpanStatusArrays<'a> {
-    status: &'a StructArray,
-    code: Option<Int32ArrayAccessor<'a>>,
-    message: Option<StringArrayAccessor<'a>>,
+    pub status: &'a StructArray,
+    pub code: Option<Int32ArrayAccessor<'a>>,
+    pub message: Option<StringArrayAccessor<'a>>,
 }
 
 impl NullableArrayAccessor for SpanStatusArrays<'_> {

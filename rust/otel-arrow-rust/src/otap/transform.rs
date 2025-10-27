@@ -1,23 +1,27 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::AddAssign;
 use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
+    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{and, concat};
+use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
+use arrow::row::{RowConverter, SortField};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{NullableArrayAccessor, get_u8_array};
+use crate::arrays::{
+    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+};
 use crate::error::{self, Result};
-use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
+use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -185,7 +189,9 @@ where
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
     // downcast parent ID into an array of the primitive type
-    let parent_id_arr = T::get_parent_id_column(record_batch)?;
+    let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(
+        get_required_array(record_batch, consts::PARENT_ID)?,
+    )?;
 
     let mut materialized_parent_ids =
         PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
@@ -326,8 +332,13 @@ where
     };
 
     let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
+
+    // TODO: It would be more efficient here to figure out if the original type was a
+    // dictionary and map the keys. Instead, we build up this primitive array and cast
+    // back to the original type in `replace_materialized_parent_id_column`
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
+
     // safety: there's a check at the beginning of this method that the batch is not empty
     let mut curr_parent_id = encoded_parent_ids
         .value_at(0)
@@ -392,18 +403,25 @@ fn replace_materialized_parent_id_column(
     let parent_id_idx = schema
         .index_of(consts::PARENT_ID)
         .expect("parent_id should be in the schema");
+
+    let field = schema.field(parent_id_idx);
     let columns = record_batch
         .columns()
         .iter()
         .enumerate()
         .map(|(i, col)| {
             if i == parent_id_idx {
-                materialized_parent_ids.clone()
+                arrow::compute::cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("could not replace parent id {e}"),
+                    }
+                    .build()
+                })
             } else {
-                col.clone()
+                Ok(col.clone())
             }
         })
-        .collect::<Vec<ArrayRef>>();
+        .collect::<Result<Vec<ArrayRef>>>()?;
 
     // update the field metadata for the parent_id column
     let schema = update_field_metadata(
@@ -469,13 +487,55 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
+pub struct RenameTransform {
+    pub(super) map: BTreeMap<String, String>,
+    pub(super) target_bytes: Vec<Vec<u8>>,
+    pub(super) replacement_bytes: Vec<Vec<u8>>,
+}
+
+impl RenameTransform {
+    #[must_use]
+    pub fn new(map: BTreeMap<String, String>) -> Self {
+        let count = map.len();
+        let mut target_bytes = Vec::with_capacity(count);
+        let mut replacement_bytes = Vec::with_capacity(count);
+        for (key, value) in &map {
+            target_bytes.push(key.as_bytes().to_vec());
+            replacement_bytes.push(value.as_bytes().to_vec());
+        }
+
+        Self {
+            map,
+            target_bytes,
+            replacement_bytes,
+        }
+    }
+}
+
+pub struct DeleteTransform {
+    pub(super) set: BTreeSet<String>,
+    pub(super) target_bytes: Vec<Vec<u8>>,
+}
+
+impl DeleteTransform {
+    #[must_use]
+    pub fn new(set: BTreeSet<String>) -> Self {
+        let count = set.len();
+        let mut target_bytes = Vec::with_capacity(count);
+        for key in &set {
+            target_bytes.push(key.as_bytes().to_vec());
+        }
+
+        Self { set, target_bytes }
+    }
+}
 /// Specification for transformations to make to a collection of OTel Attributes
 pub struct AttributesTransform {
     /// map of old -> new attribute keys
-    pub rename: Option<BTreeMap<String, String>>,
+    pub rename: Option<RenameTransform>,
 
     // rows with attribute names in this set will be deleted from the attribute record batch
-    pub delete: Option<BTreeSet<String>>,
+    pub delete: Option<DeleteTransform>,
 }
 
 impl AttributesTransform {
@@ -493,7 +553,7 @@ impl AttributesTransform {
         let mut all_keys = BTreeSet::new();
 
         if let Some(rename) = &self.rename {
-            for (from, to) in rename.iter() {
+            for (from, to) in rename.map.iter() {
                 if !all_keys.insert(from) {
                     return Err(error::InvalidAttributeTransformSnafu {
                         reason: format!("Duplicate key in rename: {from}"),
@@ -510,7 +570,7 @@ impl AttributesTransform {
         }
 
         if let Some(delete) = &self.delete {
-            for key in delete.iter() {
+            for key in delete.set.iter() {
                 if !all_keys.insert(key) {
                     return Err(error::InvalidAttributeTransformSnafu {
                         reason: format!("Duplicate key in delete: {key}"),
@@ -521,6 +581,194 @@ impl AttributesTransform {
         }
 
         Ok(())
+    }
+}
+
+/// Exact, per-batch statistics produced while transforming a single OTel attributes
+/// [`RecordBatch`].
+///
+/// Fields semantics:
+/// - `deleted_entries`: number of attribute rows removed due to `delete` rules.
+/// - `renamed_entries`: number of attribute rows whose key changed due to `rename` rules.
+///
+/// Notes:
+/// - Counts are exact for the provided `RecordBatch` (no approximation).
+/// - For dictionary-encoded key columns, `renamed_entries` counts only rows that remain
+///   after `delete` rules (i.e., rows referencing dictionary values that were renamed).
+///   Rows that are deleted are not also counted as renamed.
+/// - This struct intentionally contains totals only. Per-key breakdowns are not collected
+///   by default to avoid string allocation and additional work.
+#[derive(Debug, Default, Clone)]
+pub struct TransformStats {
+    /// Exact number of attribute entries removed by delete rules
+    pub deleted_entries: u64,
+    /// Exact number of attribute entries whose key was renamed
+    pub renamed_entries: u64,
+}
+
+/// Apply an [`AttributesTransform`] to an attributes [`RecordBatch`] and return both the
+/// transformed batch and exact per-batch [`TransformStats`].
+///
+/// Behavior and guarantees:
+/// - Expects the caller to validate the transform configuration by calling [`AttributesTransform::validate`].
+/// - Parity: the returned `RecordBatch` is the same result you would get from
+///   [`transform_attributes`] for the same inputs.
+/// - Exact totals: `TransformStats` are computed during the transform with minimal overhead.
+///   The UTF-8 key path reuses planning information; the dictionary path tallies counts during
+///   the existing remapping loop. No extra full passes over the data are performed.
+/// - Dictionary rename semantics: `renamed_entries` counts only kept rows whose keys were
+///   changed; deleted rows are counted only in `deleted_entries`.
+///
+/// Errors:
+/// - Returns the same kinds of errors as [`transform_attributes`] (e.g., invalid transform,
+///   missing columns, unsupported key types).
+pub fn transform_attributes_with_stats(
+    attrs_record_batch: &RecordBatch,
+    transform: &AttributesTransform,
+) -> Result<(RecordBatch, TransformStats)> {
+    let schema = attrs_record_batch.schema();
+    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
+        error::ColumnNotFoundSnafu {
+            name: consts::ATTRIBUTE_KEY,
+        }
+        .build()
+    })?;
+
+    match schema.field(key_column_idx).data_type() {
+        DataType::Utf8 => {
+            let keys_arr = attrs_record_batch
+                .column(key_column_idx)
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast Utf8 Column to string array");
+
+            let keys_transform_result = transform_keys(keys_arr, transform)?;
+            let stats = TransformStats {
+                renamed_entries: keys_transform_result.replaced_rows as u64,
+                deleted_entries: keys_transform_result.deleted_rows as u64,
+            };
+            let new_keys = Arc::new(keys_transform_result.new_keys);
+
+            let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
+            let should_materialize_parent_ids =
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
+            };
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        Ok(new_keys.clone() as ArrayRef)
+                    } else {
+                        match keys_transform_result.keep_ranges.as_ref() {
+                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
+                            None => Ok(col.clone()),
+                        }
+                    }
+                })
+                .collect::<Result<Vec<ArrayRef>>>()?;
+
+            let rb = RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns");
+            Ok((rb, stats))
+        }
+        DataType::Dictionary(k, _) => {
+            let (new_dict, keep_ranges, stats) = match *k.clone() {
+                DataType::UInt8 => {
+                    let dict_imm_result = transform_dictionary_keys(
+                        attrs_record_batch
+                            .column(key_column_idx)
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .expect("can downcast dictionary column to dictionary array"),
+                        transform,
+                    )?;
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
+                    (
+                        new_dict as ArrayRef,
+                        dict_imm_result.keep_ranges,
+                        TransformStats {
+                            deleted_entries: dict_imm_result.deleted_rows as u64,
+                            renamed_entries: dict_imm_result.renamed_rows as u64,
+                        },
+                    )
+                }
+                DataType::UInt16 => {
+                    let dict_imm_result = transform_dictionary_keys(
+                        attrs_record_batch
+                            .column(key_column_idx)
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .expect("can downcast dictionary column to dictionary array"),
+                        transform,
+                    )?;
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
+                    (
+                        new_dict as ArrayRef,
+                        dict_imm_result.keep_ranges,
+                        TransformStats {
+                            deleted_entries: dict_imm_result.deleted_rows as u64,
+                            renamed_entries: dict_imm_result.renamed_rows as u64,
+                        },
+                    )
+                }
+                data_type => {
+                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: data_type.clone(),
+                    }
+                    .build());
+                }
+            };
+
+            let any_rows_deleted = keep_ranges.is_some();
+            let should_materialize_parent_ids =
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
+            };
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        Ok(new_dict.clone())
+                    } else {
+                        match keep_ranges.as_ref() {
+                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
+                            None => Ok(col.clone()),
+                        }
+                    }
+                })
+                .collect::<Result<Vec<ArrayRef>>>()?;
+
+            let rb = RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns");
+            Ok((rb, stats))
+        }
+        data_type => Err(error::InvalidListArraySnafu {
+            expect_oneof: vec![
+                DataType::Utf8,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ],
+            actual: data_type.clone(),
+        }
+        .build()),
     }
 }
 
@@ -695,6 +943,11 @@ struct KeysTransformResult {
     ///
     /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
+
+    /// Exact number of rows whose key was renamed (row-level replacements)
+    replaced_rows: usize,
+    /// Exact number of rows that were deleted due to delete rules (row-level deletions)
+    deleted_rows: usize,
 }
 
 /// Transform the attributes key array
@@ -714,7 +967,7 @@ fn transform_keys(
         .rename
         .as_ref()
         // handle an empty set of replacements as if no replacements were passed
-        .filter(|r| !r.is_empty())
+        .filter(|r| !r.map.is_empty())
         .map(|r| plan_key_replacements(len, values, offsets, r))
         .transpose()?;
 
@@ -722,7 +975,7 @@ fn transform_keys(
         .delete
         .as_ref()
         // handle an empty set of deletes as if no replacements were passed
-        .filter(|d| !d.is_empty())
+        .filter(|d| !d.set.is_empty())
         .map(|d| plan_key_deletes(len, values, offsets, d))
         .transpose()?;
 
@@ -738,6 +991,8 @@ fn transform_keys(
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
             keep_ranges: None,
+            replaced_rows: 0,
+            deleted_rows: 0,
         });
     }
 
@@ -757,7 +1012,7 @@ fn transform_keys(
     let mut last_end_offset = 0;
 
     // iterate over the transform ranges, copying unmodified ranges and replacing renamed keys
-    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().cloned() {
+    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().copied() {
         // directly copy all the bytes of the values that were not replaced
         let start_offset = offsets[start_idx] as usize;
         new_values.extend_from_slice(
@@ -767,7 +1022,7 @@ fn transform_keys(
         match range_type {
             KeyTransformRangeType::Replace => {
                 // insert the replaced values into the new_values buffer
-                let replacement_bytes = replacement_plan
+                let replacement_bytes = &replacement_plan
                     .as_ref()
                     .expect("replacement plan should be initialized")
                     .replacement_bytes[transform_idx];
@@ -808,7 +1063,7 @@ fn transform_keys(
         // pointer to the end of the previous range where the values were replaced
         let mut prev_range_index_end = 0;
 
-        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges {
+        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().copied() {
             // copy offsets for values that were not replaced, but add the offset adjustment
             offsets
                 .inner()
@@ -828,7 +1083,7 @@ fn transform_keys(
             match range_type {
                 KeyTransformRangeType::Replace => {
                     // append offsets for values that were replaced, but add the offset adjustment
-                    let replacement_bytes = replacement_plan
+                    let replacement_bytes = &replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
                         .replacement_bytes[transform_idx];
@@ -859,7 +1114,7 @@ fn transform_keys(
                 }
             }
 
-            prev_range_index_end = end_idx
+            prev_range_index_end = end_idx;
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
@@ -905,7 +1160,7 @@ fn transform_keys(
         } else {
             let mut keep_ranges: Vec<(usize, usize)> = vec![];
             let mut last_delete_range_end = 0;
-            for (start, end, _) in &d.ranges {
+            for (start, end, _, _) in &d.ranges {
                 keep_ranges.push((last_delete_range_end, *start));
                 last_delete_range_end = *end;
             }
@@ -929,6 +1184,8 @@ fn transform_keys(
     Ok(KeysTransformResult {
         new_keys,
         keep_ranges,
+        replaced_rows: total_replacements,
+        deleted_rows: total_deletions,
     })
 }
 
@@ -942,6 +1199,11 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     ///
     /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
+
+    /// Exact number of rows that were deleted due to delete rules
+    deleted_rows: usize,
+    /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
+    renamed_rows: usize,
 }
 
 /// transforms the keys for the dictionary array.
@@ -962,6 +1224,24 @@ where
     })?;
     let dict_values_transform_result = transform_keys(dict_values, transform)?;
 
+    // Build a quick lookup of which dictionary value indices were renamed
+    let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
+    if let Some(rename) = transform.rename.as_ref().filter(|r| !r.map.is_empty()) {
+        let repl_plan = plan_key_replacements(
+            dict_values.len(),
+            dict_values.values(),
+            dict_values.offsets(),
+            rename,
+        )?;
+        for (start_idx, end_idx, _, _) in repl_plan.ranges.iter().copied() {
+            for i in start_idx..end_idx {
+                if let Some(slot) = value_index_renamed.get_mut(i) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+
     if dict_values_transform_result.keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
@@ -978,6 +1258,26 @@ where
         return Ok(DictionaryKeysTransformResult {
             new_keys: new_dict,
             keep_ranges: None,
+            deleted_rows: 0,
+            renamed_rows: {
+                // Count renamed rows among kept rows (all rows are kept in this branch)
+                let mut renamed = 0usize;
+                if !value_index_renamed.is_empty() {
+                    let dict_keys_nulls = dict_keys.nulls();
+                    for i in 0..dict_arr.len() {
+                        if dict_keys_nulls
+                            .map(|nulls| nulls.is_valid(i))
+                            .unwrap_or(true)
+                        {
+                            let dict_key: usize = dict_keys.value(i).as_usize();
+                            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                                renamed += 1;
+                            }
+                        }
+                    }
+                }
+                renamed
+            },
         });
     }
 
@@ -1072,6 +1372,9 @@ where
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
+    let total_rows = dict_arr.len();
+    let deleted_rows_count = total_rows - count_kept_values;
+    let mut renamed_rows_count: usize = 0;
 
     // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
@@ -1107,6 +1410,11 @@ where
             .get(dict_key)
             .expect("dict keys values range lookup not properly initialized");
         if *kept_in_dict_values_range_idx >= 0 {
+            // Count rename if the referenced dictionary value was replaced
+            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                renamed_rows_count += 1;
+            }
+
             let new_dict_key =
                 dict_key - dict_key_adjustments[*kept_in_dict_values_range_idx as usize];
             let new_dict_key = K::Native::from_usize(new_dict_key).expect("dict_key_overflow");
@@ -1137,19 +1445,21 @@ where
     Ok(DictionaryKeysTransformResult {
         new_keys: new_dict,
         keep_ranges: Some(keep_ranges),
+        deleted_rows: deleted_rows_count,
+        renamed_rows: renamed_rows_count,
     })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum KeyTransformRangeType {
     Replace,
     Delete,
 }
 
-fn merge_transform_ranges(
-    replacement_plan: Option<&KeyReplacementPlan<'_>>,
-    delete_plan: Option<&KeyDeletePlan<'_>>,
-) -> Vec<(usize, usize, usize, KeyTransformRangeType)> {
+fn merge_transform_ranges<'a>(
+    replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
+    delete_plan: Option<&'a KeyDeletePlan<'_>>,
+) -> Cow<'a, [(usize, usize, usize, KeyTransformRangeType)]> {
     match (replacement_plan, delete_plan) {
         (Some(replacement_plan), Some(delete_plan)) => {
             let mut result =
@@ -1163,43 +1473,35 @@ fn merge_transform_ranges(
                 let del_start = delete_plan.ranges[del_idx].0;
 
                 if rep_start <= del_start {
-                    let (start, end, r_idx) = replacement_plan.ranges[rep_idx];
-                    result.push((start, end, r_idx, KeyTransformRangeType::Replace));
+                    let &rep_range = &replacement_plan.ranges[rep_idx];
+                    result.push(rep_range);
                     rep_idx += 1;
                 } else {
-                    let (start, end, d_idx) = delete_plan.ranges[del_idx];
-                    result.push((start, end, d_idx, KeyTransformRangeType::Delete));
+                    let &del_range = &delete_plan.ranges[del_idx];
+                    result.push(del_range);
                     del_idx += 1;
                 }
             }
 
             // append any remaining replacements
             while rep_idx < replacement_plan.ranges.len() {
-                let (start, end, r_idx) = replacement_plan.ranges[rep_idx];
-                result.push((start, end, r_idx, KeyTransformRangeType::Replace));
+                let &rep_range = &replacement_plan.ranges[rep_idx];
+                result.push(rep_range);
                 rep_idx += 1;
             }
 
             // append any remaining deletions
             while del_idx < delete_plan.ranges.len() {
-                let (start, end, d_idx) = delete_plan.ranges[del_idx];
-                result.push((start, end, d_idx, KeyTransformRangeType::Delete));
+                let &del_range = &delete_plan.ranges[del_idx];
+                result.push(del_range);
                 del_idx += 1;
             }
 
-            result
+            Cow::Owned(result)
         }
-        (Some(replacement_plan), None) => replacement_plan
-            .ranges
-            .iter()
-            .map(|(start, end, idx)| (*start, *end, *idx, KeyTransformRangeType::Replace))
-            .collect(),
-        (None, Some(delete_plan)) => delete_plan
-            .ranges
-            .iter()
-            .map(|(start, end, idx)| (*start, *end, *idx, KeyTransformRangeType::Delete))
-            .collect(),
-        (None, None) => Vec::new(),
+        (Some(replacement_plan), None) => Cow::Borrowed(&replacement_plan.ranges),
+        (None, Some(delete_plan)) => Cow::Borrowed(&delete_plan.ranges),
+        (None, None) => Cow::Borrowed(&[]),
     }
 }
 
@@ -1208,10 +1510,10 @@ fn merge_transform_ranges(
 struct KeyReplacementPlan<'a> {
     /// contiguous ranges in the original array's values buffer that should be replaced.
     /// this is keyed as (start, end, idx) where idx is the index into `replacement_bytes`
-    ranges: Vec<(usize, usize, usize)>,
+    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
 
     /// this contains the bytes to replace each value in each of `ranges`
-    replacement_bytes: Vec<&'a [u8]>,
+    replacement_bytes: &'a [Vec<u8>],
 
     /// this contains the count of how many values are replaced in each of `ranges`. Along with
     /// `replacement_byte_len_diffs` can be used to calculate the length of the new values buffer.
@@ -1234,21 +1536,21 @@ fn plan_key_replacements<'a>(
     array_len: usize,
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
-    replacements: &'a BTreeMap<String, String>,
+    replacements: &'a RenameTransform,
 ) -> Result<KeyReplacementPlan<'a>> {
-    let target_bytes = replacements
-        .keys()
-        .map(|target| target.as_bytes())
-        .collect::<Vec<_>>();
+    let target_bytes = replacements.target_bytes.as_slice();
 
-    let replacement_bytes = replacements
-        .values()
-        .map(|replacement| replacement.as_bytes())
-        .collect::<Vec<_>>();
+    let replacement_bytes = replacements.replacement_bytes.as_slice();
 
-    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
+    let target_ranges = find_matching_key_ranges(
+        array_len,
+        values_buf,
+        offsets,
+        target_bytes,
+        KeyTransformRangeType::Replace,
+    )?;
 
-    let replacement_byte_len_diffs = (0..replacements.len())
+    let replacement_byte_len_diffs = (0..replacements.map.len())
         .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
         .collect::<Vec<_>>();
     let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
@@ -1268,10 +1570,10 @@ fn plan_key_replacements<'a>(
 pub struct KeyDeletePlan<'a> {
     /// contiguous ranges in the original array's values buffer that should be deleted.
     /// this is keyed as (start, end, idx) where idx is the index into `target_bytes``
-    ranges: Vec<(usize, usize, usize)>,
+    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
 
     /// the bytes of the key being deleted in each `range`
-    target_keys: Vec<&'a [u8]>,
+    target_keys: &'a [Vec<u8>],
 
     /// how many values are in each range being deleted
     counts: Vec<usize>,
@@ -1286,14 +1588,17 @@ fn plan_key_deletes<'a>(
     array_len: usize,
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
-    delete_keys: &'a BTreeSet<String>,
+    delete_keys: &'a DeleteTransform,
 ) -> Result<KeyDeletePlan<'a>> {
-    let target_bytes = delete_keys
-        .iter()
-        .map(|key| key.as_bytes())
-        .collect::<Vec<_>>();
+    let target_bytes = delete_keys.target_bytes.as_slice();
 
-    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
+    let target_ranges = find_matching_key_ranges(
+        array_len,
+        values_buf,
+        offsets,
+        target_bytes,
+        KeyTransformRangeType::Delete,
+    )?;
 
     Ok(KeyDeletePlan {
         target_keys: target_bytes,
@@ -1310,7 +1615,7 @@ struct KeyTransformTargetRanges {
     // that was passed to `find_matching_key_ranges`.
     //
     // This also be sorted by first element in the tuple (the start index)
-    ranges: Vec<(usize, usize, usize)>,
+    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
 
     // count of many occurrences of each of the `target_bytes` were found in the passed values
     // buffer. This will have the same order as passed `target_bytes`. This can be used to
@@ -1327,7 +1632,8 @@ fn find_matching_key_ranges(
     array_len: usize,
     values_buf: &Buffer,
     offsets: &OffsetBuffer<i32>,
-    target_bytes: &[&[u8]],
+    target_bytes: &[Vec<u8>],
+    range_type: KeyTransformRangeType,
 ) -> Result<KeyTransformTargetRanges> {
     let mut ranges = Vec::new();
     let mut total_matches = 0;
@@ -1345,7 +1651,7 @@ fn find_matching_key_ranges(
     let offset_ptr = offsets.as_ptr();
 
     for target_idx in 0..target_bytes.len() {
-        let target_bytes = target_bytes[target_idx];
+        let target_bytes = &target_bytes[target_idx];
         let count = counts
             .get_mut(target_idx)
             .expect("counts should be initialized");
@@ -1375,18 +1681,18 @@ fn find_matching_key_ranges(
             // if we're here, we've found a non matching value
             if let Some(s) = eq_range_start.take() {
                 // close current range
-                ranges.push((s, i, target_idx))
+                ranges.push((s, i, target_idx, range_type));
             }
         }
 
         // add the final trailing range
         if let Some(s) = eq_range_start {
-            ranges.push((s, array_len, target_idx))
+            ranges.push((s, array_len, target_idx, range_type));
         }
     }
 
     // Sort the ranges to replace by start_index (first element in contained tuple)
-    ranges.sort();
+    ranges.sort_unstable_by_key(|r| r.0);
 
     Ok(KeyTransformTargetRanges {
         ranges,
@@ -1464,6 +1770,49 @@ fn take_null_buffer_ranges(
     })
 }
 
+/// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
+/// sort or single column sort
+pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Result<UInt32Array> {
+    if sort_columns.len() == 1 {
+        arrow::compute::sort_to_indices(&sort_columns[0].values, sort_columns[0].options, None)
+    } else {
+        // multi-column sort .. using row converter to convert the rows.
+        //
+        // For multi-column sort, it is faster to use the row model for sorting and compare the
+        // row bytes directly instead of having to fetch & compare the values from multiple columns
+        // See here for more discussion:
+        // https://arrow.apache.org/blog/2022/11/07/multi-column-sorts-in-arrow-rust-part-1/
+
+        let sort_fields = sort_columns
+            .iter()
+            .map(|sort_col| {
+                SortField::new_with_options(
+                    sort_col.values.data_type().clone(),
+                    sort_col.options.unwrap_or_default(),
+                )
+            })
+            .collect();
+
+        let row_converter = RowConverter::new(sort_fields)?;
+        let sort_arrays = sort_columns
+            .iter()
+            .map(|sort_col| sort_col.values.clone())
+            .collect::<Vec<_>>();
+
+        // safety: this will only panic if we pass in a set of columns that don't match the
+        // expected for the `RowConverter`, which clearly will not happen here because we created
+        // the row converter directly from the columns we're passing
+        let rows = row_converter
+            .convert_columns(&sort_arrays)
+            .expect("error converting columns for sorting");
+        let mut sort: Vec<_> = rows.iter().enumerate().collect();
+        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+
+        let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+        Ok(indices)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1480,7 +1829,6 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
-    use crate::otlp::attributes::store::AttributeValueType;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
@@ -2134,8 +2482,13 @@ mod test {
             (
                 // most basic transform
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("b".into(), "B".into())])),
-                    delete: Some(BTreeSet::from_iter(vec![("d".into())])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "b".into(),
+                        "B".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                        ("d".into()),
+                    ]))),
                 },
                 (vec!["a", "b", "c", "d", "e"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["a", "B", "c", "e"], vec!["1", "1", "3", "5"]),
@@ -2143,7 +2496,10 @@ mod test {
             (
                 // test replacements at array boundaries
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("a".into(), "A".into())])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "A".into(),
+                    )]))),
                     delete: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
@@ -2152,7 +2508,10 @@ mod test {
             (
                 // test replacements where replacements longer than target
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("a".into(), "AAA".into())])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAA".into(),
+                    )]))),
                     delete: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
@@ -2164,7 +2523,10 @@ mod test {
             (
                 // test replacements where replacements shorter than target
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("aaa".into(), "a".into())])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "aaa".into(),
+                        "a".into(),
+                    )]))),
                     delete: None,
                 },
                 (
@@ -2176,7 +2538,10 @@ mod test {
             (
                 // test replacing single contiguous block of keys
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("a".into(), "AA".into())])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
                     delete: None,
                 },
                 (
@@ -2191,10 +2556,10 @@ mod test {
             (
                 // test multiple replacements
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
-                    ])),
+                    ]))),
                     delete: None,
                 },
                 (
@@ -2209,10 +2574,10 @@ mod test {
             (
                 // test multiple replacements interleaved
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
-                    ])),
+                    ]))),
                     delete: None,
                 },
                 (
@@ -2228,7 +2593,7 @@ mod test {
                 // test deletion at array boundaries without replaces
                 AttributesTransform {
                     rename: None,
-                    delete: Some(BTreeSet::from_iter(vec!["a".into()])),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["b", "d"], vec!["1", "4"]),
@@ -2237,7 +2602,7 @@ mod test {
                 // test delete contiguous segment
                 AttributesTransform {
                     rename: None,
-                    delete: Some(BTreeSet::from_iter(vec!["a".into()])),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "b", "a", "a"],
@@ -2249,7 +2614,10 @@ mod test {
                 // test multiple deletes
                 AttributesTransform {
                     rename: None,
-                    delete: Some(BTreeSet::from_iter(vec!["a".into(), "b".into()])),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                        "a".into(),
+                        "b".into(),
+                    ]))),
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "c", "a", "a"],
@@ -2260,8 +2628,11 @@ mod test {
             (
                 // test adjacent replacement and delete
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("a".into(), "AAA".into())])),
-                    delete: Some(BTreeSet::from_iter(vec!["b".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
                 (vec!["_", "a", "a", "b", "c"], vec!["1", "2", "3", "4", "5"]),
                 (vec!["_", "AAA", "AAA", "c"], vec!["1", "2", "3", "5"]),
@@ -2269,8 +2640,8 @@ mod test {
             (
                 // test we handle an empty rename
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![])),
-                    delete: Some(BTreeSet::from_iter(vec!["b".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["a", "a", "c"], vec!["1", "2", "4"]),
@@ -2278,8 +2649,11 @@ mod test {
             (
                 // test we handle an empty delete
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("a".into(), "AAAA".into())])),
-                    delete: Some(BTreeSet::from_iter(vec![])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "a".into(),
+                        "AAAA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![]))),
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["AAAA", "AAAA", "b", "c"], vec!["1", "2", "3", "4"]),
@@ -2447,8 +2821,11 @@ mod test {
             let result = transform_attributes(
                 &record_batch,
                 &AttributesTransform {
-                    rename: Some(BTreeMap::from_iter(vec![("k2".into(), "K2".into())])),
-                    delete: Some(BTreeSet::from_iter(vec!["k3".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                        "k2".into(),
+                        "K2".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["k3".into()]))),
                 },
             )
             .unwrap();
@@ -2601,8 +2978,14 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(BTreeMap::from_iter(vec![("b".into(), "B".into())])),
-                delete: Some(BTreeSet::from_iter(vec!["c".into(), "e".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
+                    "b".into(),
+                    "B".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                    "c".into(),
+                    "e".into(),
+                ]))),
             },
         )
         .unwrap();
@@ -2631,8 +3014,11 @@ mod test {
             (
                 // basic dict transform
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter([("a".into(), "AA".into())])),
-                    delete: Some(BTreeSet::from_iter(["b".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
                     // keys column - dict keys
@@ -2669,8 +3055,11 @@ mod test {
             (
                 // test with some nulls
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter([("a".into(), "AA".into())])),
-                    delete: Some(BTreeSet::from_iter(["b".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
                     vec![
@@ -2733,8 +3122,11 @@ mod test {
                 // test if there's nulls in the dict keys. This would be unusual
                 // but technically it's possible
                 AttributesTransform {
-                    rename: Some(BTreeMap::from_iter([("a".into(), "AA".into())])),
-                    delete: Some(BTreeSet::from_iter(["b".into()])),
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 },
                 (
                     vec![0, 1, 2, 3, 0, 1, 2, 3]
@@ -2829,8 +3221,11 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("c".into(), "CCCCC".into())])),
-                delete: Some(BTreeSet::from_iter(["b".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "c".into(),
+                    "CCCCC".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -2925,7 +3320,7 @@ mod test {
             &input,
             &AttributesTransform {
                 rename: None,
-                delete: Some(BTreeSet::from_iter(["b".into()])),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -3002,7 +3397,7 @@ mod test {
             &input,
             &AttributesTransform {
                 rename: None,
-                delete: Some(BTreeSet::from_iter(["b".into()])),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
         )
         .unwrap();
@@ -3062,8 +3457,11 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("b".into(), "BBB".into())])),
-                delete: Some(BTreeSet::from_iter(["e".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "BBB".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
             },
         )
         .unwrap();
@@ -3127,8 +3525,11 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("b".into(), "BBB".into())])),
-                delete: Some(BTreeSet::from_iter(["e".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "BBB".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
             },
         )
         .unwrap();
@@ -3140,23 +3541,32 @@ mod test {
     fn test_invalid_attributes_transforms() {
         let test_cases = vec![
             AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("b".into(), "b".into())])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "b".into(),
+                )]))),
                 delete: None,
             },
             AttributesTransform {
-                rename: Some(BTreeMap::from_iter([
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([
                     ("b".into(), "b".into()),
                     ("a".into(), "b".into()),
-                ])),
+                ]))),
                 delete: None,
             },
             AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("b".into(), "a".into())])),
-                delete: Some(BTreeSet::from_iter(vec!["b".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "a".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
             },
             AttributesTransform {
-                rename: Some(BTreeMap::from_iter([("b".into(), "a".into())])),
-                delete: Some(BTreeSet::from_iter(vec!["a".into()])),
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "b".into(),
+                    "a".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
             },
         ];
 
@@ -3172,5 +3582,82 @@ mod test {
                 Err(Error::InvalidAttributeTransform { .. })
             ));
         }
+    }
+
+    #[test]
+    fn test_with_stats_utf8_rename_and_delete() {
+        // keys: [a, b, a, d, c] ; rename a->A ; delete d
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "a", "d", "c"])),
+                Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                String::from("a"),
+                String::from("A"),
+            )]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from(
+                "d",
+            )]))),
+        };
+
+        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        assert_eq!(stats.renamed_entries, 2);
+        assert_eq!(stats.deleted_entries, 1);
+
+        // parity with original transform
+        let plain = transform_attributes(&input, &tx).unwrap();
+        assert_eq!(with_stats, plain);
+    }
+
+    #[test]
+    fn test_with_stats_dict_rename_and_delete() {
+        // keys: [a, b, a, d, c] ; rename a->A ; delete d
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 1, 0, 2, 3]);
+        let dict_vals = StringArray::from_iter_values(vec!["a", "b", "d", "c"]);
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(dict_keys, Arc::new(dict_vals))),
+                Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                String::from("a"),
+                String::from("A"),
+            )]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter([String::from(
+                "d",
+            )]))),
+        };
+
+        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        assert_eq!(stats.renamed_entries, 2);
+        assert_eq!(stats.deleted_entries, 1);
+
+        let plain = transform_attributes(&input, &tx).unwrap();
+        assert_eq!(with_stats, plain);
     }
 }

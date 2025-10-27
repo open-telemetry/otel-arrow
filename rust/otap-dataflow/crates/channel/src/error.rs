@@ -18,6 +18,18 @@ pub enum SendError<T> {
     Closed(T),
 }
 
+impl<T> SendError<T> {
+    /// Returns the object that had an error; useful in situations
+    /// where a blocking call expects only one of the two outcomes,
+    /// simply wants the value back either way.
+    pub fn inner(self) -> T {
+        match self {
+            Self::Full(t) => t,
+            Self::Closed(t) => t,
+        }
+    }
+}
+
 /// Errors that can occur when consuming messages from a channel.
 #[derive(thiserror::Error, Debug)]
 pub enum RecvError {

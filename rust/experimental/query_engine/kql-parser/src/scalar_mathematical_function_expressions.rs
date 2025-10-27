@@ -5,9 +5,22 @@ use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{Rule, scalar_expression::*};
 
-pub(crate) fn parse_negate_expression(
+pub(crate) fn parse_math_unary_expressions(
+    math_unary_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = math_unary_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::negate_expression => parse_negate_expression(rule, scope),
+        Rule::bin_expression => parse_bin_expression(rule, scope),
+        _ => panic!("Unexpected rule in math_unary_expressions: {rule}"),
+    }
+}
+
+fn parse_negate_expression(
     negate_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -17,14 +30,14 @@ pub(crate) fn parse_negate_expression(
     // Grammar guarantees exactly one scalar_expression
     let scalar_expr_rule = inner.next().unwrap();
 
-    let scalar = parse_scalar_expression(scalar_expr_rule, scope)?;
+    let scalar = parse_scalar_unary_expression(scalar_expr_rule, scope)?;
 
     Ok(ScalarExpression::Math(MathScalarExpression::Negate(
         UnaryMathematicalScalarExpression::new(query_location, scalar),
     )))
 }
 
-pub(crate) fn parse_bin_expression(
+fn parse_bin_expression(
     bin_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -38,83 +51,6 @@ pub(crate) fn parse_bin_expression(
     Ok(ScalarExpression::Math(MathScalarExpression::Bin(
         BinaryMathematicalScalarExpression::new(query_location, left_scalar, right_scalar),
     )))
-}
-
-pub(crate) fn parse_arithmetic_expression(
-    arithmetic_expr_rule: Pair<Rule>,
-    scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
-    let query_location = to_query_location(&arithmetic_expr_rule);
-    let mut inner_rules = arithmetic_expr_rule.into_inner();
-
-    let first = inner_rules.next().unwrap();
-
-    let mut current_expr = parse_arithmetic_factor(first, scope)?;
-
-    while let Some(op_rule) = inner_rules.next() {
-        let right = parse_arithmetic_factor(inner_rules.next().unwrap(), scope)?;
-
-        current_expr = match op_rule.as_rule() {
-            Rule::plus_token => ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    query_location.clone(),
-                    current_expr,
-                    right,
-                ),
-            )),
-            Rule::minus_token => ScalarExpression::Math(MathScalarExpression::Subtract(
-                BinaryMathematicalScalarExpression::new(
-                    query_location.clone(),
-                    current_expr,
-                    right,
-                ),
-            )),
-            _ => panic!("Unexpected operator in arithmetic_expression: {op_rule}"),
-        };
-    }
-
-    Ok(current_expr)
-}
-
-fn parse_arithmetic_factor(
-    factor_rule: Pair<Rule>,
-    scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
-    let query_location = to_query_location(&factor_rule);
-    let mut inner_rules = factor_rule.into_inner();
-    let mut current_expr = parse_scalar_expression(inner_rules.next().unwrap(), scope)?;
-
-    // Process multiplication/division/modulo operations
-    while let Some(op_rule) = inner_rules.next() {
-        let right = parse_scalar_expression(inner_rules.next().unwrap(), scope)?;
-
-        current_expr = match op_rule.as_rule() {
-            Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathematicalScalarExpression::new(
-                    query_location.clone(),
-                    current_expr,
-                    right,
-                ),
-            )),
-            Rule::divide_token => ScalarExpression::Math(MathScalarExpression::Divide(
-                BinaryMathematicalScalarExpression::new(
-                    query_location.clone(),
-                    current_expr,
-                    right,
-                ),
-            )),
-            Rule::modulo_token => ScalarExpression::Math(MathScalarExpression::Modulus(
-                BinaryMathematicalScalarExpression::new(
-                    query_location.clone(),
-                    current_expr,
-                    right,
-                ),
-            )),
-            _ => panic!("Unexpected operator in arithmetic_factor: {op_rule}"),
-        };
-    }
-
-    Ok(current_expr)
 }
 
 #[cfg(test)]
@@ -225,7 +161,7 @@ mod tests {
 
         // Test simple addition
         run_test_success(
-            "(5 + 3)",
+            "5 + 3",
             ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -257,7 +193,7 @@ mod tests {
 
         // Test simple multiplication
         run_test_success(
-            "(6 * 7)",
+            "6 * 7",
             ScalarExpression::Math(MathScalarExpression::Multiply(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -289,7 +225,7 @@ mod tests {
 
         // Test simple modulo
         run_test_success(
-            "(10 % 3)",
+            "10 % 3",
             ScalarExpression::Math(MathScalarExpression::Modulus(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -305,7 +241,7 @@ mod tests {
 
         // Test operator precedence: multiplication before addition
         run_test_success(
-            "(2 + 3 * 4)",
+            "2 + 3 * 4",
             ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -329,7 +265,7 @@ mod tests {
 
         // Test parentheses override precedence
         run_test_success(
-            "((2 + 3) * 4)",
+            "(2 + 3) * 4",
             ScalarExpression::Math(MathScalarExpression::Multiply(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -393,7 +329,7 @@ mod tests {
 
         // Test arithmetic with doubles
         run_test_success(
-            "(4.44 + 2.86)",
+            "4.44 + 2.86",
             ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -437,7 +373,7 @@ mod tests {
 
         // Test nested parentheses
         run_test_success(
-            "((2 + 3) * (4 + 5))",
+            "(2 + 3) * (4 + 5)",
             ScalarExpression::Math(MathScalarExpression::Multiply(
                 BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -475,29 +411,29 @@ mod tests {
             Rule::scalar_expression,
             &[
                 // Basic arithmetic
-                "(1 + 2)",
-                "(10 - 5)",
-                "(3 * 4)",
-                "(20 / 4)",
-                "(10 % 3)",
+                "1 + 2",
+                "10 - 5",
+                "3 * 4",
+                "20 / 4",
+                "10 % 3",
                 // With doubles
-                "(3.14 + 2.86)",
-                "(10.5 * 2.0)",
+                "3.14 + 2.86",
+                "10.5 * 2.0",
                 // With variables
-                "(x + y)",
-                "(a * b + c)",
+                "x + y",
+                "a * b + c",
                 // Operator precedence
-                "(2 + 3 * 4)",
-                "(10 - 6 / 2)",
-                "(5 + 10 % 3)",
+                "2 + 3 * 4",
+                "10 - 6 / 2",
+                "5 + 10 % 3",
                 // Parentheses
                 "((2 + 3) * 4)",
-                "(5 * (10 - 8))",
-                "(((1 + 2) * 3) + 4)",
+                "5 * (10 - 8)",
+                "((1 + 2) * 3) + 4",
                 // Unary operators
                 "(-(5 + 3))",
                 // Complex expressions
-                "(a + b * c - d / e % f)",
+                "a + b * c - d / e % f",
                 "((a + b) * (c - d) / (e + f))",
                 "(1 + 2 * 3 - 4 / 2 + 5 % 3)",
             ],
@@ -531,24 +467,24 @@ mod tests {
             }
         };
         // Test basic arithmetic
-        assert_eq!(evaluate_constant("(2 + 3)"), Some(5));
+        assert_eq!(evaluate_constant("2 + 3"), Some(5));
         assert_eq!(evaluate_constant("(10 - 4)"), Some(6));
-        assert_eq!(evaluate_constant("(6 * 7)"), Some(42));
+        assert_eq!(evaluate_constant("6 * 7"), Some(42));
         assert_eq!(evaluate_constant("(10 % 3)"), Some(1));
         assert_eq!(evaluate_constant("(10 / 2)"), Some(5));
 
         // Test operator precedence
-        assert_eq!(evaluate_constant("(2 + 3 * 4)"), Some(14)); // not 20
-        assert_eq!(evaluate_constant("((2 + 3) * 4)"), Some(20));
+        assert_eq!(evaluate_constant("2 + 3 * 4"), Some(14)); // not 20
+        assert_eq!(evaluate_constant("(2 + 3) * 4"), Some(20));
         assert_eq!(evaluate_constant("(10 - 6 * 2)"), Some(-2));
-        assert_eq!(evaluate_constant("((2 + 3) * (4 + 5))"), Some(45));
+        assert_eq!(evaluate_constant("(2 + 3) * (4 + 5)"), Some(45));
         assert_eq!(evaluate_constant("(1 + 2 * 3 - 4 / 2 + 5 % 3)"), Some(7));
         assert_eq!(evaluate_constant("(1 + 2 * 3 - 5 / 2 + 5 % 3)"), Some(7));
         assert_eq!(evaluate_constant("(10 / 3)"), Some(3));
 
         // Test unary operators
         assert_eq!(evaluate_constant("(-5 + 3)"), Some(-2));
-        assert_eq!(evaluate_constant("(-(5 + 3))"), Some(-8));
+        assert_eq!(evaluate_constant("-(5 + 3)"), Some(-8));
     }
 
     #[test]
@@ -575,7 +511,7 @@ mod tests {
         };
 
         // Division always returns double
-        assert_eq!(evaluate_constant_double("(10.0 / 3)"), Some(10.0 / 3.0));
+        assert_eq!(evaluate_constant_double("10.0 / 3"), Some(10.0 / 3.0));
         assert_eq!(
             evaluate_constant_double("(1 + 2 * 3 - 5.0 / 2 + 5 % 3)"),
             Some(6.5)
@@ -583,6 +519,6 @@ mod tests {
 
         // Double arithmetic
         assert_eq!(evaluate_constant_double("(3.14 + 2.86)"), Some(6.0));
-        assert_eq!(evaluate_constant_double("(10.5 * 2.0)"), Some(21.0));
+        assert_eq!(evaluate_constant_double("10.5 * 2.0"), Some(21.0));
     }
 }

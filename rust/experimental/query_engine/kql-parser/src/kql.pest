@@ -84,25 +84,19 @@ null_literal = {
     ("long(" ~ "null" ~ ")") |
     ("real(" ~ "null" ~ ")") |
     ("double(" ~ "null" ~ ")") |
-    ("timespan(" ~ "null" ~ ")")
+    ("timespan(" ~ "null" ~ ")") |
+    ("regex(" ~ "null" ~ ")")
 }
-datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
-
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 identifier_or_pattern_literal = ${
     (("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }
-
-// Expressions
-accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
-accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
-accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
-
-boolean_expression = _{ true_literal | false_literal }
-real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
-datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
-time_units = @{
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
+time_literal = {
+    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+}
+time_units_literal = @{
     "day" ~ "s"?
     | "hour" ~ "s"?
     | "microsecond" ~ "s"?
@@ -116,19 +110,45 @@ time_units = @{
     | "m"
     | "s"
 }
-time_literal = {
-    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
-}
+
+// Expressions
+accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
+accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
+accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
+
+real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
+datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
 time_expression = {
-    (double_literal|integer_literal) ~ time_units
+    (double_literal|integer_literal) ~ time_units_literal
     | "timespan(" ~ (time_literal|string_literal) ~ ")"
-    | "timespan(" ~ (double_literal|integer_literal) ~ time_units? ~ ")"
+    | "timespan(" ~ (double_literal|integer_literal) ~ time_units_literal? ~ ")"
 }
+regex_expression = { "regex(" ~ string_literal ~ ("," ~ string_literal)? ~ ")" }
+dynamic_array_expression = { "[" ~ (dynamic_inner_expression ~ ("," ~ dynamic_inner_expression)*)? ~ "]" }
+dynamic_map_item_expression = { string_literal ~ ":" ~ dynamic_inner_expression }
+dynamic_map_expression = { "{" ~ (dynamic_map_item_expression ~ ("," ~ dynamic_map_item_expression)*)? ~ "}" }
+dynamic_inner_expression = _{ dynamic_array_expression|dynamic_map_expression|type_unary_expressions }
+dynamic_expression = { "dynamic" ~ "(" ~ dynamic_inner_expression ~ ")" }
+type_unary_expressions = {
+    null_literal
+    | real_expression
+    | datetime_expression
+    | time_expression
+    | regex_expression
+    | dynamic_expression
+    | true_literal
+    | false_literal
+    | double_literal
+    | integer_literal
+    | string_literal
+}
+
+get_type_expression = { "gettype" ~ "(" ~ scalar_expression ~ ")" }
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 coalesce_expression = { "coalesce" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
-conditional_expressions = _{
+conditional_unary_expressions = {
     conditional_expression
     | case_expression
     | coalesce_expression
@@ -143,7 +163,7 @@ toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
 todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
 todatetime_expression = { "todatetime" ~ "(" ~ scalar_expression ~ ")" }
 totimespan_expression = { "totimespan" ~ "(" ~ scalar_expression ~ ")" }
-conversion_expressions = _{
+conversion_unary_expressions = {
     tostring_expression
     | toint_expression
     | tobool_expression
@@ -158,70 +178,89 @@ conversion_expressions = _{
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
-parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
-strcat_expression = { "strcat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+strcat_expression = { "strcat" ~ scalar_list_expression }
 strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
-string_expressions = _{
+extract_expression = { "extract" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
+string_unary_expressions = {
     strlen_expression
     | replace_string_expression
     | substring_expression
-    | parse_json_expression
     | strcat_expression
     | strcat_delim_expression
+    | extract_expression
 }
 
-array_concat_expression = { "array_concat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
-array_expressions = _{
+parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
+parse_regex_expression = { "parse_regex" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
+parse_unary_expressions = {
+    parse_json_expression
+    | parse_regex_expression
+}
+
+array_concat_expression = { "array_concat" ~ scalar_list_expression }
+array_unary_expressions = {
     array_concat_expression
 }
 
-negate_expression = { "-" ~ scalar_expression }
+negate_expression = { "-" ~ scalar_unary_expression }
 bin_expression = { "bin" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
-math_expressions = _{
+math_unary_expressions = {
     negate_expression
     | bin_expression
 }
 
 now_expression = { "now" ~ "(" ~ scalar_expression? ~ ")" }
-temporal_expressions = _{
+temporal_unary_expressions = {
     now_expression
 }
 
-arithmetic_factor = {
-    scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
-}
-arithmetic_expression = {
-    arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+not_expression = { "not" ~ "(" ~ logical_expression ~ ")" }
+logical_unary_expressions = {
+    not_expression
 }
 
-// Modify scalar_expression to include arithmetic_expression as first option
-scalar_expression = {
-    null_literal
-    | real_expression
-    | datetime_expression
-    | time_expression
-    | conditional_expressions
-    | conversion_expressions
-    | string_expressions
-    | array_expressions
-    | boolean_expression
-    | double_literal
-    | integer_literal
-    | string_literal
-    | math_expressions
-    | temporal_expressions
+/* Note: Order is imporant here. Once Pest has matched something it won't go
+backwards. For example if integer_literal is defined before time_expression "1h"
+would be parsed as integer_literal(1) and the remaining "h" would be fed into
+the next rule. */
+scalar_unary_expression = {
+    type_unary_expressions
+    | get_type_expression
+    | conditional_unary_expressions
+    | conversion_unary_expressions
+    | string_unary_expressions
+    | array_unary_expressions
+    | math_unary_expressions
+    | temporal_unary_expressions
+    | logical_unary_expressions
+    | parse_unary_expressions
     | accessor_expression
-    | ("(" ~ scalar_expression ~ ")")
-    | ("(" ~ logical_expression ~ ")")
-    | ("(" ~ arithmetic_expression ~ ")")
+    | "(" ~ scalar_expression ~ ")"
 }
 
-comparison_expression = {
-    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token|matches_regex_token) ~ scalar_expression
-    | scalar_expression ~ (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
+scalar_arithmetic_binary_expression = _{
+    (multiply_token|divide_token|modulo_token) ~ scalar_unary_expression
+    | (plus_token|minus_token) ~ scalar_unary_expression
 }
-logical_expressions = _{ comparison_expression|scalar_expression }
-logical_expression = { logical_expressions ~ ((and_token|or_token) ~ logical_expressions)* }
+scalar_logical_binary_expression = _{
+    (equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_unary_expression
+    | matches_regex_token ~ scalar_unary_expression
+    | (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token) ~ scalar_unary_expression
+    | (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ scalar_list_expression
+    | (and_token|or_token) ~ scalar_unary_expression
+}
+
+scalar_expression = {
+    scalar_unary_expression ~ (scalar_arithmetic_binary_expression|scalar_logical_binary_expression)*
+}
+
+scalar_list_expression = {
+    "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
+}
+
+logical_expression = {
+    scalar_expression
+}
 
 assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
 
@@ -229,6 +268,7 @@ extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expre
 project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
 project_keep_expression = { "project-keep" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
 project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
+project_rename_expression = { "project-rename" ~ assignment_expression ~ ("," ~ assignment_expression)* }
 where_expression = { "where" ~ logical_expression }
 
 average_aggregate_expression = {
@@ -247,7 +287,7 @@ sum_aggregate_expression = {
     "sum" ~ "(" ~ scalar_expression ~ ")"
 }
 
-aggregate_expression = _{
+aggregate_expressions = _{
     average_aggregate_expression
     | count_aggregate_expression
     | maximum_aggregate_expression
@@ -255,18 +295,19 @@ aggregate_expression = _{
     | sum_aggregate_expression
 }
 
-aggregate_assignment_expression = {
-    identifier_literal ~ "=" ~ aggregate_expression
+aggregate_expression = {
+    identifier_literal ~ "=" ~ aggregate_expressions
+    | aggregate_expressions
 }
 
 group_by_expression = {
     identifier_literal ~ "=" ~ scalar_expression
-    | accessor_expression
+    | scalar_expression
 }
 
 summarize_expression = {
     "summarize"
-        ~ (aggregate_assignment_expression ~ ("," ~ aggregate_assignment_expression)*)?
+        ~ (aggregate_expression ~ ("," ~ aggregate_expression)*)?
         ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
         ~ ("|" ~ tabular_expressions)*
 }
@@ -276,6 +317,7 @@ tabular_expressions = _{
     | project_expression
     | project_keep_expression
     | project_away_expression
+    | project_rename_expression
     | where_expression
     | summarize_expression
 }

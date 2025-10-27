@@ -1,0 +1,186 @@
+name: Pipeline Performance Tests - Nightly
+permissions:
+  contents: read
+
+on:
+    schedule:
+      - cron: '0 10 * * *'  # runs every day at 10 AM UTC
+    workflow_dispatch:
+
+# Cancel in-progress runs on new commits to same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+    pipeline-perf-test:
+        runs-on: oracle-bare-metal-64cpu-512gb-x86-64
+        steps:
+        - name: Harden the runner (Audit all outbound calls)
+          uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+          with:
+            egress-policy: audit
+
+        - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+        - id: detect_os
+          name: Detect OS (self-hosted)
+          shell: bash
+          run: |
+            . /etc/os-release
+            echo "id=$ID" >> "$GITHUB_OUTPUT"
+            echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+
+        - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
+          if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
+          shell: bash
+          run: |
+            set -euxo pipefail
+
+            # Enable repos (no-op if already enabled)
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache
+
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+            # pip may be packaged as part of python3.11 or available via ensurepip;
+            # fall back to ensurepip if needed.
+            if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
+              /usr/bin/python3.11 -m ensurepip --upgrade || true
+            fi
+            /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+            # Add a 'python' shim so subsequent steps can call `python ...`
+            mkdir -p "$HOME/.local/bin"
+            ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+            # Smoke test
+            python --version
+            python -m pip --version
+
+        - name: Build dataflow_engine
+          run: |
+            git submodule init
+            git submodule update
+            cd rust/otap-dataflow
+            docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+            cd ../..
+
+        - name: Install dependencies
+          run: |
+            python -m pip install --user --upgrade pip
+            pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
+            pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+
+        - name: Run syslog performance test log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/syslog-docker.yaml
+
+        - name: Run backpressure performance test log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
+
+        - name: Upload syslog results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: syslog-nightly-results
+            path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
+
+        - name: Upload backpressure results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: backpressure-nightly-results
+            path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
+
+        - name: Add benchmark link to job summary
+          run: |
+            echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+
+    update-benchmarks:
+        runs-on: ubuntu-24.04
+        needs: [pipeline-perf-test]
+        permissions:
+          # deployments permission to deploy GitHub pages website
+          deployments: write
+          # contents permission to update benchmark contents in gh-pages branch
+          contents: write
+        steps:
+          - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+          - name: Download syslog artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: syslog-nightly-results*
+              merge-multiple: true
+              path: syslog_results
+
+          - name: Download backpressure artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: backpressure-nightly-results*
+              merge-multiple: true
+              path: backpressure_results
+
+          - name: Consolidate syslog benchmark data
+            run: |
+              echo "Consolidating benchmark JSON files..."
+              find syslog_results -name "*.json" -type f | while read file; do
+                echo "Processing: $file"
+                cat "$file"
+                echo
+              done
+
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find syslog_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > syslog_output.json
+
+              echo "Consolidated benchmark data:"
+              cat syslog_output.json
+
+          - name: Consolidate backpressure benchmark data
+            run: |
+              echo "Consolidating benchmark JSON files..."
+              find backpressure_results -name "*.json" -type f | while read file; do
+                echo "Processing: $file"
+                cat "$file"
+                echo
+              done
+
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find backpressure_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > backpressure_output.json
+
+              echo "Consolidated benchmark data:"
+              cat backpressure_output.json
+
+          - name: Update benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: syslog_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update benchmark data and deploy to GitHub Pages
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: backpressure_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/backpressure"
+              auto-push: true
+              save-data-file: true
+
+          - name: Add benchmark link to job summary
+            run: |
+              echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY

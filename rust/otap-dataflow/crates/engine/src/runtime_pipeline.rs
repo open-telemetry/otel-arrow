@@ -4,16 +4,16 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
+use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
@@ -35,6 +35,12 @@ pub struct RuntimePipeline<PData: Debug> {
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
+}
+
+fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
+    for snapshot in terminal_state.into_metrics() {
+        let _ = metrics_reporter.try_report_snapshot(snapshot);
+    }
 }
 
 /// PipeNode contains runtime-specific info.
@@ -86,8 +92,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub fn run_forever(
         self,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -98,30 +104,59 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let local_tasks = LocalSet::new();
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
-        let mut control_senders = HashMap::new();
+        let mut control_senders = ControlSenders::default();
 
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
         for exporter in self.exporters {
-            _ = control_senders.insert(exporter.node_id().index, exporter.control_sender());
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
+            control_senders.register(
+                exporter.node_id(),
+                NodeType::Exporter,
+                exporter.control_sender(),
             );
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                exporter
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    })
+            }));
         }
         for processor in self.processors {
-            _ = control_senders.insert(processor.node_id().index, processor.control_sender());
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
+            control_senders.register(
+                processor.node_id(),
+                NodeType::Processor,
+                processor.control_sender(),
             );
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                processor
+                    .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                    .await
+            }));
         }
         for receiver in self.receivers {
-            _ = control_senders.insert(receiver.node_id().index, receiver.control_sender());
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(
-                local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
+            control_senders.register(
+                receiver.node_id(),
+                NodeType::Receiver,
+                receiver.control_sender(),
             );
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
+            futures.push(local_tasks.spawn_local(async move {
+                receiver
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    })
+            }));
         }
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
@@ -139,6 +174,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             local_tasks
                 .run_until(async {
                     let mut task_results = Vec::new();
+
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
@@ -260,7 +296,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {
-                node: node_id.clone(),
+                node_id: node_id.index,
                 error: e,
             }),
             None => Err(TypedError::Error(Error::InternalError {

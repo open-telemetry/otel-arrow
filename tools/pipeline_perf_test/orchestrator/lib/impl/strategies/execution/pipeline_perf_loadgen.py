@@ -27,6 +27,7 @@ components:
         threads: 1
         target_rate: 10000
         body_size: 25
+        message_body: A message string that overides body_size
         num_attributes: 2
         attribute_value_size: 15
         batch_size: 10000
@@ -65,6 +66,8 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
         threads (Optional[int]): Number of concurrent threads to simulate. Defaults to 1.
         target_rate (Optional[int]): Number of messages / sec to target. Defaults to None.
         body_size (Optional[int]): Size of the request body payload. Defaults to 25.
+        message_body (Optional[str]): Static message body, overrides body_size. Defaults to
+            None (random str of len=body_size).
         num_attributes (Optional[int]): Number of attributes included in each load event.
             Defaults to 2.
         attribute_value_size (Optional[int]): Size of each attribute's value. Defaults to 15.
@@ -77,6 +80,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
     threads: Optional[int] = 1
     target_rate: Optional[int] = None
     body_size: Optional[int] = 25
+    message_body: Optional[str] = None
     num_attributes: Optional[int] = 2
     attribute_value_size: Optional[int] = 15
     batch_size: Optional[int] = 10000
@@ -152,6 +156,7 @@ components:
         parameters = {
             "threads": self.config.threads,
             "body_size": self.config.body_size,
+            "message_body": self.config.message_body,
             "target_rate": self.config.target_rate,
             "num_attributes": self.config.num_attributes,
             "attribute_value_size": self.config.attribute_value_size,

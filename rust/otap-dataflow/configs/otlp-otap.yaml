@@ -1,11 +1,12 @@
 settings:
-  default_control_channel_size: 100
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
 
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn::otel::otlp::receiver"
+    plugin_urn: "urn:otel:otlp:receiver"
     out_ports:
       out_port:
         destinations:

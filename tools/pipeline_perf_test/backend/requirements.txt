@@ -1,3 +1,0 @@
-grpcio==1.74.0
-Flask[async]==3.1.2
-opentelemetry-proto==1.36.0

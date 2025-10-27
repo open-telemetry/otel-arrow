@@ -27,6 +27,16 @@ To work with this repository, you'll need:
 
 ## Local Run/Build
 
+Initialize Git submodules so that the OpenTelemetry protocol references
+used in building from `.proto` definitions can succeed:
+
+```bash
+git submodule update --init --recursive
+```
+
+When successful, you will find the directory `proto/opentelemetry-proto/`
+populated with the OpenTelemetry protocol definition used in this repository.
+
 ### How to set up and run a local OTel-Arrow collector
 
 See [collector/README.md](./collector/README.md) for instructions on running the
@@ -119,6 +129,31 @@ Join the OpenTelemetry
 
 ## Our Development Process
 
+### How to Receive Comments
+
+- If the PR is not ready for review, please put `[WIP]` in the title or mark it
+  as draft.
+- Make sure CLA is signed and all required CI checks are clear.
+- Submit small, focused PRs addressing a single concern/issue.
+- Make sure the PR title reflects the contribution.
+- Write a summary that helps understand the change.
+- Include usage examples in the summary, where applicable.
+- Include benchmarks (before/after) in the summary, for contributions that are
+  performance enhancements.
+
+### How to Get PRs Merged
+
+A PR is considered to be ready to merge when:
+
+- It has received approval from at least one Approver / Maintainer.
+- Major feedback is resolved.
+
+Any Maintainer can merge the PR once it is ready to merge. Note, that some PRs
+may not be merged immediately if the repo is in the process of a release and the
+maintainers decided to defer the PR to the next release train. Also, maintainers
+may decide to wait for more than one approval for certain PRs, particularly ones
+that are affecting multiple areas, or topics that may warrant more discussion.
+
 ### Repository background
 
 The OpenTelemetry Protocol with Apache Arrow project was initially developed in
@@ -130,8 +165,8 @@ part of [our development process][DEVPROCESS].
 
 ### Source locations
 
-This repository contains the OpenTelemetry Protocol with Apache Arrow definition
-and Golang libraries for producing and consuming streams of data in this format.
+This repository contains the OpenTelemetry Protocol with Apache Arrow
+definition and our Rust and Golang reference implementations.
 
 Exporter and receiver components for the [OpenTelemetry Collector][OTCDOCS] were
 developed in parallel, maintained in this repository through release v0.24.0,
@@ -168,7 +203,13 @@ Once the `*.pb.go` files are generated, you need to replace the content of the
 
 See the instructions in [RELEASING.md][].
 
-### Local development issues
+### Local development issues: Rust
+
+See the `otap-dataflow`-specific [CONTRIBUTING][OTAPDATAFLOWCONTRIBUTING].
+
+[OTAPDATAFLOWCONTRIBUTING]: ./rust/otap-dataflow/CONTRIBUTING.md
+
+### Local development issues: Golang
 
 This repository contains a top-level `go.work` file.  This enables the Go
 modules defined here to avoid relative replace statements, which interfere with
