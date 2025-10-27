@@ -28,6 +28,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
+        .route("/metrics", get(get_metrics))
 }
 
 /// All metric sets.
