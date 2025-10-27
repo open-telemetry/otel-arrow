@@ -123,7 +123,11 @@ in time.
 The OpenTelemetry specification goes only as far as required to define
 basic SDK behavior. Defining an implementing a query engine could
 require introducing new specifications and semantic conventions that
-OpenTelemetry has not required for its work on SDKs.
+OpenTelemetry has not required for its work on SDKs. 
+
+These are areas where it could take the existence of a query engine
+first in order to obtain OpenTelemetry specifications using the
+prototype. These are limitations a query-engine designer might face.
 
 ### Two-dimensional time axis
 
@@ -139,6 +143,34 @@ OpenTelemetry producers and consumers recognize intentional repetition
 as an extension of the single-writer rule, allowing producers to
 replace or update earlier outputs as time passes?
 
+### How to set start-time
+
+An essential question, also faced by SDKs, is how to set the start
+time for a series. Consider this scenario: an SDK starts, it begins
+reporting metrics, an hour passes, and then the first use of a Counter
+occurs with a new attribute set. The choices are:
+
+1. New series get the SDK's start time. This is a safe and simple
+   choice, and it is true that the Counter was zero when the SDK
+   started. However, this gives the interpretation that the rate has
+   been approximately 0.00027 for an hour. Worse, this makes it
+   impossible for the aggregator to forget groups it has seen and
+   recycle memory; a "restarted" series requires a newer start time
+   than the last time it was recycled.
+2. New series start time is the instant that it was first recognized
+   in the aggregation logic. However, the rate contribution from the
+   first point in a timeseries is always arbitrary, unless it has
+   zero width.
+3. New series start time is equal to event time. This explicitly
+   states that the first value in a series is arbitrary and
+   contributes zero in a rate calculation. This is the ideal way 
+   to avoid an arbitrary rate contributed by the choice of start time.
+   
+It is somewhat disappointing, however, to lose the value of the first
+point in every Counter timeseries because it contributes arbitrarily
+to the rate. OpenTelemetry could conveivably add a data point flag to
+indicate that a series has a true-zero value at its start time.
+
 ### Fractional histogram
 
 Frequently, metric engines will apply temporal alignment to aggregate
@@ -153,12 +185,16 @@ As we know, it is common to compute metrics from span and log
 events. In a typical use-case, for example, we compute a histogram
 from span latencies. When spans arrive pre-sampled, however, we cannot
 compute a representative metric. This breaks representivity because
-sampled spans can have fractional counts, and there is not a histogram
-data type with fractional bucket counts.
+sampled spans have fractional adjusted counts, and there is not a
+histogram data type with fractional bucket counts.
 
-### Start-time ambiguity
-Z
+### Gauge histogram
 
+OpenTelemetry does not define the Gauge histogram concept that we
+obtain naturally from aggregating Gauge values. This is an omission in
+the OpenTelemetry specification, in part because this type of
+aggregation is not typically performed in an SDK.
 
-Ambiguous about start_time
-Gauge histogram
+In an OpenTelemetry-based query engine, we will be capable of defining
+Gauge histogram data, but there is not a histogram data type that
+represents spatial or temporal aggregation of Gauge values.
