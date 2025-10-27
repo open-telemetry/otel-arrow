@@ -22,6 +22,13 @@ pub struct OtapDataSourceExec {
 }
 
 impl OtapDataSourceExec {
+    pub fn new( payload_type: ArrowPayloadType, data_source: MemorySourceConfig) -> Self {
+        Self {
+            payload_type,
+            source_plan: DataSourceExec::new(Arc::new(data_source))
+        }
+    }
+
     pub fn try_with_next_batch(&self, rb: RecordBatch) -> Result<Self> {
         let data_source = self.source_plan.data_source();
         if let Some(mem_ds) = data_source.as_any().downcast_ref::<MemorySourceConfig>() {

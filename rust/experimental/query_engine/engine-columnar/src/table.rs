@@ -1,47 +1,47 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use datafusion::arrow::array::{Int32Array, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::catalog::{MemTable, Session};
+use datafusion::catalog::memory::MemorySourceConfig;
+use datafusion::catalog::Session;
 use datafusion::common::Result;
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::{SessionContext, SessionState};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::*;
-use std::sync::{Arc, RwLock};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+use crate::datasource::OtapDataSourceExec;
 
 // ---------------------
 // MutableMemTable
 // ---------------------
 #[derive(Debug)]
-pub struct MutableMemTable {
-    schema: SchemaRef,
-    data: Arc<RwLock<Vec<RecordBatch>>>,
+pub struct OtapBatchTable {
+    payload_type: ArrowPayloadType,
+    current_batch: RecordBatch,
 }
 
-impl MutableMemTable {
-    pub fn new(schema: SchemaRef) -> Self {
+impl OtapBatchTable {
+    pub fn new(payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Self {
         Self {
-            schema,
-            data: Arc::new(RwLock::new(Vec::new())),
+            payload_type,
+            current_batch: record_batch,
         }
-    }
-
-    pub fn replace_batches(&self, new_batches: Vec<RecordBatch>) {
-        let mut guard = self.data.write().unwrap();
-        *guard = new_batches;
     }
 }
 
 #[async_trait]
-impl TableProvider for MutableMemTable {
+impl TableProvider for OtapBatchTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.current_batch.schema()
     }
 
     fn table_type(&self) -> TableType {
@@ -51,15 +51,20 @@ impl TableProvider for MutableMemTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let batches = self.data.read().unwrap().clone();
-        // Ok(Arc::new(MemoryE::try_new(&[batches], self.schema.clone(), None)?))
-        let memtable = MemTable::try_new(self.schema.clone(), vec![batches])?;
-        // MemTable implements TableProvider, so we can just return it as an ExecutionPlan
-        println!("here");
-        memtable.scan(_state, _projection, _filters, _limit).await
+        let schema = self.current_batch.schema();
+        let data_source = MemorySourceConfig::try_new(
+            &[vec![
+                // TODO -- validate if it's somehow possible to avoid the clone here
+                self.current_batch.clone()
+            ]],
+            schema,
+            projection.cloned()
+        )?;
+
+        Ok(Arc::new(OtapDataSourceExec::new(self.payload_type, data_source)))
     }
 }

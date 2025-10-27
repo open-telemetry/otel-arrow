@@ -16,8 +16,14 @@ use crate::datasource::OtapDataSourceExec;
 // - document what this is doing
 // - check the debug implementation if it spews out a bunch of data
 #[derive(Debug)]
-struct UpdateDataSourceOptimizer {
+pub struct UpdateDataSourceOptimizer {
     otap_batch: OtapArrowRecords,
+}
+
+impl UpdateDataSourceOptimizer {
+    pub fn new(otap_batch: OtapArrowRecords) -> Self {
+        Self { otap_batch }
+    }
 }
 
 impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {

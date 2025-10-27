@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_columnar::table::MutableMemTable;
+use arrow::util::pretty::print_batches;
+use data_engine_columnar::optimize::datasource::UpdateDataSourceOptimizer;
+use data_engine_columnar::table::OtapBatchTable;
 use data_engine_kql_parser::{KqlParser, Parser};
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
@@ -10,6 +12,7 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::displayable;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::prelude::SessionContext;
 use datafusion::prelude::{SessionConfig, col, lit};
 use otap_df_otap::encoder::encode_logs_otap_batch;
@@ -28,6 +31,46 @@ use std::sync::Arc;
 
 use data_engine_columnar::engine::{ExecutionContext, OtapBatchEngine};
 
+#[tokio::main]
+async fn main() -> Result<(), DataFusionError> {
+    let batch1 = generate_logs_batch(10, 50);
+
+    let ctx = SessionContext::new();
+    
+    let logs_table = OtapBatchTable::new(
+        ArrowPayloadType::Logs,
+        batch1.get(ArrowPayloadType::Logs).unwrap().clone()
+    );
+
+    _ = ctx.register_table("logs", Arc::new(logs_table))?;
+
+    let df1 = ctx.table("logs").await?
+        .limit(1, Some(2))?;
+
+    let state = ctx.state();
+    let logical_plan = state.optimize(df1.logical_plan())?;
+    let physical_plan = state.create_physical_plan(&logical_plan).await?;
+    
+    let task_ctx = Arc::new(TaskContext::from(&state));
+    
+    let stream1 = physical_plan.execute(0, task_ctx.clone())?;
+    let results1 = collect(stream1).await?;
+    println!("result 1:");
+    print_batches(&results1).unwrap();
+
+    let batch2 = generate_logs_batch(10, 80);
+    let data_source_updater = UpdateDataSourceOptimizer::new(batch2);
+    let session_cfg = ctx.copied_config();
+    let physical_plan = data_source_updater.optimize(physical_plan, session_cfg.options().as_ref())?;
+
+    let stream2 = physical_plan.execute(0, task_ctx.clone())?;
+    let results2 = collect(stream2).await?;
+    println!("result 2:");
+    print_batches(&results2).unwrap();
+    Ok(())    
+}
+
+/*
 #[tokio::main]
 async fn main() -> Result<(), DataFusionError> {
     let batch_size = 8192;
@@ -56,12 +99,14 @@ async fn main() -> Result<(), DataFusionError> {
     // register first batch
     let (logs, log_attrs) = data[0];
 
-    // let logs_table = MemTable::try_new(logs.schema(), vec![vec![logs.clone()]]).unwrap();
-    // let log_attrs_table = MemTable::try_new(log_attrs.schema(), vec![vec![log_attrs.clone()]]).unwrap();
-    let logs_table = Arc::new(MutableMemTable::new(logs.schema()));
-    let log_attrs_table = Arc::new(MutableMemTable::new(log_attrs.schema()));
-    logs_table.replace_batches(vec![logs.clone()]);
-    log_attrs_table.replace_batches(vec![log_attrs.clone()]);
+    let logs_table = MemTable::try_new(logs.schema(), vec![vec![logs.clone()]]).unwrap();
+    let log_attrs_table = MemTable::try_new(log_attrs.schema(), vec![vec![log_attrs.clone()]]).unwrap();
+    let logs_table = Arc::new(logs_table);
+    let log_attrs_table = Arc::new(log_attrs_table);
+    // let logs_table = Arc::new(OtapBatchTable::new(logs.schema()));
+    // let log_attrs_table = Arc::new(OtapBatchTable::new(log_attrs.schema()));
+    // logs_table.replace_batches(vec![logs.clone()]);
+    // log_attrs_table.replace_batches(vec![log_attrs.clone()]);
 
     ctx.register_table("logs", logs_table.clone()).unwrap();
     ctx.register_table("logattrs", log_attrs_table.clone())
@@ -113,8 +158,8 @@ async fn main() -> Result<(), DataFusionError> {
         let result = collect(stream).await?;
         black_box(result);
 
-        logs_table.replace_batches(vec![logs.clone()]);
-        log_attrs_table.replace_batches(vec![log_attrs.clone()]);
+        // logs_table.replace_batches(vec![logs.clone()]);
+        // log_attrs_table.replace_batches(vec![log_attrs.clone()]);
         //     let logs_table = MutableMemTable::new(logs.schema());
         //     logs_table.replace_batches(vec![logs.clone()]);
         //     let log_attrs_table = MutableMemTable::new(log_attrs.schema());
@@ -125,27 +170,10 @@ async fn main() -> Result<(), DataFusionError> {
     // arrow::util::pretty::print_batches(&[logs.clone()]).unwrap();
 
     // println!("results 1");
-    /*
-    // reregister tables
-    let (logs, log_attrs) = data[1];
-    let logs_table = MemTable::try_new(logs.schema(), vec![vec![logs.clone()]]).unwrap();
-    let log_attrs_table = MemTable::try_new(log_attrs.schema(), vec![vec![log_attrs.clone()]]).unwrap();
-    ctx.deregister_table("logs")?;
-    ctx.register_table("logs", Arc::new(logs_table)).unwrap();
-    ctx.deregister_table("logattrs")?;
-    ctx.register_table("logattrs", Arc::new(log_attrs_table)).unwrap();
-
-    let stream = physical_plan.execute(0, task_ctx.clone())?;
-    let result = collect(stream).await?;
-
-    println!("input 2");
-    arrow::util::pretty::print_batches(&[logs.clone()]).unwrap();
-    println!("results 2");
-    arrow::util::pretty::print_batches(&result).unwrap();
-    */
 
     Ok(())
 }
+*/
 
 /*
 #[tokio::main]
