@@ -13,8 +13,8 @@ limited ways. The SDK for example can perform tasks such as:
 OpenTelemetry specifications explain a lot about these processes, with
 a focus on how SDKs perform the necessary tasks. However, we know
 these tasks are relatively simple when performed inside an SDK because
-SDKs have contact with the original API events. This relative simplicy
-is compared against the same in a downstream query engine:
+SDKs have contact with the original API events. This relative simplicity
+is compared against performing the same tasks in a downstream query engine:
 
 - **SDKs**: An SDK remembers its start time and assumes a functional
   system clock. The SDK assumes its resource value is unique. SDKs a
@@ -46,11 +46,11 @@ representative of the original API events.
 
 To aggregate OpenTelemetry data, as in a query engine, where we accept
 OpenTelemetry data as input, combine it, then output it again, the
-most important question is whether we preserve representivity. Does
-the data still represent the original API events? We use this
+most important question is whether we preserve representivity (i.e.,
+whether the data accurately represents the original events). We use this
 definition because it applies across signal types, and it gives a
 substantial amount of freedom to aggregate the data without distorting
-an observability signal. This means resepecting:
+an observability signal. This means respecting:
 
 - Event timestamps: Preferrably, do not presume the event time is
   close to the arrival time for aggregation purposes, as that will
@@ -103,11 +103,10 @@ from original metric API events into aggregate metric data that
 respects the single-writer principle. Essential to the approach, every
 metric instrument has a natural aggregation function determined by its
 instrument kind. For example, to combine multiple aggregate Counter
-measurements into a single aggregate, as to remove a metric attribute,
-we compute the sum in order to preserve representivity. Summation is
-the default for every kind of instrument except Gauges.  For the Gauge
-instrument, we use the latest measurement value to preserve
-representivity.
+measurements into a single aggregate (e.g., in order to remove a
+metric attribute), we compute the aggregate Sum, because Sum preserves
+representivity for all forms of Counter. For the Gauge instrument, we
+use the latest measurement value to preserve representivity.
 
 For a query engine to meet the single-writer rule and preserve
 representivity, it should begin by defining for each distinct
@@ -121,13 +120,13 @@ in time.
 ## Limitations
 
 The OpenTelemetry specification goes only as far as required to define
-basic SDK behavior. Defining an implementing a query engine could
+basic SDK behavior. Defining and implementing a query engine could
 require introducing new specifications and semantic conventions that
-OpenTelemetry has not required for its work on SDKs. 
+OpenTelemetry has not required for its work on SDKs.
 
-These are areas where it could take the existence of a query engine
-first in order to obtain OpenTelemetry specifications using the
-prototype. These are limitations a query-engine designer might face.
+These are areas where a working query engine prototype may be needed
+first in order to develop OpenTelemetry specifications. The following
+are limitations a query-engine designer might face.
 
 ### Two-dimensional time axis
 
@@ -141,7 +140,9 @@ expect 90% of telemetry data is received within 1 minute of the event
 timestamp, 99% within 2 minutes, 100% within 10 minutes. Could
 OpenTelemetry producers and consumers recognize intentional repetition
 as an extension of the single-writer rule, allowing producers to
-replace or update earlier outputs as time passes?
+replace or update earlier outputs as time passes? This would require
+new specifications to handle progressive refinement of late-arriving
+data.
 
 ### How to set start-time
 
@@ -163,8 +164,8 @@ occurs with a new attribute set. The choices are:
    zero width.
 3. New series start time is equal to event time. This explicitly
    states that the first value in a series is arbitrary and
-   contributes zero in a rate calculation. This is the ideal way 
-   to avoid an arbitrary rate contributed by the choice of start time.
+   contributes zero in a rate calculation. This is the ideal way
+   to avoid an arbitrary rate contribution from the choice of start time.
    
 It is somewhat disappointing, however, to lose the value of the first
 point in every Counter timeseries because it contributes arbitrarily
