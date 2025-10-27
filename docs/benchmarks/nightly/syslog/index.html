@@ -1,281 +1,517 @@
+
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1, user-scalable=yes" />
-    <style>
-      html {
-        font-family: BlinkMacSystemFont,-apple-system,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Fira Sans","Droid Sans","Helvetica Neue",Helvetica,Arial,sans-serif;
-        -webkit-font-smoothing: antialiased;
-        background-color: #fff;
-        font-size: 16px;
-      }
-      body {
-        color: #4a4a4a;
-        margin: 8px;
-        font-size: 1em;
-        font-weight: 400;
-      }
-      header {
-        margin-bottom: 8px;
-        display: flex;
-        flex-direction: column;
-      }
-      main {
-        width: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-      a {
-        color: #3273dc;
-        cursor: pointer;
-        text-decoration: none;
-      }
-      a:hover {
-        color: #000;
-      }
-      button {
-        color: #fff;
-        background-color: #3298dc;
-        border-color: transparent;
-        cursor: pointer;
-        text-align: center;
-      }
-      button:hover {
-        background-color: #2793da;
-        flex: none;
-      }
-      .spacer {
-        flex: auto;
-      }
-      .small {
-        font-size: 0.75rem;
-      }
-      footer {
-        margin-top: 16px;
-        display: flex;
-        align-items: center;
-      }
-      .header-label {
-        margin-right: 4px;
-      }
-      .benchmark-set {
-        margin: 8px 0;
-        width: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-      .benchmark-title {
-        font-size: 3rem;
-        font-weight: 600;
-        word-break: break-word;
-        text-align: center;
-      }
-      .benchmark-graphs {
-        display: flex;
-        flex-direction: row;
-        justify-content: space-around;
-        align-items: center;
-        flex-wrap: wrap;
-        width: 100%;
-      }
-      .benchmark-chart {
-        max-width: 1000px;
-      }
-    </style>
-    <title>Benchmarks</title>
-  </head>
 
-  <body>
-    <header id="header">
-      <div class="header-item">
-        <strong class="header-label">Last Update:</strong>
-        <span id="last-update"></span>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1, user-scalable=yes" />
+  <style>
+    html {
+      font-family: BlinkMacSystemFont, -apple-system, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background-color: #fff;
+      font-size: 16px;
+    }
+
+    body {
+      margin: 0;
+      color: #4a4a4a;
+      font-size: 1em;
+      font-weight: 400;
+    }
+
+    header {
+      width: 100%;
+      display: flex;
+      flex-direction: row;
+      background-color: rgb(79, 98, 173);
+    }
+
+    main {
+      margin: 8px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    a {
+      color: #3273dc;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: #000;
+    }
+
+    button {
+      color: #fff;
+      background-color: #3298dc;
+      border-color: transparent;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    button:hover {
+      background-color: #2793da;
+      flex: none;
+    }
+
+    .spacer {
+      flex: auto;
+    }
+
+    .small {
+      font-size: 0.75rem;
+    }
+
+    footer {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+    }
+
+    .header-label {
+      margin-right: 4px;
+    }
+
+    .benchmark-set {
+      margin: 8px 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .benchmark-title {
+      font-size: 3rem;
+      font-weight: 600;
+      word-break: break-word;
+      text-align: center;
+    }
+
+    .benchmark-graphs {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-around;
+      align-items: center;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+
+    .benchmark-chart {
+      max-width: 1000px;
+    }
+
+    header nav {
+      width: 100%;
+      max-width: 1140px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 24px;
+      min-height: 64px;
+      display: flex;
+      flex: 2;
+      align-items: center;
+    }
+
+    .logo svg {
+      height: 48px;
+      margin-left: 30px;
+    }
+
+    .header-item {
+      flex: 1;
+    }
+
+    div.container {
+      max-width: 1012px;
+      margin-right: auto;
+      margin-left: auto;
+    }
+
+
+    details summary {
+      font-size: 1.5em;
+      font-weight: bold;
+      cursor: pointer;
+      padding: 8px;
+      background-color: #f4f4f4;
+      border: 1px solid #ccc;
+      margin-top: 16px;
+    }
+
+    #toc ul {
+      padding-left: 20px;
+    }
+
+    #toc li {
+      margin-bottom: 4px;
+    }
+  </style>
+  <title>Dataflow Engine Benchmarks</title>
+</head>
+
+<body>
+  <header id="header">
+    <nav>
+      <div class="header-item logo">
+        <a href="https://opentelemetry.io">
+
+        </a>
       </div>
-      <div class="header-item">
-        <strong class="header-label">Repository:</strong>
-        <a id="repository-link" rel="noopener"></a>
-      </div>
-    </header>
+      <div class="header-item"><!-- links --></div>
+    </nav>
+  </header>
+
+
+  <div class="container">
+    <h2>Dataflow Engine Nightly Syslog Benchmarks</h2>
+    <div>
+      <strong>Last Update:</strong>
+      <span id="last-update"></span>
+    </div>
+    <div>
+      <strong>Repository:</strong>
+      <a id="repository-link" rel="noopener"></a>
+    </div>
+
+    <section id="benchmark-dashboards" style="margin-top: 20px;">
+      <h2>Additional Benchmark Dashboards</h2>
+      <ul style="list-style-type: disc; margin-top: 8px;">
+        <li style="margin-bottom: 8px;">
+          <a href="https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/" target="_blank" rel="noopener">
+            Continuous Benchmarks
+          </a> — Ongoing performance runs tracking incremental changes across builds.
+        </li>
+        <li style="margin-bottom: 8px;">
+          <a href="https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/" target="_blank" rel="noopener">
+            Nightly Benchmarks
+          </a> — Daily scheduled benchmark runs spanning a wide variety of engine configurations.
+        </li>
+      </ul>
+    </section>
+
+    <nav id="toc" style="margin-top: 16px;">
+      <h2>Table of Contents</h2>
+      <ul style="list-style-type: disc; margin-top: 8px;">
+        <li><a href="#summary-section">Aggregated Charts</a></li>
+        <li><a href="#detail-section">Scenario Charts</a></li>
+      </ul>
+    </nav>
+
+    <section id="benchmark-tests" style="margin-top: 24px;">
+      <h2>Benchmark Tests</h2>
+      <p>The following benchmarks evaluate different syslog processing configurations used in the nightly Dataflow Engine performance runs:</p>
+      <ul>
+        <li  style="margin-bottom: 12px;">
+          <strong>SYSLOG-3164-ATTR-OTAP</strong> — Tests a static, non-parsable message body with randomized attributes. 
+          Messages include RFC 3164-style headers, processed by an attribute processor, and are output using the OTAP protocol.
+        </li>
+        <li  style="margin-bottom: 12px;">
+          <strong>SYSLOG-3164-ATTR-OTLP</strong> — Similar to SYSLOG-3164-ATTR-OTAP, this benchmark uses a static, non-parsable 
+          message body with randomized attributes and 3164 headers, but outputs messages via the OTLP protocol.
+        </li>
+        <li  style="margin-bottom: 12px;">
+          <strong>SYSLOG-3164-CEF-ATTR-OTLP</strong> — Evaluates a static, CEF-parsable message body combined with RFC 3164 headers. 
+          The messages are processed with attributes and exported using the OTLP output format.
+        </li>
+        <li  style="margin-bottom: 12px;">
+          <strong>SYSLOG-3164-CEF-ATTR-OTAP</strong> — Tests a static, CEF-parsable message body with 3164 headers and attribute 
+          enrichment, output through the OTAP protocol.
+        </li>
+      </ul>
+    </section>
     <main id="main"></main>
-    <footer>
-      <button id="dl-button">Download data as JSON</button>
-      <div class="spacer"></div>
-      <div class="small">Powered by <a rel="noopener" href="https://github.com/marketplace/actions/continuous-benchmark">github-action-benchmark</a></div>
-    </footer>
+  </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js"></script>
-    <script src="data.js"></script>
-    <script id="main-script">
-      'use strict';
-      (function() {
-        // Colors from https://github.com/github/linguist/blob/master/lib/linguist/languages.yml
-        const toolColors = {
-          cargo: '#dea584',
-          go: '#00add8',
-          benchmarkjs: '#f1e05a',
-          benchmarkluau: '#000080',
-          pytest: '#3572a5',
-          googlecpp: '#f34b7d',
-          catch2: '#f34b7d',
-          julia: '#a270ba',
-          jmh: '#b07219',
-          benchmarkdotnet: '#178600',
-          customBiggerIsBetter: '#38ff38',
-          customSmallerIsBetter: '#ff3838',
-          _: '#333333'
-        };
 
-        function init() {
-          function collectBenchesPerTestCase(entries) {
-            const map = new Map();
-            for (const entry of entries) {
-              const {commit, date, tool, benches} = entry;
-              for (const bench of benches) {
-                const result = { commit, date, tool, bench };
-                const arr = map.get(bench.name);
-                if (arr === undefined) {
-                  map.set(bench.name, [result]);
-                } else {
-                  arr.push(result);
-                }
-              }
-            }
-            return map;
+  <footer>
+    <button id="dl-button">Download data as JSON</button>
+    <div class="spacer"></div>
+    <div class="small">Powered by <a rel="noopener"
+        href="https://github.com/marketplace/actions/continuous-benchmark">github-action-benchmark</a></div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js"></script>
+
+  <script src="https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/syslog/data.js"></script>
+  
+  <script id="main-script">
+ 'use strict';
+(function () {
+  const COLORS = [
+    "#48aaf9", "#8a3ef2", "#78eeda", "#d78000", "#1248b3",
+    "#97dbfc", "#006174", "#00b6b6", "#854200", "#f3c8ad", "#410472",
+  ];
+
+  function init() {
+    function collectBenchesPerTestCase(entries) {
+      const byGroup = new Map();
+      const dates = [];
+
+      for (const entry of entries) {
+        const { commit, date, tool, benches } = entry;
+        const dateStr = new Date(date).toISOString().slice(0, 10); // YYYY-MM-DD
+
+        if (!dates.includes(dateStr)) {
+          dates.push(dateStr);
+        }
+
+        for (const bench of benches) {
+          const result = { commit, date, tool, bench };
+
+          let byExtraGroup = byGroup.get(bench.extra);
+          if (byExtraGroup === undefined) {
+            byExtraGroup = new Map();
+            byGroup.set(bench.extra, byExtraGroup);
           }
 
-          const data = window.BENCHMARK_DATA;
+          let byBenchName = byExtraGroup.get(bench.name);
+          if (byBenchName === undefined) {
+            byBenchName = new Map();
+            byExtraGroup.set(bench.name, byBenchName);
+          }
 
-          // Render header
-          document.getElementById('last-update').textContent = new Date(data.lastUpdate).toString();
-          const repoLink = document.getElementById('repository-link');
-          repoLink.href = data.repoUrl;
-          repoLink.textContent = data.repoUrl;
+          byBenchName.set(dateStr, result);
+        }
+      }
 
-          // Render footer
-          document.getElementById('dl-button').onclick = () => {
-            const dataUrl = 'data:,' + JSON.stringify(data, null, 2);
-            const a = document.createElement('a');
-            a.href = dataUrl;
-            a.download = 'benchmark_data.json';
-            a.click();
+      // Ensure chronological order
+      dates.sort((a, b) => new Date(a) - new Date(b));
+
+      return { dates, byGroup };
+    }
+
+    function collectAggregatedBenchmarks(entries) {
+      const grouped = new Map();
+      const dates = [];
+
+      for (const entry of entries) {
+        const { commit, date, tool, benches } = entry;
+        const dateStr = new Date(date).toISOString().slice(0, 10); // YYYY-MM-DD
+
+        if (!dates.includes(dateStr)) {
+          dates.push(dateStr);
+        }
+
+        for (const bench of benches) {
+          const extraParts = bench.extra.split('/');
+          if (extraParts.length !== 2) continue;
+
+          const prefix = extraParts[0].trim(); // e.g., CI 100kLRPS
+          const [testName, metricGroup] = extraParts[1].split(' - ').map(s => s.trim());
+
+          const sectionHeader = `${prefix} - ${metricGroup}`; // section heading
+          const metricName = bench.name;
+
+          if (!grouped.has(sectionHeader)) {
+            grouped.set(sectionHeader, new Map());
+          }
+          const sectionMap = grouped.get(sectionHeader);
+
+          if (!sectionMap.has(metricName)) {
+            sectionMap.set(metricName, new Map());
+          }
+          const metricMap = sectionMap.get(metricName);
+
+          if (!metricMap.has(testName)) {
+            metricMap.set(testName, new Map());
+          }
+          const testMap = metricMap.get(testName);
+
+          testMap.set(dateStr, { commit, date, tool, bench });
+        }
+      }
+
+      // Ensure chronological order
+      dates.sort((a, b) => new Date(a) - new Date(b));
+
+      return { dates, grouped };
+    }
+
+    const data = window.BENCHMARK_DATA;
+
+    // Header info
+    document.getElementById('last-update').textContent = new Date(data.lastUpdate).toString();
+    const repoLink = document.getElementById('repository-link');
+    repoLink.href = data.repoUrl;
+    repoLink.textContent = data.repoUrl;
+
+    // Footer button
+    document.getElementById('dl-button').onclick = () => {
+      const dataUrl = 'data:,' + JSON.stringify(data, null, 2);
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = 'benchmark_data.json';
+      a.click();
+    };
+
+    // Prepare both datasets
+    return Object.keys(data.entries).map(name => {
+      const rawEntries = data.entries[name];
+      return {
+        name,
+        dataSet: collectBenchesPerTestCase(rawEntries),
+        aggregatedSet: collectAggregatedBenchmarks(rawEntries),
+      };
+    });
+  }
+
+  function renderAllChars(dataSets) {
+
+    function renderGraph(parent, name, dates, byName) {
+      const chartTitle = document.createElement('h3');
+      chartTitle.textContent = name;
+      parent.append(chartTitle);
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'benchmark-chart';
+      parent.appendChild(canvas);
+
+      const results = [];
+      for (const [seriesName, byCommitId] of byName.entries()) {
+        results.push({
+          name: seriesName,
+          dataset: dates.map(date => byCommitId.get(date) ?? null),
+        });
+      }
+
+      results.sort((a, b) => a.name.localeCompare(b.name));
+
+      const data = {
+        labels: dates,
+        datasets: results.map(({ name, dataset }, index) => {
+          const color = COLORS[index % COLORS.length];
+          return {
+            label: name,
+            data: dataset.map(d => d?.bench.value ?? null),
+            fill: false,
+            borderColor: color,
+            backgroundColor: color,
           };
+        }),
+      };
 
-          // Prepare data points for charts
-          return Object.keys(data.entries).map(name => ({
-            name,
-            dataSet: collectBenchesPerTestCase(data.entries[name]),
-          }));
+      const options = {
+        scales: {
+          xAxes: [{
+            scaleLabel: { display: true, labelString: 'date' },
+          }],
+          yAxes: [{
+            scaleLabel: {
+              display: true,
+              labelString: results?.[0]?.dataset.find(d => d !== null)?.bench.unit ?? '',
+            },
+            ticks: { beginAtZero: true },
+          }]
+        },
+        tooltips: {
+          callbacks: {
+            afterTitle: items => {
+              const { datasetIndex, index } = items[0];
+              const data = results[datasetIndex].dataset[index];
+              if (!data) return '';
+              return '\n' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.author.username + '\n';
+            },
+            label: item => {
+              const { datasetIndex, index, value } = item;
+              const data = results[datasetIndex].dataset[index];
+              if (!data) return `${results[datasetIndex].name}: N/A`;
+              const { name, dataset } = results[datasetIndex];
+              const { range, unit } = data.bench;
+              let label = `${name}: ${value}`;
+              label += unit;
+              if (range) label += ` (${range})`;
+              return label;
+            },
+          },
+        },
+        legend: { display: true },
+      };
+
+      new Chart(canvas, { type: 'line', data, options });
+    }
+
+    function renderAggregatedCharts(aggregatedSet, main) {
+      const { dates, grouped } = aggregatedSet;
+
+      const setElem = document.createElement('div');
+      setElem.className = 'benchmark-set';
+      main.appendChild(setElem);
+
+      const graphsElem = document.createElement('div');
+      graphsElem.className = 'benchmark-graphs';
+      setElem.appendChild(graphsElem);
+
+      const sortedHeaders = [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [sectionName, metricMap] of sortedHeaders) {
+        const sectionHeader = document.createElement('h2');
+        sectionHeader.textContent = sectionName;
+        graphsElem.appendChild(sectionHeader);
+
+        const sortedMetrics = [...metricMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        for (const [metricName, testMap] of sortedMetrics) {
+          renderGraph(graphsElem, metricName, dates, testMap);
         }
+      }
+    }
 
-        function renderAllChars(dataSets) {
+    function renderBenchSet(name, benchSet, main) {
+      const setElem = document.createElement('div');
+      setElem.className = 'benchmark-set';
+      main.appendChild(setElem);
 
-          function renderGraph(parent, name, dataset) {
-            const canvas = document.createElement('canvas');
-            canvas.className = 'benchmark-chart';
-            parent.appendChild(canvas);
+      const graphsElem = document.createElement('div');
+      graphsElem.className = 'benchmark-graphs';
+      setElem.appendChild(graphsElem);
 
-            const color = toolColors[dataset.length > 0 ? dataset[0].tool : '_'];
-            const data = {
-              labels: dataset.map(d => d.commit.id.slice(0, 7)),
-              datasets: [
-                {
-                  label: name,
-                  data: dataset.map(d => d.bench.value),
-                  borderColor: color,
-                  backgroundColor: color + '60', // Add alpha for #rrggbbaa
-                }
-              ],
-            };
-            const options = {
-              scales: {
-                xAxes: [
-                  {
-                    scaleLabel: {
-                      display: true,
-                      labelString: 'commit',
-                    },
-                  }
-                ],
-                yAxes: [
-                  {
-                    scaleLabel: {
-                      display: true,
-                      labelString: dataset.length > 0 ? dataset[0].bench.unit : '',
-                    },
-                    ticks: {
-                      beginAtZero: true,
-                    }
-                  }
-                ],
-              },
-              tooltips: {
-                callbacks: {
-                  afterTitle: items => {
-                    const {index} = items[0];
-                    const data = dataset[index];
-                    return '\n' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.committer.username + '\n';
-                  },
-                  label: item => {
-                    let label = item.value;
-                    const { range, unit } = dataset[item.index].bench;
-                    label += ' ' + unit;
-                    if (range) {
-                      label += ' (' + range + ')';
-                    }
-                    return label;
-                  },
-                  afterLabel: item => {
-                    const { extra } = dataset[item.index].bench;
-                    return extra ? '\n' + extra : '';
-                  }
-                }
-              },
-              onClick: (_mouseEvent, activeElems) => {
-                if (activeElems.length === 0) {
-                  return;
-                }
-                // XXX: Undocumented. How can we know the index?
-                const index = activeElems[0]._index;
-                const url = dataset[index].commit.url;
-                window.open(url, '_blank');
-              },
-            };
+      const { dates, byGroup } = benchSet;
+      const groups = [];
+      for (const [name, byName] of byGroup.entries()) {
+        groups.push({ name, byName });
+      }
+      groups.sort((a, b) => a.name.localeCompare(b.name));
 
-            new Chart(canvas, {
-              type: 'line',
-              data,
-              options,
-            });
-          }
+      for (const { name, byName } of groups) {
+        renderGraph(graphsElem, name, dates, byName);
+      }
+    }
 
-          function renderBenchSet(name, benchSet, main) {
-            const setElem = document.createElement('div');
-            setElem.className = 'benchmark-set';
-            main.appendChild(setElem);
+    const main = document.getElementById('main');
 
-            const nameElem = document.createElement('h1');
-            nameElem.className = 'benchmark-title';
-            nameElem.textContent = name;
-            setElem.appendChild(nameElem);
+    // Summary section (collapsible)
+    const summaryDetails = document.createElement('details');
+    summaryDetails.id = 'summary-section';
+    summaryDetails.open = true;
+    const summarySummary = document.createElement('summary');
+    summarySummary.textContent = 'Aggregated Charts';
+    summaryDetails.appendChild(summarySummary);
+    main.appendChild(summaryDetails);
 
-            const graphsElem = document.createElement('div');
-            graphsElem.className = 'benchmark-graphs';
-            setElem.appendChild(graphsElem);
+    // Add summary content
+    for (const { aggregatedSet } of dataSets) {
+      renderAggregatedCharts(aggregatedSet, summaryDetails);
+    }
 
-            for (const [benchName, benches] of benchSet.entries()) {
-              renderGraph(graphsElem, benchName, benches)
-            }
-          }
+    // Detail section (collapsible)
+    const detailDetails = document.createElement('details');
+    detailDetails.id = 'detail-section';
+    detailDetails.open = false;
+    const detailSummary = document.createElement('summary');
+    detailSummary.textContent = 'Scenario Charts';
+    detailDetails.appendChild(detailSummary);
+    main.appendChild(detailDetails);
 
-          const main = document.getElementById('main');
-          for (const {name, dataSet} of dataSets) {
-            renderBenchSet(name, dataSet, main);
-          }
-        }
+    // Add detail content
+    for (const { name, dataSet } of dataSets) {
+      renderBenchSet(name, dataSet, detailDetails);
+    }
+  }
 
-        renderAllChars(init()); // Start
-      })();
-    </script>
-  </body>
+  renderAllChars(init());
+})();
+
+  </script>
+</body>
+
 </html>
