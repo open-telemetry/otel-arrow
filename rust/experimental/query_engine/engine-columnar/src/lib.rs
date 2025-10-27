@@ -6,7 +6,6 @@ pub mod error;
 pub mod optimize;
 pub mod table;
 
-
 mod common;
 mod consts;
 mod datasource;

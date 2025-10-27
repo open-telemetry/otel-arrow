@@ -36,6 +36,9 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
         false
     }
 
+    // TODO add a note about the implementation here about why it works like it does and how
+    // we need it to call with_new_children recursively so it resets the state of all the
+    // stateful execution plan steps parents above the datasource (e.g. repartitioning and stuff)
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,

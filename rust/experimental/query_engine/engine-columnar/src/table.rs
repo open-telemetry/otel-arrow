@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::catalog::memory::MemorySourceConfig;
 use datafusion::catalog::Session;
+use datafusion::catalog::memory::MemorySourceConfig;
 use datafusion::common::Result;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
@@ -55,16 +55,21 @@ impl TableProvider for OtapBatchTable {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        println!("projection (table) = {:?}", projection);
+
         let schema = self.current_batch.schema();
         let data_source = MemorySourceConfig::try_new(
             &[vec![
                 // TODO -- validate if it's somehow possible to avoid the clone here
-                self.current_batch.clone()
+                self.current_batch.clone(),
             ]],
             schema,
-            projection.cloned()
+            projection.cloned(),
         )?;
 
-        Ok(Arc::new(OtapDataSourceExec::new(self.payload_type, data_source)))
+        Ok(Arc::new(OtapDataSourceExec::new(
+            self.payload_type,
+            data_source,
+        )))
     }
 }

@@ -6,6 +6,7 @@ use std::fmt::{self, Formatter};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
 use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
 use datafusion::datasource::sink::DataSinkExec;
 use datafusion::error::Result;
@@ -22,10 +23,10 @@ pub struct OtapDataSourceExec {
 }
 
 impl OtapDataSourceExec {
-    pub fn new( payload_type: ArrowPayloadType, data_source: MemorySourceConfig) -> Self {
+    pub fn new(payload_type: ArrowPayloadType, data_source: MemorySourceConfig) -> Self {
         Self {
             payload_type,
-            source_plan: DataSourceExec::new(Arc::new(data_source))
+            source_plan: DataSourceExec::new(Arc::new(data_source)),
         }
     }
 
@@ -42,6 +43,25 @@ impl OtapDataSourceExec {
         } else {
             todo!("throw")
         }
+    }
+
+    fn next_project(
+        &self,
+        curr_projection: &[usize],
+        curr_schema: SchemaRef,
+        next_schema: SchemaRef,
+    ) -> Vec<usize> {
+        let next_max_field_id = next_schema.fields.len();
+
+        for field_id in curr_projection.iter().copied() {
+            let curr_field = curr_schema.field(field_id);
+            if field_id < next_max_field_id {
+                let next_field = next_schema.field(field_id);
+            } else {
+            }
+        }
+
+        todo!()
     }
 }
 
