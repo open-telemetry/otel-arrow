@@ -1,6 +1,6 @@
 # Geneva Exporter (Experimental)
 
-**Status:** PRE-ALPHA (Scaffold Only)
+**Status:** ALPHA (Functional scaffold with trait implementation)
 
 ## Overview
 
@@ -8,51 +8,88 @@ The Geneva Exporter is designed for Microsoft products to send telemetry data to
 
 ## Current State
 
-This is an initial no-op scaffold with zero functionality. It establishes the API surface for incremental development.
+This is a functional scaffold that implements the full `Exporter<OtapPdata>` trait and can be integrated with the OTAP dataflow engine. The message loop is functional but encoding/upload logic is still no-op.
 
-- ✅ Configuration struct and builder pattern
-- ✅ No-op method stubs
-- ❌ No encoding, upload, or authentication logic
+**Implemented:**
+- ✅ Configuration struct with serde deserialization
+- ✅ `Exporter<OtapPdata>` trait implementation
+- ✅ Distributed slice registration (`linkme`)
+- ✅ Message loop with shutdown handling
+- ✅ Metrics registration (placeholder)
+- ✅ Can be discovered by `df_engine` binary
 
-## Usage Example
+**Not Yet Implemented:**
+- ❌ Arrow RecordBatch encoding
+- ❌ Geneva Bond format encoding
+- ❌ LZ4 compression
+- ❌ HTTP upload to Geneva
+- ❌ Authentication (certificate, managed identity)
 
-```rust
-use gigwarm_exporter::geneva_exporter;
+## Building
 
-let exporter = geneva_exporter()
-    .with_endpoint("https://geneva.microsoft.com")
-    .with_environment("production")
-    .with_account("my-account")
-    .with_namespace("my-namespace")
-    .with_region("westus2")
-    .with_tenant("my-tenant")
-    .with_role("my-role", "instance-1")
-    .build();
-
-// All operations are no-ops in this scaffold
-exporter.export(b"data");
-exporter.flush();
-exporter.shutdown();
-```
-
-## Building and Testing
+### Standalone Build
 
 ```bash
 cargo build
 cargo test
-cargo clippy
 ```
 
-## Development
+### Integration with OTAP Dataflow
 
-This crate intentionally has zero dependencies. Functionality will be added incrementally:
+To integrate with the `df_engine` binary:
 
-1. Configuration and validation
-2. Arrow RecordBatch processing
-3. Geneva Bond encoding and LZ4 compression
-4. Authentication (certificate, managed identity)
-5. HTTP upload with retry logic
-6. Integration with OTAP pipeline
+**1. Add to workspace** (`../../otap-dataflow/Cargo.toml`):
+```toml
+[workspace]
+members = [
+    "benchmarks",
+    "crates/*",
+    "xtask",
+    "../experimental/gigwarm_exporter",  # ← Add this
+]
+```
+
+**2. Import in otap crate** (`../../otap-dataflow/crates/otap/src/lib.rs`):
+```rust
+// Import to trigger distributed_slice registration
+extern crate gigwarm_exporter;
+```
+
+**3. Build df_engine**:
+```bash
+cd ../../otap-dataflow
+cargo build --release
+```
+
+**4. Verify registration**:
+```bash
+./target/release/df_engine --help
+# Should show: "urn:otel:geneva:exporter" in Exporters list
+```
+
+## Usage
+
+### Example YAML Configuration
+
+See `configs/geneva-example.yaml` for a complete example:
+
+
+### Running
+
+```bash
+./target/release/df_engine --pipeline configs/geneva-example.yaml --num-cores 4
+```
+
+## Current Behavior
+
+The exporter currently:
+- ✅ Accepts configuration from YAML
+- ✅ Starts successfully and logs startup
+- ✅ Receives PData messages
+- ✅ Logs receipt of data (no-op - discards data)
+- ✅ Handles shutdown gracefully
+- ❌ Does NOT encode or upload to Geneva (placeholder)
+
 
 ## License
 

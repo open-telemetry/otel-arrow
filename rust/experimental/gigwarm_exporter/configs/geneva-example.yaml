@@ -1,0 +1,79 @@
+# Example configuration for Geneva exporter with OTLP receiver
+#
+# This configuration sets up a simple pipeline:
+# OTLP receiver (gRPC) -> Geneva exporter
+#
+# Usage:
+#   df_engine --pipeline configs/geneva-example.yaml --num-cores 4
+
+nodes:
+  # OTLP receiver - accepts telemetry data via gRPC
+  - id: otlp-receiver
+    urn: "urn:otel:otlp:receiver"
+    config:
+      endpoint: "0.0.0.0:4317"
+
+  # Optional: Batch processor for efficiency
+  - id: batch-processor
+    urn: "urn:otel:otap:batchprocessor"
+    config:
+      timeout: "1s"
+      max_batch_size: 1000
+
+  # Geneva exporter - sends data to Microsoft Geneva
+  - id: geneva-exporter
+    urn: "urn:otel:geneva:exporter"
+    config:
+      # Geneva endpoint URL
+      endpoint: "https://geneva.microsoft.com/api/v1"
+
+      # Environment identifier
+      environment: "production"
+
+      # Geneva account and namespace
+      account: "my-account"
+      namespace: "my-namespace"
+
+      # Azure region
+      region: "westus2"
+
+      # Tenant, role, and instance identifiers
+      tenant: "my-tenant"
+      role_name: "my-service"
+      role_instance: "instance-001"
+
+      # Authentication - choose one method below:
+
+      # Option 1: Certificate authentication (PKCS#12)
+      auth:
+        type: "certificate"
+        path: "/etc/geneva/cert.p12"
+        password: "${GENEVA_CERT_PASSWORD}"  # Use environment variable
+
+      # Option 2: System Managed Identity
+      # auth:
+      #   type: "systemmanaged identity"
+      #   msi_resource: "https://monitoring.azure.com"
+
+      # Option 3: User Managed Identity
+      # auth:
+      #   type: "usermanagedidentity"
+      #   client_id: "00000000-0000-0000-0000-000000000000"
+      #   msi_resource: "https://monitoring.azure.com"
+
+      # Option 4: Workload Identity (Kubernetes)
+      # auth:
+      #   type: "workloadidentity"
+      #   msi_resource: "https://monitoring.azure.com"
+
+      # Optional: Performance tuning
+      # max_buffer_size: 1000
+      # max_concurrent_uploads: 4
+    config_major_version: 1
+
+# Define data flow: receiver -> processor -> exporter
+edges:
+  - from: otlp-receiver
+    to: batch-processor
+  - from: batch-processor
+    to: geneva-exporter
