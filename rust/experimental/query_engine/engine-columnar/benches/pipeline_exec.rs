@@ -122,7 +122,6 @@ fn bench_exec_pipelines(c: &mut Criterion) {
         });
     }
 
-
     let batch_sizes = [32, 1024, 8192];
 
     let mut group = c.benchmark_group("simple_field_filter");
@@ -153,8 +152,8 @@ fn bench_exec_pipelines(c: &mut Criterion) {
     let mut group = c.benchmark_group("simple_attrs_filter");
     for batch_size in batch_sizes {
         let batch = generate_logs_batch(batch_size);
-        let pipeline =
-            KqlParser::parse("logs | where attributes[\"k8s.ns\"] == \"prod\"").expect("can parse pipeline");
+        let pipeline = KqlParser::parse("logs | where attributes[\"k8s.ns\"] == \"prod\"")
+            .expect("can parse pipeline");
 
         let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
         let _ = group.bench_with_input(benchmark_id, &(batch, pipeline), |b, input| {
@@ -177,29 +176,40 @@ fn bench_exec_pipelines(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("attrs_filter_exec_only");
     for batch_size in batch_sizes {
-
         let (physical_plan1, physical_plan2, task_context) = rt.block_on(async move {
-            use datafusion::prelude::{lit, col};
+            use datafusion::prelude::{col, lit};
             let session_config = SessionConfig::new()
                 // .with_batch_size(8192 * 4)
                 .with_target_partitions(1);
             let ctx = SessionContext::new_with_config(session_config);
             let batch1 = generate_logs_batch(batch_size);
-            let (logs, log_attrs) = (batch1.get(ArrowPayloadType::Logs).unwrap(), batch1.get(ArrowPayloadType::LogAttrs).unwrap());
+            let (logs, log_attrs) = (
+                batch1.get(ArrowPayloadType::Logs).unwrap(),
+                batch1.get(ArrowPayloadType::LogAttrs).unwrap(),
+            );
 
             let logs_table = MemTable::try_new(logs.schema(), vec![vec![logs.clone()]]).unwrap();
-            let log_attrs_table = MemTable::try_new(log_attrs.schema(), vec![vec![log_attrs.clone()]]).unwrap();
+            let log_attrs_table =
+                MemTable::try_new(log_attrs.schema(), vec![vec![log_attrs.clone()]]).unwrap();
 
             ctx.register_table("logs", Arc::new(logs_table)).unwrap();
-            ctx.register_table("logattrs", Arc::new(log_attrs_table)).unwrap();
+            ctx.register_table("logattrs", Arc::new(log_attrs_table))
+                .unwrap();
 
-            let df = ctx.table("logs").await.unwrap()
+            let df = ctx
+                .table("logs")
+                .await
+                .unwrap()
                 .join(
-                    ctx.table("logattrs").await.unwrap().filter(col("key").eq(lit("k8s.ns")).and(col("str").eq(lit("prod")))).unwrap(),
+                    ctx.table("logattrs")
+                        .await
+                        .unwrap()
+                        .filter(col("key").eq(lit("k8s.ns")).and(col("str").eq(lit("prod"))))
+                        .unwrap(),
                     JoinType::LeftSemi,
                     &["id"],
                     &["parent_id"],
-                    None
+                    None,
                 )
                 .unwrap();
 
@@ -209,15 +219,12 @@ fn bench_exec_pipelines(c: &mut Criterion) {
             let logical_plan = state.optimize(df.logical_plan()).unwrap();
             let physical_plan1 = state.create_physical_plan(&logical_plan).await.unwrap();
 
-
-            let df2 = ctx.table("logattrs").await.unwrap()
-                .join(
-                    df,
-                    JoinType::LeftSemi,
-                    &["parent_id"],
-                    &["id"],
-                    None
-                ).unwrap();
+            let df2 = ctx
+                .table("logattrs")
+                .await
+                .unwrap()
+                .join(df, JoinType::LeftSemi, &["parent_id"], &["id"], None)
+                .unwrap();
             let logical_plan = state.optimize(df2.logical_plan()).unwrap();
             let physical_plan2 = state.create_physical_plan(&logical_plan).await.unwrap();
 
@@ -228,26 +235,31 @@ fn bench_exec_pipelines(c: &mut Criterion) {
         println!("phy plan 2 {}", dis.indent(true));
 
         let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
-        let _ = group.bench_with_input(benchmark_id, &(physical_plan1, physical_plan2, task_context), |b, input| {
-            b.to_async(&rt).iter_batched(
-                || input,
-                |input| async move {
-                    let (physical_plan1, physical_plan2, task_context) = input;
-                    let stream = physical_plan1.execute(0, task_context.clone()).unwrap();
-                    let result = datafusion::physical_plan::common::collect(stream).await.unwrap();
-                    black_box(result);
+        let _ = group.bench_with_input(
+            benchmark_id,
+            &(physical_plan1, physical_plan2, task_context),
+            |b, input| {
+                b.to_async(&rt).iter_batched(
+                    || input,
+                    |input| async move {
+                        let (physical_plan1, physical_plan2, task_context) = input;
+                        let stream = physical_plan1.execute(0, task_context.clone()).unwrap();
+                        let result = datafusion::physical_plan::common::collect(stream)
+                            .await
+                            .unwrap();
+                        black_box(result);
 
-                    let stream = physical_plan2.execute(0, task_context.clone()).unwrap();
-                    let result = datafusion::physical_plan::common::collect(stream).await.unwrap();
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            );
-        });
-
-
+                        let stream = physical_plan2.execute(0, task_context.clone()).unwrap();
+                        let result = datafusion::physical_plan::common::collect(stream)
+                            .await
+                            .unwrap();
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
-
 }
 
 #[allow(missing_docs)]

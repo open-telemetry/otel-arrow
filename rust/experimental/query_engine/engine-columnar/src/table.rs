@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use async_trait::async_trait;
 use datafusion::arrow::array::{Int32Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -9,7 +9,7 @@ use datafusion::execution::context::{SessionContext, SessionState};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::*;
-use async_trait::async_trait;
+use std::sync::{Arc, RwLock};
 
 // ---------------------
 // MutableMemTable
@@ -44,9 +44,9 @@ impl TableProvider for MutableMemTable {
         self.schema.clone()
     }
 
-      fn table_type(&self) -> TableType {
+    fn table_type(&self) -> TableType {
         TableType::Base
-      }
+    }
 
     async fn scan(
         &self,
@@ -59,6 +59,7 @@ impl TableProvider for MutableMemTable {
         // Ok(Arc::new(MemoryE::try_new(&[batches], self.schema.clone(), None)?))
         let memtable = MemTable::try_new(self.schema.clone(), vec![batches])?;
         // MemTable implements TableProvider, so we can just return it as an ExecutionPlan
+        println!("here");
         memtable.scan(_state, _projection, _filters, _limit).await
     }
 }

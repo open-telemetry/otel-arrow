@@ -7,7 +7,9 @@ pub mod table;
 
 mod common;
 mod consts;
+mod datasource;
 mod filter;
+mod optimize;
 
 /// helpers for testing
 #[cfg(test)]

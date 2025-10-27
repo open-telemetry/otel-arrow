@@ -34,8 +34,10 @@ impl Filter {
     ) -> Result<Self> {
         match predicate {
             LogicalExpression::And(and_expr) => {
-                let left_filter = Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_left())).await?;
-                let right_filter = Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_right())).await?;
+                let left_filter =
+                    Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_left())).await?;
+                let right_filter =
+                    Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_right())).await?;
 
                 let filter_expr = match (left_filter.filter_expr, right_filter.filter_expr) {
                     (Some(left), Some(right)) => Some(left.and(right)),
@@ -68,8 +70,11 @@ impl Filter {
             LogicalExpression::Or(or_expr) => Self::try_from_or_expr(exec_ctx, or_expr).await,
 
             LogicalExpression::Not(not_expr) => {
-                let not_filter =
-                    Box::pin(Self::try_from_predicate(exec_ctx, not_expr.get_inner_expression())).await?;
+                let not_filter = Box::pin(Self::try_from_predicate(
+                    exec_ctx,
+                    not_expr.get_inner_expression(),
+                ))
+                .await?;
                 if let Some(not_join) = not_filter.join {
                     let mut plan = exec_ctx.root_batch_plan()?;
                     if let Some(filter_expr) = not_filter.filter_expr {
@@ -96,24 +101,33 @@ impl Filter {
                 }
             }
 
-            LogicalExpression::EqualTo(eq_expr) => Self::try_from_binary_expr(
-                exec_ctx,
-                Operator::Eq,
-                eq_expr.get_left(),
-                eq_expr.get_right(),
-            ).await,
-            LogicalExpression::GreaterThan(eq_expr) => Self::try_from_binary_expr(
-                exec_ctx,
-                Operator::Gt,
-                eq_expr.get_left(),
-                eq_expr.get_right(),
-            ).await,
-            LogicalExpression::GreaterThanOrEqualTo(eq_expr) => Self::try_from_binary_expr(
-                exec_ctx,
-                Operator::GtEq,
-                eq_expr.get_left(),
-                eq_expr.get_right(),
-            ).await,
+            LogicalExpression::EqualTo(eq_expr) => {
+                Self::try_from_binary_expr(
+                    exec_ctx,
+                    Operator::Eq,
+                    eq_expr.get_left(),
+                    eq_expr.get_right(),
+                )
+                .await
+            }
+            LogicalExpression::GreaterThan(eq_expr) => {
+                Self::try_from_binary_expr(
+                    exec_ctx,
+                    Operator::Gt,
+                    eq_expr.get_left(),
+                    eq_expr.get_right(),
+                )
+                .await
+            }
+            LogicalExpression::GreaterThanOrEqualTo(eq_expr) => {
+                Self::try_from_binary_expr(
+                    exec_ctx,
+                    Operator::GtEq,
+                    eq_expr.get_left(),
+                    eq_expr.get_right(),
+                )
+                .await
+            }
             expr => Err(Error::NotYetSupportedError {
                 message: format!("filtering predicate {:?}", expr),
             }),
@@ -143,7 +157,8 @@ impl Filter {
         //
 
         let left_filter = Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_left())).await?;
-        let right_filter = Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_right())).await?;
+        let right_filter =
+            Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_right())).await?;
 
         match (left_filter.join, right_filter.join) {
             (Some(left_join), Some(right_join)) => {
@@ -349,8 +364,10 @@ impl Filter {
                                 }
                                 AttributesIdentifier::NonRoot(payload_type) => payload_type,
                             };
-                            let attrs_filter =
-                                exec_ctx.scan_batch_plan(attrs_payload_type).await?.filter(and(
+                            let attrs_filter = exec_ctx
+                                .scan_batch_plan(attrs_payload_type)
+                                .await?
+                                .filter(and(
                                     binary_expr(
                                         col(consts::ATTRIBUTE_KEY),
                                         Operator::Eq,

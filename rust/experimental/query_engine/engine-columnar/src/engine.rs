@@ -47,7 +47,6 @@ impl OtapBatchEngine {
         let mut exec_ctx = ExecutionContext::try_new(otap_batch.clone()).await?;
         self.plan(&mut exec_ctx, pipeline).await?;
 
-
         // apply the plan:
         //
         // TODO at some point we may want to think more carefully about where to apply the plan.
@@ -104,7 +103,11 @@ impl OtapBatchEngine {
         Ok(exec_ctx.curr_batch)
     }
 
-    pub async fn plan(&self, exec_ctx: &mut ExecutionContext, pipeline: &PipelineExpression) -> Result<()> {
+    pub async fn plan(
+        &self,
+        exec_ctx: &mut ExecutionContext,
+        pipeline: &PipelineExpression,
+    ) -> Result<()> {
         for data_expr in pipeline.get_expressions() {
             self.plan_data_expr(exec_ctx, data_expr).await?;
         }
@@ -420,7 +423,7 @@ impl OtapBatchEngine {
 pub struct ExecutionContext {
     curr_plan: LogicalPlanBuilder,
     curr_batch: OtapArrowRecords,
-    
+
     // TODO doesn't maybe need to be pub
     pub session_ctx: SessionContext,
 }
@@ -453,7 +456,7 @@ impl ExecutionContext {
         //     None,
         // )?;
         let session_ctx = SessionContext::new();
-        
+
         let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
         let table = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
         session_ctx.register_table(&table_name, Arc::new(table))?;
@@ -483,12 +486,15 @@ impl ExecutionContext {
                 let table_name = format!("{:?}", payload_type).to_lowercase();
                 println!("reregistering table {:?}", table_name);
                 let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
-                self.session_ctx.register_table(&table_name, Arc::new(table))?;
+                self.session_ctx
+                    .register_table(&table_name, Arc::new(table))?;
             }
         }
 
         self.curr_batch = batch;
-        let root_plan = self.scan_batch_plan(self.root_batch_payload_type()?).await?;
+        let root_plan = self
+            .scan_batch_plan(self.root_batch_payload_type()?)
+            .await?;
         self.curr_plan = root_plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
 
         Ok(())
@@ -507,7 +513,10 @@ impl ExecutionContext {
         Ok(self.curr_plan.clone())
     }
 
-    pub async fn scan_batch_plan(&self, payload_type: ArrowPayloadType) -> Result<LogicalPlanBuilder> {
+    pub async fn scan_batch_plan(
+        &self,
+        payload_type: ArrowPayloadType,
+    ) -> Result<LogicalPlanBuilder> {
         if let Some(rb) = self.curr_batch.get(payload_type) {
             // // TODO would there be anything gained by registering this table on the execution context
             // // and just reusing it? Probably save at least:
@@ -529,7 +538,8 @@ impl ExecutionContext {
             if !self.session_ctx.table_exist(&table_name)? {
                 let table_name = format!("{:?}", payload_type).to_lowercase();
                 let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
-                self.session_ctx.register_table(&table_name, Arc::new(table))?;
+                self.session_ctx
+                    .register_table(&table_name, Arc::new(table))?;
             }
 
             let table_df = self.session_ctx.table(table_name).await?;
