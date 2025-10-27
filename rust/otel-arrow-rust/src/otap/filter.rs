@@ -35,7 +35,7 @@ pub enum MatchType {
     Regexp,
 }
 
-fn default_match_type() -> MatchType {
+const fn default_match_type() -> MatchType {
     MatchType::Strict
 }
 
