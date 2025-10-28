@@ -27,6 +27,7 @@
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -36,22 +37,21 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::ExporterFactory;
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 // Geneva uploader dependencies
-use geneva_uploader::client::{GenevaClient, GenevaClientConfig};
 use geneva_uploader::AuthMethod;
+use geneva_uploader::client::{GenevaClient, GenevaClientConfig};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::OTAP_EXPORTER_FACTORIES;
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:otel:geneva:exporter";
@@ -186,23 +186,17 @@ impl GenevaExporter {
 
         // Convert AuthConfig to AuthMethod
         let auth_method = match &config.auth {
-            AuthConfig::Certificate { path, password } => {
-                AuthMethod::Certificate {
-                    path: PathBuf::from(path),
-                    password: password.clone(),
-                }
-            }
+            AuthConfig::Certificate { path, password } => AuthMethod::Certificate {
+                path: PathBuf::from(path),
+                password: password.clone(),
+            },
             AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
-            AuthConfig::UserManagedIdentity { client_id, .. } => {
-                AuthMethod::UserManagedIdentity {
-                    client_id: client_id.clone(),
-                }
-            }
-            AuthConfig::WorkloadIdentity { msi_resource } => {
-                AuthMethod::WorkloadIdentity {
-                    resource: msi_resource.clone(),
-                }
-            }
+            AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
+                client_id: client_id.clone(),
+            },
+            AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
+                resource: msi_resource.clone(),
+            },
         };
 
         // Get MSI resource if needed for managed identity
@@ -270,9 +264,9 @@ impl GenevaExporter {
 
         // Convert OTAP payload to OTLP bytes
         // TODO: This conversion step should be eliminated (see method documentation above)
-        let otlp_bytes: OtlpProtoBytes = payload.try_into().map_err(|e| {
-            format!("Failed to convert OTAP to OTLP: {:?}", e)
-        })?;
+        let otlp_bytes: OtlpProtoBytes = payload
+            .try_into()
+            .map_err(|e| format!("Failed to convert OTAP to OTLP: {:?}", e))?;
 
         // Process based on signal type
         match otlp_bytes {
@@ -387,9 +381,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    effect_handler
-                        .info("Geneva exporter shutting down")
-                        .await;
+                    effect_handler.info("Geneva exporter shutting down").await;
 
                     return Ok(TerminalState::new(deadline, [self.metrics]));
                 }
