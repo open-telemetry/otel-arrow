@@ -465,7 +465,8 @@ mod tests {
             "listening_addr": "127.0.0.1:4317",
             "timeout": "30s"
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
         assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
 
         let config_with_timeout_ms = json!({

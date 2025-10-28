@@ -112,8 +112,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let mut endpoint = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),

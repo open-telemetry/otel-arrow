@@ -116,8 +116,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
