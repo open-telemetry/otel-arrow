@@ -237,6 +237,7 @@ impl GenevaExporter {
     }
 
     /// Get exporter configuration
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
