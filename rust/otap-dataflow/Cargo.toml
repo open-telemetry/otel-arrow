@@ -126,6 +126,8 @@ default = []
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+# Experimental exporters (opt-in)
+experimental-geneva = ["otap-df-otap/experimental-geneva"]
 
 [workspace.lints.rust]
 # General compatibility lints

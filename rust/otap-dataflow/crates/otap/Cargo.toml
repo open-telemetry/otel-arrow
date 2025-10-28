@@ -64,6 +64,10 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 
+[features]
+# Experimental exporters
+experimental-geneva = []
+
 [dev-dependencies]
 flume = { workspace = true }
 portpicker.workspace = true
