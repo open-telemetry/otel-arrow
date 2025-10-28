@@ -94,6 +94,7 @@ async fn main() -> Result<(), DataFusionError> {
     // println!("result w/ placeholder");
     // print_batches(&results).unwrap();
 
+
     // change the column order
     let mut batch = generate_logs_batch(20, 200);
     let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
@@ -134,6 +135,28 @@ async fn main() -> Result<(), DataFusionError> {
     let stream = physical_plan.execute(0, task_ctx.clone())?;
     let results = collect(stream).await?;
     println!("result w/ extra");
+    print_batches(&results).unwrap();
+
+    // remove a column
+    let mut batch = generate_logs_batch(20, 400);
+    let mut logs_rb = batch.get(ArrowPayloadType::Logs).unwrap().clone();
+    let _ = logs_rb.remove_column(4);
+    batch.set(ArrowPayloadType::Logs, logs_rb);
+    let ds_updater = UpdateDataSourceOptimizer::new(batch);
+    let physical_plan = ds_updater.optimize(physical_plan, session_config.options())?;
+
+    let stream = physical_plan.execute(0, task_ctx.clone())?;
+    let results = collect(stream).await?;
+    println!("result w/ removed columns");
+    print_batches(&results).unwrap();
+
+    // re-add the column
+    let batch = generate_logs_batch(20, 500);
+    let ds_updater = UpdateDataSourceOptimizer::new(batch);
+    let physical_plan = ds_updater.optimize(physical_plan, session_config.options())?;
+    let stream = physical_plan.execute(0, task_ctx.clone())?;
+    let results = collect(stream).await?;
+    println!("result w/ original columns again");
     print_batches(&results).unwrap();
 
     Ok(())

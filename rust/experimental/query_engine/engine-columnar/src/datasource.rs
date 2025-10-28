@@ -5,8 +5,8 @@ use std::any::Any;
 use std::fmt::{self, Formatter};
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::array::{new_null_array, Array, Int16Array, PrimitiveArray, RecordBatch, RunArray};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -29,22 +29,44 @@ impl OtapDataSourceExec {
         }
     }
 
-    pub fn try_with_next_batch(&self, next_batch: RecordBatch) -> Result<Self> {
+    pub fn try_with_next_batch(&self, mut next_batch: RecordBatch) -> Result<Self> {
         let data_source = self.source_plan.data_source();
         if let Some(curr_data_source) = data_source.as_any().downcast_ref::<MemorySourceConfig>() {
             let curr_batch_schema = curr_data_source.original_schema();
             let curr_batch_projection = curr_data_source.projection();
-            let next_batch_schema = next_batch.schema();
+            let mut next_batch_schema = next_batch.schema();
             let (next_batch_projection, placeholders) = self.next_project(
                 curr_batch_projection,
                 curr_batch_schema,
                 next_batch_schema.clone(),
             );
 
-            println!("next projection = {:?}", next_batch_projection);
-
+            // some columns from the previous batch were not present in this batch, so we need to
+            // add some all-null placeholders
             if let Some(placeholders) = placeholders {
-                todo!("add column placeholders")
+                let mut new_columns = next_batch.columns().to_vec();
+                let mut new_fields = next_batch_schema.fields.to_vec();
+                
+                // to optimize memory, the placeholders will be a RunArray with a single run of
+                // nulls spanning entire length of batch
+                // TODO handle if there's more than 2^16 rows in the batch
+                let run_ends = Int16Array::from_iter_values([next_batch.num_rows() as i16]);
+
+                for placeholder in placeholders {
+                    // safety: non of the criteria that would make run-end panic are met here:
+                    // https://github.com/apache/arrow-rs/blob/57447434d1921701456543f9dfb92741e5d86734/arrow-array/src/array/run_array.rs#L109-L115
+                    let new_column = RunArray::try_new(
+                        &run_ends,
+                        new_null_array(placeholder.data_type(), 1).as_ref()
+                    ).expect("valid run end");
+                    let new_field = placeholder.with_data_type(new_column.data_type().clone());
+                    new_fields.push(Arc::new(new_field));
+                    new_columns.push(Arc::new(new_column));
+                }
+
+                next_batch_schema = Arc::new(Schema::new(new_fields));
+                // safety: TODO explain why this is safe
+                next_batch = RecordBatch::try_new(next_batch_schema.clone(), new_columns).expect("can build new record batch");
             }
 
             let next_data_source = MemorySourceConfig::try_new(
