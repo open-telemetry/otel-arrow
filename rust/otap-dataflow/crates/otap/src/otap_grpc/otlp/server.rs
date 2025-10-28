@@ -209,14 +209,14 @@ fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
 /// signal.  Like new_grpc, these are inexpensive to create and do
 /// not require Arc<Mutex<_>>.
 struct OtapBatchService {
-    effect_handler: EffectHandler<OtapPdata>,
+    effect_handler: Option<EffectHandler<OtapPdata>>,
     state: Option<SharedState>,
 }
 
 impl OtapBatchService {
     fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
         Self {
-            effect_handler,
+            effect_handler: Some(effect_handler),
             state,
         }
     }
@@ -244,7 +244,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
         let mut otap_batch = request.into_inner();
 
-        let effect_handler = self.effect_handler.clone();
+        let effect_handler = self
+            .effect_handler
+            .take()
+            .expect("`OtapBatchService` is not reused for multiple calls");
         let state = self.state.clone();
         Box::pin(async move {
             let cancel_rx = if let Some(state) = state {
