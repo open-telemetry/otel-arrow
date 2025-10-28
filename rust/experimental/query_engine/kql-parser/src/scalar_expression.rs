@@ -347,6 +347,59 @@ pub(crate) fn parse_scalar_unary_expression(
         Rule::math_unary_expressions => parse_math_unary_expressions(rule, scope)?,
         Rule::temporal_unary_expressions => parse_temporal_unary_expressions(rule, scope)?,
         Rule::logical_unary_expressions => parse_logical_unary_expressions(rule, scope)?,
+        Rule::extract_json_expression => {
+            let location = to_query_location(&rule);
+
+            let mut extract_json_rules = rule.into_inner();
+
+            let path = parse_scalar_expression(extract_json_rules.next().unwrap(), scope)?;
+
+            let value = parse_scalar_expression(extract_json_rules.next().unwrap(), scope)?;
+
+            let inner_expression = ScalarExpression::Select(SelectScalarExpression::new(
+                location.clone(),
+                ScalarExpression::Parse(ParseScalarExpression::Json(
+                    ParseJsonScalarExpression::new(value.get_query_location().clone(), value),
+                )),
+                ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                    ParseJsonPathScalarExpression::new(path.get_query_location().clone(), path),
+                )),
+            ));
+
+            if let Some(typeof_rule) = extract_json_rules.next() {
+                let typeof_location = to_query_location(&typeof_rule);
+                match crate::shared_expressions::parse_typeof_expression(typeof_rule)? {
+                    Some(t) => {
+                        let c = ConversionScalarExpression::new(
+                            typeof_location.clone(),
+                            inner_expression,
+                        );
+
+                        ScalarExpression::Convert(match t {
+                            ValueType::Boolean => ConvertScalarExpression::Boolean(c),
+                            ValueType::DateTime => ConvertScalarExpression::DateTime(c),
+                            ValueType::Double => ConvertScalarExpression::Double(c),
+                            ValueType::Integer => ConvertScalarExpression::Integer(c),
+                            ValueType::String => ConvertScalarExpression::String(c),
+                            ValueType::TimeSpan => ConvertScalarExpression::TimeSpan(c),
+                            v => {
+                                return Err(ParserError::SyntaxNotSupported(
+                                    typeof_location,
+                                    format!(
+                                        "Type '{v}' specified in typeof expression is not supported"
+                                    ),
+                                ));
+                            }
+                        })
+                    }
+                    None => inner_expression,
+                }
+            } else {
+                ScalarExpression::Convert(ConvertScalarExpression::String(
+                    ConversionScalarExpression::new(location, inner_expression),
+                ))
+            }
+        }
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
@@ -446,9 +499,12 @@ pub(crate) fn try_resolve_identifier(
         }
         ScalarExpression::Select(s) => {
             if let Some(mut value) = try_resolve_identifier(s.get_value(), scope)?
-                && let Some(mut selector) = try_resolve_identifier(s.get_selectors(), scope)?
+                && let ScalarExpression::Static(StaticScalarExpression::Array(selectors)) = s.get_selectors()
             {
-                value.append(&mut selector);
+                for v in selectors.get_values() {
+                    value.push(v.to_value().to_string().into());
+                }
+
                 return Ok(Some(value));
             }
 
@@ -1170,5 +1226,114 @@ mod tests {
         run_test_success("gettype('hello world')", "string");
 
         run_test_success("gettype(1m)", "timespan");
+    }
+
+    #[test]
+    fn test_parse_extract_json_scalar_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let actual = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, actual);
+        };
+
+        run_test_success(
+            "extract_json('$.key1', '{\"key1\":1}')",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Select(SelectScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Parse(ParseScalarExpression::Json(
+                            ParseJsonScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "{\"key1\":1}",
+                                    ),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                            ParseJsonPathScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "$.key1",
+                                    ),
+                                )),
+                            ),
+                        )),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "extract_json('$.key1', '{\"key1\":1}', typeof(int))",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Select(SelectScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Parse(ParseScalarExpression::Json(
+                            ParseJsonScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "{\"key1\":1}",
+                                    ),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                            ParseJsonPathScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "$.key1",
+                                    ),
+                                )),
+                            ),
+                        )),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "extract_json('$.key1', '{\"key1\":true}', typeof(dynamic))",
+            ScalarExpression::Select(SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Parse(ParseScalarExpression::Json(
+                    ParseJsonScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "{\"key1\":true}",
+                            ),
+                        )),
+                    ),
+                )),
+                ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                    ParseJsonPathScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "$.key1"),
+                        )),
+                    ),
+                )),
+            )),
+        );
     }
 }
