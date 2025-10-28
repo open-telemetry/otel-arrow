@@ -617,6 +617,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -681,6 +682,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
