@@ -64,25 +64,43 @@ async fn main() -> Result<(), DataFusionError> {
     println!("original result:");
     print_batches(&results).unwrap();
 
-    // remove a column and replace it with a placeholder
+    // // remove a column and replace it with a placeholder - manually
+    // let mut batch = generate_logs_batch(20, 200);
+    // let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+    // let new_column = RunArray::try_new(
+    //     &Int16Array::from_iter_values([logs_rb.num_rows() as i16]),
+    //     &StringArray::new_null(1),
+    // )
+    // .unwrap();
+    // let field_id = logs_rb.schema_ref().index_of("event_name").unwrap();
+    // let mut new_fields = logs_rb.schema_ref().fields().clone().to_vec();
+    // new_fields[field_id] = Arc::new(
+    //     logs_rb
+    //         .schema_ref()
+    //         .field(field_id)
+    //         .clone()
+    //         .with_data_type(new_column.data_type().clone()),
+    // );
+    // let mut new_columns = logs_rb.columns().to_vec();
+    // new_columns[field_id] = Arc::new(new_column);
+    // let new_logs_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
+    // batch.set(ArrowPayloadType::Logs, new_logs_rb);
+
+    // let ds_updater = UpdateDataSourceOptimizer::new(batch);
+    // let physical_plan = ds_updater.optimize(physical_plan, session_config.options())?;
+
+    // let stream = physical_plan.execute(0, task_ctx.clone())?;
+    // let results = collect(stream).await?;
+    // println!("result w/ placeholder");
+    // print_batches(&results).unwrap();
+
+    // change the column order
     let mut batch = generate_logs_batch(20, 200);
     let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
-    let new_column = RunArray::try_new(
-        &Int16Array::from_iter_values([logs_rb.num_rows() as i16]),
-        &StringArray::new_null(1),
-    )
-    .unwrap();
-    let field_id = logs_rb.schema_ref().index_of("event_name").unwrap();
-    let mut new_fields = logs_rb.schema_ref().fields().clone().to_vec();
-    new_fields[field_id] = Arc::new(
-        logs_rb
-            .schema_ref()
-            .field(field_id)
-            .clone()
-            .with_data_type(new_column.data_type().clone()),
-    );
     let mut new_columns = logs_rb.columns().to_vec();
-    new_columns[field_id] = Arc::new(new_column);
+    new_columns.swap(5, 6);
+    let mut new_fields = logs_rb.schema().fields().to_vec();
+    new_fields.swap(5, 6);
     let new_logs_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
     batch.set(ArrowPayloadType::Logs, new_logs_rb);
 
@@ -91,7 +109,7 @@ async fn main() -> Result<(), DataFusionError> {
 
     let stream = physical_plan.execute(0, task_ctx.clone())?;
     let results = collect(stream).await?;
-    println!("result w/ placeholder");
+    println!("result w/ swapped columns");
     print_batches(&results).unwrap();
 
     // add an extra column
