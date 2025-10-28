@@ -31,6 +31,9 @@ and exporters supporting natively the OTAP Pdata.
 - OTAP Exporter: An exporter sending OTAP messages over gRPC.
 - Noop Exporter: An exporter that drops all data.
 - Parquet Exporter: An exporter that writes data to Parquet files.
+- Geneva Exporter (Experimental): An exporter for Microsoft Geneva monitoring
+  backend. Supports logs and traces. See [experimental/geneva_exporter](src/experimental/geneva_exporter/)
+  for details. Enable with `--features geneva-exporter`.
 
 ## Generate Protobuf Stubs
 

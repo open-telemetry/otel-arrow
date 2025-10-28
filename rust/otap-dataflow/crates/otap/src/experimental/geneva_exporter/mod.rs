@@ -1,24 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Geneva Exporter for OTAP logs
+//! Geneva Exporter for OTAP logs and traces
 //!
-//! This exporter sends OTAP log data to Microsoft Geneva telemetry backend.
+//! This exporter sends OTAP log and trace data to Microsoft Geneva telemetry backend.
 //! It is designed for Microsoft products and implements the `Exporter<OtapPdata>` trait
 //! for integration with the OTAP dataflow engine.
-//!
-//! ## Current Status
-//!
-//! **Implemented:**
-//! - Configuration parsing (serde)
-//! - `Exporter<OtapPdata>` trait with async message loop
-//! - Distributed slice registration (automatic discovery by df_engine)
-//! - Message handling (shutdown, telemetry collection, pdata reception)
-//! - Metrics registration
-//!
-//! **Not Yet Implemented (no-op placeholders):**
-//! - Arrow RecordBatch extraction from OtapPdata
-//! - Integrating with Geneva Uploader from opentelemetry-rust-contrib
 //!
 //! ## Usage
 //!
@@ -52,10 +39,18 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::ExporterFactory;
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+// Geneva uploader dependencies
+use geneva_uploader::client::{GenevaClient, GenevaClientConfig};
+use geneva_uploader::AuthMethod;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use prost::Message as ProstMessage;
+
 // Use crate-relative paths since we're now a module within otap
-use crate::pdata::OtapPdata;
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::OTAP_EXPORTER_FACTORIES;
 
 /// The URN for the Geneva exporter
@@ -78,8 +73,7 @@ pub struct Config {
     pub namespace: String,
     /// Azure region
     pub region: String,
-    /// Config major version
-    #[serde(default = "default_config_version")]
+    /// Config major version (required)
     pub config_major_version: u32,
     /// Tenant name
     pub tenant: String,
@@ -97,10 +91,6 @@ pub struct Config {
     pub max_concurrent_uploads: usize,
 }
 
-fn default_config_version() -> u32 {
-    1
-}
-
 fn default_buffer_size() -> usize {
     1000
 }
@@ -110,6 +100,7 @@ fn default_max_concurrent() -> usize {
 }
 
 /// Authentication configuration
+/// TODO - see if we directly use AuthMethod from geneva-uploader crate
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
@@ -171,11 +162,12 @@ impl otap_df_telemetry::metrics::MetricSetHandler for ExporterMetrics {
     }
 }
 
-/// Geneva exporter that sends OTAP data to Geneva backend (scaffold)
+/// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
     config: Config,
     #[allow(dead_code)]
     metrics: MetricSet<ExporterMetrics>,
+    geneva_client: GenevaClient,
 }
 
 impl GenevaExporter {
@@ -192,12 +184,167 @@ impl GenevaExporter {
             }
         })?;
 
-        Ok(Self { config, metrics })
+        // Convert AuthConfig to AuthMethod
+        let auth_method = match &config.auth {
+            AuthConfig::Certificate { path, password } => {
+                AuthMethod::Certificate {
+                    path: PathBuf::from(path),
+                    password: password.clone(),
+                }
+            }
+            AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
+            AuthConfig::UserManagedIdentity { client_id, .. } => {
+                AuthMethod::UserManagedIdentity {
+                    client_id: client_id.clone(),
+                }
+            }
+            AuthConfig::WorkloadIdentity { msi_resource } => {
+                AuthMethod::WorkloadIdentity {
+                    resource: msi_resource.clone(),
+                }
+            }
+        };
+
+        // Get MSI resource if needed for managed identity
+        let msi_resource = match &config.auth {
+            AuthConfig::SystemManagedIdentity { msi_resource }
+            | AuthConfig::UserManagedIdentity { msi_resource, .. }
+            | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
+            AuthConfig::Certificate { .. } => None,
+        };
+
+        // Create GenevaClient configuration
+        let client_config = GenevaClientConfig {
+            endpoint: config.endpoint.clone(),
+            environment: config.environment.clone(),
+            account: config.account.clone(),
+            namespace: config.namespace.clone(),
+            region: config.region.clone(),
+            config_major_version: config.config_major_version,
+            auth_method,
+            tenant: config.tenant.clone(),
+            role_name: config.role_name.clone(),
+            role_instance: config.role_instance.clone(),
+            msi_resource,
+        };
+
+        // Initialize Geneva client
+        let geneva_client = GenevaClient::new(client_config).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Failed to initialize Geneva client: {}", e),
+            }
+        })?;
+
+        Ok(Self {
+            config,
+            metrics,
+            geneva_client,
+        })
     }
 
     /// Get exporter configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Handle PData message by converting OTAP to OTLP and uploading to Geneva
+    ///
+    /// TODO: Ideal Approach - Geneva uploader should accept OTAP directly
+    ///
+    /// Current implementation converts OTAP → OTLP → Geneva format, which has overhead:
+    /// - OTAP (Arrow RecordBatch) → OTLP (protobuf) conversion step
+    /// - OTLP (protobuf) → Geneva format conversion
+    ///
+    /// Ideal implementation would be:
+    /// - OTAP (Arrow RecordBatch) → Geneva format directly
+    ///
+    /// This requires modifying the geneva-uploader crate to accept Arrow RecordBatch
+    /// and process it directly, rather than going through OTLP ResourceLogs/ResourceSpans.
+    async fn handle_pdata(
+        &self,
+        pdata: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), String> {
+        // Split pdata into context and payload
+        let (_context, payload) = pdata.into_parts();
+
+        // Convert OTAP payload to OTLP bytes
+        // TODO: This conversion step should be eliminated (see method documentation above)
+        let otlp_bytes: OtlpProtoBytes = payload.try_into().map_err(|e| {
+            format!("Failed to convert OTAP to OTLP: {:?}", e)
+        })?;
+
+        // Process based on signal type
+        match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                effect_handler
+                    .info("Converting and uploading logs to Geneva")
+                    .await;
+
+                // Decode OTLP bytes to ResourceLogs
+                let logs_request = ExportLogsServiceRequest::decode(&bytes[..])
+                    .map_err(|e| format!("Failed to decode logs request: {}", e))?;
+
+                // Encode and compress using Geneva client
+                let batches = self
+                    .geneva_client
+                    .encode_and_compress_logs(&logs_request.resource_logs)
+                    .map_err(|e| format!("Failed to encode logs: {}", e))?;
+
+                // Upload each batch
+                for batch in batches {
+                    self.geneva_client
+                        .upload_batch(&batch)
+                        .await
+                        .map_err(|e| format!("Failed to upload log batch: {}", e))?;
+                }
+
+                effect_handler
+                    .info(&format!(
+                        "Successfully uploaded {} log batches to Geneva",
+                        logs_request.resource_logs.len()
+                    ))
+                    .await;
+            }
+            OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                effect_handler
+                    .info("Converting and uploading traces to Geneva")
+                    .await;
+
+                // Decode OTLP bytes to ResourceSpans
+                let traces_request = ExportTraceServiceRequest::decode(&bytes[..])
+                    .map_err(|e| format!("Failed to decode traces request: {}", e))?;
+
+                // Encode and compress using Geneva client
+                let batches = self
+                    .geneva_client
+                    .encode_and_compress_spans(&traces_request.resource_spans)
+                    .map_err(|e| format!("Failed to encode spans: {}", e))?;
+
+                // Upload each batch
+                for batch in batches {
+                    self.geneva_client
+                        .upload_batch(&batch)
+                        .await
+                        .map_err(|e| format!("Failed to upload trace batch: {}", e))?;
+                }
+
+                effect_handler
+                    .info(&format!(
+                        "Successfully uploaded {} trace batches to Geneva",
+                        traces_request.resource_spans.len()
+                    ))
+                    .await;
+            }
+            OtlpProtoBytes::ExportMetricsRequest(_) => {
+                effect_handler
+                    .info("Metrics export to Geneva not yet supported")
+                    .await;
+                return Err("Metrics export not yet supported".to_string());
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -231,17 +378,17 @@ impl Exporter<OtapPdata> for GenevaExporter {
     ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
-                "Geneva exporter starting (no-op scaffold): endpoint={}, namespace={}",
-                self.config.endpoint, self.config.namespace
+                "Geneva exporter starting: endpoint={}, namespace={}, account={}",
+                self.config.endpoint, self.config.namespace, self.config.account
             ))
             .await;
 
-        // No-op message loop - just handles shutdown
+        // Message loop
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     effect_handler
-                        .info("Geneva exporter shutting down (no-op scaffold)")
+                        .info("Geneva exporter shutting down")
                         .await;
 
                     return Ok(TerminalState::new(deadline, [self.metrics]));
@@ -251,15 +398,13 @@ impl Exporter<OtapPdata> for GenevaExporter {
                 }) => {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
-                Message::PData(_pdata) => {
-                    // No-op: In real implementation, this would:
-                    // 1. Extract OTAP Arrow batches
-                    // 2. Encode to Geneva Bond format
-                    // 3. Compress with LZ4
-                    // 4. Upload to Geneva
-                    effect_handler
-                        .info("Geneva exporter received PData (no-op - discarded)")
-                        .await;
+                Message::PData(pdata) => {
+                    // Convert OTAP to OTLP and upload to Geneva
+                    if let Err(e) = self.handle_pdata(pdata, &effect_handler).await {
+                        effect_handler
+                            .info(&format!("ERROR: Failed to export to Geneva: {}", e))
+                            .await;
+                    }
                 }
                 _ => {
                     // Ignore other messages
@@ -281,6 +426,7 @@ mod tests {
             "account": "test-account",
             "namespace": "test-namespace",
             "region": "westus2",
+            "config_major_version": 1,
             "tenant": "test-tenant",
             "role_name": "test-role",
             "role_instance": "test-instance",
@@ -294,7 +440,7 @@ mod tests {
         let config: Config = serde_json::from_value(json).unwrap();
         assert_eq!(config.endpoint, "https://geneva.example.com");
         assert_eq!(config.environment, "production");
-        assert_eq!(config.config_major_version, 1); // default
+        assert_eq!(config.config_major_version, 1);
         assert_eq!(config.max_buffer_size, 1000); // default
     }
 
