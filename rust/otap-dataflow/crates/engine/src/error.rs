@@ -8,7 +8,9 @@
 
 use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
+use otap_df_config::node::NodeKind;
 use otap_df_config::{PortName, Urn};
+use otap_df_state::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
 
@@ -409,5 +411,53 @@ impl Error {
             Error::TooManyNodes {} => "TooManyNodes",
         }
         .to_owned()
+    }
+}
+
+/// Converts an `Error` into an `ErrorSummary` for easier reporting and troubleshooting.
+#[must_use]
+pub fn error_summary_from(err: &Error) -> ErrorSummary {
+    match err {
+        Error::ReceiverError {
+            receiver,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: receiver.name.to_string(),
+            node_kind: NodeKind::Receiver,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        Error::ProcessorError {
+            processor,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: processor.name.to_string(),
+            node_kind: NodeKind::Processor,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        Error::ExporterError {
+            exporter,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: exporter.name.to_string(),
+            node_kind: NodeKind::Exporter,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        _ => ErrorSummary::Pipeline {
+            error_kind: err.variant_name(),
+            message: err.to_string(),
+            source: None,
+        },
     }
 }
