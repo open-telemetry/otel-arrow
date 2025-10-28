@@ -7,5 +7,6 @@
 //! but are related to project goals mentioned
 //! in [OTel-Arrow Project Phases](../../../../../../docs/project-phases.md).
 
-/// Geneva exporter for Microsoft telemetry backend (experimental)
+/// Geneva exporter for Microsoft telemetry backend
+#[cfg(feature = "geneva-exporter")]
 pub mod geneva_exporter;

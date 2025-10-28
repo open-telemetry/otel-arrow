@@ -65,8 +65,10 @@ rand.workspace = true
 zip.workspace = true
 
 [features]
+# Base experimental feature - enabled by all experimental exporters
+experimental-exporters = []
 # Experimental exporters
-experimental-geneva = []
+geneva-exporter = ["experimental-exporters"]
 
 [dev-dependencies]
 flume = { workspace = true }

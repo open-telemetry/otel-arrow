@@ -10,7 +10,7 @@ The Geneva Exporter is designed for Microsoft products to send telemetry data to
 From the `otap-dataflow` directory:
 
 ```bash
-cargo build --release --features experimental-geneva
+cargo build --release --features geneva-exporter
 ```
 
 ## Verify the exporter is registered
