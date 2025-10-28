@@ -11,23 +11,33 @@ mod consts;
 mod datasource;
 mod filter;
 
-/// helpers for testing
 #[cfg(test)]
 mod test {
-    use arrow::array::{DictionaryArray, StringArray};
-    use arrow::datatypes::UInt8Type;
+    use std::sync::Arc;
+
+    use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt32Array};
+    use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+    use arrow::util::pretty::print_batches;
     use data_engine_expressions::PipelineExpression;
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
+    use datafusion::execution::TaskContext;
+    use datafusion::logical_expr::logical_plan;
+    use datafusion::physical_optimizer::PhysicalOptimizerRule;
+    use datafusion::physical_plan::common::collect;
+    use datafusion::physical_plan::{displayable, execute_stream};
     use otap_df_otap::encoder::encode_logs_otap_batch;
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber};
+    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_rust::schema::consts;
     use prost::Message;
 
-    use crate::engine::OtapBatchEngine;
+    use crate::engine::{ExecutionContext, OtapBatchEngine};
+    use crate::optimize::datasource::UpdateDataSourceOptimizer;
 
     pub(crate) async fn apply_to_logs(
         record: ExportLogsServiceRequest,
@@ -37,7 +47,7 @@ mod test {
         record.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
         let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
-        let mut engine = OtapBatchEngine::new();
+        let engine = OtapBatchEngine::new();
         engine.execute(&pipeline_expr, &otap_batch).await.unwrap()
     }
 
@@ -81,4 +91,123 @@ mod test {
             }],
         }
     }
+
+
+    fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords {
+        let logs = ((0 + offset)..(batch_size + offset))
+            .map(|i| {
+                let severity_number = SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).unwrap();
+                let severity_text = severity_number
+                    .as_str_name()
+                    .split("_")
+                    .skip(2)
+                    .next()
+                    .unwrap();
+                let event_name = format!("event {}", i);
+                // let event_name = format!("{} happen", severity_text.to_lowercase());
+
+                let attrs = vec![
+                    KeyValue::new("k8s.pod", AnyValue::new_string(format!("my-app-{}", i % 4))),
+                    KeyValue::new(
+                        "k8s.ns",
+                        AnyValue::new_string(format!(
+                            "{}",
+                            match i % 3 {
+                                0 => "dev",
+                                1 => "staging",
+                                _ => "prod",
+                            }
+                        )),
+                    ),
+                    KeyValue::new(
+                        "region",
+                        AnyValue::new_string(if i > batch_size / 2 {
+                            "us-east-1"
+                        } else {
+                            "us-west-1"
+                        }),
+                    ),
+                ];
+
+                LogRecord::build(i as u64, severity_number, event_name)
+                    .severity_text(severity_text)
+                    .attributes(attrs)
+                    .finish()
+            })
+            .collect::<Vec<_>>();
+
+        let log_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::default())
+                        .log_records(logs)
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+
+        let mut bytes = vec![];
+        log_req.encode(&mut bytes).expect("can encode to vec");
+        let logs_view = RawLogsData::new(&bytes);
+        let otap_batch = encode_logs_otap_batch(&logs_view).expect("can convert to OTAP");
+
+        otap_batch
+    }
+
+    #[tokio::test]
+    async fn test_schema_modifications() {
+        let batch = generate_logs_batch(32, 100);
+        // let query = "logs | where attributes[\"k8s.ns\"] == \"prod\" or severity_text == \"WARN\"";
+        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+        let pipeline = KqlParser::parse(query).unwrap();
+        let engine = OtapBatchEngine::new();
+        let mut exec_ctx = ExecutionContext::try_new(batch).await.unwrap();
+        engine.plan(&mut exec_ctx, &pipeline).await.unwrap();
+
+        let plan = exec_ctx.root_batch_plan().unwrap();
+        let ctx = exec_ctx.session_ctx.clone();
+        let logical_plan = plan.build().unwrap();
+        println!("original logical plan:\n{}\n", logical_plan);
+
+        let results_from_lp = ctx.execute_logical_plan(logical_plan.clone()).await.unwrap().collect().await.unwrap();
+        print_batches(&results_from_lp).unwrap();
+
+        let state = ctx.state();
+        let disp_show_schema = true;
+        let logical_plan = state.optimize(&logical_plan).unwrap();
+        println!("optimized logical plan:\n----\n{}\n", logical_plan);
+        let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
+        let dp = displayable(physical_plan.as_ref());
+        
+        println!("physical plan:\n----\n{}", dp.set_show_schema(disp_show_schema).indent(true));
+
+        let task_context = Arc::new(TaskContext::from(&state));
+        let stream = execute_stream(physical_plan.clone(), task_context.clone()).unwrap();
+        let result = collect(stream).await.unwrap();
+        print_batches(&result).unwrap();
+
+        // test what happens when a column is added
+        let mut batch = generate_logs_batch(32, 200);
+        let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+        let new_column = UInt32Array::from_iter_values((0..logs_rb.num_rows()).map(|_| 1u32));
+        let new_field = Arc::new(Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true));
+        let mut new_columns = logs_rb.columns().to_vec();
+        new_columns.push(Arc::new(new_column));
+        let mut new_fields = logs_rb.schema().fields().to_vec();
+        new_fields.push(new_field);
+        let new_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
+        batch.set(ArrowPayloadType::Logs, new_rb);
+
+        let data_source_updater = UpdateDataSourceOptimizer::new(batch);
+        let session_cfg = ctx.copied_config();
+        let config_options = session_cfg.options();
+        let physical_plan = data_source_updater.optimize(physical_plan, config_options.as_ref()).unwrap();
+        let dp = displayable(physical_plan.as_ref());
+        println!("updated physical plan:\n----\n{}", dp.set_show_schema(disp_show_schema).indent(true));
+        let stream = execute_stream(physical_plan.clone(), task_context).unwrap();
+        let result = collect(stream).await.unwrap();
+        print_batches(&result).unwrap();
+        
+    }
+
 }

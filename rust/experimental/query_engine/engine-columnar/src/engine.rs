@@ -17,7 +17,7 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -28,6 +28,7 @@ use crate::consts::ROW_NUMBER_COL;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::filter::Filter;
+use crate::table::OtapBatchTable;
 
 #[derive(Default)]
 pub struct OtapBatchEngine {}
@@ -455,10 +456,18 @@ impl ExecutionContext {
         //     table_source,
         //     None,
         // )?;
-        let session_ctx = SessionContext::new();
+        
+        let session_config = SessionConfig::new()
+            // since we're executing always in single threaded runtime it doesn't really make
+            // sense to spawn repartition tasks to do do things like parallel joins. Just use
+            // a single partition for simplicity.
+            .with_target_partitions(1);
+
+        let session_ctx = SessionContext::new_with_config(session_config);
 
         let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
-        let table = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
+        // let table = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
+        let table = OtapBatchTable::new(root_batch_payload_type, root_rb.clone());
         session_ctx.register_table(&table_name, Arc::new(table))?;
 
         let table_df = session_ctx.table(table_name).await?;
@@ -537,7 +546,8 @@ impl ExecutionContext {
             let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
             if !self.session_ctx.table_exist(&table_name)? {
                 let table_name = format!("{:?}", payload_type).to_lowercase();
-                let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
+                // let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
+                let table = OtapBatchTable::new(payload_type, rb.clone());
                 self.session_ctx
                     .register_table(&table_name, Arc::new(table))?;
             }
