@@ -171,6 +171,11 @@ pub enum ErrorSummary {
 }
 
 impl ObservedEvent {
+    #[must_use]
+    pub(crate) fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
     /// Create an `Admitted` engine-level event.
     #[must_use]
     pub fn admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
