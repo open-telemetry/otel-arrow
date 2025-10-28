@@ -677,6 +677,30 @@ mod tests {
     }
 
     #[test]
+    fn test_from_config_with_timeout() {
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config_with_timeout = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "timeout": "45s"
+        });
+        let exporter = OTAPExporter::from_config(pipeline_ctx.clone(), &config_with_timeout)
+            .expect("Config should be valid");
+        assert_eq!(exporter.config.timeout, Some(Duration::from_secs(45)));
+
+        let config_with_timeout_ms = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "timeout": "250ms"
+        });
+        let exporter = OTAPExporter::from_config(pipeline_ctx, &config_with_timeout_ms)
+            .expect("Config should be valid");
+        assert_eq!(exporter.config.timeout, Some(Duration::from_millis(250)));
+    }
+
+    #[test]
     fn test_from_config_missing_required_field() {
         let json_config = json!({
             "compression_method": "gzip"

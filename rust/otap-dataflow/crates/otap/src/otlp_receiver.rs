@@ -458,8 +458,22 @@ mod tests {
             "compression_method": "gzip",
             "max_concurrent_requests": 2500
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+
+        let config_with_timeout = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "30s"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
+
+        let config_with_timeout_ms = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "500ms"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_millis(500)));
     }
 
     fn scenario(
