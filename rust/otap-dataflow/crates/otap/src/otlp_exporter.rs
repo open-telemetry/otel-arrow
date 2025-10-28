@@ -118,6 +118,22 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     source_detail,
                 }
             })?
+            // Transport limits / middleware applied on the client:
+            .concurrency_limit(256) // bound client-side work (tunes backpressure)
+            .connect_timeout(Duration::from_secs(3))
+            // TCP and HTTP/2 keepalives keep long-lived channels healthy:
+            .tcp_nodelay(true)
+            .tcp_keepalive(Some(Duration::from_secs(45)))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true)
+            // Bigger windows reduce flow-control throttling for big exports:
+            .initial_stream_window_size(Some(8 * 1024 * 1024))        // 8 MiB
+            .initial_connection_window_size(Some(32 * 1024 * 1024))   // 32 MiB
+            // Or rely on BDP estimation (overrides manual window sizes):
+            // .http2_adaptive_window(true)
+            // Optional: expand internal Tower buffer if needed:
+            // .buffer_size(Some(2048))
             .connect_lazy();
 
         // start a grpc client and connect to the server
@@ -128,15 +144,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
         if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
 
-            logs_client = logs_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            metrics_client = metrics_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            trace_client = trace_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
+            logs_client = logs_client.send_compressed(encoding);
+            metrics_client = metrics_client.send_compressed(encoding);
+            trace_client = trace_client.send_compressed(encoding);
         }
 
         // reuse the encoder and the buffer across pdatas
