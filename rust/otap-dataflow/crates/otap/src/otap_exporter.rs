@@ -116,17 +116,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
+        let mut endpoint = Channel::from_shared(self.config.grpc_endpoint.clone())
             .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
-                    exporter: exporter_id,
+                    exporter: exporter_id.clone(),
                     kind: ExporterErrorKind::Connect,
                     error: format!("grpc channel error {e}"),
                     source_detail,
                 }
-            })?
-            .connect_lazy();
+            })?;
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
+
+        let channel = endpoint.connect_lazy();
 
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
