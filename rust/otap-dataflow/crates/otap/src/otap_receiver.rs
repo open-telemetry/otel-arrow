@@ -94,6 +94,7 @@ impl OTAPReceiver {
                 listening_addr,
                 compression_method,
                 message_size,
+                timeout: None,
             },
         }
     }
