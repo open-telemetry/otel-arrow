@@ -8,8 +8,7 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::future::LocalBoxFuture;
-use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+use futures::{StreamExt, stream::FuturesUnordered};
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -30,7 +29,10 @@ use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
+use std::mem;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
@@ -158,8 +160,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::new();
-        let mut inflight: FuturesUnordered<LocalBoxFuture<'static, ExportOutcome>> =
-            FuturesUnordered::new();
+        let mut inflight: FuturesUnordered<ExportFuture> = FuturesUnordered::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
         loop {
@@ -389,7 +390,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         })?;
 
     let mut owned_buffer = ProtoBuffer::new();
-    std::mem::swap(proto_buffer, &mut owned_buffer);
+    mem::swap(proto_buffer, &mut owned_buffer);
     let next_capacity = owned_buffer.capacity();
     let bytes = Bytes::from(owned_buffer.into_bytes());
     *proto_buffer = ProtoBuffer::with_capacity(next_capacity);
@@ -431,8 +432,34 @@ fn make_export_future(
     prepared: PreparedExport,
     channel: Channel,
     compression: Option<CompressionEncoding>,
-) -> LocalBoxFuture<'static, ExportOutcome> {
-    async move {
+) -> ExportFuture {
+    ExportFuture::new(prepared, channel, compression)
+}
+
+struct ExportFuture {
+    state: ExportFutureState,
+    outcome_data: Option<(Context, OtapPayload)>,
+    signal_type: SignalType,
+}
+
+enum ExportFutureState {
+    Pending(ExportFuturePending),
+    InFlight(Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>>),
+    Finished,
+}
+
+struct ExportFuturePending {
+    bytes: Bytes,
+    channel: Channel,
+    compression: Option<CompressionEncoding>,
+}
+
+impl ExportFuture {
+    fn new(
+        prepared: PreparedExport,
+        channel: Channel,
+        compression: Option<CompressionEncoding>,
+    ) -> Self {
         let PreparedExport {
             bytes,
             context,
@@ -440,38 +467,94 @@ fn make_export_future(
             signal_type,
         } = prepared;
 
-        let result = match signal_type {
-            SignalType::Logs => {
-                let mut client = LogsServiceClient::new(channel.clone());
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }
-            SignalType::Metrics => {
-                let mut client = MetricsServiceClient::new(channel.clone());
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }
-            SignalType::Traces => {
-                let mut client = TraceServiceClient::new(channel.clone());
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }
-        };
-
-        ExportOutcome {
-            result,
-            context,
-            saved_payload,
+        Self {
+            state: ExportFutureState::Pending(ExportFuturePending {
+                bytes,
+                channel,
+                compression,
+            }),
+            outcome_data: Some((context, saved_payload)),
             signal_type,
         }
     }
-    .boxed_local()
+}
+
+impl Future for ExportFuture {
+    type Output = ExportOutcome;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        loop {
+            match &mut self.state {
+                ExportFutureState::Pending(_) => {
+                    let pending = match mem::replace(&mut self.state, ExportFutureState::Finished) {
+                        ExportFutureState::Pending(pending) => pending,
+                        other => {
+                            self.state = other;
+                            continue;
+                        }
+                    };
+                    let future = pending.into_future(self.signal_type);
+                    self.state = ExportFutureState::InFlight(future);
+                }
+                ExportFutureState::InFlight(future) => match future.as_mut().poll(cx) {
+                    Poll::Ready(result) => {
+                        self.state = ExportFutureState::Finished;
+                        let (context, saved_payload) = self
+                            .outcome_data
+                            .take()
+                            .expect("outcome data already taken");
+                        return Poll::Ready(ExportOutcome {
+                            result,
+                            context,
+                            saved_payload,
+                            signal_type: self.signal_type,
+                        });
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                ExportFutureState::Finished => {
+                    panic!("polled ExportFuture after completion");
+                }
+            }
+        }
+    }
+}
+
+impl ExportFuturePending {
+    fn into_future(
+        self,
+        signal_type: SignalType,
+    ) -> Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>> {
+        let ExportFuturePending {
+            bytes,
+            channel,
+            compression,
+        } = self;
+
+        match signal_type {
+            SignalType::Logs => Box::pin(async move {
+                let mut client = LogsServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+            SignalType::Metrics => Box::pin(async move {
+                let mut client = MetricsServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+            SignalType::Traces => Box::pin(async move {
+                let mut client = TraceServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+        }
+    }
 }
 
 async fn process_export_outcome(
@@ -594,7 +677,7 @@ mod tests {
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
     fn scenario()
-    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
@@ -657,7 +740,7 @@ mod tests {
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
         Result<(), Error>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    ) -> Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
                 assert!(exporter_result.is_ok());
@@ -741,6 +824,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    max_in_flight: 32,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -805,6 +889,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    max_in_flight: 32,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
