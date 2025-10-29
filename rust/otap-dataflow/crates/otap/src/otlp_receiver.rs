@@ -250,6 +250,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         };
 
         let server = Server::builder()
+            .concurrency_limit_per_connection(self.config.max_concurrent_requests)
+            .initial_stream_window_size(Some(8 * 1024 * 1024))
+            .initial_connection_window_size(Some(32 * 1024 * 1024))
+            .max_frame_size(Some(1 * 1024 * 1024))
+            .http2_keepalive_interval(Some(Duration::from_secs(30)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32))
             .add_service(logs_server)
             .add_service(metrics_server)
             .add_service(traces_server);
