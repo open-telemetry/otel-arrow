@@ -634,7 +634,7 @@ mod tests {
             })
         }
     }
-    
+
     /// Test scenario for NACK functionality - expects error responses for all signals
     fn nack_scenario(
         grpc_endpoint: String,

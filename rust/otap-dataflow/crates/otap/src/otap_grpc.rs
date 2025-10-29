@@ -284,20 +284,38 @@ where
 
     let cancel_rx = if let Some(state) = state {
         // Try to allocate a slot (under the mutex) for calldata.
-        let (key, rx) = match state
-            .0
-            .lock()
-            .map(|mut state| state.allocate(|| oneshot::channel()))
-        {
-            Err(_) => {
-                log::error!("Mutex poisoned");
-                return Err(());
+        let allocation_result = {
+            let guard_result = state.0.lock();
+            match guard_result {
+                Ok(mut guard) => guard.allocate(|| oneshot::channel()),
+                Err(_) => {
+                    log::error!("Mutex poisoned");
+                    return Err(());
+                }
             }
-            Ok(None) => {
+        }; // MutexGuard is dropped here
+
+        let (key, rx) = match allocation_result {
+            None => {
                 log::error!("Too many concurrent requests");
-                return Err(());
+
+                // Send backpressure response
+                tx.send(Ok(BatchStatus {
+                    batch_id,
+                    status_code: StatusCode::Unavailable as i32,
+                    status_message: format!(
+                        "Pipeline processing failed: {}",
+                        "Too many concurrent requests"
+                    ),
+                }))
+                .await
+                .map_err(|e| {
+                    log::error!("Error sending BatchStatus response: {e:?}");
+                })?;
+
+                return Ok(());
             }
-            Ok(Some(pair)) => pair,
+            Some(pair) => pair,
         };
 
         // Enter the subscription. Slot key becomes calldata.
