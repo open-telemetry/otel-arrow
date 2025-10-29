@@ -29,14 +29,18 @@ mod test {
     use otel_arrow_rust::otap::OtapArrowRecords;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber};
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue,
+    };
+    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
+    };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_rust::schema::consts;
     use prost::Message;
 
-    use crate::engine::{ExecutionContext, OtapBatchEngine};
     use crate::datasource::exec::UpdateDataSourceOptimizer;
+    use crate::engine::{ExecutionContext, OtapBatchEngine};
 
     pub(crate) async fn apply_to_logs(
         record: ExportLogsServiceRequest,
@@ -49,7 +53,7 @@ mod test {
         let engine = OtapBatchEngine::new();
         let mut exec_ctx = ExecutionContext::try_new(otap_batch).await.unwrap();
         engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
-        return exec_ctx.curr_batch
+        return exec_ctx.curr_batch;
     }
 
     // TODO this might not be the right abstraction, it only works for filtering
@@ -92,7 +96,6 @@ mod test {
             }],
         }
     }
-
 
     fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords {
         let logs = ((0 + offset)..(batch_size + offset))
@@ -170,7 +173,13 @@ mod test {
         let logical_plan = plan.build().unwrap();
         println!("original logical plan:\n{}\n", logical_plan);
 
-        let results_from_lp = ctx.execute_logical_plan(logical_plan.clone()).await.unwrap().collect().await.unwrap();
+        let results_from_lp = ctx
+            .execute_logical_plan(logical_plan.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
         print_batches(&results_from_lp).unwrap();
 
         let state = ctx.state();
@@ -179,8 +188,11 @@ mod test {
         println!("optimized logical plan:\n----\n{}\n", logical_plan);
         let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
         let dp = displayable(physical_plan.as_ref());
-        
-        println!("physical plan:\n----\n{}", dp.set_show_schema(disp_show_schema).indent(true));
+
+        println!(
+            "physical plan:\n----\n{}",
+            dp.set_show_schema(disp_show_schema).indent(true)
+        );
 
         let task_context = Arc::new(TaskContext::from(&state));
         let stream = execute_stream(physical_plan.clone(), task_context.clone()).unwrap();
@@ -191,7 +203,11 @@ mod test {
         let mut batch = generate_logs_batch(32, 200);
         let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
         let new_column = UInt32Array::from_iter_values((0..logs_rb.num_rows()).map(|_| 1u32));
-        let new_field = Arc::new(Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true));
+        let new_field = Arc::new(Field::new(
+            consts::DROPPED_ATTRIBUTES_COUNT,
+            DataType::UInt32,
+            true,
+        ));
         let mut new_columns = logs_rb.columns().to_vec();
         new_columns.push(Arc::new(new_column));
         let mut new_fields = logs_rb.schema().fields().to_vec();
@@ -202,13 +218,16 @@ mod test {
         let data_source_updater = UpdateDataSourceOptimizer::new(batch);
         let session_cfg = ctx.copied_config();
         let config_options = session_cfg.options();
-        let physical_plan = data_source_updater.optimize(physical_plan, config_options.as_ref()).unwrap();
+        let physical_plan = data_source_updater
+            .optimize(physical_plan, config_options.as_ref())
+            .unwrap();
         let dp = displayable(physical_plan.as_ref());
-        println!("updated physical plan:\n----\n{}", dp.set_show_schema(disp_show_schema).indent(true));
+        println!(
+            "updated physical plan:\n----\n{}",
+            dp.set_show_schema(disp_show_schema).indent(true)
+        );
         let stream = execute_stream(physical_plan.clone(), task_context).unwrap();
         let result = collect(stream).await.unwrap();
         print_batches(&result).unwrap();
-        
     }
-
 }

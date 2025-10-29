@@ -48,8 +48,7 @@ impl OtapBatchEngine {
         if exec_ctx.planned_execution.is_none() {
             self.plan(&mut exec_ctx, pipeline).await?;
 
-            // do physical planning ...
-            // TODO this could be a method on exec_ctx
+            // do physical planning (TODO this could be a method on exec_ctx)
             let state = exec_ctx.session_ctx.state();
             let mut logical_plan = exec_ctx.curr_plan.clone().build()?;
             logical_plan = state.optimize(&logical_plan)?;
@@ -58,6 +57,11 @@ impl OtapBatchEngine {
             exec_ctx.planned_execution = Some(PlannedExecution {
                 task_context: Arc::new(TaskContext::from(&state)),
                 root_physical_plan: physical_plan,
+                // TODO I can't decide when to plan these, so just deferring it until we need them
+                // which may or may not be correct
+                root_attrs_filter: None,
+                scope_attrs_filter: None,
+                resource_attrs_filter: None,
             })
         }
 
@@ -378,42 +382,109 @@ impl OtapBatchEngine {
         payload_type: ArrowPayloadType,
     ) -> Result<()> {
         if let Some(attrs_rb) = exec_ctx.curr_batch.get(payload_type) {
-            let mut attrs_table_scan = exec_ctx.scan_batch_plan(payload_type).await?;
-            let root_table_scan = exec_ctx.root_batch_plan()?.build()?;
+            // TODO tons of unwraps below
 
-            attrs_table_scan = match payload_type {
-                ArrowPayloadType::ResourceAttrs => attrs_table_scan.join_on(
-                    root_table_scan,
-                    JoinType::LeftSemi,
-                    [col(consts::RESOURCE)
-                        .field(consts::ID)
-                        .eq(col(consts::PARENT_ID))],
-                )?,
-
-                ArrowPayloadType::ScopeAttrs => attrs_table_scan.join_on(
-                    root_table_scan,
-                    JoinType::LeftSemi,
-                    [col(consts::SCOPE)
-                        .field(consts::ID)
-                        .eq(col(consts::PARENT_ID))],
-                )?,
+            let stream = match payload_type {
+                ArrowPayloadType::ResourceAttrs => {
+                    if exec_ctx
+                        .planned_execution
+                        .as_ref()
+                        .unwrap()
+                        .resource_attrs_filter
+                        .is_none()
+                    {
+                        let attrs_table_scan = exec_ctx
+                            .scan_batch_plan(payload_type)
+                            .await?
+                            .join_on(
+                                exec_ctx.root_batch_plan()?.build()?,
+                                JoinType::LeftSemi,
+                                [col(consts::RESOURCE)
+                                    .field(consts::ID)
+                                    .eq(col(consts::PARENT_ID))],
+                            )?
+                            .build()?;
+                        let state = exec_ctx.session_ctx.state();
+                        let logical_plan = state.optimize(&attrs_table_scan)?;
+                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
+                        planned_exec.resource_attrs_filter = Some(physical_plan);
+                    }
+                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
+                    let phy_plan = planned_exec
+                        .resource_attrs_filter
+                        .as_ref()
+                        .expect("root attrs filter plan initialized");
+                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
+                }
+                ArrowPayloadType::ScopeAttrs => {
+                    if exec_ctx
+                        .planned_execution
+                        .as_ref()
+                        .unwrap()
+                        .scope_attrs_filter
+                        .is_none()
+                    {
+                        let attrs_table_scan = exec_ctx
+                            .scan_batch_plan(payload_type)
+                            .await?
+                            .join_on(
+                                exec_ctx.root_batch_plan()?.build()?,
+                                JoinType::LeftSemi,
+                                [col(consts::SCOPE)
+                                    .field(consts::ID)
+                                    .eq(col(consts::PARENT_ID))],
+                            )?
+                            .build()?;
+                        let state = exec_ctx.session_ctx.state();
+                        let logical_plan = state.optimize(&attrs_table_scan)?;
+                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
+                        planned_exec.scope_attrs_filter = Some(physical_plan);
+                    }
+                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
+                    let phy_plan = planned_exec
+                        .scope_attrs_filter
+                        .as_ref()
+                        .expect("root attrs filter plan initialized");
+                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
+                }
 
                 // root attributes
-                _ => attrs_table_scan.join(
-                    root_table_scan,
-                    JoinType::LeftSemi,
-                    (vec![consts::PARENT_ID], vec![consts::ID]),
-                    None,
-                )?,
+                _ => {
+                    if exec_ctx
+                        .planned_execution
+                        .as_ref()
+                        .unwrap()
+                        .root_attrs_filter
+                        .is_none()
+                    {
+                        let attrs_table_scan = exec_ctx
+                            .scan_batch_plan(payload_type)
+                            .await?
+                            .join(
+                                exec_ctx.root_batch_plan()?.build()?,
+                                JoinType::LeftSemi,
+                                (vec![consts::PARENT_ID], vec![consts::ID]),
+                                None,
+                            )?
+                            .build()?;
+                        let state = exec_ctx.session_ctx.state();
+                        let logical_plan = state.optimize(&attrs_table_scan)?;
+                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
+                        planned_exec.root_attrs_filter = Some(physical_plan);
+                    }
+                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
+                    let phy_plan = planned_exec
+                        .root_attrs_filter
+                        .as_ref()
+                        .expect("root attrs filter plan initialized");
+                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
+                }
             };
 
-            let batches = exec_ctx
-                .session_ctx
-                .execute_logical_plan(attrs_table_scan.build()?)
-                .await?
-                .collect()
-                .await?;
-
+            let batches = collect(stream).await?;
             let result = if !batches.is_empty() {
                 // safety: this shouldn't fail unless batches don't have matching schemas, but they
                 // will b/c datafusion enforces this
@@ -561,6 +632,10 @@ impl ExecutionContext {
 pub struct PlannedExecution {
     task_context: Arc<TaskContext>,
     root_physical_plan: Arc<dyn ExecutionPlan>,
+
+    root_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
+    scope_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
+    resource_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
 }
 
 impl ColumnAccessor {

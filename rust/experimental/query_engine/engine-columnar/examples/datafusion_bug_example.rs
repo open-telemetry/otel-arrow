@@ -1,30 +1,41 @@
+use arrow::{
+    array::{RecordBatch, StringArray, UInt8Array, UInt16Array},
+    datatypes::{DataType, Field, Schema},
+};
+use datafusion::{
+    catalog::{
+        MemTable,
+        memory::{DataSourceExec, MemorySourceConfig},
+    },
+    error::DataFusionError,
+    physical_optimizer::PhysicalOptimizerRule,
+    prelude::*,
+};
 use std::sync::Arc;
-use arrow::{array::{RecordBatch, StringArray, UInt16Array, UInt8Array}, datatypes::{DataType, Field, Schema}};
-use datafusion::{catalog::{memory::{DataSourceExec, MemorySourceConfig}, MemTable}, error::DataFusionError, physical_optimizer::PhysicalOptimizerRule, prelude::*};
 
 #[tokio::main]
 async fn main() -> Result<(), DataFusionError> {
-
-
     let left_batch1 = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::UInt8, false),
-            Field::new("a", DataType::Utf8, false)
+            Field::new("a", DataType::Utf8, false),
         ])),
         vec![
             Arc::new(UInt8Array::from_iter_values([0, 1, 2, 3])),
-            Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"]))
-        ]
-    ).unwrap();
+            Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+        ],
+    )
+    .unwrap();
 
     let right_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("parent_id", DataType::UInt8, false),
-        ])),
-        vec![
-            Arc::new(UInt8Array::from_iter_values([0, 1])),
-        ]
-    ).unwrap();
+        Arc::new(Schema::new(vec![Field::new(
+            "parent_id",
+            DataType::UInt8,
+            false,
+        )])),
+        vec![Arc::new(UInt8Array::from_iter_values([0, 1]))],
+    )
+    .unwrap();
 
     let ctx = SessionContext::new();
     let left_table = MemTable::try_new(left_batch1.schema(), vec![vec![left_batch1]]).unwrap();
@@ -32,21 +43,17 @@ async fn main() -> Result<(), DataFusionError> {
     ctx.register_table("tab_l", Arc::new(left_table))?;
     ctx.register_table("tab_r", Arc::new(right_table))?;
 
-    let df = ctx.table("tab_l").await?
-        .join(
-            ctx.table("tab_r").await?,
-            JoinType::LeftSemi,
-            &["id"],
-            &["parent_id"],
-            None
-        )?;
+    let df = ctx.table("tab_l").await?.join(
+        ctx.table("tab_r").await?,
+        JoinType::LeftSemi,
+        &["id"],
+        &["parent_id"],
+        None,
+    )?;
 
     let state = ctx.state();
     let logical_plan = state.optimize(df.logical_plan())?;
     let physical_plan = state.create_physical_plan(&logical_plan).await?;
-
-
-    
 
     Ok(())
 }

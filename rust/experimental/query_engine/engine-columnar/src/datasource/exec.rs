@@ -5,7 +5,7 @@ use std::any::Any;
 use std::fmt::{self, Formatter};
 use std::sync::Arc;
 
-use arrow::array::{new_null_array, Array, Int16Array, RecordBatch, RunArray};
+use arrow::array::{Array, Int16Array, RecordBatch, RunArray, new_null_array};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
 use datafusion::config::ConfigOptions;
@@ -14,7 +14,9 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::joins::HashJoinExec;
-use datafusion::physical_plan::{with_new_children_if_necessary, DisplayAs, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, ExecutionPlan, PlanProperties, with_new_children_if_necessary,
+};
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -50,7 +52,7 @@ impl OtapDataSourceExec {
             if let Some(placeholders) = placeholders {
                 let mut new_columns = next_batch.columns().to_vec();
                 let mut new_fields = next_batch_schema.fields.to_vec();
-                
+
                 // to optimize memory, the placeholders will be a RunArray with a single run of
                 // nulls spanning entire length of batch
                 // TODO handle if there's more than 2^16 rows in the batch
@@ -61,8 +63,9 @@ impl OtapDataSourceExec {
                     // https://github.com/apache/arrow-rs/blob/57447434d1921701456543f9dfb92741e5d86734/arrow-array/src/array/run_array.rs#L109-L115
                     let new_column = RunArray::try_new(
                         &run_ends,
-                        new_null_array(placeholder.data_type(), 1).as_ref()
-                    ).expect("valid run end");
+                        new_null_array(placeholder.data_type(), 1).as_ref(),
+                    )
+                    .expect("valid run end");
                     let new_field = placeholder.with_data_type(new_column.data_type().clone());
                     new_fields.push(Arc::new(new_field));
                     new_columns.push(Arc::new(new_column));
@@ -70,7 +73,8 @@ impl OtapDataSourceExec {
 
                 next_batch_schema = Arc::new(Schema::new(new_fields));
                 // safety: TODO explain why this is safe
-                next_batch = RecordBatch::try_new(next_batch_schema.clone(), new_columns).expect("can build new record batch");
+                next_batch = RecordBatch::try_new(next_batch_schema.clone(), new_columns)
+                    .expect("can build new record batch");
             }
 
             let next_data_source = MemorySourceConfig::try_new(
@@ -83,7 +87,6 @@ impl OtapDataSourceExec {
                 payload_type: self.payload_type,
                 source_plan: DataSourceExec::new(Arc::new(next_data_source)),
             })
-
         } else {
             todo!("throw")
         }
@@ -243,8 +246,6 @@ impl ExecutionPlan for OtapDataSourceExec {
     }
 }
 
-
-
 // TODO:
 // - document what this is doing
 // - check the debug implementation if it spews out a bunch of data
@@ -301,16 +302,15 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
             println!("projection = {:?}", curr_hash_join.projection);
             let new_hash_join = HashJoinExec::try_new(
                 left,
-                right, 
-                curr_hash_join.on.clone(), 
+                right,
+                curr_hash_join.on.clone(),
                 curr_hash_join.filter.clone(),
                 curr_hash_join.join_type(),
                 curr_hash_join.projection.clone(),
-                curr_hash_join.partition_mode().clone(), 
-                curr_hash_join.null_equality.clone()
+                curr_hash_join.partition_mode().clone(),
+                curr_hash_join.null_equality.clone(),
             )?;
             Ok(Arc::new(new_hash_join))
-        
         } else {
             let children = plan
                 .children()

@@ -94,7 +94,6 @@ async fn main() -> Result<(), DataFusionError> {
     // println!("result w/ placeholder");
     // print_batches(&results).unwrap();
 
-
     // change the column order
     let mut batch = generate_logs_batch(20, 200);
     let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
