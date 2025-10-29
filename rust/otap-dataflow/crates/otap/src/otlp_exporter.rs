@@ -42,6 +42,10 @@ pub struct Config {
     pub grpc_endpoint: String,
     /// The compression method to use for the gRPC connection
     pub compression_method: Option<CompressionMethod>,
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 /// Exporter that sends OTLP data via gRPC
@@ -108,8 +112,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -117,8 +121,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     error: format!("grpc channel error {e}"),
                     source_detail,
                 }
-            })?
-            .connect_lazy();
+            })?;
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
+
+        let channel = endpoint.connect_lazy();
 
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::new(channel.clone());
@@ -607,6 +617,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -671,6 +682,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
