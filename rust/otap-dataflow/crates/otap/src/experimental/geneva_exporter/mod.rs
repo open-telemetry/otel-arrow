@@ -56,8 +56,6 @@ use crate::pdata::{OtapPdata, OtlpProtoBytes};
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:otel:geneva:exporter";
 
-/// Crate version
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
