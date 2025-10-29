@@ -28,11 +28,7 @@ impl CollectionScalarExpression {
         scope: &PipelineResolutionScope,
     ) -> ScalarStaticResolutionResult<'_> {
         match self {
-            CollectionScalarExpression::Concat(_) => {
-                // Note: Arrays don't get folded so there isn't a static
-                // resolution path for concat, it is always a runtime thing.
-                Ok(None)
-            }
+            CollectionScalarExpression::Concat(c) => c.try_resolve_array_static(scope),
             CollectionScalarExpression::List(c) => c.try_resolve_static(scope),
         }
     }
@@ -115,6 +111,53 @@ impl CombineScalarExpression {
                 ))
             }
             None => Ok(None),
+        }
+    }
+
+    pub(crate) fn try_resolve_array_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        match self.values_expression.try_resolve_static(scope)? {
+            None => Ok(None),
+            Some(s) => {
+                let t = s.as_ref().get_value_type();
+                if t != ValueType::Array {
+                    return Err(ExpressionError::TypeMismatch(
+                        self.values_expression.get_query_location().clone(),
+                        format!(
+                            "Value of '{t}' type returned by scalar expression was not an array",
+                        ),
+                    ));
+                }
+
+                if let Some(StaticScalarExpression::Array(a)) = s.try_fold() {
+                    let mut items = Vec::new();
+                    for (i, item) in a.get_values().iter().enumerate() {
+                        if let StaticScalarExpression::Array(inner_array) = item {
+                            for item in inner_array.get_values() {
+                                items.push(item.clone());
+                            }
+                        } else {
+                            return Err(ExpressionError::TypeMismatch(
+                                item.get_query_location().clone(),
+                                format!(
+                                    "Value of '{}' type returned by scalar expression at index '{i}' could not be converted to an array",
+                                    item.get_value_type()
+                                ),
+                            ));
+                        }
+                    }
+                    Ok(Some(ResolvedStaticScalarExpression::Computed(
+                        StaticScalarExpression::Array(ArrayScalarExpression::new(
+                            self.query_location.clone(),
+                            items,
+                        )),
+                    )))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 

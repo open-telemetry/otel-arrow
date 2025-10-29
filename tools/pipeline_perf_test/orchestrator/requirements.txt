@@ -7,7 +7,7 @@ pydantic==2.12.3
 
 # Docker management
 docker==7.1.0
-psutil==7.1.1
+psutil==7.1.2
 
 # Kubernetes management
 kubernetes==33.1.0

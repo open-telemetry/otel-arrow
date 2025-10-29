@@ -49,6 +49,10 @@ pub struct Config {
     pub grpc_endpoint: String,
     /// The compression method to use for the gRPC connection
     pub compression_method: Option<CompressionMethod>,
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
     /// Maximum number of concurrent in-flight export RPCs.
     #[serde(default = "default_max_in_flight")]
     pub max_in_flight: usize,
@@ -122,8 +126,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -143,12 +147,18 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .keep_alive_while_idle(true)
             // Bigger windows reduce flow-control throttling for big exports:
             .initial_stream_window_size(Some(8 * 1024 * 1024)) // 8 MiB
-            .initial_connection_window_size(Some(32 * 1024 * 1024)) // 32 MiB
+            .initial_connection_window_size(Some(32 * 1024 * 1024)); // 32 MiB
             // Or rely on BDP estimation (overrides manual window sizes):
             // .http2_adaptive_window(true)
             // Optional: expand internal Tower buffer if needed:
             // .buffer_size(Some(2048))
-            .connect_lazy();
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
+
+        let channel = endpoint.connect_lazy();
 
         let compression = self
             .config
@@ -823,6 +833,7 @@ mod tests {
                     grpc_endpoint,
                     compression_method: None,
                     max_in_flight: 32,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -888,6 +899,7 @@ mod tests {
                     grpc_endpoint,
                     compression_method: None,
                     max_in_flight: 32,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },

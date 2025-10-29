@@ -66,6 +66,11 @@ pub struct Config {
     /// see a failure, errors are effectively suppressed.
     #[serde(default = "default_wait_for_result")]
     wait_for_result: bool,
+
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 const fn default_max_concurrent_requests() -> usize {
@@ -131,21 +136,15 @@ impl OTLPReceiver {
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
         let calldata = ack.calldata;
         let resp = Ok(());
-        match ack.accepted.signal_type() {
-            SignalType::Logs => states
-                .logs
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Metrics => states
-                .metrics
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Traces => states
-                .traces
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-        }
-        .unwrap_or(RouteResponse::None)
+        let state = match ack.accepted.signal_type() {
+            SignalType::Logs => states.logs.as_ref(),
+            SignalType::Metrics => states.metrics.as_ref(),
+            SignalType::Traces => states.traces.as_ref(),
+        };
+
+        state
+            .map(|s| s.route_response(calldata, resp))
+            .unwrap_or(RouteResponse::None)
     }
 
     fn route_nack_response(
@@ -154,30 +153,33 @@ impl OTLPReceiver {
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
         let calldata = std::mem::take(&mut nack.calldata);
-        let sigtype = nack.refused.signal_type();
+        let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
-        match sigtype {
-            SignalType::Logs => states
-                .logs
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Metrics => states
-                .metrics
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Traces => states
-                .traces
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-        }
-        .unwrap_or(RouteResponse::None)
+        let state = match signal_type {
+            SignalType::Logs => states.logs.as_ref(),
+            SignalType::Metrics => states.metrics.as_ref(),
+            SignalType::Traces => states.traces.as_ref(),
+        };
+
+        state
+            .map(|s| s.route_response(calldata, resp))
+            .unwrap_or(RouteResponse::None)
     }
 
-    fn handle_acknack_response(&mut self, resp: RouteResponse) {
+    fn handle_ack_response(&mut self, resp: RouteResponse) {
         match resp {
             RouteResponse::Sent => self.metrics.acks_sent.inc(),
-            RouteResponse::Expired => self.metrics.nacks_sent.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_expired.inc(),
+            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::None => {}
+        }
+    }
+
+    fn handle_nack_response(&mut self, resp: RouteResponse) {
+        match resp {
+            RouteResponse::Sent => self.metrics.nacks_sent.inc(),
+            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
             RouteResponse::None => {}
         }
     }
@@ -207,7 +209,7 @@ pub struct OtlpReceiverMetrics {
 
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
-    pub acks_nacks_expired: Counter<u64>,
+    pub acks_nacks_invalid_or_expired: Counter<u64>,
 }
 
 #[async_trait]
@@ -249,7 +251,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             traces: traces_server.common.state(),
         };
 
-        let server = Server::builder()
+        let mut server_builder = Server::builder()
             .concurrency_limit_per_connection(self.config.max_concurrent_requests) // transport level
             .load_shed(true) // immediately reject when above limit
             .initial_stream_window_size(Some(8 * 1024 * 1024))
@@ -257,7 +259,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .max_frame_size(Some(1 * 1024 * 1024))
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-            .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32))
+            .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32));
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            server_builder = server_builder.timeout(timeout);
+        }
+
+        let server = server_builder
             .add_service(logs_server)
             .add_service(metrics_server)
             .add_service(traces_server);
@@ -284,10 +293,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_acknack_response(self.route_ack_response(&states, ack));
+                            self.handle_ack_response(self.route_ack_response(&states, ack));
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_acknack_response(self.route_nack_response(&states, nack));
+                            self.handle_nack_response(self.route_nack_response(&states, nack));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -458,8 +467,23 @@ mod tests {
             "compression_method": "gzip",
             "max_concurrent_requests": 2500
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+
+        let config_with_timeout = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "30s"
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
+
+        let config_with_timeout_ms = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "500ms"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_millis(500)));
     }
 
     fn scenario(
@@ -644,6 +668,7 @@ mod tests {
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
+                    timeout: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -681,6 +706,7 @@ mod tests {
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
+                    timeout: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },

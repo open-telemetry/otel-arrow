@@ -116,8 +116,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id,
@@ -125,8 +125,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     error: format!("grpc channel error {e}"),
                     source_detail,
                 }
-            })?
-            .connect_lazy();
+            })?;
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
+
+        let channel = endpoint.connect_lazy();
 
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -668,6 +674,30 @@ mod tests {
             },
             None => panic!("Expected Some compression method"),
         }
+    }
+
+    #[test]
+    fn test_from_config_with_timeout() {
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config_with_timeout = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "timeout": "45s"
+        });
+        let exporter = OTAPExporter::from_config(pipeline_ctx.clone(), &config_with_timeout)
+            .expect("Config should be valid");
+        assert_eq!(exporter.config.timeout, Some(Duration::from_secs(45)));
+
+        let config_with_timeout_ms = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "timeout": "250ms"
+        });
+        let exporter = OTAPExporter::from_config(pipeline_ctx, &config_with_timeout_ms)
+            .expect("Config should be valid");
+        assert_eq!(exporter.config.timeout, Some(Duration::from_millis(250)));
     }
 
     #[test]
