@@ -31,9 +31,9 @@ use std::net::SocketAddr;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -219,7 +219,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     ) -> Result<TerminalState, Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let listener_stream = TcpListenerStream::new(listener);
+        let incoming = TcpIncoming::from(listener)
+            .with_nodelay(Some(true))
+            .with_keepalive(Some(Duration::from_secs(45)))
+            .with_keepalive_interval(Some(Duration::from_secs(15)))
+            .with_keepalive_retries(Some(5));
 
         let mut compression = EnabledCompressionEncodings::default();
         let _ = self
@@ -290,7 +294,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             },
 
             // Run server
-            result = server.serve_with_incoming(listener_stream) => {
+            result = server.serve_with_incoming(incoming) => {
                 if let Err(error) = result {
                     let source_detail = format_error_sources(&error);
                     return Err(Error::ReceiverError {

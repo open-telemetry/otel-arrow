@@ -29,6 +29,7 @@ use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
+use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -676,8 +677,7 @@ mod tests {
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn scenario()
-    -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
@@ -737,10 +737,8 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
-    ) -> impl FnOnce(
-        TestContext<OtapPdata>,
-        Result<(), Error>,
-    ) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>, Result<(), Error>) -> Pin<Box<dyn Future<Output = ()>>>
+    {
         |_, exporter_result| {
             Box::pin(async move {
                 assert!(exporter_result.is_ok());
