@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
         assert_eq!(receiver.config.message_size, 100);
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
-        assert_eq!(receiver.config.wait_for_result, false);
+        assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
 
         // Test with minimal required fields, max_concurrent_requests defaults to 1000, wait_for_result defaults to false
@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
         assert_eq!(receiver.config.message_size, 200);
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
-        assert_eq!(receiver.config.wait_for_result, false);
+        assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
 
         // Test with full configuration including gzip compression
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
         assert_eq!(receiver.config.message_size, 150);
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
-        assert_eq!(receiver.config.wait_for_result, true);
+        assert!(receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
             Some(CompressionMethod::Gzip)
@@ -997,7 +997,7 @@ mod tests {
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_zstd).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4320");
         assert_eq!(receiver.config.message_size, 50);
-        assert_eq!(receiver.config.wait_for_result, false);
+        assert!(!receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
             Some(CompressionMethod::Zstd)
