@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use data_engine_expressions::*;
 
-use crate::ParserError;
+use crate::*;
 
 pub trait Parser {
     fn parse(query: &str) -> Result<PipelineExpression, Vec<ParserError>> {
@@ -146,13 +146,13 @@ impl ParserMapSchema {
     pub fn try_resolve_value_type(
         &self,
         selectors: &mut [ScalarExpression],
-        scope: &PipelineResolutionScope,
+        scope: &dyn ParserScope,
     ) -> Result<Option<ValueType>, ParserError> {
         let number_of_selectors = selectors.len();
 
         if let Some(selector) = selectors.first_mut() {
             if let Some(r) = selector
-                .try_resolve_static(scope)
+                .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
                 .map_err(|e| ParserError::from(&e))?
                 .as_ref()
                 .map(|v| v.as_ref())
