@@ -250,7 +250,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         };
 
         let server = Server::builder()
-            .concurrency_limit_per_connection(self.config.max_concurrent_requests) // transport-level
+            .concurrency_limit_per_connection(self.config.max_concurrent_requests) // transport level
             .load_shed(true) // immediately reject when above limit
             .initial_stream_window_size(Some(8 * 1024 * 1024))
             .initial_connection_window_size(Some(32 * 1024 * 1024))
