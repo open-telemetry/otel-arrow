@@ -64,6 +64,16 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 
+# Geneva exporter dependencies
+geneva-uploader = { version = "0.3.0", optional = true }
+opentelemetry-proto = { workspace = true, optional = true }
+
+[features]
+# Base experimental feature - enabled by all experimental exporters
+experimental-exporters = []
+# Experimental exporters
+geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
+
 [dev-dependencies]
 flume = { workspace = true }
 portpicker.workspace = true

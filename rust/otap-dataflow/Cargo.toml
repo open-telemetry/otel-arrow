@@ -70,6 +70,7 @@ miette = { version="7.6.0", features = ["fancy"] }
 mimalloc-rust = "0.2.1"
 object_store = "0.12.3"
 once_cell = "1.20.2"
+opentelemetry-proto = { version = "0.31", default-features = false} #TODO - use it from submodule instead of crate(?)
 otel-arrow-rust = { path = "../otel-arrow-rust"}
 parking_lot = "0.12.4"
 parquet = { version = "56.1", default-features = false, features = ["arrow", "async", "object_store"]}
@@ -126,6 +127,9 @@ default = []
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+# Experimental exporters (opt-in)
+experimental-exporters = ["otap-df-otap/experimental-exporters"]
+geneva-exporter = ["otap-df-otap/geneva-exporter"]
 
 [workspace.lints.rust]
 # General compatibility lints

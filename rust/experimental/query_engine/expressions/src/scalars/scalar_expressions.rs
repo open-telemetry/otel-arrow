@@ -142,10 +142,9 @@ impl ScalarExpression {
         *self = ScalarExpression::Static(computed);
 
         if let ScalarExpression::Static(s) = self {
-            return Ok(Some(match s.foldable() {
-                true => ResolvedStaticScalarExpression::FoldEligibleReference(s),
-                false => ResolvedStaticScalarExpression::Reference(s),
-            }));
+            return Ok(Some(ResolvedStaticScalarExpression::FoldEligibleReference(
+                s,
+            )));
         }
 
         unreachable!()
