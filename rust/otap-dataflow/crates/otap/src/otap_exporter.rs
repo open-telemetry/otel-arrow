@@ -120,7 +120,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
-                    exporter: exporter_id.clone(),
+                    exporter: exporter_id,
                     kind: ExporterErrorKind::Connect,
                     error: format!("grpc channel error {e}"),
                     source_detail,
