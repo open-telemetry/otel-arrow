@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod engine;
+pub mod datasource;
 pub mod error;
-pub mod optimize;
-pub mod table;
 
 mod common;
 mod consts;
-mod datasource;
 mod filter;
 
 #[cfg(test)]
@@ -37,7 +35,7 @@ mod test {
     use prost::Message;
 
     use crate::engine::{ExecutionContext, OtapBatchEngine};
-    use crate::optimize::datasource::UpdateDataSourceOptimizer;
+    use crate::datasource::exec::UpdateDataSourceOptimizer;
 
     pub(crate) async fn apply_to_logs(
         record: ExportLogsServiceRequest,

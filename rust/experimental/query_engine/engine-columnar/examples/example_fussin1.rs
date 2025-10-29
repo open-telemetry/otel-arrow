@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::util::pretty::print_batches;
-use data_engine_columnar::optimize::datasource::UpdateDataSourceOptimizer;
-use data_engine_columnar::table::OtapBatchTable;
+use data_engine_columnar::datasource::exec::UpdateDataSourceOptimizer;
+use data_engine_columnar::datasource::table_provider::OtapBatchTable;
 use data_engine_kql_parser::{KqlParser, Parser};
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;

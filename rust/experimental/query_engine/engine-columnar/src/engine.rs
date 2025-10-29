@@ -12,7 +12,6 @@ use data_engine_expressions::{
 };
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
-use datafusion::datasource::provider_as_source;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
@@ -28,7 +27,7 @@ use crate::consts::ROW_NUMBER_COL;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::filter::Filter;
-use crate::table::OtapBatchTable;
+use crate::datasource::table_provider::OtapBatchTable;
 
 #[derive(Default)]
 pub struct OtapBatchEngine {}

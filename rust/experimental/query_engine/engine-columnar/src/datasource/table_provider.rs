@@ -14,11 +14,8 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use crate::datasource::OtapDataSourceExec;
+use crate::datasource::exec::OtapDataSourceExec;
 
-// ---------------------
-// MutableMemTable
-// ---------------------
 #[derive(Debug)]
 pub struct OtapBatchTable {
     payload_type: ArrowPayloadType,

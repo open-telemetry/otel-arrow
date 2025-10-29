@@ -3,8 +3,8 @@ use arrow::array::{
 };
 use arrow::datatypes::{Field, Schema};
 use arrow::util::pretty::print_batches;
-use data_engine_columnar::optimize::datasource::UpdateDataSourceOptimizer;
-use data_engine_columnar::table::OtapBatchTable;
+use data_engine_columnar::datasource::exec::UpdateDataSourceOptimizer;
+use data_engine_columnar::datasource::table_provider::OtapBatchTable;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
