@@ -107,14 +107,17 @@ impl OtapBatchEngine {
             .curr_batch
             .set(exec_ctx.root_batch_payload_type()?, result);
 
+        // TODO this is a hack to get the correct batch in the right place before updating the children
+        exec_ctx.update_batch(exec_ctx.curr_batch.clone())?;
+
         // // update the attributes
         // // TODO -- we only need to do this if there was filtering applied to the root batch?
-        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
-        //     .await?;
-        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
-        //     .await?;
-        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
-        //     .await?;
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
+            .await?;
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
+            .await?;
+        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
+            .await?;
 
         Ok(())
     }
@@ -465,7 +468,8 @@ impl OtapBatchEngine {
                             .scan_batch_plan(payload_type)
                             .await?
                             .join(
-                                exec_ctx.root_batch_plan()?.build()?,
+                                // exec_ctx.root_batch_plan()?.build()?,
+                                exec_ctx.scan_batch_plan(ArrowPayloadType::Logs).await?.build()?,
                                 JoinType::LeftSemi,
                                 (vec![consts::PARENT_ID], vec![consts::ID]),
                                 None,
@@ -518,10 +522,38 @@ pub struct ExecutionContext {
 
 // TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
-    pub fn print_root_phy_plan(&self) {
-        let plan = self.planned_execution.as_ref().unwrap().root_physical_plan.as_ref();
+    pub fn print_phy_plans(&self) {
+        let planned_ex = self.planned_execution.as_ref().unwrap();
+        let plan = planned_ex.root_physical_plan.as_ref();
+        
+        println!("\nroot plan");
         let dp = displayable(plan);
         println!("{}", dp.indent(true));
+
+        println!("\nroot attrs plan:");
+        if let Some(plan) = planned_ex.root_attrs_filter.as_ref() {
+            let dp = displayable(plan.as_ref());
+            println!("{}", dp.indent(true));
+        } else {
+            println!("None")
+        }
+
+        println!("\nscope attrs plan:");
+        if let Some(plan) = planned_ex.scope_attrs_filter.as_ref() {
+            let dp = displayable(plan.as_ref());
+            println!("{}", dp.indent(true));
+        } else {
+            println!("None")
+        }
+
+        println!("\nres attrs plan:");
+        if let Some(plan) = planned_ex.scope_attrs_filter.as_ref() {
+            let dp = displayable(plan.as_ref());
+            println!("{}", dp.indent(true));
+        } else {
+            println!("None")
+        }
+        
     }
 
     pub fn update_batch(&mut self, otap_batch: OtapArrowRecords) -> Result<()> {
@@ -599,7 +631,7 @@ impl ExecutionContext {
         // add a row number column
         // TODO comment on why we're doing this
         // TODO this is a performance issue
-        let plan = plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
+        // let plan = plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
 
         Ok(Self {
             curr_batch: batch,

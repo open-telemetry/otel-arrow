@@ -127,20 +127,18 @@ fn bench_exec_pipelines(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("simple_field_filter");
     for batch_size in batch_sizes {
-
-
         let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
         let _ = group.bench_with_input(benchmark_id, &batch_size, |b, batch_size| {
             b.iter_custom(|iters| {
                 let batch = generate_logs_batch(*batch_size);
-                // let query = "logs | where severity_text == \"WARN\"";
-                let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+                let query = "logs | where severity_text == \"WARN\"";
+                // let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
                 let pipeline = KqlParser::parse(query).expect("can parse pipeline");
                 rt.block_on(async move {
                     let mut exec_ctx = ExecutionContext::try_new(batch.clone()).await.unwrap();
                     let engine = OtapBatchEngine::new();
                     engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
-                    // exec_ctx.print_root_phy_plan();
+                    // exec_ctx.print_phy_plans();
 
                     let start = Instant::now();
                     for _ in 0..iters {
@@ -150,41 +148,6 @@ fn bench_exec_pipelines(c: &mut Criterion) {
                     start.elapsed()
                 })
             });
-
-            // let batch = generate_logs_batch(*batch_size);                    
-            // let exec_ctx = rt.block_on(async {
-            //     ExecutionContext::try_new(batch).await.unwrap()
-            // });
-
-            // let pipeline = KqlParser::parse("logs | where severity_text == \"WARN\"").expect("can parse pipeline");  
-            // b.iter_batched_ref(
-            //     || {
-            //         let exec_ctx = exec_ctx.clone();
-            //         let pipeline = pipeline.clone();
-                    
-            //     },
-            //     |input| {
-            //         let (exec_ctx, pipeline) = input;
-            //         rt.block_on(async move {
-            //             let engine = OtapBatchEngine::new();
-            //             engine.execute(&pipeline, exec_ctx).await.unwrap();
-            //         });
-            //     },
-            //     BatchSize::SmallInput
-            // );
-            // b.to_async(&rt).iter_batched(
-            //     || input,
-            //     |input| async move {
-            //         let engine = OtapBatchEngine::new();
-            //         let (batch, pipeline) = &input;
-            //         let result = engine
-            //             .execute(pipeline, batch)
-            //             .await
-            //             .expect("can process result");
-            //         black_box(result)
-            //     },
-            //     BatchSize::SmallInput,
-            // );
         });
     }
     group.finish();
@@ -271,8 +234,8 @@ fn bench_exec_pipelines(c: &mut Criterion) {
             (physical_plan1, physical_plan2, task_ctx)
         });
 
-        let dis = displayable(physical_plan2.as_ref());
-        println!("phy plan 2 {}", dis.indent(true));
+        // let dis = displayable(physical_plan2.as_ref());
+        // println!("phy plan 2 {}", dis.indent(true));
 
         let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
         let _ = group.bench_with_input(
