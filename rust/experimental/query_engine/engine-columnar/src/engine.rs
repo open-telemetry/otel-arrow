@@ -12,10 +12,12 @@ use data_engine_expressions::{
 };
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
+use datafusion::execution::TaskContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -40,11 +42,8 @@ impl OtapBatchEngine {
     pub async fn execute(
         &self,
         pipeline: &PipelineExpression,
-        otap_batch: &OtapArrowRecords,
-    ) -> Result<OtapArrowRecords> {
-        // TODO - revisit the args here and figure out if we need to clone batch, or if the engine
-        // can just take an owned reference
-        let mut exec_ctx = ExecutionContext::try_new(otap_batch.clone()).await?;
+        mut exec_ctx: &mut ExecutionContext,
+    ) -> Result<()> {
         self.plan(&mut exec_ctx, pipeline).await?;
 
         // apply the plan:
@@ -100,7 +99,7 @@ impl OtapBatchEngine {
         self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
             .await?;
 
-        Ok(exec_ctx.curr_batch)
+        Ok(())
     }
 
     pub async fn plan(
@@ -422,11 +421,15 @@ impl OtapBatchEngine {
 #[derive(Clone)]
 pub struct ExecutionContext {
     curr_plan: LogicalPlanBuilder,
-    curr_batch: OtapArrowRecords,
-
-    // TODO doesn't maybe need to be pub
+    
+    // TODO doesn't maybe need to be pub these next 2 members?
+    pub curr_batch: OtapArrowRecords,
     pub session_ctx: SessionContext,
+    
+    planned_execution: Option<PlannedExecution>,
 }
+
+
 
 // TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
@@ -448,24 +451,17 @@ impl ExecutionContext {
 
         // TODO this logic is temporarily duplicated from scan_batch until figure out whether it
         // makes more sense to just register everything in session ctx
-        // let table_provider = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
-        // let table_source = provider_as_source(Arc::new(table_provider));
-        // let plan = LogicalPlanBuilder::scan(
-        //     format!("{:?}", root_batch_payload_type).to_ascii_lowercase(),
-        //     table_source,
-        //     None,
-        // )?;
         
         let session_config = SessionConfig::new()
             // since we're executing always in single threaded runtime it doesn't really make
             // sense to spawn repartition tasks to do do things like parallel joins. Just use
             // a single partition for simplicity.
+            // TODO this setting doesn't seem to work to avoid having RepartitionExec in the physical plan
             .with_target_partitions(1);
 
         let session_ctx = SessionContext::new_with_config(session_config);
 
         let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
-        // let table = MemTable::try_new(root_rb.schema(), vec![vec![root_rb.clone()]])?;
         let table = OtapBatchTable::new(root_batch_payload_type, root_rb.clone());
         session_ctx.register_table(&table_name, Arc::new(table))?;
 
@@ -480,32 +476,8 @@ impl ExecutionContext {
             curr_batch: batch,
             curr_plan: plan,
             session_ctx: SessionContext::new(),
+            planned_execution: None,
         })
-    }
-
-    pub async fn reinit(&mut self, batch: OtapArrowRecords) -> Result<()> {
-        for payload_type in batch.allowed_payload_types() {
-            let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
-            if self.session_ctx.table_exist(&table_name)? {
-                self.session_ctx.deregister_table(&table_name)?;
-            }
-
-            if let Some(rb) = batch.get(*payload_type) {
-                let table_name = format!("{:?}", payload_type).to_lowercase();
-                println!("reregistering table {:?}", table_name);
-                let table = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
-                self.session_ctx
-                    .register_table(&table_name, Arc::new(table))?;
-            }
-        }
-
-        self.curr_batch = batch;
-        let root_plan = self
-            .scan_batch_plan(self.root_batch_payload_type()?)
-            .await?;
-        self.curr_plan = root_plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
-
-        Ok(())
     }
 
     pub fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
@@ -526,21 +498,6 @@ impl ExecutionContext {
         payload_type: ArrowPayloadType,
     ) -> Result<LogicalPlanBuilder> {
         if let Some(rb) = self.curr_batch.get(payload_type) {
-            // // TODO would there be anything gained by registering this table on the execution context
-            // // and just reusing it? Probably save at least:
-            // // - the vec allocations
-            // // - the arc allocation
-            // // - cloning the record batch (more vec/arc allocations internally)
-
-            // let table_provider = MemTable::try_new(rb.schema(), vec![vec![rb.clone()]])?;
-            // let table_source = provider_as_source(Arc::new(table_provider));
-            // let logical_plan = LogicalPlanBuilder::scan(
-            //     // TODO could avoid allocation here?
-            //     format!("{:?}", payload_type).to_ascii_lowercase(),
-            //     table_source,
-            //     None,
-            // )?;
-
             // TODO make this a method
             let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
             if !self.session_ctx.table_exist(&table_name)? {
@@ -585,6 +542,13 @@ impl ExecutionContext {
             }
         })
     }
+}
+
+// TODO comments on what this is about
+#[derive(Clone)]
+pub struct PlannedExecution {
+    task_context: Arc<TaskContext>,
+    root_physical_plan: Arc<dyn ExecutionPlan>
 }
 
 impl ColumnAccessor {

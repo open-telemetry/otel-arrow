@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod engine;
+
+// TOOD this might just be public for testing...
 pub mod datasource;
 pub mod error;
 
@@ -19,7 +21,6 @@ mod test {
     use data_engine_expressions::PipelineExpression;
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use datafusion::execution::TaskContext;
-    use datafusion::logical_expr::logical_plan;
     use datafusion::physical_optimizer::PhysicalOptimizerRule;
     use datafusion::physical_plan::common::collect;
     use datafusion::physical_plan::{displayable, execute_stream};
@@ -46,7 +47,9 @@ mod test {
         let logs_view = RawLogsData::new(&bytes);
         let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
         let engine = OtapBatchEngine::new();
-        engine.execute(&pipeline_expr, &otap_batch).await.unwrap()
+        let mut exec_ctx = ExecutionContext::try_new(otap_batch).await.unwrap();
+        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
+        return exec_ctx.curr_batch
     }
 
     // TODO this might not be the right abstraction, it only works for filtering

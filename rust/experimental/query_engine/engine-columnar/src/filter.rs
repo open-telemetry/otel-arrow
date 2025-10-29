@@ -490,7 +490,7 @@ mod test {
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
 
-    use crate::engine::OtapBatchEngine;
+    use crate::engine::{ExecutionContext, OtapBatchEngine};
     use crate::test::{logs_to_export_req, run_logs_test};
 
     #[tokio::test]
@@ -1164,15 +1164,18 @@ mod test {
         export_req.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
         let input = encode_logs_otap_batch(&logs_view).unwrap();
+        let mut exec_ctx = ExecutionContext::try_new(input.clone()).await.unwrap();
         let mut engine = OtapBatchEngine::new();
 
-        let result = engine
+        engine
             .execute(
                 &KqlParser::parse("logs | where event_name == \"1\"").unwrap(),
-                &input,
+                &mut exec_ctx,
             )
             .await
             .unwrap();
+
+        let result = exec_ctx.curr_batch;
 
         for payload_type in [
             ArrowPayloadType::LogAttrs,
