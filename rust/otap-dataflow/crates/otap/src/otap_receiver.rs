@@ -395,41 +395,13 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Metrics Request");
 
-                let mut inbound_stream = metrics_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code, 0,
-                        "Expected success status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message, "Successfully received",
-                        "Expected success message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    metrics_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "metrics",
+                )
+                .await;
 
                 let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
                     .await
@@ -448,41 +420,13 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Logs Request");
 
-                let mut inbound_stream = logs_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code, 0,
-                        "Expected success status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message, "Successfully received",
-                        "Expected success message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    logs_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "logs",
+                )
+                .await;
 
                 let mut arrow_traces_client =
                     ArrowTracesServiceClient::connect(grpc_endpoint.clone())
@@ -502,41 +446,13 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Trace Request");
 
-                let mut inbound_stream = traces_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code, 0,
-                        "Expected success status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message, "Successfully received",
-                        "Expected success message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    traces_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "traces",
+                )
+                .await;
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Instant::now(), "Test")
@@ -674,46 +590,16 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Metrics Request");
 
-                let mut inbound_stream = metrics_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code,
-                        14, // `StatusCode::Unavailable`
-                        "Expected unavailable status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message,
-                        format!(
-                            "Pipeline processing failed: {}",
-                            "Test NACK reason for metrics"
-                        ),
-                        "Expected failure message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    metrics_response.into_inner(),
+                    14, // `StatusCode::Unavailable`
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for metrics"
+                    ),
+                    "metrics",
+                )
+                .await;
 
                 // Test NACK with logs
                 let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
@@ -735,46 +621,16 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Logs Request");
 
-                let mut inbound_stream = logs_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code,
-                        14, // `StatusCode::Unavailable`
-                        "Expected unavailable status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message,
-                        format!(
-                            "Pipeline processing failed: {}",
-                            "Test NACK reason for logs"
-                        ),
-                        "Expected failure message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    logs_response.into_inner(),
+                    14, // `StatusCode::Unavailable`
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for logs"
+                    ),
+                    "logs",
+                )
+                .await;
 
                 // Test NACK with traces
                 let mut arrow_traces_client =
@@ -797,46 +653,16 @@ mod tests {
                     .await
                     .expect("Failed to receive response after sending Trace Request");
 
-                let mut inbound_stream = traces_response.into_inner();
-                let mut received_batch_ids = HashSet::new();
-
-                // Process each item in the response stream
-                while let Some(result) = inbound_stream.message().await.transpose() {
-                    assert!(result.is_ok(), "Expected successful response from server");
-                    let batch_status = result.unwrap();
-                    let batch_id = batch_status.batch_id;
-                    // Check for duplicates
-                    assert!(
-                        received_batch_ids.insert(batch_id),
-                        "Received duplicate response for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_code,
-                        14, // `StatusCode::Unavailable`
-                        "Expected unavailable status for batch ID {}",
-                        batch_id
-                    );
-
-                    assert_eq!(
-                        batch_status.status_message,
-                        format!(
-                            "Pipeline processing failed: {}",
-                            "Test NACK reason for traces"
-                        ),
-                        "Expected failure message for batch ID {}",
-                        batch_id
-                    );
-                }
-
-                // Verify we received all expected batch IDs
-                assert_eq!(
-                    received_batch_ids,
-                    (0..3).collect::<HashSet<_>>(),
-                    "Did not receive responses for all expected batch IDs. Got: {:?}",
-                    received_batch_ids
-                );
+                validate_batch_responses(
+                    traces_response.into_inner(),
+                    14, // `StatusCode::Unavailable`
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for traces"
+                    ),
+                    "traces",
+                )
+                .await;
 
                 // Shutdown
                 ctx.send_shutdown(Instant::now(), "Test complete")
@@ -897,6 +723,65 @@ mod tests {
                 }
             }) as Pin<Box<dyn Future<Output = ()>>>
         }
+    }
+
+    /// Helper function to validate batch status responses with configurable expectations
+    async fn validate_batch_responses<S>(
+        mut inbound_stream: S,
+        expected_status_code: i32,
+        expected_status_message: &str,
+        signal_name: &str,
+    ) where
+        S: futures::Stream<
+                Item = Result<
+                    otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchStatus,
+                    tonic::Status,
+                >,
+            > + Unpin,
+    {
+        use futures::StreamExt;
+
+        let mut received_batch_ids = HashSet::new();
+
+        // Process each item in the response stream
+        while let Some(result) = inbound_stream.next().await {
+            assert!(
+                result.is_ok(),
+                "Expected successful response from server for {}",
+                signal_name
+            );
+            let batch_status = result.unwrap();
+            let batch_id = batch_status.batch_id;
+
+            // Check for duplicates
+            assert!(
+                received_batch_ids.insert(batch_id),
+                "Received duplicate response for batch ID {} in {}",
+                batch_id,
+                signal_name
+            );
+
+            assert_eq!(
+                batch_status.status_code, expected_status_code,
+                "Expected status code {} for batch ID {} in {}",
+                expected_status_code, batch_id, signal_name
+            );
+
+            assert_eq!(
+                batch_status.status_message, expected_status_message,
+                "Expected status message '{}' for batch ID {} in {}",
+                expected_status_message, batch_id, signal_name
+            );
+        }
+
+        // Verify we received all expected batch IDs
+        assert_eq!(
+            received_batch_ids,
+            (0..3).collect::<HashSet<_>>(),
+            "Did not receive responses for all expected batch IDs in {}. Got: {:?}",
+            signal_name,
+            received_batch_ids
+        );
     }
 
     #[test]
