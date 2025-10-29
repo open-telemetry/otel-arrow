@@ -3,9 +3,10 @@
 
 use std::hint::black_box;
 use std::sync::Arc;
+use std::time::Instant;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use data_engine_columnar::engine::OtapBatchEngine;
+use data_engine_columnar::engine::{ExecutionContext, OtapBatchEngine};
 use data_engine_kql_parser::{KqlParser, Parser};
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
@@ -90,89 +91,128 @@ fn bench_exec_pipelines(c: &mut Criterion) {
         .expect("can build tokio single threaded runtime");
 
     // double check correct thing is happening ...
-    if false {
-        rt.block_on(async {
-            let batch = generate_logs_batch(30);
+    // if false {
+    //     rt.block_on(async {
+    //         let batch = generate_logs_batch(30);
 
-            println!("logs:");
-            let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
-            arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
+    //         println!("logs:");
+    //         let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+    //         arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
 
-            println!("log attrs:");
-            let logs_attrs_rb = batch.get(ArrowPayloadType::LogAttrs).unwrap();
-            arrow::util::pretty::print_batches(&[logs_attrs_rb.clone()]).unwrap();
+    //         println!("log attrs:");
+    //         let logs_attrs_rb = batch.get(ArrowPayloadType::LogAttrs).unwrap();
+    //         arrow::util::pretty::print_batches(&[logs_attrs_rb.clone()]).unwrap();
 
-            // let filter = "severity_text == \"WARN\"";
-            let filter = "attributes[\"k8s.ns\"] == \"prod\"";
-            let pipeline =
-                KqlParser::parse(&format!("logs | where {}", filter)).expect("can parse pipeline");
-            let engine = OtapBatchEngine::new();
-            let result = engine
-                .execute(&pipeline, &batch)
-                .await
-                .expect("can process result");
+    //         // let filter = "severity_text == \"WARN\"";
+    //         let filter = "attributes[\"k8s.ns\"] == \"prod\"";
+    //         let pipeline =
+    //             KqlParser::parse(&format!("logs | where {}", filter)).expect("can parse pipeline");
+    //         let engine = OtapBatchEngine::new();
+    //         let result = engine
+    //             .execute(&pipeline, &batch)
+    //             .await
+    //             .expect("can process result");
 
-            println!("result logs:");
-            let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-            arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
+    //         println!("result logs:");
+    //         let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+    //         arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
 
-            println!("result log attrs:");
-            let logs_attrs_rb = result.get(ArrowPayloadType::LogAttrs).unwrap();
-            arrow::util::pretty::print_batches(&[logs_attrs_rb.clone()]).unwrap();
-        });
-    }
+    //         println!("result log attrs:");
+    //         let logs_attrs_rb = result.get(ArrowPayloadType::LogAttrs).unwrap();
+    //         arrow::util::pretty::print_batches(&[logs_attrs_rb.clone()]).unwrap();
+    //     });
+    // }
 
     let batch_sizes = [32, 1024, 8192];
 
     let mut group = c.benchmark_group("simple_field_filter");
     for batch_size in batch_sizes {
-        let batch = generate_logs_batch(batch_size);
-        let pipeline =
-            KqlParser::parse("logs | where severity_text == \"WARN\"").expect("can parse pipeline");
+
 
         let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
-        let _ = group.bench_with_input(benchmark_id, &(batch, pipeline), |b, input| {
-            b.to_async(&rt).iter_batched(
-                || input,
-                |input| async move {
+        let _ = group.bench_with_input(benchmark_id, &batch_size, |b, batch_size| {
+            b.iter_custom(|iters| {
+                let batch = generate_logs_batch(*batch_size);
+                // let query = "logs | where severity_text == \"WARN\"";
+                let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+                let pipeline = KqlParser::parse(query).expect("can parse pipeline");
+                rt.block_on(async move {
+                    let mut exec_ctx = ExecutionContext::try_new(batch.clone()).await.unwrap();
                     let engine = OtapBatchEngine::new();
-                    let (batch, pipeline) = &input;
-                    let result = engine
-                        .execute(pipeline, batch)
-                        .await
-                        .expect("can process result");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            );
+                    engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
+                    // exec_ctx.print_root_phy_plan();
+
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        exec_ctx.update_batch(batch.clone()).unwrap();
+                        engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
+                    }
+                    start.elapsed()
+                })
+            });
+
+            // let batch = generate_logs_batch(*batch_size);                    
+            // let exec_ctx = rt.block_on(async {
+            //     ExecutionContext::try_new(batch).await.unwrap()
+            // });
+
+            // let pipeline = KqlParser::parse("logs | where severity_text == \"WARN\"").expect("can parse pipeline");  
+            // b.iter_batched_ref(
+            //     || {
+            //         let exec_ctx = exec_ctx.clone();
+            //         let pipeline = pipeline.clone();
+                    
+            //     },
+            //     |input| {
+            //         let (exec_ctx, pipeline) = input;
+            //         rt.block_on(async move {
+            //             let engine = OtapBatchEngine::new();
+            //             engine.execute(&pipeline, exec_ctx).await.unwrap();
+            //         });
+            //     },
+            //     BatchSize::SmallInput
+            // );
+            // b.to_async(&rt).iter_batched(
+            //     || input,
+            //     |input| async move {
+            //         let engine = OtapBatchEngine::new();
+            //         let (batch, pipeline) = &input;
+            //         let result = engine
+            //             .execute(pipeline, batch)
+            //             .await
+            //             .expect("can process result");
+            //         black_box(result)
+            //     },
+            //     BatchSize::SmallInput,
+            // );
         });
     }
     group.finish();
 
-    let mut group = c.benchmark_group("simple_attrs_filter");
-    for batch_size in batch_sizes {
-        let batch = generate_logs_batch(batch_size);
-        let pipeline = KqlParser::parse("logs | where attributes[\"k8s.ns\"] == \"prod\"")
-            .expect("can parse pipeline");
+    // let mut group = c.benchmark_group("simple_attrs_filter");
+    // for batch_size in batch_sizes {
+    //     let batch = generate_logs_batch(batch_size);
+    //     let pipeline = KqlParser::parse("logs | where attributes[\"k8s.ns\"] == \"prod\"")
+    //         .expect("can parse pipeline");
 
-        let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
-        let _ = group.bench_with_input(benchmark_id, &(batch, pipeline), |b, input| {
-            b.to_async(&rt).iter_batched(
-                || input,
-                |input| async move {
-                    let engine = OtapBatchEngine::new();
-                    let (batch, pipeline) = &input;
-                    let result = engine
-                        .execute(pipeline, batch)
-                        .await
-                        .expect("can process result");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            );
-        });
-    }
-    group.finish();
+    //     let benchmark_id = BenchmarkId::new("batch_size=", batch_size);
+    //     let _ = group.bench_with_input(benchmark_id, &(batch, pipeline), |b, input| {
+    //         b.to_async(&rt).iter_batched(
+    //             || input,
+    //             |input| async move {
+    //                 let engine = OtapBatchEngine::new();
+    //                 let (batch, pipeline) = &input;
+    //                 let result = engine
+    //                     .execute(pipeline, batch)
+    //                     .await
+    //                     .expect("can process result");
+    //                 black_box(result)
+    //             },
+    //             BatchSize::SmallInput,
+    //         );
+    //     });
+    // }
+    // group.finish();
 
     let mut group = c.benchmark_group("attrs_filter_exec_only");
     for batch_size in batch_sizes {

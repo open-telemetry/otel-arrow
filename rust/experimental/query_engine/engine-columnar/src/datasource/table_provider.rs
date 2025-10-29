@@ -52,7 +52,7 @@ impl TableProvider for OtapBatchTable {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        println!("projection (table) = {:?}", projection);
+        // println!("projection (table) = {:?}", projection);
 
         let schema = self.current_batch.schema();
         let data_source = MemorySourceConfig::try_new(

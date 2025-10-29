@@ -299,7 +299,7 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
             // TODO comment on why we do this
             let left = self.optimize(curr_hash_join.left.clone(), config)?;
             let right = self.optimize(curr_hash_join.right.clone(), config)?;
-            println!("projection = {:?}", curr_hash_join.projection);
+            // println!("projection = {:?}", curr_hash_join.projection);
             let new_hash_join = HashJoinExec::try_new(
                 left,
                 right,

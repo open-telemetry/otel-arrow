@@ -19,7 +19,7 @@ use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use datafusion::physical_plan::{displayable, execute_stream, ExecutionPlan};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -107,14 +107,14 @@ impl OtapBatchEngine {
             .curr_batch
             .set(exec_ctx.root_batch_payload_type()?, result);
 
-        // update the attributes
-        // TODO -- we only need to do this if there was filtering applied to the root batch?
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
-            .await?;
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
-            .await?;
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
-            .await?;
+        // // update the attributes
+        // // TODO -- we only need to do this if there was filtering applied to the root batch?
+        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
+        //     .await?;
+        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
+        //     .await?;
+        // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
+        //     .await?;
 
         Ok(())
     }
@@ -518,6 +518,12 @@ pub struct ExecutionContext {
 
 // TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
+    pub fn print_root_phy_plan(&self) {
+        let plan = self.planned_execution.as_ref().unwrap().root_physical_plan.as_ref();
+        let dp = displayable(plan);
+        println!("{}", dp.indent(true));
+    }
+
     pub fn update_batch(&mut self, otap_batch: OtapArrowRecords) -> Result<()> {
         let plan_batch_updater = UpdateDataSourceOptimizer::new(otap_batch);
         // TODO avoid copying the config
@@ -576,8 +582,10 @@ impl ExecutionContext {
             // since we're executing always in single threaded runtime it doesn't really make
             // sense to spawn repartition tasks to do do things like parallel joins. Just use
             // a single partition for simplicity.
-            // TODO this setting doesn't seem to work to avoid having RepartitionExec in the physical plan
-            .with_target_partitions(1);
+            .with_target_partitions(1)
+            .with_repartition_joins(false)
+            .with_repartition_file_scans(false)
+            .with_repartition_windows(false);
 
         let session_ctx = SessionContext::new_with_config(session_config);
 
@@ -595,7 +603,7 @@ impl ExecutionContext {
         Ok(Self {
             curr_batch: batch,
             curr_plan: plan,
-            session_ctx: SessionContext::new(),
+            session_ctx,
             planned_execution: None,
         })
     }
