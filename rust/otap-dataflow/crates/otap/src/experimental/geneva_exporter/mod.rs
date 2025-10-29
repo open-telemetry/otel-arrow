@@ -95,7 +95,7 @@ const fn default_buffer_size() -> usize {
     1000
 }
 
-fn default_max_concurrent() -> usize {
+const fn default_max_concurrent() -> usize {
     4
 }
 
