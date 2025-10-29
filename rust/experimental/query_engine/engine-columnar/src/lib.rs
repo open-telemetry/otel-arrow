@@ -97,7 +97,7 @@ mod test {
         }
     }
 
-    fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords {
+    pub(crate) fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords {
         let logs = ((0 + offset)..(batch_size + offset))
             .map(|i| {
                 let severity_number = SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).unwrap();

@@ -17,6 +17,7 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -28,6 +29,7 @@ use otel_arrow_rust::schema::consts;
 use crate::common::{AttributesIdentifier, ColumnAccessor, try_static_scalar_to_literal};
 use crate::consts::ROW_NUMBER_COL;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
+use crate::datasource::exec::UpdateDataSourceOptimizer;
 use crate::datasource::table_provider::OtapBatchTable;
 use crate::error::{Error, Result};
 use crate::filter::Filter;
@@ -516,6 +518,41 @@ pub struct ExecutionContext {
 
 // TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
+    pub fn update_batch(&mut self, otap_batch: OtapArrowRecords) -> Result<()> {
+        let plan_batch_updater = UpdateDataSourceOptimizer::new(otap_batch);
+        // TODO avoid copying the config
+        let session_config = self.session_ctx.copied_config();
+        let config_options = session_config.options();
+
+        if let Some(planned_execution) = &mut self.planned_execution {
+            let updated_root_plan = plan_batch_updater.optimize(
+                planned_execution.root_physical_plan.clone(),
+                config_options.as_ref(),
+            )?;
+            planned_execution.root_physical_plan = updated_root_plan;
+
+            if let Some(attrs_plan) = planned_execution.root_attrs_filter.take() {
+                let updated_plan =
+                    plan_batch_updater.optimize(attrs_plan, config_options.as_ref())?;
+                planned_execution.root_attrs_filter = Some(updated_plan);
+            }
+
+            if let Some(res_attrs_plan) = planned_execution.resource_attrs_filter.take() {
+                let updated_plan =
+                    plan_batch_updater.optimize(res_attrs_plan, config_options.as_ref())?;
+                planned_execution.resource_attrs_filter = Some(updated_plan);
+            }
+
+            if let Some(scope_attrs_plan) = planned_execution.resource_attrs_filter.take() {
+                let updated_plan =
+                    plan_batch_updater.optimize(scope_attrs_plan, config_options.as_ref())?;
+                planned_execution.resource_attrs_filter = Some(updated_plan);
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
         // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
         let root_batch_payload_type = match batch {
@@ -732,7 +769,8 @@ mod test {
     use otel_arrow_rust::proto::opentelemetry::{arrow::v1::ArrowPayloadType, logs::v1::LogRecord};
     use otel_arrow_rust::schema::consts;
 
-    use crate::test::{apply_to_logs, logs_to_export_req};
+    use crate::engine::{ExecutionContext, OtapBatchEngine};
+    use crate::test::{apply_to_logs, generate_logs_batch, logs_to_export_req};
 
     #[tokio::test]
     async fn test_simple_extend_new_column() {
@@ -1063,5 +1101,47 @@ mod test {
 
         let expected = vec!["1".to_string(), "3".to_string()];
         assert_eq!(event_name_column, expected);
+    }
+
+    #[tokio::test]
+    async fn test_reuse_plans_simple() {
+        let query = "logs | where severity_text == \"WARN\"";
+        let pipeline_expr = KqlParser::parse(query).unwrap();
+
+        let batch1 = generate_logs_batch(32, 100);
+        let mut exec_ctx = ExecutionContext::try_new(batch1).await.unwrap();
+
+        let engine = OtapBatchEngine::new();
+
+        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
+        let result1 = exec_ctx.curr_batch.clone();
+
+        let batch2 = generate_logs_batch(64, 200);
+        exec_ctx.update_batch(batch2).unwrap();
+
+        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
+        let result2 = exec_ctx.curr_batch.clone();
+
+        // TODO need to add some real asserts here
+
+        println!("result1 logs:");
+        arrow::util::pretty::print_batches(&[result1.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        println!("result1 log_attrs:");
+        arrow::util::pretty::print_batches(&[result1
+            .get(ArrowPayloadType::LogAttrs)
+            .unwrap()
+            .clone()])
+        .unwrap();
+
+        println!("result2 logs:");
+        arrow::util::pretty::print_batches(&[result2.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        println!("result2 log_attrs:");
+        arrow::util::pretty::print_batches(&[result2
+            .get(ArrowPayloadType::LogAttrs)
+            .unwrap()
+            .clone()])
+        .unwrap();
     }
 }
