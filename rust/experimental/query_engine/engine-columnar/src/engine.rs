@@ -598,6 +598,7 @@ impl ExecutionContext {
 
         // add a row number column
         // TODO comment on why we're doing this
+        // TODO this is a performance issue
         let plan = plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
 
         Ok(Self {
