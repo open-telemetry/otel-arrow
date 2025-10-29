@@ -27,7 +27,7 @@ is compared against performing the same tasks in a downstream query engine:
   reporting intervals. Query engines sometimes face duplicate data,
   overlapping data, and so on. Query engines receive a mix of
   cumulative and delta metric temporality.
-  
+
 There are two primary mechanisms used in OpenTelemetry that connect
 its various specifications, for example to say how we start with
 instrumentation events like `Counter.Add(10)` and arrive at a correct
@@ -166,7 +166,7 @@ occurs with a new attribute set. The choices are:
    states that the first value in a series is arbitrary and
    contributes zero in a rate calculation. This is the ideal way
    to avoid an arbitrary rate contribution from the choice of start time.
-   
+
 It is somewhat disappointing, however, to lose the value of the first
 point in every Counter timeseries because it contributes arbitrarily
 to the rate. OpenTelemetry could conveivably add a data point flag to
