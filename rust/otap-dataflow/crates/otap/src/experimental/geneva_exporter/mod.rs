@@ -134,31 +134,6 @@ struct ExporterMetrics {
     // Placeholder - will add actual metrics counters later
 }
 
-// Implement MetricSetHandler trait for metrics
-impl otap_df_telemetry::metrics::MetricSetHandler for ExporterMetrics {
-    fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
-        static DESCRIPTOR: otap_df_telemetry::descriptor::MetricsDescriptor =
-            otap_df_telemetry::descriptor::MetricsDescriptor {
-                name: "geneva_exporter",
-                metrics: &[],
-            };
-        &DESCRIPTOR
-    }
-
-    fn snapshot_values(&self) -> Vec<u64> {
-        // No metrics yet
-        Vec::new()
-    }
-
-    fn clear_values(&mut self) {
-        // No-op - no metrics to clear yet
-    }
-
-    fn needs_flush(&self) -> bool {
-        // No metrics yet, so nothing to flush
-        false
-    }
-}
 
 /// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
