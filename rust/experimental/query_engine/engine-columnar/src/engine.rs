@@ -17,7 +17,8 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::common::collect;
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -27,9 +28,9 @@ use otel_arrow_rust::schema::consts;
 use crate::common::{AttributesIdentifier, ColumnAccessor, try_static_scalar_to_literal};
 use crate::consts::ROW_NUMBER_COL;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
+use crate::datasource::table_provider::OtapBatchTable;
 use crate::error::{Error, Result};
 use crate::filter::Filter;
-use crate::datasource::table_provider::OtapBatchTable;
 
 #[derive(Default)]
 pub struct OtapBatchEngine {}
@@ -44,23 +45,33 @@ impl OtapBatchEngine {
         pipeline: &PipelineExpression,
         mut exec_ctx: &mut ExecutionContext,
     ) -> Result<()> {
-        self.plan(&mut exec_ctx, pipeline).await?;
+        if exec_ctx.planned_execution.is_none() {
+            self.plan(&mut exec_ctx, pipeline).await?;
 
-        // apply the plan:
-        //
-        // TODO at some point we may want to think more carefully about where to apply the plan.
-        // currently it's always happening at the end, buts maybe it could happen in
-        // process_data_expr depending on the expression?
-        //
-        // TODO can we avoid the clone here by deconstructing the execution context?
-        // it's needed b/c below we call root_batch_payload_type() and `build()` moves the plan
-        let plan = exec_ctx.curr_plan.clone().build()?;
-        let batches = exec_ctx
-            .session_ctx
-            .execute_logical_plan(plan)
-            .await?
-            .collect()
-            .await?;
+            // do physical planning ...
+            // TODO this could be a method on exec_ctx
+            let state = exec_ctx.session_ctx.state();
+            let mut logical_plan = exec_ctx.curr_plan.clone().build()?;
+            logical_plan = state.optimize(&logical_plan)?;
+            let physical_plan = state.create_physical_plan(&logical_plan).await?;
+
+            exec_ctx.planned_execution = Some(PlannedExecution {
+                task_context: Arc::new(TaskContext::from(&state)),
+                root_physical_plan: physical_plan,
+            })
+        }
+
+        let planned_exec = exec_ctx
+            .planned_execution
+            .as_ref()
+            .expect("should be initialized");
+
+        // TODO this could be a method on planned_exec
+        let stream = execute_stream(
+            Arc::clone(&planned_exec.root_physical_plan),
+            Arc::clone(&planned_exec.task_context),
+        )?;
+        let batches = collect(stream).await?;
 
         let result = if !batches.is_empty() {
             // TODO not sure concat_batches is necessary here as there should only be one batch.
@@ -418,18 +429,19 @@ impl OtapBatchEngine {
     }
 }
 
+// TODO rethink how the internal state in this thing is structured.
+// Currently it weirdly contains planning stuff for both logical and
+// physical plans and only one can be used at a time
 #[derive(Clone)]
 pub struct ExecutionContext {
     curr_plan: LogicalPlanBuilder,
-    
+
     // TODO doesn't maybe need to be pub these next 2 members?
     pub curr_batch: OtapArrowRecords,
     pub session_ctx: SessionContext,
-    
+
     planned_execution: Option<PlannedExecution>,
 }
-
-
 
 // TODO there is so much duplicated code in this struct mama mia
 impl ExecutionContext {
@@ -451,7 +463,7 @@ impl ExecutionContext {
 
         // TODO this logic is temporarily duplicated from scan_batch until figure out whether it
         // makes more sense to just register everything in session ctx
-        
+
         let session_config = SessionConfig::new()
             // since we're executing always in single threaded runtime it doesn't really make
             // sense to spawn repartition tasks to do do things like parallel joins. Just use
@@ -548,7 +560,7 @@ impl ExecutionContext {
 #[derive(Clone)]
 pub struct PlannedExecution {
     task_context: Arc<TaskContext>,
-    root_physical_plan: Arc<dyn ExecutionPlan>
+    root_physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl ColumnAccessor {
