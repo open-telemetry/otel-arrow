@@ -169,7 +169,7 @@ occurs with a new attribute set. The choices are:
    
 It is somewhat disappointing, however, to lose the value of the first
 point in every Counter timeseries because it contributes arbitrarily
-to the rate. OpenTelemetry could conveivably add a data point flag to
+to the rate. OpenTelemetry could conceivably add a data point flag to
 indicate that a series has a true-zero value at its start time.
 
 ### Fractional histogram
