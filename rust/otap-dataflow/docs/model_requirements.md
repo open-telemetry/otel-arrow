@@ -17,7 +17,7 @@ SDKs have contact with the original API events. This relative simplicity
 is compared against performing the same tasks in a downstream query engine:
 
 - **SDKs**: An SDK remembers its start time and assumes a functional
-  system clock. The SDK assumes its resource value is unique. SDKs a
+  system clock. The SDK assumes its resource value is unique. SDKs
   coordinate collection (typically through hardware synchronization)
   to ensure outputs do not overlap in time. The SDK chooses a single
   metric "temporality" and manages the necessary state internally.
