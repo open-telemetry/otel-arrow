@@ -36,6 +36,42 @@ where
                 }
             }
         }
+        ParseScalarExpression::JsonPath(p) => {
+            let inner_value =
+                execute_scalar_expression(execution_context, p.get_inner_expression())?;
+
+            let value = inner_value.to_value();
+
+            match value {
+                Value::String(s) => {
+                    let values = ParseJsonPathScalarExpression::parse_json_path(
+                        p.get_query_location(),
+                        s.get_value(),
+                    )?
+                    .drain(..)
+                    .map(|v| match v {
+                        ParsedSelector::Index(i) => {
+                            OwnedValue::Integer(IntegerValueStorage::new(i))
+                        }
+                        ParsedSelector::Key(key) => {
+                            OwnedValue::String(StringValueStorage::new(key))
+                        }
+                    })
+                    .collect();
+
+                    ResolvedValue::Computed(OwnedValue::Array(ArrayValueStorage::new(values)))
+                }
+                _ => {
+                    return Err(ExpressionError::ParseError(
+                        p.get_query_location().clone(),
+                        format!(
+                            "Input of '{:?}' type could not be parsed as JSONPath",
+                            value.get_value_type()
+                        ),
+                    ));
+                }
+            }
+        }
         ParseScalarExpression::Regex(p) => {
             let pattern_value = execute_scalar_expression(execution_context, p.get_pattern())?;
 
@@ -115,6 +151,55 @@ mod tests {
         run_test_success(
             "18",
             Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_failure("hello world");
+    }
+
+    #[test]
+    pub fn test_execute_parse_json_path_scalar_expression() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let expression = ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                ParseJsonPathScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), input),
+                    )),
+                ),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value());
+        }
+
+        fn run_test_failure(input: &str) {
+            let expression = ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                ParseJsonPathScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), input),
+                    )),
+                ),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value =
+                execute_scalar_expression(&execution_context, &expression).unwrap_err();
+            assert!(matches!(actual_value, ExpressionError::ParseError(_, _)));
+        }
+
+        run_test_success(
+            "$.key1",
+            OwnedValue::Array(ArrayValueStorage::new(vec![OwnedValue::String(
+                StringValueStorage::new("key1".into()),
+            )]))
+            .to_value(),
         );
         run_test_failure("hello world");
     }
