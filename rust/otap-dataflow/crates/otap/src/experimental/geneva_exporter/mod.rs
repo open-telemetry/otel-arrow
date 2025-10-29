@@ -91,7 +91,7 @@ pub struct Config {
     pub max_concurrent_uploads: usize,
 }
 
-fn default_buffer_size() -> usize {
+const fn default_buffer_size() -> usize {
     1000
 }
 
