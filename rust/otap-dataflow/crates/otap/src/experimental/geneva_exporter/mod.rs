@@ -56,7 +56,6 @@ use crate::pdata::{OtapPdata, OtlpProtoBytes};
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:otel:geneva:exporter";
 
-
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -133,7 +132,6 @@ pub enum AuthConfig {
 struct ExporterMetrics {
     // Placeholder - will add actual metrics counters later
 }
-
 
 /// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
@@ -259,6 +257,8 @@ impl GenevaExporter {
                     .encode_and_compress_logs(&logs_request.resource_logs)
                     .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
+                // TODO: This is sequential batch upload.
+                // Consider revisiting to implementing concurrent uploads
                 // Upload each batch
                 for batch in batches {
                     self.geneva_client
@@ -289,6 +289,8 @@ impl GenevaExporter {
                     .encode_and_compress_spans(&traces_request.resource_spans)
                     .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
+                // TODO: This is sequential batch upload.
+                // Consider revisiting to implementing concurrent uploads
                 // Upload each batch
                 for batch in batches {
                     self.geneva_client
@@ -303,12 +305,6 @@ impl GenevaExporter {
                         traces_request.resource_spans.len()
                     ))
                     .await;
-            }
-            OtlpProtoBytes::ExportMetricsRequest(_) => {
-                effect_handler
-                    .info("Metrics export to Geneva not yet supported")
-                    .await;
-                return Err("Metrics export not yet supported".to_string());
             }
         }
 
@@ -404,10 +400,28 @@ mod tests {
         });
 
         let config: Config = serde_json::from_value(json).unwrap();
+
+        // Assert all config fields
         assert_eq!(config.endpoint, "https://geneva.example.com");
         assert_eq!(config.environment, "production");
+        assert_eq!(config.account, "test-account");
+        assert_eq!(config.namespace, "test-namespace");
+        assert_eq!(config.region, "westus2");
         assert_eq!(config.config_major_version, 1);
+        assert_eq!(config.tenant, "test-tenant");
+        assert_eq!(config.role_name, "test-role");
+        assert_eq!(config.role_instance, "test-instance");
         assert_eq!(config.max_buffer_size, 1000); // default
+        assert_eq!(config.max_concurrent_uploads, 4); // default
+
+        // Assert auth config
+        match config.auth {
+            AuthConfig::Certificate { path, password } => {
+                assert_eq!(path, "/path/to/cert.p12");
+                assert_eq!(password, "secret");
+            }
+            _ => panic!("Expected Certificate auth variant"),
+        }
     }
 
     #[test]

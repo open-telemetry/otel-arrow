@@ -33,7 +33,7 @@ You should see `urn:otel:geneva:exporter` in the Exporters list.
 
 ## Test Configuration
 
-To test using the configuration file `test-config-otlp-receiver.yaml` provided
+To test using the configuration file `otlp-geneva.yaml` provided
 in this directory:
 
 ```bash
