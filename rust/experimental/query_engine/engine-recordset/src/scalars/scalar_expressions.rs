@@ -1945,7 +1945,14 @@ mod tests {
     #[test]
     fn test_execute_select_scalar_expression() {
         fn run_test_success(input: SelectScalarExpression, expected: &str) {
-            let mut test = TestExecutionContext::new();
+            let mut test =
+                TestExecutionContext::new().with_record(TestRecord::new().with_key_value(
+                    "Attributes".into(),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                        "key1".into(),
+                        OwnedValue::String(StringValueStorage::new("value1".into())),
+                    )]))),
+                ));
 
             let execution_context = test.create_execution_context();
 
@@ -2084,6 +2091,28 @@ mod tests {
                             StringScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 "$.key1[-1].key2",
+                            ),
+                        )),
+                    ),
+                )),
+            ),
+            "value1",
+        );
+
+        run_test_success(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Parse(ParseScalarExpression::JsonPath(
+                    ParseJsonPathScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "$.Attributes.key1",
                             ),
                         )),
                     ),
