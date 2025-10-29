@@ -580,12 +580,12 @@ impl ExecutionContext {
 
         let session_config = SessionConfig::new()
             // since we're executing always in single threaded runtime it doesn't really make
-            // sense to spawn repartition tasks to do do things like parallel joins. Just use
-            // a single partition for simplicity.
+            // sense to spawn repartition tasks to repartition to do things in parallel.
             .with_target_partitions(1)
             .with_repartition_joins(false)
             .with_repartition_file_scans(false)
-            .with_repartition_windows(false);
+            .with_repartition_windows(false)
+            .with_repartition_aggregations(false);
 
         let session_ctx = SessionContext::new_with_config(session_config);
 
