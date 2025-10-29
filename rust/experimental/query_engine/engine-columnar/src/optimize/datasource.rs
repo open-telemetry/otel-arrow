@@ -7,6 +7,7 @@ use datafusion::catalog::{MemTable, TableProvider};
 use datafusion::config::ConfigOptions;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::{ExecutionPlan, with_new_children_if_necessary};
 use otel_arrow_rust::otap::OtapArrowRecords;
 
@@ -61,6 +62,23 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                     curr_batch_exec.payload_type
                 )))
             }
+        } else if let Some(curr_hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+            // TODO comment on why we do this
+            let left = self.optimize(curr_hash_join.left.clone(), config)?;
+            let right = self.optimize(curr_hash_join.right.clone(), config)?;
+            println!("projection = {:?}", curr_hash_join.projection);
+            let new_hash_join = HashJoinExec::try_new(
+                left,
+                right, 
+                curr_hash_join.on.clone(), 
+                curr_hash_join.filter.clone(),
+                curr_hash_join.join_type(),
+                curr_hash_join.projection.clone(),
+                curr_hash_join.partition_mode().clone(), 
+                curr_hash_join.null_equality.clone()
+            )?;
+            Ok(Arc::new(new_hash_join))
+        
         } else {
             let children = plan
                 .children()
