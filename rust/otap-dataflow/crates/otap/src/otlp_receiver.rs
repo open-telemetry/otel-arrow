@@ -50,8 +50,10 @@ pub struct Config {
     /// (as tonic supports) for request and response compression.
     compression_method: Option<CompressionMethod>,
 
-    /// Maximum number of concurrent (in-flight) requests (default: 1000)
-    #[serde(default = "default_max_concurrent_requests")]
+    /// Maximum number of concurrent in-flight requests.
+    /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity so
+    /// backpressure flows upstream automatically. Any non-zero value is still clamped to that
+    /// capacity at runtime.
     max_concurrent_requests: usize,
 
     /// Whether to wait for the result (default: true)
@@ -71,10 +73,6 @@ pub struct Config {
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
-}
-
-const fn default_max_concurrent_requests() -> usize {
-    1000
 }
 
 const fn default_wait_for_result() -> bool {
@@ -106,8 +104,12 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
+        let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
+        receiver
+            .tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
+
         Ok(ReceiverWrapper::shared(
-            OTLPReceiver::from_config(pipeline, &node_config.config)?,
+            receiver,
             node,
             node_config,
             receiver_config,
@@ -131,6 +133,19 @@ impl OTLPReceiver {
         let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
 
         Ok(Self { config, metrics })
+    }
+
+    fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
+        dbg!(&self.config.max_concurrent_requests);
+        dbg!(downstream_capacity);
+        // Fall back to the downstream channel capacity when it is tighter than the user setting.
+        let safe_capacity = downstream_capacity.max(1);
+        if self.config.max_concurrent_requests == 0 {
+            self.config.max_concurrent_requests = safe_capacity;
+        } else if self.config.max_concurrent_requests > safe_capacity {
+            self.config.max_concurrent_requests = safe_capacity;
+        }
+        dbg!(&self.config.max_concurrent_requests);
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
@@ -256,7 +271,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .load_shed(true) // immediately reject when above limit
             .initial_stream_window_size(Some(8 * 1024 * 1024))
             .initial_connection_window_size(Some(32 * 1024 * 1024))
-            .max_frame_size(Some(/*1 * */ 1024 * 1024))
+            .max_frame_size(Some(16 * 1024 * 1024))
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32));
@@ -460,7 +475,7 @@ mod tests {
             "listening_addr": "127.0.0.1:4317"
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
-        assert_eq!(receiver.config.max_concurrent_requests, 1000);
+        assert_eq!(receiver.config.max_concurrent_requests, 0);
 
         let config_full = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -484,6 +499,45 @@ mod tests {
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
         assert_eq!(receiver.config.timeout, Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn test_tune_max_concurrent_requests() {
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        // Defaults clamp to downstream capacity.
+        let config_default = json!({
+            "listening_addr": "127.0.0.1:4317"
+        });
+        let mut receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
+        receiver.tune_max_concurrent_requests(128);
+        assert_eq!(receiver.config.max_concurrent_requests, 128);
+
+        // User provided smaller value is preserved.
+        let config_small = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_concurrent_requests": 32
+        });
+        let mut receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
+        receiver.tune_max_concurrent_requests(128);
+        assert_eq!(receiver.config.max_concurrent_requests, 32);
+
+        // Config value of zero adopts downstream capacity.
+        let config_zero = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_concurrent_requests": 0
+        });
+        let mut receiver =
+            OTLPReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
+        receiver.tune_max_concurrent_requests(256);
+        assert_eq!(receiver.config.max_concurrent_requests, 256);
     }
 
     fn scenario(
