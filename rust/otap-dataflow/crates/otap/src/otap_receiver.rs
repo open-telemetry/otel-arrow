@@ -58,7 +58,8 @@ pub struct Config {
 
     compression_method: Option<CompressionMethod>,
 
-    message_size: usize,
+    /// Size of the channel used to buffer outgoing responses to the client.
+    response_stream_channel_size: usize,
 
     /// Maximum number of concurrent (in-flight) requests (default: 1000)
     #[serde(default = "default_max_concurrent_requests")]
@@ -229,7 +230,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let listener_stream = TcpListenerStream::new(listener);
 
         let settings = Settings {
-            channel_size: self.config.message_size,
+            response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
         };
@@ -849,7 +850,7 @@ mod tests {
             OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
                 .unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
-        assert_eq!(receiver.config.message_size, 100);
+        assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
@@ -862,7 +863,7 @@ mod tests {
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_minimal).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
-        assert_eq!(receiver.config.message_size, 200);
+        assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
@@ -879,7 +880,7 @@ mod tests {
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_full_gzip).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
-        assert_eq!(receiver.config.message_size, 150);
+        assert_eq!(receiver.config.response_stream_channel_size, 150);
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
         assert!(receiver.config.wait_for_result);
         assert!(matches!(
@@ -897,7 +898,7 @@ mod tests {
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_zstd).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4320");
-        assert_eq!(receiver.config.message_size, 50);
+        assert_eq!(receiver.config.response_stream_channel_size, 50);
         assert!(!receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
@@ -913,7 +914,7 @@ mod tests {
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_deflate).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4321");
-        assert_eq!(receiver.config.message_size, 75);
+        assert_eq!(receiver.config.response_stream_channel_size, 75);
         assert!(matches!(
             receiver.config.compression_method,
             Some(CompressionMethod::Deflate)

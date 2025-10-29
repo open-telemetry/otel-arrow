@@ -38,8 +38,8 @@ pub mod otlp;
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// Size of the channel used to buffer incoming requests.
-    pub channel_size: usize,
+    /// Size of the channel used to buffer outgoing responses to the client.
+    pub response_stream_channel_size: usize,
     /// Maximum concurrent requests per receiver instance (per core).
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
@@ -136,7 +136,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
         let mut input_stream = request.into_inner();
         // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.channel_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
 
@@ -181,7 +181,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.channel_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
 
@@ -225,7 +225,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.channel_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
 
