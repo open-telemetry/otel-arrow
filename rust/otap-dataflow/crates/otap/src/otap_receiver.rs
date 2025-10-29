@@ -539,6 +539,102 @@ mod tests {
         }
     }
 
+    /// Validation closure that checks the received message and counters (!Send context).
+    /// Also sends ACKs when wait_for_result is enabled.
+    fn validation_procedure()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                // check that messages have been sent through the effect_handler
+
+                // read from the effect handler
+                for batch_id in 0..3 {
+                    let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
+
+                    // Validate the payload
+                    let metrics_records: OtapArrowRecords = metrics_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
+
+                    // Assert that the message received is what the test client sent.
+                    let _expected_metrics_message =
+                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                    assert!(matches!(metrics_records, _expected_metrics_message));
+
+                    // Send ACK if wait_for_result is enabled
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("Failed to send Ack for metrics");
+                    }
+                }
+
+                for batch_id in 0..3 {
+                    let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
+
+                    // Validate the payload
+                    let logs_records: OtapArrowRecords = logs_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
+
+                    // Assert that the message received is what the test client sent.
+                    let _expected_logs_message =
+                        create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                    assert!(matches!(logs_records, _expected_logs_message));
+
+                    // Send ACK if wait_for_result is enabled
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("Failed to send Ack for logs");
+                    }
+                }
+
+                for batch_id in 0..3 {
+                    let traces_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
+
+                    // Validate the payload
+                    let traces_records: OtapArrowRecords = traces_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
+
+                    // Assert that the message received is what the test client sent.
+                    let _expected_traces_message =
+                        create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                    assert!(matches!(traces_records, _expected_traces_message));
+
+                    // Send ACK if wait_for_result is enabled
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("Failed to send Ack for traces");
+                    }
+                }
+            })
+        }
+    }
+    
     /// Test scenario for NACK functionality - expects error responses for all signals
     fn nack_scenario(
         grpc_endpoint: String,
@@ -788,102 +884,6 @@ mod tests {
                     }
                 }
             }) as Pin<Box<dyn Future<Output = ()>>>
-        }
-    }
-
-    /// Validation closure that checks the received message and counters (!Send context).
-    /// Also sends ACKs when wait_for_result is enabled.
-    fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
-        |mut ctx| {
-            Box::pin(async move {
-                // check that messages have been sent through the effect_handler
-
-                // read from the effect handler
-                for batch_id in 0..3 {
-                    let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received");
-
-                    // Validate the payload
-                    let metrics_records: OtapArrowRecords = metrics_pdata
-                        .clone()
-                        .payload()
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
-
-                    // Assert that the message received is what the test client sent.
-                    let _expected_metrics_message =
-                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
-                    assert!(matches!(metrics_records, _expected_metrics_message));
-
-                    // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
-                    {
-                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                            .await
-                            .expect("Failed to send Ack for metrics");
-                    }
-                }
-
-                for batch_id in 0..3 {
-                    let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received");
-
-                    // Validate the payload
-                    let logs_records: OtapArrowRecords = logs_pdata
-                        .clone()
-                        .payload()
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
-
-                    // Assert that the message received is what the test client sent.
-                    let _expected_logs_message =
-                        create_otap_batch(batch_id, ArrowPayloadType::Logs);
-                    assert!(matches!(logs_records, _expected_logs_message));
-
-                    // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
-                    {
-                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                            .await
-                            .expect("Failed to send Ack for logs");
-                    }
-                }
-
-                for batch_id in 0..3 {
-                    let traces_pdata = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received");
-
-                    // Validate the payload
-                    let traces_records: OtapArrowRecords = traces_pdata
-                        .clone()
-                        .payload()
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
-
-                    // Assert that the message received is what the test client sent.
-                    let _expected_traces_message =
-                        create_otap_batch(batch_id, ArrowPayloadType::Spans);
-                    assert!(matches!(traces_records, _expected_traces_message));
-
-                    // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
-                    {
-                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                            .await
-                            .expect("Failed to send Ack for traces");
-                    }
-                }
-            })
         }
     }
 
