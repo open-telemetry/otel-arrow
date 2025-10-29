@@ -136,21 +136,15 @@ impl OTLPReceiver {
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
         let calldata = ack.calldata;
         let resp = Ok(());
-        match ack.accepted.signal_type() {
-            SignalType::Logs => states
-                .logs
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Metrics => states
-                .metrics
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Traces => states
-                .traces
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-        }
-        .unwrap_or(RouteResponse::None)
+        let state = match ack.accepted.signal_type() {
+            SignalType::Logs => states.logs.as_ref(),
+            SignalType::Metrics => states.metrics.as_ref(),
+            SignalType::Traces => states.traces.as_ref(),
+        };
+
+        state
+            .map(|s| s.route_response(calldata, resp))
+            .unwrap_or(RouteResponse::None)
     }
 
     fn route_nack_response(
@@ -159,30 +153,33 @@ impl OTLPReceiver {
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
         let calldata = std::mem::take(&mut nack.calldata);
-        let sigtype = nack.refused.signal_type();
+        let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
-        match sigtype {
-            SignalType::Logs => states
-                .logs
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Metrics => states
-                .metrics
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-            SignalType::Traces => states
-                .traces
-                .as_ref()
-                .map(|state| state.route_response(calldata, resp)),
-        }
-        .unwrap_or(RouteResponse::None)
+        let state = match signal_type {
+            SignalType::Logs => states.logs.as_ref(),
+            SignalType::Metrics => states.metrics.as_ref(),
+            SignalType::Traces => states.traces.as_ref(),
+        };
+
+        state
+            .map(|s| s.route_response(calldata, resp))
+            .unwrap_or(RouteResponse::None)
     }
 
-    fn handle_acknack_response(&mut self, resp: RouteResponse) {
+    fn handle_ack_response(&mut self, resp: RouteResponse) {
         match resp {
             RouteResponse::Sent => self.metrics.acks_sent.inc(),
-            RouteResponse::Expired => self.metrics.nacks_sent.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_expired.inc(),
+            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::None => {}
+        }
+    }
+
+    fn handle_nack_response(&mut self, resp: RouteResponse) {
+        match resp {
+            RouteResponse::Sent => self.metrics.nacks_sent.inc(),
+            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
             RouteResponse::None => {}
         }
     }
@@ -212,7 +209,7 @@ pub struct OtlpReceiverMetrics {
 
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
-    pub acks_nacks_expired: Counter<u64>,
+    pub acks_nacks_invalid_or_expired: Counter<u64>,
 }
 
 #[async_trait]
@@ -284,10 +281,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_acknack_response(self.route_ack_response(&states, ack));
+                            self.handle_ack_response(self.route_ack_response(&states, ack));
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_acknack_response(self.route_nack_response(&states, nack));
+                            self.handle_nack_response(self.route_nack_response(&states, nack));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
