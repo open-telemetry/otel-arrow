@@ -182,13 +182,17 @@ impl Decoder for OtlpBytesDecoder {
     type Error = Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        let buf = src.chunk();
+        let len = src.remaining();
+        if len == 0 {
+            return Ok(None);
+        }
+
+        let bytes = src.copy_to_bytes(len);
         let result = match self.signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
         };
-        src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))
     }
 }

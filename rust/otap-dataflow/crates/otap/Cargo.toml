@@ -42,6 +42,7 @@ tonic-prost = { workspace = true }
 prost = { workspace = true }
 smallvec = { workspace = true }
 bitflags = { workspace = true }
+bytes = "1"
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }

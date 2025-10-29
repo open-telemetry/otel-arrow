@@ -88,7 +88,7 @@ pub fn create_test_pdata() -> OtapPdata {
     let mut otlp_bytes = vec![];
     otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into())
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes.into()).into())
 }
 
 /// Simple exporter test where there is NO subscribe_to() in the context.

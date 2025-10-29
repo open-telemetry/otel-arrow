@@ -291,7 +291,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Logs) {
-                            let req = LogsData::decode(bytes.as_slice()).map_err(|e| {
+                            let req = LogsData::decode(bytes.as_ref()).map_err(|e| {
                                 Error::PdataConversionError {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
@@ -302,7 +302,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
-                            let req = MetricsData::decode(bytes.as_slice()).map_err(|e| {
+                            let req = MetricsData::decode(bytes.as_ref()).map_err(|e| {
                                 Error::PdataConversionError {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
@@ -313,7 +313,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
-                            let req = TracesData::decode(bytes.as_slice()).map_err(|e| {
+                            let req = TracesData::decode(bytes.as_ref()).map_err(|e| {
                                 Error::PdataConversionError {
                                     error: format!("error decoding proto bytes: {e}"),
                                 }
@@ -618,7 +618,7 @@ mod tests {
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -671,8 +671,9 @@ mod tests {
                 metrics_data
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let otlp_metrics_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                let otlp_metrics_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.into()).into(),
+                );
                 ctx.process(Message::PData(otlp_metrics_bytes))
                     .await
                     .expect("failed to process");
@@ -736,8 +737,9 @@ mod tests {
                 traces_data
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let otlp_traces_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
+                let otlp_traces_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportTracesRequest(bytes.into()).into(),
+                );
                 ctx.process(Message::PData(otlp_traces_bytes))
                     .await
                     .expect("failed to process");
