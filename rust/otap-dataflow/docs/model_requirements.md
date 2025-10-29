@@ -17,7 +17,7 @@ SDKs have contact with the original API events. This relative simplicity
 is compared against performing the same tasks in a downstream query engine:
 
 - **SDKs**: An SDK remembers its start time and assumes a functional
-  system clock. The SDK assumes its resource value is unique. SDKs a
+  system clock. The SDK assumes its resource value is unique. SDKs
   coordinate collection (typically through hardware synchronization)
   to ensure outputs do not overlap in time. The SDK chooses a single
   metric "temporality" and manages the necessary state internally.
@@ -52,7 +52,7 @@ definition because it applies across signal types, and it gives a
 substantial amount of freedom to aggregate the data without distorting
 an observability signal. This means respecting:
 
-- Event timestamps: Preferrably, do not presume the event time is
+- Event timestamps: Preferably, do not presume the event time is
   close to the arrival time for aggregation purposes, as that will
   distort representivity.
 - Start timestamps: In OpenTelemetry metrics, the start timestamp
@@ -169,7 +169,7 @@ occurs with a new attribute set. The choices are:
 
 It is somewhat disappointing, however, to lose the value of the first
 point in every Counter timeseries because it contributes arbitrarily
-to the rate. OpenTelemetry could conveivably add a data point flag to
+to the rate. OpenTelemetry could conceivably add a data point flag to
 indicate that a series has a true-zero value at its start time.
 
 ### Fractional histogram
