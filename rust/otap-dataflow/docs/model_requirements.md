@@ -52,7 +52,7 @@ definition because it applies across signal types, and it gives a
 substantial amount of freedom to aggregate the data without distorting
 an observability signal. This means respecting:
 
-- Event timestamps: Preferrably, do not presume the event time is
+- Event timestamps: Preferably, do not presume the event time is
   close to the arrival time for aggregation purposes, as that will
   distort representivity.
 - Start timestamps: In OpenTelemetry metrics, the start timestamp
