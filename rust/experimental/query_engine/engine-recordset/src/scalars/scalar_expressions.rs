@@ -914,6 +914,20 @@ mod tests {
             )),
             Value::Null,
         );
+
+        // Test invalid access (using a bool value)
+        run_test(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )]),
+            )),
+            Value::Null,
+        );
     }
 
     #[test]
@@ -965,6 +979,21 @@ mod tests {
                 )]),
             )),
             Value::String(&StringValueStorage::new("hello world".into())),
+        );
+
+        // Test invalid access (using a bool value)
+        run_test(
+            ScalarExpression::Attached(AttachedScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )]),
+            )),
+            Value::Null,
         );
     }
 
