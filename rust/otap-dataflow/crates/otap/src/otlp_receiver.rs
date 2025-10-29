@@ -66,6 +66,11 @@ pub struct Config {
     /// see a failure, errors are effectively suppressed.
     #[serde(default = "default_wait_for_result")]
     wait_for_result: bool,
+
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 const fn default_max_concurrent_requests() -> usize {
@@ -245,7 +250,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             traces: traces_server.common.state(),
         };
 
-        let server = Server::builder()
+        let mut server_builder = Server::builder();
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            server_builder = server_builder.timeout(timeout);
+        }
+
+        let server = server_builder
             .add_service(logs_server)
             .add_service(metrics_server)
             .add_service(traces_server);
@@ -446,8 +458,23 @@ mod tests {
             "compression_method": "gzip",
             "max_concurrent_requests": 2500
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_full).unwrap();
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+
+        let config_with_timeout = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "30s"
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
+
+        let config_with_timeout_ms = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "timeout": "500ms"
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
+        assert_eq!(receiver.config.timeout, Some(Duration::from_millis(500)));
     }
 
     fn scenario(
@@ -632,6 +659,7 @@ mod tests {
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
+                    timeout: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -669,6 +697,7 @@ mod tests {
                     listening_addr: addr,
                     compression_method: None,
                     max_concurrent_requests: 1000,
+                    timeout: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },

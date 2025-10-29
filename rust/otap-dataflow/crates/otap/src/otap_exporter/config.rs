@@ -5,6 +5,7 @@
 
 use crate::compression::CompressionMethod;
 use serde::{Deserialize, Deserializer};
+use std::time::Duration;
 
 /// Configuration for the OTAP Exporter
 #[derive(Debug, Deserialize)]
@@ -24,6 +25,11 @@ pub struct Config {
     /// Configuration for the arrow payloads
     #[serde(default)]
     pub arrow: ArrowConfig,
+
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 /// Configuration for the arrow payloads produced by the [`OtapExporter`]
