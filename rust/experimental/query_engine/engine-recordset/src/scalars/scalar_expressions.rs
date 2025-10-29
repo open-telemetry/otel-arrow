@@ -2121,6 +2121,21 @@ mod tests {
             "value1",
         );
 
+        // Test invalid selectors (not an array)
+        run_test_failure(SelectScalarExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Parse(ParseScalarExpression::Json(ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), r#"[18]"#),
+                )),
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Selectors should be an array",
+            ))),
+        ));
+
         // Test invalid index access (positive)
         run_test_failure(SelectScalarExpression::new(
             QueryLocation::new_fake(),
