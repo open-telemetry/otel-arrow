@@ -238,7 +238,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
             accept_compression_encodings: compression,
-            send_compression_encodings: EnabledCompressionEncodings::default() // no response compression
+            send_compression_encodings: EnabledCompressionEncodings::default(), // no response compression
         };
 
         let logs_server = LogsServiceServer::new(effect_handler.clone(), &settings);
@@ -256,7 +256,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .load_shed(true) // immediately reject when above limit
             .initial_stream_window_size(Some(8 * 1024 * 1024))
             .initial_connection_window_size(Some(32 * 1024 * 1024))
-            .max_frame_size(Some(1 * 1024 * 1024))
+            .max_frame_size(Some(/*1 * */ 1024 * 1024))
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32));

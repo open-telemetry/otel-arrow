@@ -126,8 +126,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let mut endpoint =
-            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
+        let mut endpoint = Channel::from_shared(self.config.grpc_endpoint.clone())
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -148,10 +148,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // Bigger windows reduce flow-control throttling for big exports:
             .initial_stream_window_size(Some(8 * 1024 * 1024)) // 8 MiB
             .initial_connection_window_size(Some(32 * 1024 * 1024)); // 32 MiB
-            // Or rely on BDP estimation (overrides manual window sizes):
-            // .http2_adaptive_window(true)
-            // Optional: expand internal Tower buffer if needed:
-            // .buffer_size(Some(2048))
+        // Or rely on BDP estimation (overrides manual window sizes):
+        // .http2_adaptive_window(true)
+        // Optional: expand internal Tower buffer if needed:
+        // .buffer_size(Some(2048))
 
         // Apply timeout if configured
         if let Some(timeout) = self.config.timeout {
