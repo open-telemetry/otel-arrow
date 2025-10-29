@@ -48,6 +48,11 @@ pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
     message_size: usize,
+
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// A Receiver that listens for OTAP messages
@@ -89,6 +94,7 @@ impl OTAPReceiver {
                 listening_addr,
                 compression_method,
                 message_size,
+                timeout: None,
             },
         }
     }
@@ -148,7 +154,14 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 .accept_compressed(encoding);
         }
 
-        let server = Server::builder()
+        let mut server_builder = Server::builder();
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            server_builder = server_builder.timeout(timeout);
+        }
+
+        let server = server_builder
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_service_server)
             .add_service(metrics_service_server)

@@ -14,8 +14,11 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
+      message_size: 256 # Required: channel buffer capacity (number of messages)
+      # timeout: "30s" # Optional: timeout for RPC requests
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otap:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:1235"
+      # timeout: "15s" # Optional: timeout for RPC requests
