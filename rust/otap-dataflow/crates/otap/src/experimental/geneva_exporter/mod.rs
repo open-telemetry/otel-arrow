@@ -38,6 +38,7 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,10 +128,16 @@ pub enum AuthConfig {
     },
 }
 
-/// Placeholder metrics (will be replaced with actual metrics)
-#[derive(Default, Debug)]
+/// Geneva exporter metrics.
+/// Grouped under `otap.exporter.geneva`.
+#[metric_set(name = "otap.exporter.geneva")]
+#[derive(Debug, Default, Clone)]
 struct ExporterMetrics {
-    // Placeholder - will add actual metrics counters later
+    // TODO: Add actual metrics counters later
+    // Examples:
+    // - batches_uploaded: Counter<u64>
+    // - batches_failed: Counter<u64>
+    // - bytes_sent: Counter<u64>
 }
 
 /// Geneva exporter that sends OTAP data to Geneva backend
@@ -305,6 +312,10 @@ impl GenevaExporter {
                         traces_request.resource_spans.len()
                     ))
                     .await;
+            }
+            OtlpProtoBytes::ExportMetricsRequest(_) => {
+                // Geneva exporter does not support metrics
+                return Err("Geneva exporter does not support metrics signal".to_string());
             }
         }
 
