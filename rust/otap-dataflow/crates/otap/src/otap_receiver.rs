@@ -968,6 +968,7 @@ mod tests {
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
+        assert!(receiver.config.timeout.is_none());
 
         // Test with minimal required fields, max_concurrent_requests defaults to 1000, wait_for_result defaults to false
         let config_minimal = json!({
@@ -980,6 +981,7 @@ mod tests {
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
+        assert!(receiver.config.timeout.is_none());
 
         // Test with full configuration including gzip compression
         let config_full_gzip = json!({
@@ -987,7 +989,8 @@ mod tests {
             "message_size": 150,
             "compression_method": "gzip",
             "max_concurrent_requests": 2500,
-            "wait_for_result": true
+            "wait_for_result": true,
+            "timeout": "30s"
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_full_gzip).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
@@ -998,6 +1001,7 @@ mod tests {
             receiver.config.compression_method,
             Some(CompressionMethod::Gzip)
         ));
+        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
 
         // Test with zstd compression
         let config_with_zstd = json!({
@@ -1014,6 +1018,7 @@ mod tests {
             receiver.config.compression_method,
             Some(CompressionMethod::Zstd)
         ));
+        assert!(receiver.config.timeout.is_none());
 
         // Test with deflate compression
         let config_with_deflate = json!({
@@ -1028,6 +1033,7 @@ mod tests {
             receiver.config.compression_method,
             Some(CompressionMethod::Deflate)
         ));
+        assert!(receiver.config.timeout.is_none());
     }
 
     #[test]
