@@ -94,6 +94,8 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
+    /// Maximum size for inbound gRPC messages.
+    pub max_decoding_message_size: Option<usize>,
     /// Request compression allowed
     pub accept_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
@@ -205,7 +207,11 @@ impl Decoder for OtlpBytesDecoder {
 /// would require Arc<Mutex<_>>.
 fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal);
-    Grpc::new(codec).apply_compression_config(
+    let mut grpc = Grpc::new(codec);
+    if let Some(limit) = settings.max_decoding_message_size {
+        grpc = grpc.max_decoding_message_size(limit);
+    }
+    grpc.apply_compression_config(
         settings.accept_compression_encodings,
         settings.send_compression_encodings,
     )

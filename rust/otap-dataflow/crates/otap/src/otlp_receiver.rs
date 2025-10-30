@@ -141,6 +141,14 @@ pub struct Config {
     )]
     max_frame_size: Option<u32>,
 
+    /// Maximum size for inbound gRPC messages, in bytes.
+    /// Accepts plain integers or suffixed strings such as `4MiB`. Defaults to tonic's 4MiB limit.
+    #[serde(
+        default = "default_max_decoding_message_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    max_decoding_message_size: Option<u32>,
+
     /// Interval between HTTP/2 keepalive pings.
     /// The default 30s ping keeps intermediaries aware of idle-but-healthy connections. Shorten it
     /// to detect broken links faster, lengthen it to reduce ping traffic, or set to `null` to
@@ -215,6 +223,10 @@ fn default_initial_connection_window_size() -> Option<u32> {
 
 fn default_max_frame_size() -> Option<u32> {
     Some(16 * 1024)
+}
+
+fn default_max_decoding_message_size() -> Option<u32> {
+    None // use tonic default (4 MiB)
 }
 
 fn default_http2_keepalive_interval() -> Option<Duration> {
@@ -402,6 +414,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let settings = Settings {
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
+            max_decoding_message_size: self
+                .config
+                .max_decoding_message_size
+                .map(|value| value as usize),
             accept_compression_encodings: compression,
             send_compression_encodings: EnabledCompressionEncodings::default(), // no response compression
         };
@@ -566,6 +582,7 @@ mod tests {
             initial_stream_window_size: default_initial_stream_window_size(),
             initial_connection_window_size: default_initial_connection_window_size(),
             max_frame_size: default_max_frame_size(),
+            max_decoding_message_size: default_max_decoding_message_size(),
             http2_adaptive_window: default_http2_adaptive_window(),
             http2_keepalive_interval: default_http2_keepalive_interval(),
             http2_keepalive_timeout: default_http2_keepalive_timeout(),
@@ -688,6 +705,10 @@ mod tests {
         assert!(!receiver.config.http2_adaptive_window);
         assert_eq!(receiver.config.max_frame_size, Some(16 * 1024));
         assert_eq!(
+            receiver.config.max_decoding_message_size,
+            Some(4 * 1024 * 1024)
+        );
+        assert_eq!(
             receiver.config.http2_keepalive_interval,
             Some(Duration::from_secs(30))
         );
@@ -717,6 +738,7 @@ mod tests {
             "initial_stream_window_size": "4MiB",
             "initial_connection_window_size": "16MiB",
             "max_frame_size": "8MiB",
+            "max_decoding_message_size": "6MiB",
             "http2_keepalive_interval": "45s",
             "http2_keepalive_timeout": "20s",
             "max_concurrent_streams": 1024,
@@ -743,6 +765,10 @@ mod tests {
             Some(16 * 1024 * 1024)
         );
         assert_eq!(receiver.config.max_frame_size, Some(8 * 1024 * 1024));
+        assert_eq!(
+            receiver.config.max_decoding_message_size,
+            Some(6 * 1024 * 1024)
+        );
         assert_eq!(
             receiver.config.http2_keepalive_interval,
             Some(Duration::from_secs(45))
