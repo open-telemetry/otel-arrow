@@ -57,6 +57,10 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
+/// Experimental exporters
+#[cfg(feature = "experimental-exporters")]
+pub mod experimental;
+
 /// testing utilities
 #[cfg(test)]
 mod otap_mock;

@@ -34,10 +34,12 @@ use tonic::server::{Grpc, NamedService, UnaryService};
 /// generally optional depending on wait_for_result: true, we do not
 /// create or use the state when ack/nack is not required.
 #[derive(Clone)]
-pub struct SharedState(Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>);
+pub struct SharedState(
+    pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
+);
 
 impl SharedState {
-    fn new(max_size: usize) -> Self {
+    pub(crate) fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
 }
@@ -228,9 +230,9 @@ impl OtapBatchService {
 
 /// Guard mechanism for cancelling a slot when Tonic timeout
 /// drops the future.
-struct SlotGuard {
-    key: SlotKey,
-    state: SharedState,
+pub(crate) struct SlotGuard {
+    pub(crate) key: SlotKey,
+    pub(crate) state: SharedState,
 }
 
 impl Drop for SlotGuard {

@@ -11,10 +11,10 @@ on:
         required: true
         type: number
       suite_config:
-        description: "Path to benchmark suite config (relative to repo)"
+        description: "Path to benchmark suite config (relative to tools/pipeline_perf_test/)"
         required: true
         type: string
-        default: tools/pipeline_perf_test/test_suites/integration/continuous/100klrps-docker.yaml
+        default: test_suites/integration/continuous/100klrps-docker.yaml
 
 # Cancel in-progress runs for the same PR if a new manual run is started
 concurrency:
