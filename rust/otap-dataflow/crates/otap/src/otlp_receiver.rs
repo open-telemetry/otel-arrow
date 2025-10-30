@@ -8,7 +8,7 @@ use crate::otap_grpc::otlp::server::{
 };
 use crate::pdata::OtapPdata;
 
-use crate::compression::CompressionMethod;
+use crate::compression::{self, CompressionMethod};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::byte_units;
@@ -47,8 +47,12 @@ pub struct Config {
     listening_addr: SocketAddr,
 
     /// Compression methods accepted (only used for requests, responses are not compressed as they
-    /// are typically small).
-    compression_method: Option<CompressionMethod>,
+    /// are typically small). Omitted field defaults to accepting gzip, zstd, and deflate.
+    #[serde(
+        default,
+        deserialize_with = "compression::deserialize_compression_methods"
+    )]
+    compression_method: Option<Vec<CompressionMethod>>,
 
     // --- All the following settings have defaults that should be reasonable for most users ---
     // -----------------------------------------------------------------------------------------
@@ -288,7 +292,7 @@ impl OTLPReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        let mut config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
@@ -405,11 +409,18 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .with_keepalive_retries(self.config.tcp_keepalive_retries);
 
         let mut compression = EnabledCompressionEncodings::default();
-        let _ = self
-            .config
-            .compression_method
-            .as_ref()
-            .map(|method| compression.enable(method.map_to_compression_encoding()));
+        match &self.config.compression_method {
+            Some(methods) => {
+                for method in methods {
+                    compression.enable(method.map_to_compression_encoding());
+                }
+            }
+            None => {
+                for method in compression::DEFAULT_COMPRESSION_METHODS {
+                    compression.enable(method.map_to_compression_encoding());
+                }
+            }
+        }
 
         let settings = Settings {
             max_concurrent_requests: self.config.max_concurrent_requests,
@@ -535,6 +546,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 mod tests {
     use super::*;
 
+    use crate::compression::CompressionMethod;
     use crate::pdata::OtlpProtoBytes;
     use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use crate::proto::opentelemetry::collector::logs::v1::{
@@ -685,6 +697,7 @@ mod tests {
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 0);
+        assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.tcp_nodelay);
         assert_eq!(receiver.config.tcp_keepalive, Some(Duration::from_secs(45)));
         assert_eq!(
@@ -725,6 +738,10 @@ mod tests {
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+        assert_eq!(
+            receiver.config.compression_method,
+            Some(vec![CompressionMethod::Gzip])
+        );
 
         let config_with_server_overrides = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -779,6 +796,25 @@ mod tests {
         );
         assert_eq!(receiver.config.max_concurrent_streams, Some(1024));
         assert!(receiver.config.http2_adaptive_window);
+
+        let config_with_compression_list = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "compression_method": ["gzip", "zstd", "gzip"]
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_list).unwrap();
+        assert_eq!(
+            receiver.config.compression_method,
+            Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
+        );
+
+        let config_with_compression_none = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "compression_method": "none"
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_none).unwrap();
+        assert_eq!(receiver.config.compression_method, Some(vec![]));
 
         let config_with_timeout = json!({
             "listening_addr": "127.0.0.1:4317",

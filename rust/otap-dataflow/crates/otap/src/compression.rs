@@ -5,11 +5,11 @@
 //! Defines a compression enum to abstract from tonic and allows the exporter and receiver to get the respective tonic equivalent
 //!
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tonic::codec::CompressionEncoding;
 
 /// Enum to represent various compression methods
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMethod {
     /// Fastest compression
@@ -33,9 +33,60 @@ impl CompressionMethod {
     }
 }
 
+/// Default set of compression methods that are accepted when no configuration is provided.
+pub const DEFAULT_COMPRESSION_METHODS: [CompressionMethod; 3] = [
+    CompressionMethod::Gzip,
+    CompressionMethod::Zstd,
+    CompressionMethod::Deflate,
+];
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CompressionConfigValue {
+    Single(CompressionMethod),
+    List(Vec<CompressionMethod>),
+    NoneKeyword(CompressionNone),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CompressionNone {
+    None,
+}
+
+/// Deserializer that accepts either a single compression method, a list, or the string `"none"`.
+/// Absence of the field keeps the default behaviour (all methods).
+pub fn deserialize_compression_methods<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<CompressionMethod>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<CompressionConfigValue>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let methods = match value {
+        CompressionConfigValue::Single(method) => vec![method],
+        CompressionConfigValue::List(methods) => methods,
+        CompressionConfigValue::NoneKeyword(CompressionNone::None) => Vec::new(),
+    };
+
+    let mut deduped = Vec::with_capacity(methods.len());
+    for method in methods {
+        if !deduped.contains(&method) {
+            deduped.push(method);
+        }
+    }
+
+    Ok(Some(deduped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
 
     #[test]
     fn compression_method_accepts_snake_case_only() {
@@ -51,5 +102,45 @@ mod tests {
         assert!(serde_json::from_str::<CompressionMethod>("\"Gzip\"").is_err());
         assert!(serde_json::from_str::<CompressionMethod>("\"Zstd\"").is_err());
         assert!(serde_json::from_str::<CompressionMethod>("\"Deflate\"").is_err());
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Holder {
+        #[serde(default, deserialize_with = "deserialize_compression_methods")]
+        methods: Option<Vec<CompressionMethod>>,
+    }
+
+    #[test]
+    fn deserialize_supports_single_value() {
+        let holder: Holder = serde_json::from_str(r#"{ "methods": "gzip" }"#).unwrap();
+        assert_eq!(holder.methods, Some(vec![CompressionMethod::Gzip]));
+    }
+
+    #[test]
+    fn deserialize_supports_list() {
+        let holder: Holder =
+            serde_json::from_str(r#"{ "methods": ["gzip", "zstd", "gzip"] }"#).unwrap();
+        assert_eq!(
+            holder.methods,
+            Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
+        );
+    }
+
+    #[test]
+    fn deserialize_supports_none_keyword() {
+        let holder: Holder = serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
+        assert_eq!(holder.methods, Some(vec![]));
+    }
+
+    #[test]
+    fn deserialize_absent_is_none() {
+        let holder: Holder = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(holder.methods.is_none());
+    }
+
+    #[test]
+    fn deserialize_null_is_none() {
+        let holder: Holder = serde_json::from_str(r#"{ "methods": null }"#).unwrap();
+        assert!(holder.methods.is_none());
     }
 }
