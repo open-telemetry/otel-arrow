@@ -11,7 +11,7 @@ settings:
   {% set plugin_urn = "urn:otel:otap:receiver" %}
   {% set compression = compression_method | default("zstd") %}
   {% set extra_config = {
-    "message_size": 100,
+    "response_stream_channel_size": 100,
     "compression_method": compression
   } %}
 {%- elif receiver_type == "otlp" -%}
