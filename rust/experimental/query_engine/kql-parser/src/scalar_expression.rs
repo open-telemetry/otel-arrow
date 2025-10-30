@@ -499,7 +499,8 @@ pub(crate) fn try_resolve_identifier(
         }
         ScalarExpression::Select(s) => {
             if let Some(mut value) = try_resolve_identifier(s.get_value(), scope)?
-                && let ScalarExpression::Static(StaticScalarExpression::Array(selectors)) = s.get_selectors()
+                && let ScalarExpression::Static(StaticScalarExpression::Array(selectors)) =
+                    s.get_selectors()
             {
                 for v in selectors.get_values() {
                     value.push(v.to_value().to_string().into());
