@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn test_aggregate_metric_groups_sorting_logic() {
         // Test the sorting logic with mock AggregateGroup structs
-        let mut groups = vec![
+        let mut groups = [
             AggregateGroup {
                 name: "zebra_metrics".to_string(),
                 brief: &TEST_METRICS_DESCRIPTOR,

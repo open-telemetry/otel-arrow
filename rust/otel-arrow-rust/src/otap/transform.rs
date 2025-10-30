@@ -2268,7 +2268,7 @@ mod test {
 
     #[test]
     fn test_materialize_parent_id_for_exemplar() {
-        let test_data = vec![
+        let test_data = [
             // p.id, int, f64, expected
             (1, Some(1), None, 1),
             (1, Some(1), None, 2),   // delta = 1
@@ -2333,7 +2333,7 @@ mod test {
 
     #[test]
     fn test_materialize_parent_id_for_exemplar_optional_columns() {
-        let test_data = vec![
+        let test_data = [
             // p.id, int, f64
             (1, Some(1), None),
             (1, Some(1), None),

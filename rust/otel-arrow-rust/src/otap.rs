@@ -1297,7 +1297,7 @@ mod test {
         // Also note that there's no remapping of the resource IDs because it is the primary column
         // we sort by, so it will always be increasing after sorting.
         //
-        let logs_data = vec![
+        let logs_data = [
             (1, 3, 6, 4),
             (0, 2, 2, 3),
             (0, 0, 1, 2),
@@ -1403,7 +1403,7 @@ mod test {
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
         ]));
 
-        let expected_logs_data = vec![
+        let expected_logs_data = [
             (0, 0, 0, 0),
             (0, 0, 1, 1),
             (0, 1, 2, 1),
@@ -2225,7 +2225,7 @@ mod test {
         // for span links, we'll use basically the same ordering of IDs and attributes values
         // as span events, which will make asserting on it a bit easier. The only difference is,
         // we replace the span name with a trace_id that will sort in the same order.
-        let span_links_data = vec![
+        let span_links_data = [
             (0, 1, 2),
             (2, 2, 4),
             (1, 3, 3),
@@ -2471,7 +2471,7 @@ mod test {
         // because span links for this test case was constructed in a way that should sort and
         // remap the IDs in basically the same ways as span events, see the comment above that
         // expected record batch for comments about why this is data is expected
-        let expected_span_links_data = vec![
+        let expected_span_links_data = [
             (0, 1, 1),
             (1, 4, 1),
             (1, 1, 1),
