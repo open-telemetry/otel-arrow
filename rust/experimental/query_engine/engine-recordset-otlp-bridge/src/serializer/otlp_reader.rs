@@ -563,15 +563,14 @@ mod tests {
 
             let actual = read_key_value(&mut reader).unwrap();
 
-            if expected.is_none() {
-                assert!(actual.is_none());
-            } else {
-                assert_eq!(expected.as_ref().unwrap().0, actual.as_ref().unwrap().0,);
-
+            if let Some(expected) = expected {
+                assert_eq!(expected.0, actual.as_ref().unwrap().0);
                 assert_eq!(
-                    expected.as_ref().unwrap().1.to_value().to_string(),
+                    expected.1.to_value().to_string(),
                     actual.as_ref().unwrap().1.to_value().to_string()
                 );
+            } else {
+                assert!(actual.is_none());
             }
         };
 

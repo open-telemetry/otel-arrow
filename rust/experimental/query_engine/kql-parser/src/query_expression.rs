@@ -146,14 +146,14 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
             let errors = parse_query(input, Default::default()).unwrap_err();
 
-            if expected_id.is_some() {
+            if let Some(expected_id) = expected_id {
                 if let ParserError::QueryLanguageDiagnostic {
                     location: _,
                     diagnostic_id: id,
                     message: msg,
                 } = &errors[0]
                 {
-                    assert_eq!(expected_id.unwrap(), *id);
+                    assert_eq!(expected_id, *id);
                     assert_eq!(expected_msg, msg);
                 } else {
                     panic!("Expected QueryLanguageDiagnostic");

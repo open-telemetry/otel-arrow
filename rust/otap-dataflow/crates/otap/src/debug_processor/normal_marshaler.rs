@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_marshal_metric_signal() {
-        let metrics = vec![
+        let metrics = [
             Metric::build_sum(
                 "system.cpu.time",
                 Sum::new(

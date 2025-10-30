@@ -1595,7 +1595,7 @@ mod tests {
 
         run_test(
             "subkey",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),
@@ -1607,7 +1607,7 @@ mod tests {
 
         run_test(
             "sub.key",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),
@@ -1619,7 +1619,7 @@ mod tests {
 
         run_test(
             "sub.a.b['key1']",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),

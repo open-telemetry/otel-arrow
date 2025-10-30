@@ -610,12 +610,12 @@ fn parse_identifier_or_pattern_literal(
         let mut pattern = regex::escape(&value).replace("\\*", ".*");
         pattern.insert(0, '^');
         let regex = Regex::new(&pattern);
-        if regex.is_err() {
+        if let Err(regex_err) = regex {
             return Err(ParserError::SyntaxError(
                 location,
                 format!(
                     "The '{value}' string value could not be parsed into a Regex: {}",
-                    regex.unwrap_err()
+                    regex_err
                 ),
             ));
         }
