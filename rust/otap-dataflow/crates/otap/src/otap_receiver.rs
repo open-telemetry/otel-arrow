@@ -794,7 +794,7 @@ mod tests {
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let message_size = 100;
+        let response_stream_channel_size = 100;
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
@@ -812,7 +812,7 @@ mod tests {
         // Create config JSON
         let config = json!({
             "listening_addr": addr.to_string(),
-            "message_size": message_size
+            "response_stream_channel_size": response_stream_channel_size
         });
 
         let receiver = ReceiverWrapper::shared(
@@ -843,7 +843,7 @@ mod tests {
         // Test with custom max_concurrent_requests, max_concurrent_requests defaults to 1000
         let config_with_max_concurrent_requests = json!({
             "listening_addr": "127.0.0.1:4317",
-            "message_size": 100,
+            "response_stream_channel_size": 100,
             "max_concurrent_requests": 5000
         });
         let receiver =
@@ -859,7 +859,7 @@ mod tests {
         // Test with minimal required fields, max_concurrent_requests defaults to 1000, wait_for_result defaults to false
         let config_minimal = json!({
             "listening_addr": "127.0.0.1:4318",
-            "message_size": 200
+            "response_stream_channel_size": 200
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_minimal).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
@@ -872,7 +872,7 @@ mod tests {
         // Test with full configuration including gzip compression
         let config_full_gzip = json!({
             "listening_addr": "127.0.0.1:4319",
-            "message_size": 150,
+            "response_stream_channel_size": 150,
             "compression_method": "gzip",
             "max_concurrent_requests": 2500,
             "wait_for_result": true,
@@ -892,7 +892,7 @@ mod tests {
         // Test with zstd compression
         let config_with_zstd = json!({
             "listening_addr": "127.0.0.1:4320",
-            "message_size": 50,
+            "response_stream_channel_size": 50,
             "compression_method": "zstd",
             "wait_for_result": false
         });
@@ -909,7 +909,7 @@ mod tests {
         // Test with deflate compression
         let config_with_deflate = json!({
             "listening_addr": "127.0.0.1:4321",
-            "message_size": 75,
+            "response_stream_channel_size": 75,
             "compression_method": "deflate"
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_deflate).unwrap();
@@ -944,7 +944,7 @@ mod tests {
 
         let config = json!({
             "listening_addr": addr.to_string(),
-            "message_size": 100,
+            "response_stream_channel_size": 100,
             "wait_for_result": true  // Enable ACK handling
         });
 
@@ -983,7 +983,7 @@ mod tests {
 
         let config = json!({
             "listening_addr": addr.to_string(),
-            "message_size": 100,
+            "response_stream_channel_size": 100,
             "wait_for_result": true  // Enable NACK handling
         });
 
