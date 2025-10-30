@@ -719,7 +719,7 @@ mod test {
 
     #[test]
     fn test_invalid_config() {
-        for (value, expect) in vec![
+        for (value, expect) in [
             (
                 json!({
                     "initial_interval": 0,
