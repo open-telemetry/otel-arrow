@@ -95,9 +95,9 @@ pub struct Config {
     transport_concurrency_limit: Option<usize>,
 
     /// Whether the gRPC server should shed load immediately once concurrency limits are hit.
-    /// Leaving this `true` (default) results in fast `UNAVAILABLE` responses and protects the
-    /// single-threaded runtime from unbounded queues. Turning it off allows requests to queue but
-    /// increases memory usage and tail latency under sustained overload.
+    /// Leaving this `true` (default) results in fast `resource_exhausted` responses and protects
+    /// the single-threaded runtime from unbounded queues. Turning it off allows requests to queue
+    /// but increases memory usage and tail latency under sustained overload.
     #[serde(default = "default_load_shed")]
     load_shed: bool,
 
@@ -131,7 +131,7 @@ pub struct Config {
     http2_adaptive_window: bool,
 
     /// Maximum HTTP/2 frame size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `16MiB`. The 16MiB default matches the
+    /// Accepts plain integers or suffixed strings such as `16KiB`. The 16KiB default matches the
     /// current tuning: large enough to keep framing overhead low for sizeable batches yet still
     /// bounded; larger values further decrease framing costs at the expense of bigger per-frame
     /// buffers, while smaller values force additional fragmentation and CPU work on jumbo exports.
@@ -162,7 +162,7 @@ pub struct Config {
     #[serde(default)]
     max_concurrent_streams: Option<u32>,
 
-    /// Whether to wait for the result (default: true)
+    /// Whether to wait for the result (default: false)
     ///
     /// When enabled, the receiver will not send a response until the
     /// immediate downstream component has acknowledged receipt of the
