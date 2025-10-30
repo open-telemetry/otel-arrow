@@ -75,18 +75,21 @@ string_literal = @{
     ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
-null_literal = {
-    ("bool(" ~ "null" ~ ")") |
-    ("datetime(" ~ "null" ~ ")") |
-    ("dynamic(" ~ "null" ~ ")") |
-    ("guid(" ~ "null" ~ ")") |
-    ("int(" ~ "null" ~ ")") |
-    ("long(" ~ "null" ~ ")") |
-    ("real(" ~ "null" ~ ")") |
-    ("double(" ~ "null" ~ ")") |
-    ("timespan(" ~ "null" ~ ")") |
-    ("regex(" ~ "null" ~ ")")
+type_literal = {
+    "bool"
+    | "datetime"
+    | "decimal"
+    | "double"
+    | "dynamic"
+    | "guid"
+    | "int"
+    | "long"
+    | "real"
+    | "regex"
+    | "string"
+    | "timespan"
 }
+null_literal = { type_literal ~ "(" ~ "null" ~ ")" }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 identifier_or_pattern_literal = ${
     (("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
@@ -144,6 +147,7 @@ type_unary_expressions = {
 }
 
 get_type_expression = { "gettype" ~ "(" ~ scalar_expression ~ ")" }
+typeof_expression = { "typeof" ~ "(" ~ type_literal ~ ")" }
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
@@ -219,6 +223,8 @@ logical_unary_expressions = {
     not_expression
 }
 
+extract_json_expression = { "extract_json" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ typeof_expression)? ~ ")" }
+
 /* Note: Order is imporant here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
@@ -234,6 +240,7 @@ scalar_unary_expression = {
     | temporal_unary_expressions
     | logical_unary_expressions
     | parse_unary_expressions
+    | extract_json_expression
     | accessor_expression
     | "(" ~ scalar_expression ~ ")"
 }
