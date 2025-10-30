@@ -450,8 +450,12 @@ impl<T: EnumerableValueSource<T>> MapValue for MapValueStorage<T> {
         self.values.contains_key(key)
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
-        self.values.get(key).map(|v| v as &dyn AsStaticValue)
+    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
+        self.values.get(key).map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {

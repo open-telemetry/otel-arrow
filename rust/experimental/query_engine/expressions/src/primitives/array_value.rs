@@ -75,6 +75,15 @@ impl ArrayRange {
     }
 }
 
+impl From<usize> for ArrayRange {
+    fn from(index: usize) -> Self {
+        Self {
+            start_range_inclusize: Some(index),
+            end_range_exclusive: Some(index + 1),
+        }
+    }
+}
+
 impl From<RangeFull> for ArrayRange {
     fn from(_: RangeFull) -> Self {
         Self {

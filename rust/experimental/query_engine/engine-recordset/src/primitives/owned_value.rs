@@ -144,6 +144,19 @@ impl From<&dyn ArrayValue> for ArrayValueStorage<OwnedValue> {
     }
 }
 
+impl From<&dyn MapValue> for MapValueStorage<OwnedValue> {
+    fn from(value: &dyn MapValue) -> Self {
+        let mut values: HashMap<Box<str>, _> = HashMap::new();
+
+        value.get_items(&mut KeyValueClosureCallback::new(|k, v| {
+            values.insert(k.into(), v.into());
+            true
+        }));
+
+        MapValueStorage::new(values)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -79,8 +79,12 @@ impl MapValue for LogRecord {
         }
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
-        match key {
+    fn get(&self, key: &str) -> Option<&dyn AsValue> {
+        self.get_static(key).unwrap().map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(match key {
             "Attributes" => Some(&self.attributes),
             "Timestamp" => self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue),
             "ObservedTimestamp" => self
@@ -98,7 +102,7 @@ impl MapValue for LogRecord {
             "TraceFlags" => self.flags.as_ref().map(|v| v as &dyn AsStaticValue),
             "EventName" => self.event_name.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,
-        }
+        })
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
