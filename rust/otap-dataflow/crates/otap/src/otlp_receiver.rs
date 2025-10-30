@@ -11,6 +11,7 @@ use crate::pdata::OtapPdata;
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::byte_units;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
@@ -45,16 +46,121 @@ pub struct Config {
     /// The endpoint details: protocol, name, port.
     listening_addr: SocketAddr,
 
-    /// Compression methods accepted
-    /// TODO: this should be (CompressionMethod, CompressionMethod), with separate settings
-    /// (as tonic supports) for request and response compression.
+    /// Compression methods accepted (only used for requests, responses are not compressed as they
+    /// are typically small).
     compression_method: Option<CompressionMethod>,
 
+    // --- All the following settings have defaults that should be reasonable for most users ---
+    // -----------------------------------------------------------------------------------------
     /// Maximum number of concurrent in-flight requests.
     /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity so
     /// backpressure flows upstream automatically. Any non-zero value is still clamped to that
     /// capacity at runtime.
+    #[serde(default = "default_max_concurrent_requests")]
     max_concurrent_requests: usize,
+
+    /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
+    /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
+    /// Disabling it trades slightly higher latency for fewer small TCP packets when workloads
+    /// involve very bursty, tiny messages.
+    #[serde(default = "default_tcp_nodelay")]
+    tcp_nodelay: bool,
+
+    /// TCP keepalive timeout for accepted sockets.
+    /// The 45s default evicts dead clients in under a minute without incurring much background
+    /// traffic. Raise it to reduce keepalive chatter, or set to `null` to disable kernel keepalives
+    /// entirely (at the cost of slower leak detection on broken links).
+    #[serde(default = "default_tcp_keepalive", with = "humantime_serde")]
+    tcp_keepalive: Option<Duration>,
+
+    /// Interval between TCP keepalive probes once keepalive is active.
+    /// Defaults to 15s so the kernel confirms progress quickly after the keepalive timeout. Longer
+    /// intervals reduce packets, shorter intervals detect stalled peers faster. Ignored if
+    /// `tcp_keepalive` is `null`.
+    #[serde(default = "default_tcp_keepalive_interval", with = "humantime_serde")]
+    tcp_keepalive_interval: Option<Duration>,
+
+    /// Number of TCP keepalive probes sent before a connection is declared dead.
+    /// The default (5) balances resilience to transient loss with timely reclamation of resources.
+    /// Smaller values clean up faster during outages, larger values favor noisy or lossy networks.
+    #[serde(default = "default_tcp_keepalive_retries")]
+    tcp_keepalive_retries: Option<u32>,
+
+    /// Per-connection concurrency limit enforced by the transport layer.
+    /// By default it mirrors the effective `max_concurrent_requests`, so transport- and
+    /// application-level backpressure remain aligned. Lower values gate connection bursts earlier,
+    /// while higher values only help if you also raise `max_concurrent_requests`. Set to `0` to
+    /// revert to the derived default.
+    #[serde(default)]
+    transport_concurrency_limit: Option<usize>,
+
+    /// Whether the gRPC server should shed load immediately once concurrency limits are hit.
+    /// Leaving this `true` (default) results in fast `UNAVAILABLE` responses and protects the
+    /// single-threaded runtime from unbounded queues. Turning it off allows requests to queue but
+    /// increases memory usage and tail latency under sustained overload.
+    #[serde(default = "default_load_shed")]
+    load_shed: bool,
+
+    /// Initial HTTP/2 stream window size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `8MiB`. The default 8MiB window reduces
+    /// flow-control stalls for large OTLP batches; trimming it lowers per-stream memory but may
+    /// throttle throughput, while increasing it benefits high-bandwidth deployments at the cost of
+    /// larger buffers.
+    #[serde(
+        default = "default_initial_stream_window_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    initial_stream_window_size: Option<u32>,
+
+    /// Initial HTTP/2 connection window size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `32MiB`. Defaults to 32MiB, giving room
+    /// for several simultaneous large streams; adjust using the same trade-offs as the stream
+    /// window but applied per connection.
+    #[serde(
+        default = "default_initial_connection_window_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    initial_connection_window_size: Option<u32>,
+
+    /// Whether to rely on HTTP/2 adaptive window sizing instead of the manual values above.
+    /// Disabled by default so the receiver uses predictable static windows. Enabling this lets tonic
+    /// adjust flow-control windows dynamically, which can improve throughput on high-bandwidth links
+    /// but makes memory usage and latency more workload dependent (and largely ignores the window
+    /// sizes configured above).
+    #[serde(default = "default_http2_adaptive_window")]
+    http2_adaptive_window: bool,
+
+    /// Maximum HTTP/2 frame size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `16MiB`. The 16MiB default matches the
+    /// current tuning: large enough to keep framing overhead low for sizeable batches yet still
+    /// bounded; larger values further decrease framing costs at the expense of bigger per-frame
+    /// buffers, while smaller values force additional fragmentation and CPU work on jumbo exports.
+    #[serde(
+        default = "default_max_frame_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    max_frame_size: Option<u32>,
+
+    /// Interval between HTTP/2 keepalive pings.
+    /// The default 30s ping keeps intermediaries aware of idle-but-healthy connections. Shorten it
+    /// to detect broken links faster, lengthen it to reduce ping traffic, or set to `null` to
+    /// disable HTTP/2 keepalives.
+    #[serde(default = "default_http2_keepalive_interval", with = "humantime_serde")]
+    http2_keepalive_interval: Option<Duration>,
+
+    /// Timeout waiting for an HTTP/2 keepalive acknowledgement.
+    /// Defaults to 10s, balancing rapid detection of stalled peers with tolerance for transient
+    /// network jitter. Decrease it for quicker failover or increase it for chatty-but-latent paths.
+    #[serde(default = "default_http2_keepalive_timeout", with = "humantime_serde")]
+    http2_keepalive_timeout: Option<Duration>,
+
+    /// Upper bound on concurrently active HTTP/2 streams per connection.
+    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
+    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
+    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
+    /// default.
+    #[serde(default)]
+    max_concurrent_streams: Option<u32>,
 
     /// Whether to wait for the result (default: true)
     ///
@@ -73,6 +179,54 @@ pub struct Config {
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+}
+
+const fn default_max_concurrent_requests() -> usize {
+    0
+}
+
+const fn default_tcp_nodelay() -> bool {
+    true
+}
+
+fn default_tcp_keepalive() -> Option<Duration> {
+    Some(Duration::from_secs(45))
+}
+
+fn default_tcp_keepalive_interval() -> Option<Duration> {
+    Some(Duration::from_secs(15))
+}
+
+fn default_tcp_keepalive_retries() -> Option<u32> {
+    Some(5)
+}
+
+const fn default_load_shed() -> bool {
+    true
+}
+
+fn default_initial_stream_window_size() -> Option<u32> {
+    Some(8 * 1024 * 1024)
+}
+
+fn default_initial_connection_window_size() -> Option<u32> {
+    Some(32 * 1024 * 1024)
+}
+
+fn default_max_frame_size() -> Option<u32> {
+    Some(16 * 1024)
+}
+
+fn default_http2_keepalive_interval() -> Option<Duration> {
+    Some(Duration::from_secs(30))
+}
+
+fn default_http2_keepalive_timeout() -> Option<Duration> {
+    Some(Duration::from_secs(10))
+}
+
+const fn default_http2_adaptive_window() -> bool {
+    false
 }
 
 const fn default_wait_for_result() -> bool {
@@ -105,8 +259,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
-        receiver
-            .tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
+        receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
         Ok(ReceiverWrapper::shared(
             receiver,
@@ -136,16 +289,13 @@ impl OTLPReceiver {
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
-        dbg!(&self.config.max_concurrent_requests);
-        dbg!(downstream_capacity);
         // Fall back to the downstream channel capacity when it is tighter than the user setting.
         let safe_capacity = downstream_capacity.max(1);
-        if self.config.max_concurrent_requests == 0 {
-            self.config.max_concurrent_requests = safe_capacity;
-        } else if self.config.max_concurrent_requests > safe_capacity {
+        if self.config.max_concurrent_requests == 0
+            || self.config.max_concurrent_requests > safe_capacity
+        {
             self.config.max_concurrent_requests = safe_capacity;
         }
-        dbg!(&self.config.max_concurrent_requests);
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
@@ -237,10 +387,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let incoming = TcpIncoming::from(listener)
-            .with_nodelay(Some(true))
-            .with_keepalive(Some(Duration::from_secs(45)))
-            .with_keepalive_interval(Some(Duration::from_secs(15)))
-            .with_keepalive_retries(Some(5));
+            .with_nodelay(Some(self.config.tcp_nodelay))
+            .with_keepalive(self.config.tcp_keepalive)
+            .with_keepalive_interval(self.config.tcp_keepalive_interval)
+            .with_keepalive_retries(self.config.tcp_keepalive_retries);
 
         let mut compression = EnabledCompressionEncodings::default();
         let _ = self
@@ -266,15 +416,34 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             traces: traces_server.common.state(),
         };
 
+        let transport_limit = self
+            .config
+            .transport_concurrency_limit
+            .and_then(|limit| if limit == 0 { None } else { Some(limit) })
+            .unwrap_or(self.config.max_concurrent_requests)
+            .max(1);
+
+        let fallback_streams = self.config.max_concurrent_requests.min(u32::MAX as usize) as u32;
+
         let mut server_builder = Server::builder()
-            .concurrency_limit_per_connection(self.config.max_concurrent_requests) // transport level
-            .load_shed(true) // immediately reject when above limit
-            .initial_stream_window_size(Some(8 * 1024 * 1024))
-            .initial_connection_window_size(Some(32 * 1024 * 1024))
-            .max_frame_size(Some(16 * 1024 * 1024))
-            .http2_keepalive_interval(Some(Duration::from_secs(30)))
-            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-            .max_concurrent_streams(Some(self.config.max_concurrent_requests as u32));
+            .concurrency_limit_per_connection(transport_limit) // transport level
+            .load_shed(self.config.load_shed)
+            .initial_stream_window_size(self.config.initial_stream_window_size)
+            .initial_connection_window_size(self.config.initial_connection_window_size)
+            .max_frame_size(self.config.max_frame_size)
+            .http2_adaptive_window(Some(self.config.http2_adaptive_window))
+            .http2_keepalive_interval(self.config.http2_keepalive_interval)
+            .http2_keepalive_timeout(self.config.http2_keepalive_timeout);
+
+        let mut max_concurrent_streams = self
+            .config
+            .max_concurrent_streams
+            .map(|value| if value == 0 { fallback_streams } else { value })
+            .unwrap_or(fallback_streams);
+        if max_concurrent_streams == 0 {
+            max_concurrent_streams = 1;
+        }
+        server_builder = server_builder.max_concurrent_streams(Some(max_concurrent_streams));
 
         // Apply timeout if configured
         if let Some(timeout) = self.config.timeout {
@@ -383,6 +552,29 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
+    fn test_config(addr: SocketAddr) -> Config {
+        Config {
+            listening_addr: addr,
+            compression_method: None,
+            max_concurrent_requests: 1000,
+            tcp_nodelay: default_tcp_nodelay(),
+            tcp_keepalive: default_tcp_keepalive(),
+            tcp_keepalive_interval: default_tcp_keepalive_interval(),
+            tcp_keepalive_retries: default_tcp_keepalive_retries(),
+            transport_concurrency_limit: None,
+            load_shed: default_load_shed(),
+            initial_stream_window_size: default_initial_stream_window_size(),
+            initial_connection_window_size: default_initial_connection_window_size(),
+            max_frame_size: default_max_frame_size(),
+            http2_adaptive_window: default_http2_adaptive_window(),
+            http2_keepalive_interval: default_http2_keepalive_interval(),
+            http2_keepalive_timeout: default_http2_keepalive_timeout(),
+            max_concurrent_streams: None,
+            wait_for_result: true,
+            timeout: None,
+        }
+    }
+
     fn create_logs_service_request() -> ExportLogsServiceRequest {
         ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -476,6 +668,34 @@ mod tests {
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 0);
+        assert!(receiver.config.tcp_nodelay);
+        assert_eq!(receiver.config.tcp_keepalive, Some(Duration::from_secs(45)));
+        assert_eq!(
+            receiver.config.tcp_keepalive_interval,
+            Some(Duration::from_secs(15))
+        );
+        assert_eq!(receiver.config.tcp_keepalive_retries, Some(5));
+        assert_eq!(receiver.config.transport_concurrency_limit, None);
+        assert!(receiver.config.load_shed);
+        assert_eq!(
+            receiver.config.initial_stream_window_size,
+            Some(8 * 1024 * 1024)
+        );
+        assert_eq!(
+            receiver.config.initial_connection_window_size,
+            Some(32 * 1024 * 1024)
+        );
+        assert!(!receiver.config.http2_adaptive_window);
+        assert_eq!(receiver.config.max_frame_size, Some(16 * 1024));
+        assert_eq!(
+            receiver.config.http2_keepalive_interval,
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            receiver.config.http2_keepalive_timeout,
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(receiver.config.max_concurrent_streams, None);
 
         let config_full = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -484,6 +704,55 @@ mod tests {
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+
+        let config_with_server_overrides = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "max_concurrent_requests": 512,
+            "tcp_nodelay": false,
+            "tcp_keepalive": "60s",
+            "tcp_keepalive_interval": "20s",
+            "tcp_keepalive_retries": 3,
+            "transport_concurrency_limit": 256,
+            "load_shed": false,
+            "initial_stream_window_size": "4MiB",
+            "initial_connection_window_size": "16MiB",
+            "max_frame_size": "8MiB",
+            "http2_keepalive_interval": "45s",
+            "http2_keepalive_timeout": "20s",
+            "max_concurrent_streams": 1024,
+            "http2_adaptive_window": true
+        });
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_server_overrides).unwrap();
+        assert_eq!(receiver.config.max_concurrent_requests, 512);
+        assert!(!receiver.config.tcp_nodelay);
+        assert_eq!(receiver.config.tcp_keepalive, Some(Duration::from_secs(60)));
+        assert_eq!(
+            receiver.config.tcp_keepalive_interval,
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(receiver.config.tcp_keepalive_retries, Some(3));
+        assert_eq!(receiver.config.transport_concurrency_limit, Some(256));
+        assert!(!receiver.config.load_shed);
+        assert_eq!(
+            receiver.config.initial_stream_window_size,
+            Some(4 * 1024 * 1024)
+        );
+        assert_eq!(
+            receiver.config.initial_connection_window_size,
+            Some(16 * 1024 * 1024)
+        );
+        assert_eq!(receiver.config.max_frame_size, Some(8 * 1024 * 1024));
+        assert_eq!(
+            receiver.config.http2_keepalive_interval,
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            receiver.config.http2_keepalive_timeout,
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(receiver.config.max_concurrent_streams, Some(1024));
+        assert!(receiver.config.http2_adaptive_window);
 
         let config_with_timeout = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -524,8 +793,7 @@ mod tests {
             "listening_addr": "127.0.0.1:4317",
             "max_concurrent_requests": 32
         });
-        let mut receiver =
-            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
+        let mut receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
         receiver.tune_max_concurrent_requests(128);
         assert_eq!(receiver.config.max_concurrent_requests, 32);
 
@@ -534,8 +802,7 @@ mod tests {
             "listening_addr": "127.0.0.1:4317",
             "max_concurrent_requests": 0
         });
-        let mut receiver =
-            OTLPReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
+        let mut receiver = OTLPReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
         receiver.tune_max_concurrent_requests(256);
         assert_eq!(receiver.config.max_concurrent_requests, 256);
     }
@@ -717,13 +984,7 @@ mod tests {
 
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
-                config: Config {
-                    wait_for_result: true,
-                    listening_addr: addr,
-                    compression_method: None,
-                    max_concurrent_requests: 1000,
-                    timeout: None,
-                },
+                config: test_config(addr),
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
             test_node(test_runtime.config().name.clone()),
@@ -755,13 +1016,7 @@ mod tests {
 
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
-                config: Config {
-                    wait_for_result: true,
-                    listening_addr: addr,
-                    compression_method: None,
-                    max_concurrent_requests: 1000,
-                    timeout: None,
-                },
+                config: test_config(addr),
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
             test_node(test_runtime.config().name.clone()),
