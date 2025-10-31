@@ -97,9 +97,9 @@ pub struct Settings {
     /// Maximum size for inbound gRPC messages.
     pub max_decoding_message_size: Option<usize>,
     /// Request compression allowed
-    pub accept_compression_encodings: EnabledCompressionEncodings,
+    pub request_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
-    pub send_compression_encodings: EnabledCompressionEncodings,
+    pub response_compression_encodings: EnabledCompressionEncodings,
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
@@ -212,8 +212,8 @@ fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
         grpc = grpc.max_decoding_message_size(limit);
     }
     grpc.apply_compression_config(
-        settings.accept_compression_encodings,
-        settings.send_compression_encodings,
+        settings.request_compression_encodings,
+        settings.response_compression_encodings,
     )
 }
 

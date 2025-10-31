@@ -8,6 +8,10 @@ use otap_df_config::byte_units;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::net::TcpListener;
+use tonic::codec::EnabledCompressionEncodings;
+use tonic::transport::server::TcpIncoming;
+use crate::otap_grpc::otlp::server::Settings;
 
 /// Common configuration shared across gRPC receivers.
 #[derive(Debug, Deserialize)]
@@ -16,17 +20,27 @@ pub struct GrpcServerConfig {
     /// The endpoint details: protocol, name, port.
     pub listening_addr: SocketAddr,
 
-    /// Compression methods accepted (only used for requests, responses are not compressed as they
-    /// are typically small). Omitted field defaults to accepting gzip, zstd, and deflate.
+    /// Compression methods accepted for requests. Omitted field defaults to accepting zstd, gzip,
+    /// and deflate (in that preference order).
     #[serde(
         default,
-        deserialize_with = "compression::deserialize_compression_methods"
+        deserialize_with = "compression::deserialize_compression_methods",
+        alias = "compression_method",
+        alias = "request_compression_method"
     )]
-    pub compression_method: Option<Vec<CompressionMethod>>,
+    pub request_compression: Option<Vec<CompressionMethod>>,
+
+    /// Compression methods used for responses. Defaults to no compression, falling back to the
+    /// request list when explicitly configured via the legacy `compression_method` option.
+    #[serde(
+        default,
+        deserialize_with = "compression::deserialize_compression_methods",
+        alias = "response_compression_method"
+    )]
+    pub response_compression: Option<Vec<CompressionMethod>>,
 
     // --- All the following settings have defaults that should be reasonable for most users ---
     // -----------------------------------------------------------------------------------------
-    
     /// Maximum number of concurrent in-flight requests.
     /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity so
     /// backpressure flows upstream automatically. Any non-zero value is still clamped to that
@@ -167,18 +181,73 @@ pub struct GrpcServerConfig {
 impl GrpcServerConfig {
     /// Returns the compression methods accepted for requests.
     #[must_use]
-    pub fn accepted_compression_methods(&self) -> Vec<CompressionMethod> {
-        match &self.compression_method {
+    pub fn request_compression_methods(&self) -> Vec<CompressionMethod> {
+        match &self.request_compression {
             Some(methods) => methods.clone(),
             None => compression::DEFAULT_COMPRESSION_METHODS.to_vec(),
+        }
+    }
+
+    /// Returns the compression methods configured for responses.
+    #[must_use]
+    pub fn response_compression_methods(&self) -> Vec<CompressionMethod> {
+        match &self.response_compression {
+            Some(methods) => methods.clone(),
+            None => Vec::new(),
         }
     }
 
     /// Returns the first configured compression method for responses, if any.
     #[must_use]
     pub fn preferred_response_compression(&self) -> Option<CompressionMethod> {
-        let methods = self.compression_method.as_ref()?;
-        methods.first().copied()
+        if let Some(methods) = self.response_compression.as_ref() {
+            return methods.first().copied();
+        }
+
+        // Legacy behaviour: if request compression was explicitly configured, mirror the first
+        // entry for responses unless the new response list overwrote it.
+        self.request_compression
+            .as_ref()
+            .and_then(|methods| methods.first().copied())
+    }
+
+    /// Builds the Tonic TCP Incoming.
+    #[must_use]
+    pub fn build_tcp_incoming(&self, tcp_listener: TcpListener) -> TcpIncoming {
+        TcpIncoming::from(tcp_listener)
+            .with_nodelay(Some(self.tcp_nodelay))
+            .with_keepalive(self.tcp_keepalive)
+            .with_keepalive_interval(self.tcp_keepalive_interval)
+            .with_keepalive_retries(self.tcp_keepalive_retries)
+    }
+
+    /// Returns the compression encodings to use for both requests and responses.
+    #[must_use]
+    pub fn compression_encodings(&self) -> (EnabledCompressionEncodings, EnabledCompressionEncodings) {
+        let mut request_compression = EnabledCompressionEncodings::default();
+        for method in self.request_compression_methods() {
+            request_compression.enable(method.map_to_compression_encoding());
+        }
+
+        let mut response_compression = EnabledCompressionEncodings::default();
+        for method in self.response_compression_methods() {
+            response_compression.enable(method.map_to_compression_encoding());
+        }
+        (request_compression, response_compression)
+    }
+
+    /// Builds the gRPC server settings from this configuration.
+    #[must_use]
+    pub fn build_settings(&self) -> Settings {
+        let (request_compression_encodings, response_compression_encodings) = self.compression_encodings();
+
+        Settings {
+            max_concurrent_requests: self.max_concurrent_requests,
+            wait_for_result: self.wait_for_result,
+            max_decoding_message_size: self.max_decoding_message_size.map(|value| value as usize),
+            request_compression_encodings,
+            response_compression_encodings,
+        }
     }
 }
 
@@ -244,7 +313,8 @@ impl Default for GrpcServerConfig {
     fn default() -> Self {
         Self {
             listening_addr: ([0, 0, 0, 0], 0).into(),
-            compression_method: None,
+            request_compression: None,
+            response_compression: None,
             max_concurrent_requests: default_max_concurrent_requests(),
             tcp_nodelay: default_tcp_nodelay(),
             tcp_keepalive: default_tcp_keepalive(),

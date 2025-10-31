@@ -10,8 +10,8 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
+use crate::otap_grpc::common::{self, SignalSharedStates};
 use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
-use crate::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use crate::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, GrpcServerConfig,
     Settings,
@@ -19,12 +19,11 @@ use crate::otap_grpc::{
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -110,62 +109,7 @@ impl OTAPReceiver {
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
-        let config = &mut self.config.grpc;
-        let safe_capacity = downstream_capacity.max(1);
-        if config.max_concurrent_requests == 0 || config.max_concurrent_requests > safe_capacity {
-            config.max_concurrent_requests = safe_capacity;
-        }
-    }
-
-    fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
-        let calldata = ack.calldata;
-        let resp = Ok(());
-        let state = match ack.accepted.signal_type() {
-            SignalType::Logs => states.logs.as_ref(),
-            SignalType::Metrics => states.metrics.as_ref(),
-            SignalType::Traces => states.traces.as_ref(),
-        };
-
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
-    }
-
-    fn route_nack_response(
-        &self,
-        states: &SharedStates,
-        mut nack: NackMsg<OtapPdata>,
-    ) -> RouteResponse {
-        let calldata = std::mem::take(&mut nack.calldata);
-        let signal_type = nack.refused.signal_type();
-        let resp = Err(nack);
-        let state = match signal_type {
-            SignalType::Logs => states.logs.as_ref(),
-            SignalType::Metrics => states.metrics.as_ref(),
-            SignalType::Traces => states.traces.as_ref(),
-        };
-
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
-    }
-
-    fn handle_ack_response(&mut self, resp: RouteResponse) {
-        match resp {
-            RouteResponse::Sent => self.metrics.acks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::None => {}
-        }
-    }
-
-    fn handle_nack_response(&mut self, resp: RouteResponse) {
-        match resp {
-            RouteResponse::Sent => self.metrics.nacks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::None => {}
-        }
+        common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
     }
 }
 
@@ -186,13 +130,6 @@ pub struct OtapReceiverMetrics {
     pub acks_nacks_invalid_or_expired: Counter<u64>,
 }
 
-/// State shared between gRPC server task and the effect handler.
-struct SharedStates {
-    logs: Option<SharedState>,
-    metrics: Option<SharedState>,
-    traces: Option<SharedState>,
-}
-
 // Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
 // The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
 //
@@ -204,14 +141,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let config = &self.config.grpc;
-        // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(config.listening_addr)?;
-        let incoming = TcpIncoming::from(listener)
-            .with_nodelay(Some(config.tcp_nodelay))
-            .with_keepalive(config.tcp_keepalive)
-            .with_keepalive_interval(config.tcp_keepalive_interval)
-            .with_keepalive_retries(config.tcp_keepalive_retries);
-
+        let incoming = config.build_tcp_incoming(listener);
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: config.max_concurrent_requests,
@@ -223,18 +154,18 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let metrics_service = ArrowMetricsServiceImpl::new(effect_handler.clone(), &settings);
         let traces_service = ArrowTracesServiceImpl::new(effect_handler.clone(), &settings);
 
-        let states = SharedStates {
-            logs: logs_service.state(),
-            metrics: metrics_service.state(),
-            traces: traces_service.state(),
-        };
+        let states = SignalSharedStates::new(
+            logs_service.state(),
+            metrics_service.state(),
+            traces_service.state(),
+        );
 
         let mut logs_server = ArrowLogsServiceServer::new(logs_service);
         let mut metrics_server = ArrowMetricsServiceServer::new(metrics_service);
         let mut traces_server = ArrowTracesServiceServer::new(traces_service);
 
         // apply the tonic compression settings
-        let request_compressions = config.accepted_compression_methods();
+        let request_compressions = config.request_compression_methods();
         for method in &request_compressions {
             let encoding = method.map_to_compression_encoding();
             logs_server = logs_server.accept_compressed(encoding);
@@ -249,38 +180,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             traces_server = traces_server.send_compressed(encoding);
         }
 
-        let transport_limit = config
-            .transport_concurrency_limit
-            .and_then(|limit| if limit == 0 { None } else { Some(limit) })
-            .unwrap_or(config.max_concurrent_requests)
-            .max(1);
-
-        let fallback_streams = config.max_concurrent_requests.min(u32::MAX as usize) as u32;
-
-        let mut server_builder = Server::builder()
-            .concurrency_limit_per_connection(transport_limit)
-            .load_shed(config.load_shed)
-            .initial_stream_window_size(config.initial_stream_window_size)
-            .initial_connection_window_size(config.initial_connection_window_size)
-            .max_frame_size(config.max_frame_size)
-            .http2_adaptive_window(Some(config.http2_adaptive_window))
-            .http2_keepalive_interval(config.http2_keepalive_interval)
-            .http2_keepalive_timeout(config.http2_keepalive_timeout);
-
-        let mut max_concurrent_streams = config
-            .max_concurrent_streams
-            .map(|value| if value == 0 { fallback_streams } else { value })
-            .unwrap_or(fallback_streams);
-        if max_concurrent_streams == 0 {
-            max_concurrent_streams = 1;
-        }
-        server_builder = server_builder.max_concurrent_streams(Some(max_concurrent_streams));
-
-        // Apply timeout if configured
-        if let Some(timeout) = config.timeout {
-            server_builder = server_builder.timeout(timeout);
-        }
-
+        let server_builder = common::apply_server_tuning(Server::builder(), config);
         let server = server_builder
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
@@ -309,10 +209,22 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_ack_response(self.route_ack_response(&states, ack));
+                            let resp = common::route_ack_response(&states, ack);
+                            common::handle_route_response(
+                                resp,
+                                &mut self.metrics,
+                                |metrics| metrics.acks_sent.inc(),
+                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+                            );
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_nack_response(self.route_nack_response(&states, nack));
+                            let resp = common::route_nack_response(&states, nack);
+                            common::handle_route_response(
+                                resp,
+                                &mut self.metrics,
+                                |metrics| metrics.nacks_sent.inc(),
+                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+                            );
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -865,7 +777,15 @@ mod tests {
         assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
         assert!(!receiver.config.grpc.wait_for_result);
-        assert!(receiver.config.grpc.compression_method.is_none());
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
         assert!(receiver.config.grpc.timeout.is_none());
 
         // Test with minimal required fields, max_concurrent_requests defaults to 0, wait_for_result defaults to false
@@ -881,7 +801,15 @@ mod tests {
         assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
         assert!(!receiver.config.grpc.wait_for_result);
-        assert!(receiver.config.grpc.compression_method.is_none());
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
         assert!(receiver.config.grpc.timeout.is_none());
 
         // Test with full configuration including gzip compression
@@ -902,8 +830,13 @@ mod tests {
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
         assert!(receiver.config.grpc.wait_for_result);
         assert_eq!(
-            receiver.config.grpc.compression_method,
+            receiver.config.grpc.request_compression,
             Some(vec![CompressionMethod::Gzip])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert_eq!(
+            receiver.config.grpc.preferred_response_compression(),
+            Some(CompressionMethod::Gzip)
         );
         assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
 
@@ -922,8 +855,13 @@ mod tests {
         assert_eq!(receiver.config.response_stream_channel_size, 50);
         assert!(!receiver.config.grpc.wait_for_result);
         assert_eq!(
-            receiver.config.grpc.compression_method,
+            receiver.config.grpc.request_compression,
             Some(vec![CompressionMethod::Zstd])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert_eq!(
+            receiver.config.grpc.preferred_response_compression(),
+            Some(CompressionMethod::Zstd)
         );
         assert!(receiver.config.grpc.timeout.is_none());
 
@@ -933,15 +871,44 @@ mod tests {
             "response_stream_channel_size": 75,
             "compression_method": "deflate"
         });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_deflate).unwrap();
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_deflate).unwrap();
         assert_eq!(
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4321"
         );
         assert_eq!(receiver.config.response_stream_channel_size, 75);
         assert_eq!(
-            receiver.config.grpc.compression_method,
+            receiver.config.grpc.request_compression,
             Some(vec![CompressionMethod::Deflate])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert_eq!(
+            receiver.config.grpc.preferred_response_compression(),
+            Some(CompressionMethod::Deflate)
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
+
+        // Test with explicit response compression configuration only
+        let config_with_response_only = json!({
+            "listening_addr": "127.0.0.1:4322",
+            "response_stream_channel_size": 80,
+            "response_compression_method": "gzip"
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_response_only).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4322"
+        );
+        assert_eq!(receiver.config.response_stream_channel_size, 80);
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert_eq!(
+            receiver.config.grpc.response_compression,
+            Some(vec![CompressionMethod::Gzip])
+        );
+        assert_eq!(
+            receiver.config.grpc.preferred_response_compression(),
+            Some(CompressionMethod::Gzip)
         );
         assert!(receiver.config.grpc.timeout.is_none());
     }
