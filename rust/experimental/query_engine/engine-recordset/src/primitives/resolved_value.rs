@@ -286,7 +286,32 @@ impl AsValue for ResolvedValue<'_> {
 
 impl Display for ResolvedValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.to_value().fmt(f)
+        f.write_str("[")?;
+        match self.to_value() {
+            Value::Null => f.write_str("Null"),
+            Value::Array(a) => {
+                write!(f, "Array(Count={})", a.len())
+            }
+            Value::Map(m) => {
+                write!(f, "Map(Count={})", m.len())
+            }
+            Value::String(s) => {
+                f.write_str("String(")?;
+                let v = s.get_value();
+                if v.len() <= 32 {
+                    f.write_str(v)?;
+                } else {
+                    write!(f, "{}...", &v[..32])?;
+                }
+                f.write_str(")")
+            }
+            v => {
+                write!(f, "{}(", v.get_value_type())?;
+                v.fmt(f)?;
+                f.write_str(")")
+            }
+        }?;
+        f.write_str("]")
     }
 }
 

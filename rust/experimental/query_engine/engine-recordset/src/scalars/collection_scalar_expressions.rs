@@ -13,7 +13,7 @@ where
     'a: 'c,
     'b: 'c,
 {
-    match collection_scalar_expression {
+    let value = match collection_scalar_expression {
         CollectionScalarExpression::Concat(c) => {
             match execute_scalar_expression(execution_context, c.get_values_expression())?
                 .try_resolve_array()
@@ -34,23 +34,17 @@ where
                         }
                     })?;
 
-                    let r = ResolvedValue::Sequence(Sequence::new(values));
-
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        collection_scalar_expression,
-                        || format!("Evaluated as: '{r}'"),
-                    );
-
-                    Ok(r)
+                    ResolvedValue::Sequence(Sequence::new(values))
                 }
-                Err(orig) => Err(ExpressionError::TypeMismatch(
-                    c.get_values_expression().get_query_location().clone(),
-                    format!(
-                        "Value of '{:?}' type returned by scalar expression was not an array",
-                        orig.get_value_type()
-                    ),
-                )),
+                Err(orig) => {
+                    return Err(ExpressionError::TypeMismatch(
+                        c.get_values_expression().get_query_location().clone(),
+                        format!(
+                            "Value of '{:?}' type returned by scalar expression was not an array",
+                            orig.get_value_type()
+                        ),
+                    ));
+                }
             }
         }
         CollectionScalarExpression::List(c) => {
@@ -62,17 +56,17 @@ where
                 values.push(execute_scalar_expression(execution_context, v)?);
             }
 
-            let r = ResolvedValue::List(List::new(values));
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                collection_scalar_expression,
-                || format!("Evaluated as: '{r}'"),
-            );
-
-            Ok(r)
+            ResolvedValue::List(List::new(values))
         }
-    }
+    };
+
+    execution_context.add_diagnostic_if_enabled(
+        RecordSetEngineDiagnosticLevel::Verbose,
+        collection_scalar_expression,
+        || format!("Evaluated as: {value}"),
+    );
+
+    Ok(value)
 }
 
 #[cfg(test)]
