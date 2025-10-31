@@ -11,6 +11,7 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 //!
 
+use futures::stream;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
 use otel_arrow_rust::{
     Consumer,
@@ -21,10 +22,10 @@ use otel_arrow_rust::{
         arrow_traces_service_server::ArrowTracesService,
     },
 };
+use std::marker::PhantomData;
 use std::pin::Pin;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -42,8 +43,6 @@ pub use receiver_config::GrpcServerConfig;
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// Size of the channel used to buffer outgoing responses to the client.
-    pub response_stream_channel_size: usize,
     /// Maximum concurrent requests per receiver instance (per core).
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
@@ -54,7 +53,6 @@ pub struct Settings {
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
-    settings: Settings,
 }
 
 impl ArrowLogsServiceImpl {
@@ -66,7 +64,6 @@ impl ArrowLogsServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| SharedState::new(settings.max_concurrent_requests)),
-            settings: settings.clone(),
         }
     }
 
@@ -80,7 +77,6 @@ impl ArrowLogsServiceImpl {
 pub struct ArrowMetricsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
-    settings: Settings,
 }
 
 impl ArrowMetricsServiceImpl {
@@ -92,7 +88,6 @@ impl ArrowMetricsServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| SharedState::new(settings.max_concurrent_requests)),
-            settings: settings.clone(),
         }
     }
 
@@ -107,7 +102,6 @@ impl ArrowMetricsServiceImpl {
 pub struct ArrowTracesServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
-    settings: Settings,
 }
 
 impl ArrowTracesServiceImpl {
@@ -119,7 +113,6 @@ impl ArrowTracesServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| SharedState::new(settings.max_concurrent_requests)),
-            settings: settings.clone(),
         }
     }
 
@@ -138,41 +131,14 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         &self,
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
-        let mut input_stream = request.into_inner();
-        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-
-        // Provide client a stream to listen to
-        let output = ReceiverStream::new(rx);
-
-        // write to the channel
-        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
-                // accept the batch data and handle output response
-                if accept_data::<Logs, _>(
-                    OtapArrowRecords::Logs,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
-
-        Ok(Response::new(Box::pin(output) as Self::ArrowLogsStream))
+        let input_stream = request.into_inner();
+        let output = build_response_stream::<Logs, _>(
+            input_stream,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            OtapArrowRecords::Logs,
+        );
+        Ok(Response::new(output))
     }
 }
 
@@ -184,39 +150,14 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         &self,
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
-        let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-
-        // Provide client a stream to listen to
-        let output = ReceiverStream::new(rx);
-
-        // write to the channel
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
-                // accept the batch data and handle output response
-                if accept_data::<Metrics, _>(
-                    OtapArrowRecords::Metrics,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
-
-        Ok(Response::new(Box::pin(output) as Self::ArrowMetricsStream))
+        let input_stream = request.into_inner();
+        let output = build_response_stream::<Metrics, _>(
+            input_stream,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            OtapArrowRecords::Metrics,
+        );
+        Ok(Response::new(output))
     }
 }
 
@@ -228,162 +169,179 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         &self,
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
-        let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-
-        // create a stream to output result to
-        let output = ReceiverStream::new(rx);
-
-        // write to the channel
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
-                // accept the batch data and handle output response
-                if accept_data::<Traces, _>(
-                    OtapArrowRecords::Traces,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
-
-        Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
+        let input_stream = request.into_inner();
+        let output = build_response_stream::<Traces, _>(
+            input_stream,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            OtapArrowRecords::Traces,
+        );
+        Ok(Response::new(output))
     }
 }
 
 /// handles sending the data down the pipeline via effect_handler and generating the appropriate response
-async fn accept_data<T: OtapBatchStore, F>(
-    otap_batch: F,
-    consumer: &mut Consumer,
-    mut batch: BatchArrowRecords,
-    effect_handler: &shared::EffectHandler<OtapPdata>,
+fn build_response_stream<T, F>(
+    input_stream: tonic::Streaming<BatchArrowRecords>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
-    tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
-) -> Result<(), ()>
+    otap_batch: F,
+) -> Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>
 where
-    F: Fn(T) -> OtapArrowRecords,
+    T: OtapBatchStore + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {
-    let batch_id = batch.batch_id;
-    let batch = consumer.consume_bar(&mut batch).map_err(|e| {
-        log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
-    })?;
+    struct StreamState<T, F>
+    where
+        T: OtapBatchStore + 'static,
+        F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
+    {
+        input_stream: tonic::Streaming<BatchArrowRecords>,
+        consumer: Consumer,
+        effect_handler: shared::EffectHandler<OtapPdata>,
+        state: Option<SharedState>,
+        otap_batch: F,
+        finished: bool,
+        _marker: PhantomData<fn() -> T>,
+    }
 
-    let batch = from_record_messages::<T>(batch);
-    let otap_batch_as_otap_arrow_records = otap_batch(batch);
-    let mut otap_pdata =
-        OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
+    enum NextItem {
+        Yield(Result<BatchStatus, Status>),
+        Done,
+    }
 
-    let cancel_rx = if let Some(state) = state {
-        // Try to allocate a slot (under the mutex) for calldata.
-        let allocation_result = {
-            let guard_result = state.0.lock();
-            match guard_result {
-                Ok(mut guard) => guard.allocate(|| oneshot::channel()),
-                Err(_) => {
-                    log::error!("Mutex poisoned");
-                    return Err(());
+    enum ProcessOutcome {
+        Emit(BatchStatus),
+        Terminate,
+    }
+
+    impl<T, F> StreamState<T, F>
+    where
+        T: OtapBatchStore + 'static,
+        F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
+    {
+        async fn next_item(&mut self) -> NextItem {
+            if self.finished {
+                return NextItem::Done;
+            }
+
+            match self.input_stream.message().await {
+                Ok(Some(batch)) => match self.process_batch(batch).await {
+                    ProcessOutcome::Emit(status) => NextItem::Yield(Ok(status)),
+                    ProcessOutcome::Terminate => NextItem::Done,
+                },
+                Ok(None) => {
+                    self.finished = true;
+                    NextItem::Done
+                }
+                Err(status) => {
+                    self.finished = true;
+                    NextItem::Yield(Err(status))
                 }
             }
-        }; // MutexGuard is dropped here
-
-        let (key, rx) = match allocation_result {
-            None => {
-                log::error!("Too many concurrent requests");
-
-                // Send backpressure response
-                tx.send(Ok(BatchStatus {
-                    batch_id,
-                    status_code: StatusCode::Unavailable as i32,
-                    status_message: format!(
-                        "Pipeline processing failed: {}",
-                        "Too many concurrent requests"
-                    ),
-                }))
-                .await
-                .map_err(|e| {
-                    log::error!("Error sending BatchStatus response: {e:?}");
-                })?;
-
-                return Ok(());
-            }
-            Some(pair) => pair,
-        };
-
-        // Enter the subscription. Slot key becomes calldata.
-        effect_handler.subscribe_to(
-            Interests::ACKS | Interests::NACKS,
-            key.into(),
-            &mut otap_pdata,
-        );
-        Some((SlotGuard { key, state }, rx))
-    } else {
-        None
-    };
-
-    // Send and wait for Ack/Nack
-    match effect_handler.send_message(otap_pdata).await {
-        Ok(_) => {}
-        Err(e) => {
-            log::error!("Failed to send to pipeline: {e}");
-            return Err(());
         }
-    };
 
-    // If backpressure, await a response. The guard will cancel and return the
-    // slot if Tonic times-out this task.
-    if let Some((_cancel_guard, rx)) = cancel_rx {
-        match rx.await {
-            Ok(Ok(())) => {
-                // Received Ack
-                // Behavior is similar to `wait_for_result` set to `false` case
-                // No need to send a response here since success response is sent
-                // before returning from the function anyway
-            }
-            Ok(Err(nack)) => {
-                // Received Nack
-                // TODO: Use more specific status codes based on nack reason/type
-                // when more detailed error information is available from the pipeline
-                tx.send(Ok(BatchStatus {
-                    batch_id,
-                    status_code: StatusCode::Unavailable as i32,
-                    status_message: format!("Pipeline processing failed: {}", nack.reason),
-                }))
-                .await
-                .map_err(|e| {
-                    log::error!("Error sending BatchStatus response: {e:?}");
-                })?;
+        async fn process_batch(&mut self, mut batch: BatchArrowRecords) -> ProcessOutcome {
+            let batch_id = batch.batch_id;
 
-                return Ok(());
+            let batch = match self.consumer.consume_bar(&mut batch) {
+                Ok(batch) => batch,
+                Err(e) => {
+                    log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
+                    return ProcessOutcome::Terminate;
+                }
+            };
+
+            let batch = from_record_messages::<T>(batch);
+            let otap_batch_as_otap_arrow_records = (self.otap_batch)(batch);
+            let mut otap_pdata =
+                OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
+
+            let cancel_rx = if let Some(state) = self.state.clone() {
+                let allocation_result = {
+                    let guard_result = state.0.lock();
+                    match guard_result {
+                        Ok(mut guard) => guard.allocate(|| oneshot::channel()),
+                        Err(_) => {
+                            log::error!("Mutex poisoned");
+                            return ProcessOutcome::Terminate;
+                        }
+                    }
+                };
+
+                let (key, rx) = match allocation_result {
+                    None => {
+                        log::error!("Too many concurrent requests");
+                        return ProcessOutcome::Emit(BatchStatus {
+                            batch_id,
+                            status_code: StatusCode::Unavailable as i32,
+                            status_message: format!(
+                                "Pipeline processing failed: {}",
+                                "Too many concurrent requests"
+                            ),
+                        });
+                    }
+                    Some(pair) => pair,
+                };
+
+                self.effect_handler.subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    key.into(),
+                    &mut otap_pdata,
+                );
+                Some((SlotGuard { key, state }, rx))
+            } else {
+                None
+            };
+
+            if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
+                log::error!("Failed to send to pipeline: {e}");
+                return ProcessOutcome::Terminate;
+            };
+
+            if let Some((_cancel_guard, rx)) = cancel_rx {
+                match rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(nack)) => {
+                        return ProcessOutcome::Emit(BatchStatus {
+                            batch_id,
+                            status_code: StatusCode::Unavailable as i32,
+                            status_message: format!("Pipeline processing failed: {}", nack.reason),
+                        });
+                    }
+                    Err(_) => {
+                        log::error!("Response channel closed unexpectedly");
+                        return ProcessOutcome::Terminate;
+                    }
+                }
             }
-            Err(_) => {
-                log::error!("Response channel closed unexpectedly");
-                return Err(());
-            }
+
+            ProcessOutcome::Emit(BatchStatus {
+                batch_id,
+                status_code: StatusCode::Ok as i32,
+                status_message: "Successfully received".to_string(),
+            })
         }
     }
 
-    tx.send(Ok(BatchStatus {
-        batch_id,
-        status_code: StatusCode::Ok as i32,
-        status_message: "Successfully received".to_string(),
-    }))
-    .await
-    .map_err(|e| {
-        log::error!("Error sending BatchStatus response: {e:?}");
-    })
+    let state = StreamState::<T, F> {
+        input_stream,
+        consumer: Consumer::default(),
+        effect_handler,
+        state,
+        otap_batch,
+        finished: false,
+        _marker: PhantomData,
+    };
+
+    let stream = stream::unfold(state, |mut state| async move {
+        match state.next_item().await {
+            NextItem::Yield(item) => Some((item, state)),
+            NextItem::Done => None,
+        }
+    });
+
+    Box::pin(stream)
 }
 
 /// Enum to describe the Arrow data.

@@ -51,9 +51,6 @@ const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Size of the channel used to buffer outgoing responses to the client.
-    response_stream_channel_size: usize,
-
     /// Shared gRPC server settings reused across receivers.
     #[serde(flatten)]
     pub grpc: GrpcServerConfig,
@@ -143,7 +140,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let listener = effect_handler.tcp_listener(config.listening_addr)?;
         let incoming = config.build_tcp_incoming(listener);
         let settings = Settings {
-            response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: config.max_concurrent_requests,
             wait_for_result: config.wait_for_result,
         };
@@ -773,7 +769,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4317"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
         assert!(!receiver.config.grpc.wait_for_result);
         assert!(receiver.config.grpc.request_compression.is_none());
@@ -797,7 +792,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4318"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
         assert!(!receiver.config.grpc.wait_for_result);
         assert!(receiver.config.grpc.request_compression.is_none());
@@ -825,7 +819,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4319"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 150);
         assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
         assert!(receiver.config.grpc.wait_for_result);
         assert_eq!(
@@ -854,7 +847,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4320"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 50);
         assert!(!receiver.config.grpc.wait_for_result);
         assert_eq!(
             receiver.config.grpc.request_compression,
@@ -882,7 +874,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4321"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 75);
         assert_eq!(
             receiver.config.grpc.request_compression,
             Some(vec![CompressionMethod::Deflate])
@@ -908,7 +899,6 @@ mod tests {
             receiver.config.grpc.listening_addr.to_string(),
             "127.0.0.1:4322"
         );
-        assert_eq!(receiver.config.response_stream_channel_size, 80);
         assert!(receiver.config.grpc.request_compression.is_none());
         assert_eq!(
             receiver.config.grpc.response_compression,
