@@ -10,7 +10,6 @@
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
-use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
@@ -36,12 +35,12 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use serde_json::Value;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio_stream::Stream;
 use std::time::Duration;
-use tokio::sync::{Mutex as AsyncMutex, mpsc::{error::TrySendError, Receiver, Sender}};
+use tokio::sync::{mpsc::{error::TrySendError, Receiver, Sender}, oneshot};
 use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
@@ -162,11 +161,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // TODO comment on the purpose of these
         // TODO import so can use as just "channel" here
         // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
-        let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel(64);
-        let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel(64);
-        let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel(64);
+        let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
+        let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
+        let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
-        let metrics_updates = MetricsUpdateAccumulator::new(pdata_metrics_tx);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let ipc_compression = matches!(
             self.config.arrow.payload_compression,
@@ -174,29 +172,30 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         )
         .then(|| arrow_ipc::CompressionType::ZSTD);
 
+        let mut logs_producer = Producer::new_with_options(ProducerOptions { ipc_compression });
+        let mut metrics_producer = Producer::new_with_options(ProducerOptions { ipc_compression });
+        let mut traces_producer = Producer::new_with_options(ProducerOptions { ipc_compression });
+
         // TODO check if we can expose/use spawn_local method in the effect handler
         let logs_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_logs_client,
             SignalType::Logs,
-            ipc_compression,
             logs_receiver,
-            metrics_updates.clone(),
+            pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
         let metrics_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_metrics_client,
             SignalType::Metrics,
-            ipc_compression,
             metrics_receiver,
-            metrics_updates.clone(),
+            pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
         let traces_handle = tokio::task::spawn_local(stream_arrow_batches(
             arrow_traces_client,
             SignalType::Traces,
-            ipc_compression,
             traces_receiver,
-            metrics_updates.clone(),
+            pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
         ));
 
@@ -230,9 +229,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let (_context, payload) = pdata.into_parts();
 
                         // TODO(#1098): Note context is dropped.
-                        let message: OtapArrowRecords = payload
+                        let mut message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+
+                        let producer = match signal_type {
+                            SignalType::Logs => &mut logs_producer,
+                            SignalType::Metrics => &mut metrics_producer,
+                            SignalType::Traces => &mut traces_producer,
+                        };
+
+                        let batch = match producer.produce_bar(&mut message) {
+                            Ok(batch) => batch,
+                            Err(_) => {
+                                self.pdata_metrics.inc_failed(signal_type);
+                                continue;
+                            }
+                        };
 
                         let sender = match signal_type {
                             SignalType::Logs => &logs_sender,
@@ -240,7 +253,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             SignalType::Traces => &traces_sender,
                         };
 
-                        if enqueue_otap_batch(sender, message).await.is_err() {
+                        if enqueue_batch(sender, batch).await.is_err() {
                             self.pdata_metrics.inc_failed(signal_type);
                         }
                     }
@@ -264,7 +277,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         None => {}
                     }
 
-                    metrics_updates.flush_pending();
                 }
             }
         }
@@ -321,133 +333,13 @@ enum PDataMetricsUpdate {
     },
 }
 
-#[derive(Clone)]
-struct MetricsUpdateAccumulator {
-    tx: Sender<PDataMetricsUpdate>,
-    pending: Arc<PendingMetricsCounts>,
-}
-
-struct PendingMetricsCounts {
-    exported: [AtomicU64; 3],
-    failed: [AtomicU64; 3],
-}
-
-impl PendingMetricsCounts {
-    const fn new() -> Self {
-        Self {
-            exported: [
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-            ],
-            failed: [
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-            ],
-        }
-    }
-
-    fn add_exported(&self, signal: SignalType, count: u64) {
-        _ = self.exported[signal_index(signal)].fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn add_failed(&self, signal: SignalType, count: u64) {
-        _ = self.failed[signal_index(signal)].fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn drain<F>(&self, tx: &Sender<PDataMetricsUpdate>, counters: &[AtomicU64; 3], mk: F)
-    where
-        F: Fn(SignalType, u64) -> PDataMetricsUpdate,
-    {
-        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
-            let idx = signal_index(signal);
-            let count = counters[idx].swap(0, Ordering::AcqRel);
-            if count == 0 {
-                continue;
-            }
-
-            match tx.try_send(mk(signal, count)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    _ = counters[idx].fetch_add(count, Ordering::Release);
-                    return;
-                }
-                Err(TrySendError::Closed(_)) => {
-                    return;
-                }
-            }
-        }
-    }
-}
-
-impl MetricsUpdateAccumulator {
-    fn new(tx: Sender<PDataMetricsUpdate>) -> Self {
-        Self {
-            tx,
-            pending: Arc::new(PendingMetricsCounts::new()),
-        }
-    }
-
-    fn record_failed(&self, signal: SignalType) {
-        self.record(PDataMetricsUpdate::Failed {
-            signal,
-            count: 1,
-        });
-    }
-
-    fn record_exported(&self, signal: SignalType) {
-        self.record(PDataMetricsUpdate::Exported {
-            signal,
-            count: 1,
-        });
-    }
-
-    fn record(&self, update: PDataMetricsUpdate) {
-        match self.tx.try_send(update) {
-            Ok(()) => self.flush_pending(),
-            Err(TrySendError::Full(update)) => self.store_pending(update),
-            Err(TrySendError::Closed(_)) => {}
-        }
-    }
-
-    fn flush_pending(&self) {
-        let pending = &self.pending;
-        pending.drain(&self.tx, &pending.exported, |signal, count| {
-            PDataMetricsUpdate::Exported { signal, count }
-        });
-        pending.drain(&self.tx, &pending.failed, |signal, count| {
-            PDataMetricsUpdate::Failed { signal, count }
-        });
-    }
-
-    fn store_pending(&self, update: PDataMetricsUpdate) {
-        match update {
-            PDataMetricsUpdate::Exported { signal, count } => {
-                self.pending.add_exported(signal, count);
-            }
-            PDataMetricsUpdate::Failed { signal, count } => {
-                self.pending.add_failed(signal, count);
-            }
-        }
-    }
-}
-
-const fn signal_index(signal: SignalType) -> usize {
-    match signal {
-        SignalType::Logs => 0,
-        SignalType::Metrics => 1,
-        SignalType::Traces => 2,
-    }
-}
-
 // Fast-path try_send keeps the exporter from yielding the single-threaded runtime every time it
 // hands a batch to the per-signal worker channel. We only fall back to the awaited send when the
 // channel is momentarily full, preserving backpressure without unconditionally parking the task.
-async fn enqueue_otap_batch(
-    sender: &Sender<OtapArrowRecords>,
-    batch: OtapArrowRecords,
-) -> Result<(), OtapArrowRecords> {
+async fn enqueue_batch(
+    sender: &Sender<BatchArrowRecords>,
+    batch: BatchArrowRecords,
+) -> Result<(), BatchArrowRecords> {
     match sender.try_send(batch) {
         Ok(()) => Ok(()),
         Err(TrySendError::Full(batch)) => sender.send(batch).await.map_err(|error| error.0),
@@ -457,46 +349,34 @@ async fn enqueue_otap_batch(
 
 async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
-    signal_type: SignalType,
-    ipc_compression: Option<arrow_ipc::CompressionType>,
-    otap_batches_rx: Receiver<OtapArrowRecords>,
-    metrics_updates: MetricsUpdateAccumulator,
+    signal: SignalType,
+    mut receiver: Receiver<BatchArrowRecords>,
+    metrics_tx: Sender<PDataMetricsUpdate>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
-    let otap_batches_rx = Arc::new(AsyncMutex::new(otap_batches_rx));
-    let mut shutdown = false;
-
     // we'll do an exponential backoff if there was an error creating the streaming request
     const MAX_BACKOFF: Duration = Duration::from_secs(10);
     const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
     const BACKOFF_MULTIPLIER: u32 = 2;
     let mut failed_request_backoff = INITIAL_BACKOFF;
 
+    let mut pending_failed = 0u64;
+    let mut pending_exported = 0u64;
+    let mut shutdown = false;
+
     // send streams of batches to the server until shutdown
     while !shutdown {
-        let mut rx = otap_batches_rx.lock().await;
         tokio::select! {
             // wait to receive the first batch to create the streaming request
-            first_batch = rx.recv() => {
-                drop(rx);
-                let first_batch = match first_batch {
-                    Some(f) => f,
-
-                    None => {
-                        // no more batches
-                        break
-                    }
+            first_batch = receiver.recv() => {
+                let Some(first_batch) = first_batch else {
+                    break;
                 };
 
                 // create the request stream
-                let req_stream = create_req_stream(
-                    first_batch,
-                    otap_batches_rx.clone(),
-                    signal_type,
-                    ipc_compression,
-                    metrics_updates.clone(),
-                );
-                match client.handle_req_stream(req_stream).await {
+                let (request_stream, receiver_return) = BorrowingBatchStream::new(first_batch, receiver);
+
+                match client.handle_req_stream(request_stream).await {
                     Ok(res) => {
                         // reset the reconnect timeout backoff
                         failed_request_backoff = INITIAL_BACKOFF;
@@ -504,85 +384,31 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         // handle server responses until error or shutdown
                         shutdown = handle_res_stream(
                             res.into_inner(),
-                            metrics_updates.clone(),
-                            signal_type,
-                            shutdown_rx.clone()
+                            &metrics_tx,
+                            signal,
+                            &mut pending_failed,
+                            &mut pending_exported,
+                            shutdown_rx.clone(),
                         ).await;
                     }
                     Err(_e) => {
                         // there was an error initiating the streaming request
-                        metrics_updates.record_failed(signal_type);
+                        pending_failed = pending_failed.saturating_add(1);
+                        flush_counts(
+                            &metrics_tx,
+                            signal,
+                            &mut pending_failed,
+                            &mut pending_exported,
+                        );
                         log::error!("failed request, waiting {failed_request_backoff:?}");
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
                 };
-            }
-            _ = shutdown_rx.changed() => {
-                 shutdown = *shutdown_rx.borrow();
-            }
-        }
-    }
-}
 
-#[allow(tail_expr_drop_order)]
-fn create_req_stream(
-    mut first_batch: OtapArrowRecords,
-    remaining_batches_rx: Arc<AsyncMutex<Receiver<OtapArrowRecords>>>,
-    signal_type: SignalType,
-    ipc_compression: Option<arrow_ipc::CompressionType>,
-    metrics_updates: MetricsUpdateAccumulator,
-) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
-    stream! {
-        let mut producer = Producer::new_with_options(ProducerOptions {
-            ipc_compression
-        });
-
-        // send the first batch
-        match producer.produce_bar(&mut first_batch) {
-            Ok(bar) => yield bar,
-            Err(_) => {
-                metrics_updates.record_failed(signal_type);
-            }
-        };
-
-        let mut rx = remaining_batches_rx.lock().await;
-        // send the remaining batches
-        while let Some(mut otap_batch) = rx.recv().await {
-            match producer.produce_bar(&mut otap_batch) {
-                Ok(bar) => yield bar,
-                Err(_) => {
-                    metrics_updates.record_failed(signal_type);
-                }
-            }
-        }
-    }
-}
-
-async fn handle_res_stream(
-    mut res_stream: Streaming<BatchStatus>,
-    metrics_updates: MetricsUpdateAccumulator,
-    signal_type: SignalType,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> bool {
-    let mut shutdown = false;
-
-    // handle streaming responses until shutdown
-    while !shutdown {
-        tokio::select! {
-            res = res_stream.message() => {
-                match res {
-                    Ok(Some(_val)) => {
-                        metrics_updates.record_exported(signal_type);
-                    },
-                    Ok(None) => {
-                        // sender disconnected
-                        break
-                    }
-                    Err(_grpc_status) => {
-                        metrics_updates.record_failed(signal_type);
-                        break
-                    }
+                receiver = match receiver_return.await {
+                    Ok(rx) => rx,
+                    Err(_) => break,
                 };
             }
             _ = shutdown_rx.changed() => {
@@ -591,7 +417,125 @@ async fn handle_res_stream(
         }
     }
 
+    flush_counts(
+        &metrics_tx,
+        signal,
+        &mut pending_failed,
+        &mut pending_exported,
+    );
+}
+
+struct BorrowingBatchStream {
+    current: Option<BatchArrowRecords>,
+    receiver: Option<Receiver<BatchArrowRecords>>,
+    return_tx: Option<oneshot::Sender<Receiver<BatchArrowRecords>>>,
+}
+
+impl BorrowingBatchStream {
+    fn new(
+        first: BatchArrowRecords,
+        receiver: Receiver<BatchArrowRecords>,
+    ) -> (Self, oneshot::Receiver<Receiver<BatchArrowRecords>>) {
+        let (return_tx, return_rx) = oneshot::channel();
+        (
+            Self {
+                current: Some(first),
+                receiver: Some(receiver),
+                return_tx: Some(return_tx),
+            },
+            return_rx,
+        )
+    }
+}
+
+impl Stream for BorrowingBatchStream {
+    type Item = BatchArrowRecords;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        if let Some(batch) = this.current.take() {
+            return Poll::Ready(Some(batch));
+        }
+
+        let receiver = this.receiver.as_mut().expect("receiver missing");
+        match Pin::new(receiver).poll_recv(cx) {
+            Poll::Ready(Some(batch)) => Poll::Ready(Some(batch)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for BorrowingBatchStream {
+    fn drop(&mut self) {
+        if let (Some(receiver), Some(tx)) = (self.receiver.take(), self.return_tx.take()) {
+            let _ = tx.send(receiver);
+        }
+    }
+}
+async fn handle_res_stream(
+    mut res_stream: Streaming<BatchStatus>,
+    metrics_tx: &Sender<PDataMetricsUpdate>,
+    signal: SignalType,
+    pending_failed: &mut u64,
+    pending_exported: &mut u64,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    let mut shutdown = false;
+
+    while !shutdown {
+        tokio::select! {
+            res = res_stream.message() => {
+                match res {
+                    Ok(Some(_)) => {
+                        *pending_exported = pending_exported.saturating_add(1);
+                        flush_counts(metrics_tx, signal, pending_failed, pending_exported);
+                    }
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(_) => {
+                        *pending_failed = pending_failed.saturating_add(1);
+                        flush_counts(metrics_tx, signal, pending_failed, pending_exported);
+                        break;
+                    }
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                shutdown = *shutdown_rx.borrow();
+            }
+        }
+    }
+
     shutdown
+}
+
+fn flush_counts(
+    tx: &Sender<PDataMetricsUpdate>,
+    signal: SignalType,
+    pending_failed: &mut u64,
+    pending_exported: &mut u64,
+) {
+    if *pending_failed > 0 {
+        match tx.try_send(PDataMetricsUpdate::Failed {
+            signal,
+            count: *pending_failed,
+        }) {
+            Ok(()) | Err(TrySendError::Closed(_)) => *pending_failed = 0,
+            Err(TrySendError::Full(_)) => {}
+        }
+    }
+
+    if *pending_exported > 0 {
+        match tx.try_send(PDataMetricsUpdate::Exported {
+            signal,
+            count: *pending_exported,
+        }) {
+            Ok(()) | Err(TrySendError::Closed(_)) => *pending_exported = 0,
+            Err(TrySendError::Full(_)) => {}
+        }
+    }
 }
 
 #[cfg(test)]
