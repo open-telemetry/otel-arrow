@@ -217,7 +217,7 @@ where
                             execution_context.add_diagnostic_if_enabled(
                                 RecordSetEngineDiagnosticLevel::Verbose,
                                 expression,
-                                || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
                             );
                             Some(v)
                         }
@@ -288,7 +288,7 @@ where
                             execution_context.add_diagnostic_if_enabled(
                                 RecordSetEngineDiagnosticLevel::Verbose,
                                 expression,
-                                || format!("Resolved '{:?}' value for array index '{}' specified in accessor expression", v.get_value_type(), array_index.get_value()),
+                                || format!("Resolved '{}' value for array index '{}' specified in accessor expression", v.get_value_type(), array_index.get_value()),
                             );
                             Some(v)
                         }

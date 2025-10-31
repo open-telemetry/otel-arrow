@@ -13,7 +13,7 @@ where
     'a: 'c,
     'b: 'c,
 {
-    let v = match parse_scalar_expression {
+    let value = match parse_scalar_expression {
         ParseScalarExpression::Json(p) => {
             let inner_value =
                 execute_scalar_expression(execution_context, p.get_inner_expression())?;
@@ -99,10 +99,10 @@ where
     execution_context.add_diagnostic_if_enabled(
         RecordSetEngineDiagnosticLevel::Verbose,
         parse_scalar_expression,
-        || format!("Evaluated as: {v}"),
+        || format!("Evaluated as: {value}"),
     );
 
-    Ok(v)
+    Ok(value)
 }
 
 #[cfg(test)]
