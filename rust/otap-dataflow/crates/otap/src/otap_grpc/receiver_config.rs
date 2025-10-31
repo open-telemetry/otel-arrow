@@ -4,6 +4,7 @@
 //! Shared gRPC configuration for receivers.
 
 use crate::compression::{self, CompressionMethod};
+use crate::otap_grpc::otlp::server::Settings;
 use otap_df_config::byte_units;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -11,7 +12,6 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::server::TcpIncoming;
-use crate::otap_grpc::otlp::server::Settings;
 
 /// Common configuration shared across gRPC receivers.
 #[derive(Debug, Deserialize)]
@@ -200,13 +200,7 @@ impl GrpcServerConfig {
     /// Returns the first configured compression method for responses, if any.
     #[must_use]
     pub fn preferred_response_compression(&self) -> Option<CompressionMethod> {
-        if let Some(methods) = self.response_compression.as_ref() {
-            return methods.first().copied();
-        }
-
-        // Legacy behaviour: if request compression was explicitly configured, mirror the first
-        // entry for responses unless the new response list overwrote it.
-        self.request_compression
+        self.response_compression
             .as_ref()
             .and_then(|methods| methods.first().copied())
     }
@@ -223,7 +217,9 @@ impl GrpcServerConfig {
 
     /// Returns the compression encodings to use for both requests and responses.
     #[must_use]
-    pub fn compression_encodings(&self) -> (EnabledCompressionEncodings, EnabledCompressionEncodings) {
+    pub fn compression_encodings(
+        &self,
+    ) -> (EnabledCompressionEncodings, EnabledCompressionEncodings) {
         let mut request_compression = EnabledCompressionEncodings::default();
         for method in self.request_compression_methods() {
             request_compression.enable(method.map_to_compression_encoding());
@@ -239,7 +235,8 @@ impl GrpcServerConfig {
     /// Builds the gRPC server settings from this configuration.
     #[must_use]
     pub fn build_settings(&self) -> Settings {
-        let (request_compression_encodings, response_compression_encodings) = self.compression_encodings();
+        let (request_compression_encodings, response_compression_encodings) =
+            self.compression_encodings();
 
         Settings {
             max_concurrent_requests: self.max_concurrent_requests,

@@ -4,9 +4,7 @@
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::GrpcServerConfig;
 use crate::otap_grpc::common::{self, SignalSharedStates};
-use crate::otap_grpc::otlp::server::{
-    LogsServiceServer, MetricsServiceServer, Settings, TraceServiceServer,
-};
+use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;
@@ -30,9 +28,7 @@ use std::net::SocketAddr;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::Server;
-use tonic::transport::server::TcpIncoming;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";

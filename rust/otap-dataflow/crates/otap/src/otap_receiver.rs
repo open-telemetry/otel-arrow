@@ -43,7 +43,6 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::transport::Server;
-use tonic::transport::server::TcpIncoming;
 use tonic_middleware::MiddlewareLayer;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
@@ -834,9 +833,12 @@ mod tests {
             Some(vec![CompressionMethod::Gzip])
         );
         assert!(receiver.config.grpc.response_compression.is_none());
-        assert_eq!(
-            receiver.config.grpc.preferred_response_compression(),
-            Some(CompressionMethod::Gzip)
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
         );
         assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
 
@@ -859,9 +861,12 @@ mod tests {
             Some(vec![CompressionMethod::Zstd])
         );
         assert!(receiver.config.grpc.response_compression.is_none());
-        assert_eq!(
-            receiver.config.grpc.preferred_response_compression(),
-            Some(CompressionMethod::Zstd)
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
         );
         assert!(receiver.config.grpc.timeout.is_none());
 
@@ -883,9 +888,12 @@ mod tests {
             Some(vec![CompressionMethod::Deflate])
         );
         assert!(receiver.config.grpc.response_compression.is_none());
-        assert_eq!(
-            receiver.config.grpc.preferred_response_compression(),
-            Some(CompressionMethod::Deflate)
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
         );
         assert!(receiver.config.grpc.timeout.is_none());
 
