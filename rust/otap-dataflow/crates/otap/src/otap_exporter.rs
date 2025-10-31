@@ -38,7 +38,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
 use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
@@ -230,11 +230,15 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
-                        _ = match signal_type {
-                            SignalType::Logs => logs_sender.send(message).await,
-                            SignalType::Metrics => metrics_sender.send(message).await,
-                            SignalType::Traces => traces_sender.send(message).await,
+                        let sender = match signal_type {
+                            SignalType::Logs => &logs_sender,
+                            SignalType::Metrics => &metrics_sender,
+                            SignalType::Traces => &traces_sender,
                         };
+
+                        if enqueue_otap_batch(sender, message).await.is_err() {
+                            self.pdata_metrics.inc_failed(signal_type);
+                        }
                     }
                     _ => {
                         return Err(Error::ExporterError {
@@ -302,6 +306,20 @@ enum PDataMetricsUpdate {
     IncFailed(SignalType),
 }
 
+// Fast-path try_send keeps the exporter from yielding the single-threaded runtime every time it
+// hands a batch to the per-signal worker channel. We only fall back to the awaited send when the
+// channel is momentarily full, preserving backpressure without unconditionally parking the task.
+async fn enqueue_otap_batch(
+    sender: &Sender<OtapArrowRecords>,
+    batch: OtapArrowRecords,
+) -> Result<(), OtapArrowRecords> {
+    match sender.try_send(batch) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(batch)) => sender.send(batch).await.map_err(|error| error.0),
+        Err(TrySendError::Closed(batch)) => Err(batch),
+    }
+}
+
 async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
     signal_type: SignalType,
@@ -358,7 +376,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     }
                     Err(_e) => {
                         // there was an error initiating the streaming request
-                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
+                        let _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::IncFailed(signal_type));
                         log::error!("failed request, waiting {failed_request_backoff:?}");
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
@@ -389,7 +407,7 @@ fn create_req_stream(
         match producer.produce_bar(&mut first_batch) {
             Ok(bar) => yield bar,
             Err(_) => {
-                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+                let _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::IncFailed(signal_type));
             }
         };
 
@@ -399,7 +417,7 @@ fn create_req_stream(
             match producer.produce_bar(&mut otap_batch) {
                 Ok(bar) => yield bar,
                 Err(_) => {
-                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type));
+                    let _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::IncFailed(signal_type));
                 }
             }
         }
@@ -420,14 +438,14 @@ async fn handle_res_stream(
             res = res_stream.message() => {
                 match res {
                     Ok(Some(_val)) => {
-                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncExported(signal_type)).await;
+                        let _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::IncExported(signal_type));
                     },
                     Ok(None) => {
                         // sender disconnected
                         break
                     }
                     Err(_grpc_status) => {
-                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
+                        let _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::IncFailed(signal_type));
                         break
                     }
                 };
