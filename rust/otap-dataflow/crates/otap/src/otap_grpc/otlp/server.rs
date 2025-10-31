@@ -94,10 +94,12 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
+    /// Maximum size for inbound gRPC messages.
+    pub max_decoding_message_size: Option<usize>,
     /// Request compression allowed
-    pub accept_compression_encodings: EnabledCompressionEncodings,
+    pub request_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
-    pub send_compression_encodings: EnabledCompressionEncodings,
+    pub response_compression_encodings: EnabledCompressionEncodings,
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
@@ -184,13 +186,17 @@ impl Decoder for OtlpBytesDecoder {
     type Error = Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        let buf = src.chunk();
+        let len = src.remaining();
+        if len == 0 {
+            return Ok(None);
+        }
+
+        let bytes = src.copy_to_bytes(len);
         let result = match self.signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
         };
-        src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))
     }
 }
@@ -201,9 +207,13 @@ impl Decoder for OtlpBytesDecoder {
 /// would require Arc<Mutex<_>>.
 fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal);
-    Grpc::new(codec).apply_compression_config(
-        settings.accept_compression_encodings,
-        settings.send_compression_encodings,
+    let mut grpc = Grpc::new(codec);
+    if let Some(limit) = settings.max_decoding_message_size {
+        grpc = grpc.max_decoding_message_size(limit);
+    }
+    grpc.apply_compression_config(
+        settings.request_compression_encodings,
+        settings.response_compression_encodings,
     )
 }
 

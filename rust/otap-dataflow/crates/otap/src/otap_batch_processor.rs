@@ -1322,8 +1322,9 @@ mod tests {
 
         let validation = phase.run_test(|mut ctx| async move {
             // Metrics OTLP bytes are not yet supported for conversion -> should be dropped
-            let pdata =
-                OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(vec![1, 2, 3]).into());
+            let pdata = OtapPdata::new_default(
+                OtlpProtoBytes::ExportMetricsRequest(vec![1, 2, 3].into()).into(),
+            );
             ctx.process(Message::PData(pdata)).await.expect("process 1");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(
@@ -1350,8 +1351,9 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            let pdata =
-                OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(vec![9, 9, 9]).into());
+            let pdata = OtapPdata::new_default(
+                OtlpProtoBytes::ExportMetricsRequest(vec![9, 9, 9].into()).into(),
+            );
             ctx.process(Message::PData(pdata)).await.expect("process");
             let emitted = ctx.drain_pdata().await;
             assert_eq!(emitted.len(), 0, "no flush before shutdown");

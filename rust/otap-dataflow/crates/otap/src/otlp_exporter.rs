@@ -7,6 +7,8 @@ use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::{StreamExt, stream::FuturesUnordered};
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -27,8 +29,13 @@ use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
+use std::future::Future;
+use std::mem;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 /// The URN for the OTLP exporter
@@ -46,6 +53,13 @@ pub struct Config {
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+    /// Maximum number of concurrent in-flight export RPCs.
+    #[serde(default = "default_max_in_flight")]
+    pub max_in_flight: usize,
+}
+
+const fn default_max_in_flight() -> usize {
+    32
 }
 
 /// Exporter that sends OTLP data via gRPC
@@ -112,8 +126,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let mut endpoint =
-            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
+        let mut endpoint = Channel::from_shared(self.config.grpc_endpoint.clone())
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -121,7 +135,23 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     error: format!("grpc channel error {e}"),
                     source_detail,
                 }
-            })?;
+            })?
+            // Transport limits / middleware applied on the client:
+            .concurrency_limit(256) // bound client-side work (tunes backpressure)
+            .connect_timeout(Duration::from_secs(3))
+            // TCP and HTTP/2 keepalives keep long-lived channels healthy:
+            .tcp_nodelay(true)
+            .tcp_keepalive(Some(Duration::from_secs(45)))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true)
+            // Bigger windows reduce flow-control throttling for big exports:
+            .initial_stream_window_size(Some(8 * 1024 * 1024)) // 8 MiB
+            .initial_connection_window_size(Some(32 * 1024 * 1024)); // 32 MiB
+        // Or rely on BDP estimation (overrides manual window sizes):
+        // .http2_adaptive_window(true)
+        // Optional: expand internal Tower buffer if needed:
+        // .buffer_size(Some(2048))
 
         // Apply timeout if configured
         if let Some(timeout) = self.config.timeout {
@@ -130,147 +160,175 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let channel = endpoint.connect_lazy();
 
-        // start a grpc client and connect to the server
-        let mut metrics_client = MetricsServiceClient::new(channel.clone());
-        let mut logs_client = LogsServiceClient::new(channel.clone());
-        let mut trace_client = TraceServiceClient::new(channel.clone());
+        let compression = self
+            .config
+            .compression_method
+            .as_ref()
+            .map(|c| c.map_to_compression_encoding());
+        let max_in_flight = self.config.max_in_flight.max(1);
 
-        if let Some(ref compression) = self.config.compression_method {
-            let encoding = compression.map_to_compression_encoding();
-
-            logs_client = logs_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            metrics_client = metrics_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            trace_client = trace_client
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-        }
-
-        // reuse the encoder and the buffer across pdatas
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::new();
+        let mut inflight: FuturesUnordered<ExportFuture> = FuturesUnordered::new();
+        let mut pending_msg: Option<Message<OtapPdata>> = None;
 
         loop {
-            match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    _ = timer_cancel_handle.cancel().await;
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+            if inflight.len() >= max_in_flight && pending_msg.is_some() {
+                if let Some(outcome) = inflight.next().await {
+                    process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                continue;
+            }
+
+            tokio::select! {
+                biased;
+                Some(outcome) = inflight.next(), if !inflight.is_empty() => {
+                    process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
                 }
-                Message::PData(pdata) => {
-                    // Capture signal type before moving pdata into try_from
-                    let signal_type = pdata.signal_type();
+                msg = async {
+                    if let Some(msg) = pending_msg.take() {
+                        Ok(msg)
+                    } else {
+                        msg_chan.recv().await
+                    }
+                } => {
+                    let msg = msg?;
 
-                    // Keep context for Ack/Nack delivery
-                    let (context, payload) = pdata.into_parts();
-                    self.pdata_metrics.inc_consumed(signal_type);
+                    match msg {
+                        Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            debug_assert!(
+                                pending_msg.is_none(),
+                                "pending message should have been drained before shutdown"
+                            );
+                            while let Some(outcome) = inflight.next().await {
+                                process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
+                            }
+                            _ = timer_cancel_handle.cancel().await;
+                            return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                        }
+                        Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            _ = metrics_reporter.report(&mut self.pdata_metrics);
+                        }
+                        Message::PData(pdata) => {
+                            if inflight.len() >= max_in_flight {
+                                pending_msg = Some(Message::PData(pdata));
+                                continue;
+                            }
 
-                    match (signal_type, payload) {
-                        // use optimized direct encoding OTAP -> OTLP bytes directly
-                        (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match handle_otap_export(
-                                otap_batch,
-                                context,
-                                &mut proto_buffer,
-                                &mut logs_encoder,
-                                &mut logs_client,
-                                &effect_handler,
-                            )
-                            .await
-                            {
-                                Ok(()) => self.pdata_metrics.logs_exported.inc(),
-                                _ => self.pdata_metrics.logs_failed.inc(),
-                            }
-                        }
-                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match handle_otap_export(
-                                otap_batch,
-                                context,
-                                &mut proto_buffer,
-                                &mut metrics_encoder,
-                                &mut metrics_client,
-                                &effect_handler,
-                            )
-                            .await
-                            {
-                                Ok(()) => self.pdata_metrics.metrics_exported.inc(),
-                                _ => self.pdata_metrics.metrics_failed.inc(),
-                            }
-                        }
-                        (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match handle_otap_export(
-                                otap_batch,
-                                context,
-                                &mut proto_buffer,
-                                &mut traces_encoder,
-                                &mut trace_client,
-                                &effect_handler,
-                            )
-                            .await
-                            {
-                                Ok(()) => self.pdata_metrics.traces_exported.inc(),
-                                _ => self.pdata_metrics.traces_failed.inc(),
-                            }
-                        }
-                        (_, OtapPayload::OtlpBytes(service_req)) => {
-                            _ = match service_req {
-                                OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                    match handle_otlp_export(
-                                        bytes,
+                            let signal_type = pdata.signal_type();
+                            let (context, payload) = pdata.into_parts();
+                            self.pdata_metrics.inc_consumed(signal_type);
+
+                            match (signal_type, payload) {
+                                (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                                    match prepare_otap_export(
+                                        otap_batch,
                                         context,
-                                        &mut logs_client,
-                                        &effect_handler,
-                                        |b| OtlpProtoBytes::ExportLogsRequest(b.to_vec()).into(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(()) => self.pdata_metrics.logs_exported.inc(),
-                                        _ => self.pdata_metrics.logs_failed.inc(),
+                                        &mut proto_buffer,
+                                        &mut logs_encoder,
+                                        exporter_id.clone(),
+                                        SignalType::Logs,
+                                    ) {
+                                        Ok(prepared) => {
+                                            let future = make_export_future(
+                                                prepared,
+                                                channel.clone(),
+                                                compression,
+                                            );
+                                            inflight.push(future);
+                                        }
+                                        Err(_) => {
+                                            self.pdata_metrics.logs_failed.inc();
+                                        }
                                     }
                                 }
-                                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    match handle_otlp_export(
-                                        bytes,
+                                (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                                    match prepare_otap_export(
+                                        otap_batch,
                                         context,
-                                        &mut metrics_client,
-                                        &effect_handler,
-                                        |b| OtlpProtoBytes::ExportMetricsRequest(b.to_vec()).into(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(()) => self.pdata_metrics.metrics_exported.inc(),
-                                        _ => self.pdata_metrics.metrics_failed.inc(),
+                                        &mut proto_buffer,
+                                        &mut metrics_encoder,
+                                        exporter_id.clone(),
+                                        SignalType::Metrics,
+                                    ) {
+                                        Ok(prepared) => {
+                                            let future = make_export_future(
+                                                prepared,
+                                                channel.clone(),
+                                                compression,
+                                            );
+                                            inflight.push(future);
+                                        }
+                                        Err(_) => {
+                                            self.pdata_metrics.metrics_failed.inc();
+                                        }
                                     }
                                 }
-                                OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                    match handle_otlp_export(
-                                        bytes,
+                                (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                                    match prepare_otap_export(
+                                        otap_batch,
                                         context,
-                                        &mut trace_client,
-                                        &effect_handler,
-                                        |b| OtlpProtoBytes::ExportTracesRequest(b.to_vec()).into(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(()) => self.pdata_metrics.traces_exported.inc(),
-                                        _ => self.pdata_metrics.traces_failed.inc(),
+                                        &mut proto_buffer,
+                                        &mut traces_encoder,
+                                        exporter_id.clone(),
+                                        SignalType::Traces,
+                                    ) {
+                                        Ok(prepared) => {
+                                            let future = make_export_future(
+                                                prepared,
+                                                channel.clone(),
+                                                compression,
+                                            );
+                                            inflight.push(future);
+                                        }
+                                        Err(_) => {
+                                            self.pdata_metrics.traces_failed.inc();
+                                        }
                                     }
                                 }
-                            };
+                                (_, OtapPayload::OtlpBytes(service_req)) => {
+                                    let prepared = match service_req {
+                                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                                            prepare_otlp_export(
+                                                bytes,
+                                                context,
+                                                SignalType::Logs,
+                                                |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
+                                            )
+                                        }
+                                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                                            prepare_otlp_export(
+                                                bytes,
+                                                context,
+                                                SignalType::Metrics,
+                                                |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
+                                            )
+                                        }
+                                        OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                                            prepare_otlp_export(
+                                                bytes,
+                                                context,
+                                                SignalType::Traces,
+                                                |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
+                                            )
+                                        }
+                                    };
+
+                                    let future = make_export_future(
+                                        prepared,
+                                        channel.clone(),
+                                        compression,
+                                    );
+                                    inflight.push(future);
+                                }
+                            }
+                        }
+                        _ => {
+                            // ignore unhandled messages
                         }
                     }
-                }
-                _ => {
-                    // ignore unhandled messages
                 }
             }
         }
@@ -310,73 +368,230 @@ async fn handle_export_result<T>(
     }
 }
 
-/// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
-/// and handling Ack/Nack delivery.
-async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
+struct PreparedExport {
+    bytes: Bytes,
+    context: Context,
+    saved_payload: OtapPayload,
+    signal_type: SignalType,
+}
+
+struct ExportOutcome {
+    result: Result<(), tonic::Status>,
+    context: Context,
+    saved_payload: OtapPayload,
+    signal_type: SignalType,
+}
+
+fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
     context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
-    client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
-    effect_handler: &EffectHandler<OtapPdata>,
-) -> Result<(), Error>
-where
-    T2: tonic::client::GrpcService<tonic::body::Body>,
-    T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    T2::ResponseBody: Send + 'static,
-    <T2::ResponseBody as tonic::transport::Body>::Error:
-        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
-    S: crate::otap_grpc::otlp::client::ServiceDescriptor,
-    Resp: prost::Message + Default + Send + 'static,
-{
-    // Encode OTAP records to protobuf
+    exporter: NodeId,
+    signal_type: SignalType,
+) -> Result<PreparedExport, Error> {
     proto_buffer.clear();
     encoder
         .encode(&mut otap_batch, proto_buffer)
         .map_err(|e| Error::ExporterError {
-            exporter: effect_handler.exporter_id(),
+            exporter,
             kind: ExporterErrorKind::Other,
             error: format!("encoding error: {}", e),
             source_detail: "".to_string(),
         })?;
 
-    let bytes = proto_buffer.as_ref().to_vec();
+    let mut owned_buffer = ProtoBuffer::new();
+    mem::swap(proto_buffer, &mut owned_buffer);
+    let next_capacity = owned_buffer.capacity();
+    let bytes = Bytes::from(owned_buffer.into_bytes());
+    *proto_buffer = ProtoBuffer::with_capacity(next_capacity);
+
     if !context.may_return_payload() {
-        // drop before the export, payload not requested
         let _drop = otap_batch.take_payload();
     }
     let saved_payload: OtapPayload = otap_batch.into();
 
-    // Export and handle result with Ack/Nack
-    let result = client.export(bytes).await;
-    handle_export_result(result, context, saved_payload, effect_handler).await
+    Ok(PreparedExport {
+        bytes,
+        context,
+        saved_payload,
+        signal_type,
+    })
 }
 
-/// Generic function for exporting OTLP bytes via gRPC and handling Ack/Nack delivery.
-async fn handle_otlp_export<T2, Resp, S>(
-    bytes: Vec<u8>,
+fn prepare_otlp_export(
+    bytes: Bytes,
     context: Context,
-    client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
-    effect_handler: &EffectHandler<OtapPdata>,
-    save_payload_fn: impl FnOnce(&[u8]) -> OtapPayload,
-) -> Result<(), Error>
-where
-    T2: tonic::client::GrpcService<tonic::body::Body>,
-    T2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    T2::ResponseBody: Send + 'static,
-    <T2::ResponseBody as tonic::transport::Body>::Error:
-        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
-    S: crate::otap_grpc::otlp::client::ServiceDescriptor,
-    Resp: prost::Message + Default + Send + 'static,
-{
+    signal_type: SignalType,
+    save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
+) -> PreparedExport {
     let saved_payload = if context.may_return_payload() {
-        save_payload_fn(&bytes)
+        save_payload_fn(bytes.clone())
     } else {
-        save_payload_fn(&[])
+        save_payload_fn(Bytes::new())
     };
 
-    let result = client.export(bytes).await;
-    handle_export_result(result, context, saved_payload, effect_handler).await
+    PreparedExport {
+        bytes,
+        context,
+        saved_payload,
+        signal_type,
+    }
+}
+
+fn make_export_future(
+    prepared: PreparedExport,
+    channel: Channel,
+    compression: Option<CompressionEncoding>,
+) -> ExportFuture {
+    ExportFuture::new(prepared, channel, compression)
+}
+
+struct ExportFuture {
+    state: ExportFutureState,
+    outcome_data: Option<(Context, OtapPayload)>,
+    signal_type: SignalType,
+}
+
+enum ExportFutureState {
+    Pending(ExportFuturePending),
+    InFlight(Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>>),
+    Finished,
+}
+
+struct ExportFuturePending {
+    bytes: Bytes,
+    channel: Channel,
+    compression: Option<CompressionEncoding>,
+}
+
+impl ExportFuture {
+    fn new(
+        prepared: PreparedExport,
+        channel: Channel,
+        compression: Option<CompressionEncoding>,
+    ) -> Self {
+        let PreparedExport {
+            bytes,
+            context,
+            saved_payload,
+            signal_type,
+        } = prepared;
+
+        Self {
+            state: ExportFutureState::Pending(ExportFuturePending {
+                bytes,
+                channel,
+                compression,
+            }),
+            outcome_data: Some((context, saved_payload)),
+            signal_type,
+        }
+    }
+}
+
+impl Future for ExportFuture {
+    type Output = ExportOutcome;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        loop {
+            match &mut self.state {
+                ExportFutureState::Pending(_) => {
+                    let pending = match mem::replace(&mut self.state, ExportFutureState::Finished) {
+                        ExportFutureState::Pending(pending) => pending,
+                        other => {
+                            self.state = other;
+                            continue;
+                        }
+                    };
+                    let future = pending.into_future(self.signal_type);
+                    self.state = ExportFutureState::InFlight(future);
+                }
+                ExportFutureState::InFlight(future) => match future.as_mut().poll(cx) {
+                    Poll::Ready(result) => {
+                        self.state = ExportFutureState::Finished;
+                        let (context, saved_payload) = self
+                            .outcome_data
+                            .take()
+                            .expect("outcome data already taken");
+                        return Poll::Ready(ExportOutcome {
+                            result,
+                            context,
+                            saved_payload,
+                            signal_type: self.signal_type,
+                        });
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                ExportFutureState::Finished => {
+                    panic!("polled ExportFuture after completion");
+                }
+            }
+        }
+    }
+}
+
+impl ExportFuturePending {
+    fn into_future(
+        self,
+        signal_type: SignalType,
+    ) -> Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>> {
+        let ExportFuturePending {
+            bytes,
+            channel,
+            compression,
+        } = self;
+
+        match signal_type {
+            SignalType::Logs => Box::pin(async move {
+                let mut client = LogsServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+            SignalType::Metrics => Box::pin(async move {
+                let mut client = MetricsServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+            SignalType::Traces => Box::pin(async move {
+                let mut client = TraceServiceClient::new(channel);
+                if let Some(encoding) = compression {
+                    client = client.send_compressed(encoding);
+                }
+                client.export(bytes).await.map(|_| ())
+            }),
+        }
+    }
+}
+
+async fn process_export_outcome(
+    outcome: ExportOutcome,
+    effect_handler: &EffectHandler<OtapPdata>,
+    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+) {
+    let ExportOutcome {
+        result,
+        context,
+        saved_payload,
+        signal_type,
+    } = outcome;
+
+    match handle_export_result(result, context, saved_payload, effect_handler).await {
+        Ok(()) => match signal_type {
+            SignalType::Logs => pdata_metrics.logs_exported.inc(),
+            SignalType::Metrics => pdata_metrics.metrics_exported.inc(),
+            SignalType::Traces => pdata_metrics.traces_exported.inc(),
+        },
+        Err(_) => match signal_type {
+            SignalType::Logs => pdata_metrics.logs_failed.inc(),
+            SignalType::Metrics => pdata_metrics.metrics_failed.inc(),
+            SignalType::Traces => pdata_metrics.traces_failed.inc(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -472,21 +687,21 @@ mod tests {
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn scenario()
-    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
                 let req = ExportLogsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                let logs_pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(req_bytes).into())
-                        .test_subscribe_to(
-                            Interests::ACKS | Interests::NACKS,
-                            TestCallData::default().into(),
-                            123,
-                        );
+                let logs_pdata = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)).into(),
+                )
+                .test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    123,
+                );
                 ctx.send_pdata(logs_pdata)
                     .await
                     .expect("Failed to send log message");
@@ -494,13 +709,14 @@ mod tests {
                 let req = ExportMetricsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                let metrics_pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(req_bytes).into())
-                        .test_subscribe_to(
-                            Interests::ACKS | Interests::NACKS,
-                            TestCallData::default().into(),
-                            123,
-                        );
+                let metrics_pdata = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(Bytes::from(req_bytes)).into(),
+                )
+                .test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    123,
+                );
                 ctx.send_pdata(metrics_pdata)
                     .await
                     .expect("Failed to send metric message");
@@ -508,13 +724,14 @@ mod tests {
                 let req = ExportTraceServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                let traces_pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(req_bytes).into())
-                        .test_subscribe_to(
-                            Interests::ACKS | Interests::NACKS,
-                            TestCallData::default().into(),
-                            123,
-                        );
+                let traces_pdata = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportTracesRequest(Bytes::from(req_bytes)).into(),
+                )
+                .test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    123,
+                );
                 ctx.send_pdata(traces_pdata)
                     .await
                     .expect("Failed to send metric message");
@@ -530,10 +747,8 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
-    ) -> impl FnOnce(
-        TestContext<OtapPdata>,
-        Result<(), Error>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>, Result<(), Error>) -> Pin<Box<dyn Future<Output = ()>>>
+    {
         |_, exporter_result| {
             Box::pin(async move {
                 assert!(exporter_result.is_ok());
@@ -617,6 +832,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    max_in_flight: 32,
                     timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
@@ -682,6 +898,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    max_in_flight: 32,
                     timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
@@ -740,7 +957,7 @@ mod tests {
 
             // send a request while the server isn't running and check how we handle it
             let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
-                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -761,7 +978,7 @@ mod tests {
 
             // send a pdata
             let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
-                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -782,7 +999,7 @@ mod tests {
 
             // send a request while the server isn't running and check that we still handle it correctly
             let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
-                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -806,7 +1023,7 @@ mod tests {
 
             // send another pdata. This ensures the client can reconnect after it was shut down
             let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
-                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone()),
+                OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
                 Interests::ACKS | Interests::NACKS,

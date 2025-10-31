@@ -45,7 +45,7 @@
 //!
 //! // Create a new OtapPdata with default context
 //! let context = Context::default();
-//! let mut pdata = OtapPdata::new(context, OtlpProtoBytes::ExportLogsRequest(buf).into());
+//! let mut pdata = OtapPdata::new(context, OtlpProtoBytes::ExportLogsRequest(buf.into()).into());
 //!
 //! // Split the request, convert to Otap Arrow Records
 //! let (context, payload) = pdata.into_parts();
@@ -79,6 +79,7 @@
 // this diagram may need to be updated (https://github.com/open-telemetry/otel-arrow/issues/1095)
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use otap_df_config::experimental::SignalType;
 use otap_df_engine::error::Error;
 use otap_df_engine::{
@@ -214,11 +215,11 @@ pub mod error {
 #[derive(Clone, Debug)]
 pub enum OtlpProtoBytes {
     /// protobuf serialized ExportLogsServiceRequest
-    ExportLogsRequest(Vec<u8>),
+    ExportLogsRequest(Bytes),
     /// protobuf serialized ExportMetricsServiceRequest
-    ExportMetricsRequest(Vec<u8>),
+    ExportMetricsRequest(Bytes),
     /// protobuf serialized ExportTracesServiceRequest
-    ExportTracesRequest(Vec<u8>),
+    ExportTracesRequest(Bytes),
 }
 
 impl OtlpProtoBytes {
@@ -228,7 +229,7 @@ impl OtlpProtoBytes {
         match self {
             OtlpProtoBytes::ExportLogsRequest(bytes)
             | OtlpProtoBytes::ExportMetricsRequest(bytes)
-            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_slice(),
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_ref(),
         }
     }
 }
@@ -553,7 +554,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 logs_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                Ok(Self::ExportLogsRequest(buffer.into_bytes()))
+                Ok(Self::ExportLogsRequest(Bytes::from(buffer.into_bytes())))
             }
             OtapArrowRecords::Metrics(_) => {
                 let mut metrics_encoder = MetricsProtoBytesEncoder::new();
@@ -562,7 +563,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
 
-                Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
+                Ok(Self::ExportMetricsRequest(Bytes::from(buffer.into_bytes())))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
@@ -570,7 +571,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 traces_encoder
                     .encode(&mut value, &mut buffer)
                     .map_err(map_otlp_conversion_error)?;
-                Ok(Self::ExportTracesRequest(buffer.into_bytes()))
+                Ok(Self::ExportTracesRequest(Bytes::from(buffer.into_bytes())))
             }
         }
     }
@@ -708,6 +709,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 mod test {
     use super::*;
     use crate::testing::{TestCallData, create_test_logs, create_test_pdata};
+    use bytes::Bytes;
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -735,8 +737,10 @@ mod test {
         let otlp_service_req = create_test_logs();
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-        let pdata =
-            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
+        let pdata = OtapPdata::new_default(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into(),
+        )
+        .payload();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
@@ -762,8 +766,10 @@ mod test {
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata =
-            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
+        let pdata = OtapPdata::new_default(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into(),
+        )
+        .payload();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
@@ -783,8 +789,10 @@ mod test {
     fn roundtrip_otlp_otap_traces(otlp_service_req: ExportTraceServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into())
-            .payload();
+        let pdata = OtapPdata::new_default(
+            OtlpProtoBytes::ExportTracesRequest(Bytes::from(otlp_bytes)).into(),
+        )
+        .payload();
 
         // test can go OtlpBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
@@ -1061,9 +1069,9 @@ mod test {
     #[test]
     fn test_signal_type() {
         // Test signal_type for OtlpProtoBytes variants
-        let logs_bytes = OtlpProtoBytes::ExportLogsRequest(vec![]);
-        let metrics_bytes = OtlpProtoBytes::ExportMetricsRequest(vec![]);
-        let traces_bytes = OtlpProtoBytes::ExportTracesRequest(vec![]);
+        let logs_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
+        let metrics_bytes = OtlpProtoBytes::ExportMetricsRequest(Bytes::new());
+        let traces_bytes = OtlpProtoBytes::ExportTracesRequest(Bytes::new());
 
         assert_eq!(logs_bytes.signal_type(), SignalType::Logs);
         assert_eq!(metrics_bytes.signal_type(), SignalType::Metrics);
@@ -1079,7 +1087,8 @@ mod test {
         assert_eq!(traces_records.signal_type(), SignalType::Traces);
 
         // Test signal_type for OtapPdata variants
-        let pdata_logs = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(vec![]).into());
+        let pdata_logs =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
         let pdata_metrics =
             OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
