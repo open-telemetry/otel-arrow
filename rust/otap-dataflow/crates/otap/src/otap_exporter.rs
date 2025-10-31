@@ -1,7 +1,24 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTAP exporter node
+//! Implementation of the OTAP exporter node.
+//!
+//! # Architecture
+//! The exporter runs on a single-threaded Tokio runtime and is designed to keep hot-path
+//! bookkeeping entirely lock-free:
+//! * `Message::PData` is converted into `BatchArrowRecords` before it ever reaches the worker
+//!   tasks, so the expensive Arrow encoding is performed once per signal on the main loop.
+//! * Each signal has its own `Producer` and `mpsc` channel carrying ready-to-send batches. This
+//!   keeps backpressure explicit and allows us to emit a batch immediately or await only when a
+//!   channel is momentarily full.
+//! * `BorrowingBatchStream` wraps the downstream receiver when a gRPC streaming export is active.
+//!   It hands ownership of the receiver to Tonic for the duration of the request and returns it via
+//!   a oneshot when the call completes, eliminating the need for `Arc<Mutex<_>>` around the queue.
+//! * Export/failed counters are accumulated per worker and flushed in aggregates, so telemetry
+//!   updates do not introduce additional contention.
+//!
+//! This structure keeps the hot path predictable while still playing nicely with Tonic’s `Send`
+//! requirements for request streams.
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
 //! ToDo: Handle configuration changes
