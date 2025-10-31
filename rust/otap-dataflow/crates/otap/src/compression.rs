@@ -26,8 +26,8 @@ impl CompressionMethod {
     #[must_use]
     pub const fn map_to_compression_encoding(&self) -> CompressionEncoding {
         match *self {
-            CompressionMethod::Gzip => CompressionEncoding::Gzip,
             CompressionMethod::Zstd => CompressionEncoding::Zstd,
+            CompressionMethod::Gzip => CompressionEncoding::Gzip,
             CompressionMethod::Deflate => CompressionEncoding::Deflate,
         }
     }
@@ -35,8 +35,8 @@ impl CompressionMethod {
 
 /// Default set of compression methods that are accepted when no configuration is provided.
 pub const DEFAULT_COMPRESSION_METHODS: [CompressionMethod; 3] = [
-    CompressionMethod::Gzip,
     CompressionMethod::Zstd,
+    CompressionMethod::Gzip,
     CompressionMethod::Deflate,
 ];
 

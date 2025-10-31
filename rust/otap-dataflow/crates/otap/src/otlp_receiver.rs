@@ -2,16 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_RECEIVER_FACTORIES;
+use crate::otap_grpc::GrpcServerConfig;
 use crate::otap_grpc::otlp::server::{
     LogsServiceServer, MetricsServiceServer, RouteResponse, Settings, SharedState,
     TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
 
-use crate::compression::{self, CompressionMethod};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::byte_units;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
@@ -43,212 +42,9 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The endpoint details: protocol, name, port.
-    listening_addr: SocketAddr,
-
-    /// Compression methods accepted (only used for requests, responses are not compressed as they
-    /// are typically small). Omitted field defaults to accepting gzip, zstd, and deflate.
-    #[serde(
-        default,
-        deserialize_with = "compression::deserialize_compression_methods"
-    )]
-    compression_method: Option<Vec<CompressionMethod>>,
-
-    // --- All the following settings have defaults that should be reasonable for most users ---
-    // -----------------------------------------------------------------------------------------
-    /// Maximum number of concurrent in-flight requests.
-    /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity so
-    /// backpressure flows upstream automatically. Any non-zero value is still clamped to that
-    /// capacity at runtime.
-    #[serde(default = "default_max_concurrent_requests")]
-    max_concurrent_requests: usize,
-
-    /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
-    /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
-    /// Disabling it trades slightly higher latency for fewer small TCP packets when workloads
-    /// involve very bursty, tiny messages.
-    #[serde(default = "default_tcp_nodelay")]
-    tcp_nodelay: bool,
-
-    /// TCP keepalive timeout for accepted sockets.
-    /// The 45s default evicts dead clients in under a minute without incurring much background
-    /// traffic. Raise it to reduce keepalive chatter, or set to `null` to disable kernel keepalives
-    /// entirely (at the cost of slower leak detection on broken links).
-    #[serde(default = "default_tcp_keepalive", with = "humantime_serde")]
-    tcp_keepalive: Option<Duration>,
-
-    /// Interval between TCP keepalive probes once keepalive is active.
-    /// Defaults to 15s so the kernel confirms progress quickly after the keepalive timeout. Longer
-    /// intervals reduce packets, shorter intervals detect stalled peers faster. Ignored if
-    /// `tcp_keepalive` is `null`.
-    #[serde(default = "default_tcp_keepalive_interval", with = "humantime_serde")]
-    tcp_keepalive_interval: Option<Duration>,
-
-    /// Number of TCP keepalive probes sent before a connection is declared dead.
-    /// The default (5) balances resilience to transient loss with timely reclamation of resources.
-    /// Smaller values clean up faster during outages, larger values favor noisy or lossy networks.
-    #[serde(default = "default_tcp_keepalive_retries")]
-    tcp_keepalive_retries: Option<u32>,
-
-    /// Per-connection concurrency limit enforced by the transport layer.
-    /// By default it mirrors the effective `max_concurrent_requests`, so transport- and
-    /// application-level backpressure remain aligned. Lower values gate connection bursts earlier,
-    /// while higher values only help if you also raise `max_concurrent_requests`. Set to `0` to
-    /// revert to the derived default.
-    #[serde(default)]
-    transport_concurrency_limit: Option<usize>,
-
-    /// Whether the gRPC server should shed load immediately once concurrency limits are hit.
-    /// Leaving this `true` (default) results in fast `resource_exhausted` responses and protects
-    /// the single-threaded runtime from unbounded queues. Turning it off allows requests to queue
-    /// but increases memory usage and tail latency under sustained overload.
-    #[serde(default = "default_load_shed")]
-    load_shed: bool,
-
-    /// Initial HTTP/2 stream window size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `8MiB`. The default 8MiB window reduces
-    /// flow-control stalls for large OTLP batches; trimming it lowers per-stream memory but may
-    /// throttle throughput, while increasing it benefits high-bandwidth deployments at the cost of
-    /// larger buffers.
-    #[serde(
-        default = "default_initial_stream_window_size",
-        deserialize_with = "byte_units::deserialize"
-    )]
-    initial_stream_window_size: Option<u32>,
-
-    /// Initial HTTP/2 connection window size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `32MiB`. Defaults to 32MiB, giving room
-    /// for several simultaneous large streams; adjust using the same trade-offs as the stream
-    /// window but applied per connection.
-    #[serde(
-        default = "default_initial_connection_window_size",
-        deserialize_with = "byte_units::deserialize"
-    )]
-    initial_connection_window_size: Option<u32>,
-
-    /// Whether to rely on HTTP/2 adaptive window sizing instead of the manual values above.
-    /// Disabled by default so the receiver uses predictable static windows. Enabling this lets tonic
-    /// adjust flow-control windows dynamically, which can improve throughput on high-bandwidth links
-    /// but makes memory usage and latency more workload dependent (and largely ignores the window
-    /// sizes configured above).
-    #[serde(default = "default_http2_adaptive_window")]
-    http2_adaptive_window: bool,
-
-    /// Maximum HTTP/2 frame size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `16KiB`. The 16KiB default matches the
-    /// current tuning: large enough to keep framing overhead low for sizeable batches yet still
-    /// bounded; larger values further decrease framing costs at the expense of bigger per-frame
-    /// buffers, while smaller values force additional fragmentation and CPU work on jumbo exports.
-    #[serde(
-        default = "default_max_frame_size",
-        deserialize_with = "byte_units::deserialize"
-    )]
-    max_frame_size: Option<u32>,
-
-    /// Maximum size for inbound gRPC messages, in bytes.
-    /// Accepts plain integers or suffixed strings such as `4MiB`. Defaults to tonic's 4MiB limit.
-    #[serde(
-        default = "default_max_decoding_message_size",
-        deserialize_with = "byte_units::deserialize"
-    )]
-    max_decoding_message_size: Option<u32>,
-
-    /// Interval between HTTP/2 keepalive pings.
-    /// The default 30s ping keeps intermediaries aware of idle-but-healthy connections. Shorten it
-    /// to detect broken links faster, lengthen it to reduce ping traffic, or set to `null` to
-    /// disable HTTP/2 keepalives.
-    #[serde(default = "default_http2_keepalive_interval", with = "humantime_serde")]
-    http2_keepalive_interval: Option<Duration>,
-
-    /// Timeout waiting for an HTTP/2 keepalive acknowledgement.
-    /// Defaults to 10s, balancing rapid detection of stalled peers with tolerance for transient
-    /// network jitter. Decrease it for quicker failover or increase it for chatty-but-latent paths.
-    #[serde(default = "default_http2_keepalive_timeout", with = "humantime_serde")]
-    http2_keepalive_timeout: Option<Duration>,
-
-    /// Upper bound on concurrently active HTTP/2 streams per connection.
-    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
-    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
-    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
-    /// default.
-    #[serde(default)]
-    max_concurrent_streams: Option<u32>,
-
-    /// Whether to wait for the result (default: false)
-    ///
-    /// When enabled, the receiver will not send a response until the
-    /// immediate downstream component has acknowledged receipt of the
-    /// data.  This does not guarantee that data has been fully
-    /// processed or successfully exported to the final destination,
-    /// since components are able acknowledge early.
-    ///
-    /// Note when wait_for_result=false, it is impossible to
-    /// see a failure, errors are effectively suppressed.
-    #[serde(default = "default_wait_for_result")]
-    wait_for_result: bool,
-
-    /// Timeout for RPC requests. If not specified, no timeout is applied.
-    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
-    #[serde(default, with = "humantime_serde")]
-    pub timeout: Option<Duration>,
-}
-
-const fn default_max_concurrent_requests() -> usize {
-    0
-}
-
-const fn default_tcp_nodelay() -> bool {
-    true
-}
-
-fn default_tcp_keepalive() -> Option<Duration> {
-    Some(Duration::from_secs(45))
-}
-
-fn default_tcp_keepalive_interval() -> Option<Duration> {
-    Some(Duration::from_secs(15))
-}
-
-fn default_tcp_keepalive_retries() -> Option<u32> {
-    Some(5)
-}
-
-const fn default_load_shed() -> bool {
-    true
-}
-
-fn default_initial_stream_window_size() -> Option<u32> {
-    Some(8 * 1024 * 1024)
-}
-
-fn default_initial_connection_window_size() -> Option<u32> {
-    Some(32 * 1024 * 1024)
-}
-
-fn default_max_frame_size() -> Option<u32> {
-    Some(16 * 1024)
-}
-
-fn default_max_decoding_message_size() -> Option<u32> {
-    None // use tonic default (4 MiB)
-}
-
-fn default_http2_keepalive_interval() -> Option<Duration> {
-    Some(Duration::from_secs(30))
-}
-
-fn default_http2_keepalive_timeout() -> Option<Duration> {
-    Some(Duration::from_secs(10))
-}
-
-const fn default_http2_adaptive_window() -> bool {
-    false
-}
-
-const fn default_wait_for_result() -> bool {
-    // See https://github.com/open-telemetry/otel-arrow/issues/1311
-    // This matches the OTel Collector default for wait_for_result, presently.
-    false
+    /// Shared gRPC server settings reused across receivers.
+    #[serde(flatten)]
+    pub grpc: GrpcServerConfig,
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
@@ -292,7 +88,7 @@ impl OTLPReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let mut config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
@@ -305,12 +101,11 @@ impl OTLPReceiver {
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
+        let config = &mut self.config.grpc;
         // Fall back to the downstream channel capacity when it is tighter than the user setting.
         let safe_capacity = downstream_capacity.max(1);
-        if self.config.max_concurrent_requests == 0
-            || self.config.max_concurrent_requests > safe_capacity
-        {
-            self.config.max_concurrent_requests = safe_capacity;
+        if config.max_concurrent_requests == 0 || config.max_concurrent_requests > safe_capacity {
+            config.max_concurrent_requests = safe_capacity;
         }
     }
 
@@ -401,34 +196,23 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
-        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        let config = &self.config.grpc;
+        let listener = effect_handler.tcp_listener(config.listening_addr)?;
         let incoming = TcpIncoming::from(listener)
-            .with_nodelay(Some(self.config.tcp_nodelay))
-            .with_keepalive(self.config.tcp_keepalive)
-            .with_keepalive_interval(self.config.tcp_keepalive_interval)
-            .with_keepalive_retries(self.config.tcp_keepalive_retries);
+            .with_nodelay(Some(config.tcp_nodelay))
+            .with_keepalive(config.tcp_keepalive)
+            .with_keepalive_interval(config.tcp_keepalive_interval)
+            .with_keepalive_retries(config.tcp_keepalive_retries);
 
         let mut compression = EnabledCompressionEncodings::default();
-        match &self.config.compression_method {
-            Some(methods) => {
-                for method in methods {
-                    compression.enable(method.map_to_compression_encoding());
-                }
-            }
-            None => {
-                for method in compression::DEFAULT_COMPRESSION_METHODS {
-                    compression.enable(method.map_to_compression_encoding());
-                }
-            }
+        for method in config.accepted_compression_methods() {
+            compression.enable(method.map_to_compression_encoding());
         }
 
         let settings = Settings {
-            max_concurrent_requests: self.config.max_concurrent_requests,
-            wait_for_result: self.config.wait_for_result,
-            max_decoding_message_size: self
-                .config
-                .max_decoding_message_size
-                .map(|value| value as usize),
+            max_concurrent_requests: config.max_concurrent_requests,
+            wait_for_result: config.wait_for_result,
+            max_decoding_message_size: config.max_decoding_message_size.map(|value| value as usize),
             accept_compression_encodings: compression,
             send_compression_encodings: EnabledCompressionEncodings::default(), // no response compression
         };
@@ -445,25 +229,27 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
         let transport_limit = self
             .config
+            .grpc
             .transport_concurrency_limit
             .and_then(|limit| if limit == 0 { None } else { Some(limit) })
-            .unwrap_or(self.config.max_concurrent_requests)
+            .unwrap_or(config.max_concurrent_requests)
             .max(1);
 
-        let fallback_streams = self.config.max_concurrent_requests.min(u32::MAX as usize) as u32;
+        let fallback_streams = config.max_concurrent_requests.min(u32::MAX as usize) as u32;
 
         let mut server_builder = Server::builder()
             .concurrency_limit_per_connection(transport_limit) // transport level
-            .load_shed(self.config.load_shed)
-            .initial_stream_window_size(self.config.initial_stream_window_size)
-            .initial_connection_window_size(self.config.initial_connection_window_size)
-            .max_frame_size(self.config.max_frame_size)
-            .http2_adaptive_window(Some(self.config.http2_adaptive_window))
-            .http2_keepalive_interval(self.config.http2_keepalive_interval)
-            .http2_keepalive_timeout(self.config.http2_keepalive_timeout);
+            .load_shed(config.load_shed)
+            .initial_stream_window_size(config.initial_stream_window_size)
+            .initial_connection_window_size(config.initial_connection_window_size)
+            .max_frame_size(config.max_frame_size)
+            .http2_adaptive_window(Some(config.http2_adaptive_window))
+            .http2_keepalive_interval(config.http2_keepalive_interval)
+            .http2_keepalive_timeout(config.http2_keepalive_timeout);
 
         let mut max_concurrent_streams = self
             .config
+            .grpc
             .max_concurrent_streams
             .map(|value| if value == 0 { fallback_streams } else { value })
             .unwrap_or(fallback_streams);
@@ -473,7 +259,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         server_builder = server_builder.max_concurrent_streams(Some(max_concurrent_streams));
 
         // Apply timeout if configured
-        if let Some(timeout) = self.config.timeout {
+        if let Some(timeout) = config.timeout {
             server_builder = server_builder.timeout(timeout);
         }
 
@@ -581,27 +367,11 @@ mod tests {
     use tokio::time::timeout;
 
     fn test_config(addr: SocketAddr) -> Config {
-        Config {
-            listening_addr: addr,
-            compression_method: None,
-            max_concurrent_requests: 1000,
-            tcp_nodelay: default_tcp_nodelay(),
-            tcp_keepalive: default_tcp_keepalive(),
-            tcp_keepalive_interval: default_tcp_keepalive_interval(),
-            tcp_keepalive_retries: default_tcp_keepalive_retries(),
-            transport_concurrency_limit: None,
-            load_shed: default_load_shed(),
-            initial_stream_window_size: default_initial_stream_window_size(),
-            initial_connection_window_size: default_initial_connection_window_size(),
-            max_frame_size: default_max_frame_size(),
-            max_decoding_message_size: default_max_decoding_message_size(),
-            http2_adaptive_window: default_http2_adaptive_window(),
-            http2_keepalive_interval: default_http2_keepalive_interval(),
-            http2_keepalive_timeout: default_http2_keepalive_timeout(),
-            max_concurrent_streams: None,
-            wait_for_result: true,
-            timeout: None,
-        }
+        let mut grpc = GrpcServerConfig::default();
+        grpc.listening_addr = addr;
+        grpc.max_concurrent_requests = 1000;
+        grpc.wait_for_result = true;
+        Config { grpc }
     }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
@@ -690,46 +460,49 @@ mod tests {
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
                 .unwrap();
-        assert_eq!(receiver.config.max_concurrent_requests, 5000);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
 
         let config_default = json!({
             "listening_addr": "127.0.0.1:4317"
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
-        assert_eq!(receiver.config.max_concurrent_requests, 0);
-        assert!(receiver.config.compression_method.is_none());
-        assert!(receiver.config.tcp_nodelay);
-        assert_eq!(receiver.config.tcp_keepalive, Some(Duration::from_secs(45)));
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
+        assert!(receiver.config.grpc.compression_method.is_none());
+        assert!(receiver.config.grpc.tcp_nodelay);
         assert_eq!(
-            receiver.config.tcp_keepalive_interval,
+            receiver.config.grpc.tcp_keepalive,
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            receiver.config.grpc.tcp_keepalive_interval,
             Some(Duration::from_secs(15))
         );
-        assert_eq!(receiver.config.tcp_keepalive_retries, Some(5));
-        assert_eq!(receiver.config.transport_concurrency_limit, None);
-        assert!(receiver.config.load_shed);
+        assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(5));
+        assert_eq!(receiver.config.grpc.transport_concurrency_limit, None);
+        assert!(receiver.config.grpc.load_shed);
         assert_eq!(
-            receiver.config.initial_stream_window_size,
+            receiver.config.grpc.initial_stream_window_size,
             Some(8 * 1024 * 1024)
         );
         assert_eq!(
-            receiver.config.initial_connection_window_size,
+            receiver.config.grpc.initial_connection_window_size,
             Some(32 * 1024 * 1024)
         );
-        assert!(!receiver.config.http2_adaptive_window);
-        assert_eq!(receiver.config.max_frame_size, Some(16 * 1024));
+        assert!(!receiver.config.grpc.http2_adaptive_window);
+        assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024));
         assert_eq!(
-            receiver.config.max_decoding_message_size,
+            receiver.config.grpc.max_decoding_message_size,
             Some(4 * 1024 * 1024)
         );
         assert_eq!(
-            receiver.config.http2_keepalive_interval,
+            receiver.config.grpc.http2_keepalive_interval,
             Some(Duration::from_secs(30))
         );
         assert_eq!(
-            receiver.config.http2_keepalive_timeout,
+            receiver.config.grpc.http2_keepalive_timeout,
             Some(Duration::from_secs(10))
         );
-        assert_eq!(receiver.config.max_concurrent_streams, None);
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
 
         let config_full = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -737,9 +510,9 @@ mod tests {
             "max_concurrent_requests": 2500
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
-        assert_eq!(receiver.config.max_concurrent_requests, 2500);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
         assert_eq!(
-            receiver.config.compression_method,
+            receiver.config.grpc.compression_method,
             Some(vec![CompressionMethod::Gzip])
         );
 
@@ -763,39 +536,42 @@ mod tests {
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_server_overrides).unwrap();
-        assert_eq!(receiver.config.max_concurrent_requests, 512);
-        assert!(!receiver.config.tcp_nodelay);
-        assert_eq!(receiver.config.tcp_keepalive, Some(Duration::from_secs(60)));
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 512);
+        assert!(!receiver.config.grpc.tcp_nodelay);
         assert_eq!(
-            receiver.config.tcp_keepalive_interval,
+            receiver.config.grpc.tcp_keepalive,
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            receiver.config.grpc.tcp_keepalive_interval,
             Some(Duration::from_secs(20))
         );
-        assert_eq!(receiver.config.tcp_keepalive_retries, Some(3));
-        assert_eq!(receiver.config.transport_concurrency_limit, Some(256));
-        assert!(!receiver.config.load_shed);
+        assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(3));
+        assert_eq!(receiver.config.grpc.transport_concurrency_limit, Some(256));
+        assert!(!receiver.config.grpc.load_shed);
         assert_eq!(
-            receiver.config.initial_stream_window_size,
+            receiver.config.grpc.initial_stream_window_size,
             Some(4 * 1024 * 1024)
         );
         assert_eq!(
-            receiver.config.initial_connection_window_size,
+            receiver.config.grpc.initial_connection_window_size,
             Some(16 * 1024 * 1024)
         );
-        assert_eq!(receiver.config.max_frame_size, Some(8 * 1024 * 1024));
+        assert_eq!(receiver.config.grpc.max_frame_size, Some(8 * 1024 * 1024));
         assert_eq!(
-            receiver.config.max_decoding_message_size,
+            receiver.config.grpc.max_decoding_message_size,
             Some(6 * 1024 * 1024)
         );
         assert_eq!(
-            receiver.config.http2_keepalive_interval,
+            receiver.config.grpc.http2_keepalive_interval,
             Some(Duration::from_secs(45))
         );
         assert_eq!(
-            receiver.config.http2_keepalive_timeout,
+            receiver.config.grpc.http2_keepalive_timeout,
             Some(Duration::from_secs(20))
         );
-        assert_eq!(receiver.config.max_concurrent_streams, Some(1024));
-        assert!(receiver.config.http2_adaptive_window);
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(1024));
+        assert!(receiver.config.grpc.http2_adaptive_window);
 
         let config_with_compression_list = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -804,7 +580,7 @@ mod tests {
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_list).unwrap();
         assert_eq!(
-            receiver.config.compression_method,
+            receiver.config.grpc.compression_method,
             Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
         );
 
@@ -814,7 +590,7 @@ mod tests {
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_none).unwrap();
-        assert_eq!(receiver.config.compression_method, Some(vec![]));
+        assert_eq!(receiver.config.grpc.compression_method, Some(vec![]));
 
         let config_with_timeout = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -822,14 +598,17 @@ mod tests {
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
-        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
 
         let config_with_timeout_ms = json!({
             "listening_addr": "127.0.0.1:4317",
             "timeout": "500ms"
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
-        assert_eq!(receiver.config.timeout, Some(Duration::from_millis(500)));
+        assert_eq!(
+            receiver.config.grpc.timeout,
+            Some(Duration::from_millis(500))
+        );
     }
 
     #[test]
@@ -848,7 +627,7 @@ mod tests {
         let mut receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
         receiver.tune_max_concurrent_requests(128);
-        assert_eq!(receiver.config.max_concurrent_requests, 128);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 128);
 
         // User provided smaller value is preserved.
         let config_small = json!({
@@ -857,7 +636,7 @@ mod tests {
         });
         let mut receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
         receiver.tune_max_concurrent_requests(128);
-        assert_eq!(receiver.config.max_concurrent_requests, 32);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 32);
 
         // Config value of zero adopts downstream capacity.
         let config_zero = json!({
@@ -866,7 +645,7 @@ mod tests {
         });
         let mut receiver = OTLPReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
         receiver.tune_max_concurrent_requests(256);
-        assert_eq!(receiver.config.max_concurrent_requests, 256);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 256);
     }
 
     fn scenario(

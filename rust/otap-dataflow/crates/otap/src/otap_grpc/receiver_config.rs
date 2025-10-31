@@ -1,0 +1,267 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Shared gRPC configuration for receivers.
+
+use crate::compression::{self, CompressionMethod};
+use otap_df_config::byte_units;
+use serde::Deserialize;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+/// Common configuration shared across gRPC receivers.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrpcServerConfig {
+    /// The endpoint details: protocol, name, port.
+    pub listening_addr: SocketAddr,
+
+    /// Compression methods accepted (only used for requests, responses are not compressed as they
+    /// are typically small). Omitted field defaults to accepting gzip, zstd, and deflate.
+    #[serde(
+        default,
+        deserialize_with = "compression::deserialize_compression_methods"
+    )]
+    pub compression_method: Option<Vec<CompressionMethod>>,
+
+    // --- All the following settings have defaults that should be reasonable for most users ---
+    // -----------------------------------------------------------------------------------------
+    
+    /// Maximum number of concurrent in-flight requests.
+    /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity so
+    /// backpressure flows upstream automatically. Any non-zero value is still clamped to that
+    /// capacity at runtime.
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+
+    /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
+    /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
+    /// Disabling it trades slightly higher latency for fewer small TCP packets when workloads
+    /// involve very bursty, tiny messages.
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+
+    /// TCP keepalive timeout for accepted sockets.
+    /// The 45s default evicts dead clients in under a minute without incurring much background
+    /// traffic. Raise it to reduce keepalive chatter, or set to `null` to disable kernel keepalives
+    /// entirely (at the cost of slower leak detection on broken links).
+    #[serde(default = "default_tcp_keepalive", with = "humantime_serde")]
+    pub tcp_keepalive: Option<Duration>,
+
+    /// Interval between TCP keepalive probes once keepalive is active.
+    /// Defaults to 15s so the kernel confirms progress quickly after the keepalive timeout. Longer
+    /// intervals reduce packets, shorter intervals detect stalled peers faster. Ignored if
+    /// `tcp_keepalive` is `null`.
+    #[serde(default = "default_tcp_keepalive_interval", with = "humantime_serde")]
+    pub tcp_keepalive_interval: Option<Duration>,
+
+    /// Number of TCP keepalive probes sent before a connection is declared dead.
+    /// The default (5) balances resilience to transient loss with timely reclamation of resources.
+    /// Smaller values clean up faster during outages, larger values favor noisy or lossy networks.
+    #[serde(default = "default_tcp_keepalive_retries")]
+    pub tcp_keepalive_retries: Option<u32>,
+
+    /// Per-connection concurrency limit enforced by the transport layer.
+    /// By default it mirrors the effective `max_concurrent_requests`, so transport- and
+    /// application-level backpressure remain aligned. Lower values gate connection bursts earlier,
+    /// while higher values only help if you also raise `max_concurrent_requests`. Set to `0` to
+    /// revert to the derived default.
+    #[serde(default)]
+    pub transport_concurrency_limit: Option<usize>,
+
+    /// Whether the gRPC server should shed load immediately once concurrency limits are hit.
+    /// Leaving this `true` (default) results in fast `resource_exhausted` responses and protects
+    /// the single-threaded runtime from unbounded queues. Turning it off allows requests to queue
+    /// but increases memory usage and tail latency under sustained overload.
+    #[serde(default = "default_load_shed")]
+    pub load_shed: bool,
+
+    /// Initial HTTP/2 stream window size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `8MiB`. The default 8MiB window reduces
+    /// flow-control stalls for large OTLP batches; trimming it lowers per-stream memory but may
+    /// throttle throughput, while increasing it benefits high-bandwidth deployments at the cost of
+    /// larger buffers.
+    #[serde(
+        default = "default_initial_stream_window_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    pub initial_stream_window_size: Option<u32>,
+
+    /// Initial HTTP/2 connection window size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `32MiB`. Defaults to 32MiB, giving room
+    /// for several simultaneous large streams; adjust using the same trade-offs as the stream
+    /// window but applied per connection.
+    #[serde(
+        default = "default_initial_connection_window_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    pub initial_connection_window_size: Option<u32>,
+
+    /// Whether to rely on HTTP/2 adaptive window sizing instead of the manual values above.
+    /// Disabled by default so the receiver uses predictable static windows. Enabling this lets tonic
+    /// adjust flow-control windows dynamically, which can improve throughput on high-bandwidth links
+    /// but makes memory usage and latency more workload dependent (and largely ignores the window
+    /// sizes configured above).
+    #[serde(default = "default_http2_adaptive_window")]
+    pub http2_adaptive_window: bool,
+
+    /// Maximum HTTP/2 frame size, in bytes.
+    /// Accepts plain integers or suffixed strings such as `16KiB`. The 16KiB default matches the
+    /// current tuning: large enough to keep framing overhead low for sizeable batches yet still
+    /// bounded; larger values further decrease framing costs at the expense of bigger per-frame
+    /// buffers, while smaller values force additional fragmentation and CPU work on jumbo exports.
+    #[serde(
+        default = "default_max_frame_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    pub max_frame_size: Option<u32>,
+
+    /// Maximum size for inbound gRPC messages, in bytes.
+    /// Accepts plain integers or suffixed strings such as `4MiB`. Defaults to tonic's 4MiB limit.
+    #[serde(
+        default = "default_max_decoding_message_size",
+        deserialize_with = "byte_units::deserialize"
+    )]
+    pub max_decoding_message_size: Option<u32>,
+
+    /// Interval between HTTP/2 keepalive pings.
+    /// The default 30s ping keeps intermediaries aware of idle-but-healthy connections. Shorten it
+    /// to detect broken links faster, lengthen it to reduce ping traffic, or set to `null` to
+    /// disable HTTP/2 keepalives.
+    #[serde(default = "default_http2_keepalive_interval", with = "humantime_serde")]
+    pub http2_keepalive_interval: Option<Duration>,
+
+    /// Timeout waiting for an HTTP/2 keepalive acknowledgement.
+    /// Defaults to 10s, balancing rapid detection of stalled peers with tolerance for transient
+    /// network jitter. Decrease it for quicker failover or increase it for chatty-but-latent paths.
+    #[serde(default = "default_http2_keepalive_timeout", with = "humantime_serde")]
+    pub http2_keepalive_timeout: Option<Duration>,
+
+    /// Upper bound on concurrently active HTTP/2 streams per connection.
+    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
+    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
+    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
+    /// default.
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+
+    /// Whether to wait for the result (default: false)
+    ///
+    /// When enabled, the receiver will not send a response until the
+    /// immediate downstream component has acknowledged receipt of the
+    /// data.  This does not guarantee that data has been fully
+    /// processed or successfully exported to the final destination,
+    /// since components are able acknowledge early.
+    ///
+    /// Note when wait_for_result=false, it is impossible to
+    /// see a failure, errors are effectively suppressed.
+    #[serde(default = "default_wait_for_result")]
+    pub wait_for_result: bool,
+
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
+}
+
+impl GrpcServerConfig {
+    /// Returns the compression methods accepted for requests.
+    #[must_use]
+    pub fn accepted_compression_methods(&self) -> Vec<CompressionMethod> {
+        match &self.compression_method {
+            Some(methods) => methods.clone(),
+            None => compression::DEFAULT_COMPRESSION_METHODS.to_vec(),
+        }
+    }
+
+    /// Returns the first configured compression method for responses, if any.
+    #[must_use]
+    pub fn preferred_response_compression(&self) -> Option<CompressionMethod> {
+        let methods = self.compression_method.as_ref()?;
+        methods.first().copied()
+    }
+}
+
+const fn default_max_concurrent_requests() -> usize {
+    0
+}
+
+const fn default_tcp_nodelay() -> bool {
+    true
+}
+
+fn default_tcp_keepalive() -> Option<Duration> {
+    Some(Duration::from_secs(45))
+}
+
+fn default_tcp_keepalive_interval() -> Option<Duration> {
+    Some(Duration::from_secs(15))
+}
+
+fn default_tcp_keepalive_retries() -> Option<u32> {
+    Some(5)
+}
+
+const fn default_load_shed() -> bool {
+    true
+}
+
+fn default_initial_stream_window_size() -> Option<u32> {
+    Some(8 * 1024 * 1024)
+}
+
+fn default_initial_connection_window_size() -> Option<u32> {
+    Some(32 * 1024 * 1024)
+}
+
+fn default_max_frame_size() -> Option<u32> {
+    Some(16 * 1024)
+}
+
+fn default_max_decoding_message_size() -> Option<u32> {
+    Some(4 * 1024 * 1024)
+}
+
+fn default_http2_keepalive_interval() -> Option<Duration> {
+    Some(Duration::from_secs(30))
+}
+
+fn default_http2_keepalive_timeout() -> Option<Duration> {
+    Some(Duration::from_secs(10))
+}
+
+const fn default_http2_adaptive_window() -> bool {
+    false
+}
+
+const fn default_wait_for_result() -> bool {
+    // See https://github.com/open-telemetry/otel-arrow/issues/1311
+    // This matches the OTel Collector default for wait_for_result, presently.
+    false
+}
+
+impl Default for GrpcServerConfig {
+    fn default() -> Self {
+        Self {
+            listening_addr: ([0, 0, 0, 0], 0).into(),
+            compression_method: None,
+            max_concurrent_requests: default_max_concurrent_requests(),
+            tcp_nodelay: default_tcp_nodelay(),
+            tcp_keepalive: default_tcp_keepalive(),
+            tcp_keepalive_interval: default_tcp_keepalive_interval(),
+            tcp_keepalive_retries: default_tcp_keepalive_retries(),
+            transport_concurrency_limit: None,
+            load_shed: default_load_shed(),
+            initial_stream_window_size: default_initial_stream_window_size(),
+            initial_connection_window_size: default_initial_connection_window_size(),
+            http2_adaptive_window: default_http2_adaptive_window(),
+            max_frame_size: default_max_frame_size(),
+            max_decoding_message_size: default_max_decoding_message_size(),
+            http2_keepalive_interval: default_http2_keepalive_interval(),
+            http2_keepalive_timeout: default_http2_keepalive_timeout(),
+            max_concurrent_streams: None,
+            wait_for_result: default_wait_for_result(),
+            timeout: None,
+        }
+    }
+}
