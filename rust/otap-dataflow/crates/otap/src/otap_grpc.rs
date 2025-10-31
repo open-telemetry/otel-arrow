@@ -258,17 +258,7 @@ where
                 OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
 
             let cancel_rx = if let Some(state) = self.state.clone() {
-                let allocation_result = {
-                    let guard_result = state.0.lock();
-                    match guard_result {
-                        Ok(mut guard) => guard.allocate(|| oneshot::channel()),
-                        Err(_) => {
-                            log::error!("Mutex poisoned");
-                            return ProcessOutcome::Terminate;
-                        }
-                    }
-                };
-
+                let allocation_result = state.0.lock().allocate(|| oneshot::channel());
                 let (key, rx) = match allocation_result {
                     None => {
                         log::error!("Too many concurrent requests");

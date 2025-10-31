@@ -1,12 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTAP receiver node
+//! Implementation of the OTAP receiver node.
 //!
-//! ToDo: implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back
-//! ToDo: implement config control message to handle live changing configuration
-//! ToDo: Add HTTP support
-//! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//! # Architecture
+//! The OTAP receiver exposes three OTAP-over-gRPC bidirectional streaming services
+//! (logs, metrics, traces). Each export call is fed directly into the pipeline via the
+//! shared `EffectHandler`, which forwards telemetry batches downstream and handles
+//! Ack/Nack routing. The receiver participates in the engine's control plane so that
+//! shutdown, telemetry collection, and flow control signals have a single entry point.
+//! The server tuning (`GrpcServerConfig`) is synchronized with the downstream channel
+//! capacity so transport backpressure aligns with pipeline capacity.
+//!
+//! # Key optimizations
+//! * Response streaming is driven by an async state machine instead of spawning a task
+//!   per request. This removes the extra `mpsc` hop and keeps backpressure intact.
+//! * Ack/Nack correlation slots are protected by a `parking_lot::Mutex`, providing
+//!   fast, non-poisoning locking in async contexts where poisoned `std::sync::Mutex`
+//!   would otherwise stall the Tokio worker.
+//! * Compression preferences, concurrency limits, and middleware (such as zstd header
+//!   handling) are applied once per service build so hot-path processing remains lean.
+//!
+//! ToDo: implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back.
+//! ToDo: implement config control message to handle live changing configuration.
+//! ToDo: Add HTTP support.
+//! ToDo: Implement proper deadline function for Shutdown ctrl msg.
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;

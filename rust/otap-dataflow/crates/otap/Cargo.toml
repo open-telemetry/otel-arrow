@@ -64,6 +64,7 @@ weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
+parking_lot.workspace = true
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.3.0", optional = true }
