@@ -17,5 +17,5 @@ pub use serializer::serializer_error::SerializerError;
 
 // Note: Re-export engine and parser to avoid users having to manually add
 // dependencies when using bridge API
-pub use data_engine_recordset::*;
 pub use data_engine_kql_parser::*;
+pub use data_engine_recordset::*;
