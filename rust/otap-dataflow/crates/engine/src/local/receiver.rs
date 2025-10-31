@@ -46,6 +46,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -124,7 +125,10 @@ impl<PData> ControlChannel<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     core: EffectHandlerCore<PData>,
+    senders: Arc<EffectHandlerSenders<PData>>,
+}
 
+struct EffectHandlerSenders<PData> {
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
     msg_senders: HashMap<PortName, LocalSender<PData>>,
@@ -155,11 +159,12 @@ impl<PData> EffectHandler<PData> {
             None
         };
 
-        EffectHandler {
-            core,
+        let senders = Arc::new(EffectHandlerSenders {
             msg_senders,
             default_sender,
-        }
+        });
+
+        EffectHandler { core, senders }
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -171,7 +176,7 @@ impl<PData> EffectHandler<PData> {
     /// Returns the list of connected out ports for this receiver.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.msg_senders.keys().cloned().collect()
+        self.senders.msg_senders.keys().cloned().collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -185,7 +190,7 @@ impl<PData> EffectHandler<PData> {
     /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
+        match &self.senders.default_sender {
             Some(sender) => sender
                 .send(data)
                 .await
@@ -213,7 +218,7 @@ impl<PData> EffectHandler<PData> {
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
+        match self.senders.msg_senders.get(&port_name) {
             Some(sender) => sender
                 .send(data)
                 .await
