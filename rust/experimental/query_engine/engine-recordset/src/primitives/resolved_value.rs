@@ -299,9 +299,15 @@ impl Display for ResolvedValue<'_> {
                 f.write_str("String(")?;
                 let v = s.get_value();
                 if v.len() <= 32 {
-                    f.write_str(v)?;
+                    f.write_str(serde_json::to_string(&v).unwrap().as_str())?;
                 } else {
-                    write!(f, "{}...", &v[..32])?;
+                    write!(
+                        f,
+                        "{}",
+                        serde_json::to_string(&format!("{}...", &v[..32]))
+                            .unwrap()
+                            .as_str()
+                    )?;
                 }
                 f.write_str(")")
             }
