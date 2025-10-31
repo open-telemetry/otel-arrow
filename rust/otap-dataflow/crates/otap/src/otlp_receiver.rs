@@ -24,7 +24,6 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
-use std::net::SocketAddr;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -254,6 +253,7 @@ mod tests {
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use std::pin::Pin;
+    use std::net::SocketAddr;
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 

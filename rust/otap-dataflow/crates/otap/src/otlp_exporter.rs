@@ -581,16 +581,8 @@ async fn process_export_outcome(
     } = outcome;
 
     match handle_export_result(result, context, saved_payload, effect_handler).await {
-        Ok(()) => match signal_type {
-            SignalType::Logs => pdata_metrics.logs_exported.inc(),
-            SignalType::Metrics => pdata_metrics.metrics_exported.inc(),
-            SignalType::Traces => pdata_metrics.traces_exported.inc(),
-        },
-        Err(_) => match signal_type {
-            SignalType::Logs => pdata_metrics.logs_failed.inc(),
-            SignalType::Metrics => pdata_metrics.metrics_failed.inc(),
-            SignalType::Traces => pdata_metrics.traces_failed.inc(),
-        },
+        Ok(()) => pdata_metrics.add_exported(signal_type, 1),
+        Err(_) => pdata_metrics.add_failed(signal_type, 1),
     }
 }
 
