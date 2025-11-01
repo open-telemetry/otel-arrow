@@ -74,6 +74,9 @@ experimental-exporters = []
 # Experimental exporters
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
 
+data_engine_kql_parser = { path = "../../../experimental/query_engine/kql-parser" }
+data_engine_expressions = { path = "../../../experimental/query_engine/expressions" }
+
 [dev-dependencies]
 flume = { workspace = true }
 portpicker.workspace = true
