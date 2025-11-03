@@ -163,7 +163,11 @@ fn test_log_record_required() {
         event_name: name.into(),
         ..Default::default()
     };
-    let lr1 = LogRecord::new(ts, sev, name);
+    let lr1 = LogRecord::build()
+        .time_unix_nano(ts)
+        .severity_number(sev)
+        .event_name(name)
+        .finish();
 
     assert_eq!(lr1, lr1_value);
 }
@@ -186,7 +190,10 @@ fn test_log_record_required_all() {
         flags: flags as u32,
         ..Default::default()
     };
-    let lr1 = LogRecord::build(ts, sev, name)
+    let lr1 = LogRecord::build()
+        .time_unix_nano(ts)
+        .severity_number(sev)
+        .event_name(name)
         .body(AnyValue::new_string(msg))
         .severity_text(sevtxt)
         .flags(flags)
@@ -235,10 +242,16 @@ fn test_scope_logs() {
 
     let is1 = InstrumentationScope::build().name("library").finish();
 
-    let lr1 = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+    let lr1 = LogRecord::build()
+        .time_unix_nano(2_000_000_000u64)
+        .severity_number(SeverityNumber::Info)
+        .event_name("event1")
         .attributes(kvs1.clone())
         .finish();
-    let lr2 = LogRecord::build(3_000_000_000u64, SeverityNumber::Info2, "event2")
+    let lr2 = LogRecord::build()
+        .time_unix_nano(3_000_000_000u64)
+        .severity_number(SeverityNumber::Info2)
+        .event_name("event2")
         .body(body2)
         .finish();
     let lrs = vec![lr1, lr2];
@@ -303,8 +316,16 @@ fn test_resource_logs() {
 
     let is1 = InstrumentationScope::build().name("library").finish();
 
-    let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1");
-    let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2");
+    let lr1 = LogRecord::build()
+        .time_unix_nano(2_000_000_000u64)
+        .severity_number(SeverityNumber::Info)
+        .event_name("event1")
+        .finish();
+    let lr2 = LogRecord::build()
+        .time_unix_nano(3_000_000_000u64)
+        .severity_number(SeverityNumber::Info2)
+        .event_name("event2")
+        .finish();
     let lrs = vec![lr1, lr2];
 
     let sl1 = ScopeLogs::build(is1.clone())

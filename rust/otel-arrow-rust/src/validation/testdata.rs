@@ -105,7 +105,10 @@ pub mod logs {
     }
 
     pub fn create_single_request() -> ExportLogsServiceRequest {
-        let log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
+        let log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Info)
+            .event_name(EVENT_NAME)
             .severity_text("INFO")
             .body(AnyValue::new_string("Test log message".to_string()))
             .attributes(vec![
@@ -131,7 +134,10 @@ pub mod logs {
 
     /// Create requests where OTAP should serialize the log bodies using cbor
     pub fn create_request_with_serialized_bodies() -> ExportLogsServiceRequest {
-        let list_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
+        let list_body_log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Info)
+            .event_name(EVENT_NAME)
             .severity_text("INFO")
             .body(AnyValue::new_array(vec![
                 AnyValue::new_string("test1"),
@@ -145,7 +151,10 @@ pub mod logs {
             .span_id((0u8..8u8).collect::<Vec<u8>>())
             .finish();
 
-        let map_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Debug, EVENT_NAME)
+        let map_body_log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Debug)
+            .event_name(EVENT_NAME)
             .severity_text("DEBUG")
             .body(AnyValue::new_kvlist(vec![
                 // test serialization/deserialization of all supported types ..
