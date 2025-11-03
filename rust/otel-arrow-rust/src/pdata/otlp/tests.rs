@@ -404,7 +404,7 @@ fn test_resource_spans() {
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
-    let res = Resource::new();
+    let res = Resource::default();
 
     let rs = ResourceSpans::new(res.clone(), sss.clone());
     let rs_value = ResourceSpans {
@@ -459,7 +459,7 @@ fn test_traces_data() {
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
-    let res = Resource::new();
+    let res = Resource::default();
 
     let rs1 = ResourceSpans::new(res.clone(), sss.clone());
     let rs2 = rs1.clone();

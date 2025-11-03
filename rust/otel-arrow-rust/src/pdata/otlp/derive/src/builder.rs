@@ -183,15 +183,11 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
         quote! {
             impl #outer_name {
-                pub fn new() -> Self {
-                    Self {
-                        #(#all_field_initializers)*
-                    }
-                }
-
                 pub fn build() -> #builder_name {
                     #builder_name {
-                        inner: #outer_name::new(),
+                        inner: Self {
+                            #(#all_field_initializers)*
+                        },
                     }
                 }
             }
