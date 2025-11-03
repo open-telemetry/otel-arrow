@@ -50,9 +50,15 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         .collect();
 
     // Generate builder methods for all non-parameter fields
+    // Exclude oneof fields that are not in params, since they get variant-specific methods instead
     let builder_methods: TokenVec = msg
         .builder_fields
         .iter()
+        .filter(|info| {
+            // If this field is a oneof field (has oneof cases) and is not a parameter,
+            // exclude it from regular builder methods since we generate variant methods
+            !(info.oneof.is_some() && !info.is_param)
+        })
         .map(|info| {
             let field_name = &info.ident;
             let field_type = &info.full_type_name;
@@ -132,26 +138,52 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         };
 
     // Build constructors for both regular and oneof cases.
-    let all_constructors: TokenVec = match msg.oneof_mapping.as_ref() {
-        None => {
+    // Also collect oneof builder methods if oneof is not in parameters.
+    let (all_constructors, oneof_builder_methods): (TokenVec, TokenVec) = match msg.oneof_mapping.as_ref() {
+        None => (
             vec![create_constructor(
                 "".to_string(),
                 &param_bounds,
                 &param_decls,
                 &param_args,
                 &all_field_initializers,
-            )]
-        }
-        Some(oneof_mapping) => common::builder_oneof_constructors(
-            oneof_mapping,
-            &msg.param_names,
-            &param_bounds,
-            &param_decls,
-            &param_args,
-            &all_field_initializers,
-            &type_params,
-            &create_constructor,
+            )],
+            vec![],
         ),
+        Some(oneof_mapping) => {
+            let (oneof_path, _) = oneof_mapping;
+            let oneof_name = oneof_path.split('.').last().unwrap();
+            let oneof_in_params = msg.param_names.iter().any(|name| name.as_str() == oneof_name);
+            
+            if oneof_in_params {
+                // Generate separate constructors for each oneof variant
+                (
+                    common::builder_oneof_constructors(
+                        oneof_mapping,
+                        &msg.param_names,
+                        &param_bounds,
+                        &param_decls,
+                        &param_args,
+                        &all_field_initializers,
+                        &type_params,
+                        &create_constructor,
+                    ),
+                    vec![],
+                )
+            } else {
+                // Generate single constructor and builder methods for oneof variants
+                (
+                    vec![create_constructor(
+                        "".to_string(),
+                        &param_bounds,
+                        &param_decls,
+                        &param_args,
+                        &all_field_initializers,
+                    )],
+                    common::builder_oneof_methods(oneof_mapping),
+                )
+            }
+        }
     };
 
     // Produce expanded implementation
@@ -169,6 +201,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
                 impl #builder_name {
                     #(#builder_methods)*
+                    #(#oneof_builder_methods)*
 
                     pub fn finish(self) -> #outer_name {
                         self.inner

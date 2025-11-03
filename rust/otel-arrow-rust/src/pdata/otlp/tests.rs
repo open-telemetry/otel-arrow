@@ -486,17 +486,17 @@ fn test_traces_data() {
 
 #[test]
 fn test_metric_sum() {
-    let m1 = Metric::new_sum(
-        "counter",
-        Sum::new(
+    let m1 = Metric::build()
+        .name("counter")
+        .data_sum(Sum::new(
             AggregationTemporality::Delta,
             true,
             vec![
                 NumberDataPoint::new_int(125_000_000_000u64, 123i64),
                 NumberDataPoint::new_double(125_000_000_000u64, 123f64),
             ],
-        ),
-    );
+        ))
+        .finish();
 
     let m1_value = Metric {
         name: "counter".to_string(),
@@ -532,13 +532,13 @@ fn test_metric_sum() {
 
 #[test]
 fn test_metric_gauge() {
-    let m1 = Metric::new_gauge(
-        "gauge",
-        Gauge::new(vec![
+    let m1 = Metric::build()
+        .name("gauge")
+        .data_gauge(Gauge::new(vec![
             NumberDataPoint::new_int(125_000_000_000u64, 123i64),
             NumberDataPoint::new_double(125_000_000_000u64, 123f64),
-        ]),
-    );
+        ]))
+        .finish();
 
     let m1_value = Metric {
         name: "gauge".to_string(),
@@ -595,9 +595,9 @@ fn test_metric_histogram() {
     let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
     let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
 
-    let m1 = Metric::new_histogram(
-        "histogram",
-        Histogram::new(
+    let m1 = Metric::build()
+        .name("histogram")
+        .data_histogram(Histogram::new(
             AggregationTemporality::Delta,
             vec![
                 HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
@@ -617,8 +617,8 @@ fn test_metric_histogram() {
                     .max(10.1)
                     .finish(),
             ],
-        ),
-    );
+        ))
+        .finish();
 
     let m1_value = Metric {
         name: "histogram".to_string(),
@@ -669,9 +669,9 @@ fn test_metric_histogram() {
 
 #[test]
 fn test_metric_summary() {
-    let m1 = Metric::new_summary(
-        "summary",
-        Summary::new(vec![
+    let m1 = Metric::build()
+        .name("summary")
+        .data_summary(Summary::new(vec![
             SummaryDataPoint::build(
                 125_000_000_000u64,
                 vec![
@@ -696,8 +696,8 @@ fn test_metric_summary() {
             .count(200u64)
             .sum(2000.0)
             .finish(),
-        ]),
-    );
+        ]))
+        .finish();
 
     let m1_value = Metric {
         name: "summary".to_string(),
@@ -759,9 +759,9 @@ fn test_metric_summary() {
 
 #[test]
 fn test_metric_exponential_histogram() {
-    let m1 = Metric::new_exponential_histogram(
-        "exp_histogram",
-        ExponentialHistogram::new(
+    let m1 = Metric::build()
+        .name("exp_histogram")
+        .data_exponential_histogram(ExponentialHistogram::new(
             AggregationTemporality::Delta,
             vec![
                 ExponentialHistogramDataPoint::build(
@@ -775,8 +775,8 @@ fn test_metric_exponential_histogram() {
                 .negative(Buckets::new(0, vec![1, 2]))
                 .finish(),
             ],
-        ),
-    );
+        ))
+        .finish();
 
     let m1_value = Metric {
         name: "exp_histogram".to_string(),

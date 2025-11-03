@@ -64,7 +64,9 @@ pub mod metrics {
             )])
             .finish();
 
-        let metric = Metric::build_gauge("test_gauge", Gauge::new(vec![data_point]))
+        let metric = Metric::build()
+            .name("test_gauge")
+            .data_gauge(Gauge::new(vec![data_point]))
             .description("Test metric".to_string())
             .unit("count")
             .finish();

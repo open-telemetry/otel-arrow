@@ -71,8 +71,7 @@ where
     let oneof_name = oneof_path.split('.').last().unwrap();
     let oneof_idx = param_names
         .iter()
-        .position(|name| name.as_str() == oneof_name)
-        .unwrap();
+        .position(|name| name.as_str() == oneof_name);
 
     oneof_cases
         .iter()
@@ -92,11 +91,39 @@ where
         .collect()
 }
 
+/// Generate builder methods for oneof variants when oneof is not in parameters
+pub fn builder_oneof_methods(
+    oneof_mapping: &(String, Vec<OneofCase>),
+) -> Vec<TokenStream> {
+    let (oneof_path, oneof_cases) = oneof_mapping;
+    let oneof_name = oneof_path.split('.').last().unwrap();
+    let oneof_ident = syn::Ident::new(oneof_name, proc_macro2::Span::call_site());
+
+    oneof_cases
+        .iter()
+        .map(|case| {
+            let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
+            let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
+            let method_name = syn::Ident::new(
+                &format!("{}_{}", oneof_name, case.name),
+                proc_macro2::Span::call_site(),
+            );
+
+            quote! {
+                pub fn #method_name<T: Into<#case_type>>(mut self, value: T) -> Self {
+                    self.inner.#oneof_ident = Some(#variant_path(value.into()));
+                    self
+                }
+            }
+        })
+        .collect()
+}
+
 /// Generate constructor for a single oneof case with shared logic
 pub fn builder_oneof_constructor<F>(
     case: &OneofCase,
     oneof_name: &str,
-    oneof_idx: usize,
+    oneof_idx: Option<usize>,
     param_bounds: &[TokenStream],
     param_decls: &[TokenStream],
     param_args: &[TokenStream],
@@ -109,22 +136,28 @@ where
 {
     let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
     let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
-    let suffix = format!("_{}", case.name);
     let oneof_ident = syn::Ident::new(oneof_name, proc_macro2::Span::call_site());
 
     // Duplicate the param bounds and field initializers
     let mut cur_param_bounds = param_bounds.to_vec();
     let mut cur_field_initializers = all_field_initializers.to_vec();
-    let type_param = &type_params[oneof_idx];
 
-    let value_bound = quote! { #type_param: Into<#case_type> };
+    let (suffix, value_bound) = if let Some(idx) = oneof_idx {
+        let suffix = format!("_{}", case.name);
+        let type_param = &type_params[idx];
+        (suffix, quote! { #type_param: Into<#case_type> })
+    } else {
+        ("".to_string(), quote! {})
+    };
     let value_initializer = quote! {
         #oneof_ident: Some(#variant_path(#oneof_ident.into())),
     };
 
     // Replace the parameter with oneof-specific expansion
-    cur_param_bounds[oneof_idx] = value_bound;
-    cur_field_initializers[oneof_idx] = value_initializer;
+    if let Some(idx) = oneof_idx {
+        cur_param_bounds[idx] = value_bound;
+        cur_field_initializers[idx] = value_initializer;
+    }
 
     create_constructor(
         suffix,

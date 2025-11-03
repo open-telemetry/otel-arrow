@@ -113,10 +113,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.metrics.v1.MetricsData",
                 vec!["resource_metrics"],
             ),
-            (
-                "opentelemetry.proto.metrics.v1.Metric",
-                vec!["name", "data"],
-            ),
+            ("opentelemetry.proto.metrics.v1.Metric", vec![]),
             (
                 "opentelemetry.proto.metrics.v1.Sum",
                 vec!["aggregation_temporality", "is_monotonic", "data_points"],
