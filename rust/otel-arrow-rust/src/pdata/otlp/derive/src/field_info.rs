@@ -14,7 +14,7 @@ use quote::ToTokens;
 ///
 /// Note the #[allow(dead_code)] stem from the removal of a Prost
 /// object visitor pattern, item counter, and OTLP bytes encoder
-/// feature.
+/// feature. TODO PR NUMBER
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
     /// The Rust identifier for this field (e.g., `field_name`)
@@ -28,7 +28,6 @@ pub struct FieldInfo {
     pub is_optional: bool,
 
     /// Whether this field is a repeated field, typically `Vec<T>` (corresponds to `repeated` in protobuf)
-    #[allow(dead_code)]
     pub is_repeated: bool,
 
     /// Whether this field represents a primitive type at the protocol level, including bytes,
@@ -42,7 +41,6 @@ pub struct FieldInfo {
 
     /// For oneof fields: contains the possible cases that this field can represent.
     /// `None` for regular fields, `Some(cases)` for oneof union types.
-    #[allow(dead_code)]
     pub oneof: Option<Vec<OneofCase>>,
 
     /// For enum fields: the primitive type that the enum maps to (e.g., `i32` for enum values)
