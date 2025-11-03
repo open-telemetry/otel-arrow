@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Asynchronous OTLP exporter implementation.
+//!
+//! The exporter receives pipeline messages on a single-threaded Tokio runtime. Each payload is
+//! encoded (when necessary) and handed off to a gRPC export RPC. We keep the gRPC futures in a
+//! lightweight in-flight queue which enforces the configured concurrency limit. As soon as a
+//! request finishes we forward the Ack/Nack to the pipeline controller so the dataflow can make
+//! progress.
+
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
@@ -8,7 +16,6 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::future::poll_fn;
 use futures::ready;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
@@ -176,12 +183,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut inflight = InFlightQueue::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
+        // Main receive/export loop: respect the concurrency budget, push new exports,
+        // and feed completions back to the pipeline.
         loop {
             if inflight.len() >= max_in_flight && pending_msg.is_some() {
-                if let Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)).await {
-                    let client =
-                        process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics)
-                            .await;
+                if let Some(completed) = inflight.next_completion().await {
+                    let client = process_completed_export(
+                        completed,
+                        &effect_handler,
+                        &mut self.pdata_metrics,
+                    )
+                    .await;
                     client_pool.release(client);
                 }
                 continue;
@@ -189,9 +201,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
             tokio::select! {
                 biased;
-                Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)), if !inflight.is_empty() => {
-                    let client = process_export_outcome(
-                        outcome,
+                Some(completed) = inflight.next_completion(), if !inflight.is_empty() => {
+                    // A gRPC export finished; surface the result to the pipeline before
+                    // accepting more work so we honour backpressure and ordered Acks.
+                    let client = process_completed_export(
+                        completed,
                         &effect_handler,
                         &mut self.pdata_metrics,
                     )
@@ -214,9 +228,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 "pending message should have been drained before shutdown"
                             );
                             while !inflight.is_empty() {
-                                if let Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)).await {
-                                    let client = process_export_outcome(
-                                        outcome,
+                                if let Some(completed) = inflight.next_completion().await {
+                                    let client = process_completed_export(
+                                        completed,
                                         &effect_handler,
                                         &mut self.pdata_metrics,
                                     )
@@ -240,6 +254,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let (context, payload) = pdata.into_parts();
                             self.pdata_metrics.inc_consumed(signal_type);
 
+                            // Dispatch based on signal type and the concrete payload representation.
                             match (signal_type, payload) {
                                 (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
                                     match prepare_otap_export(
@@ -251,7 +266,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Logs,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(prepared, &mut client_pool);
+                                            let future =
+                                                make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -269,7 +285,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Metrics,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(prepared, &mut client_pool);
+                                            let future =
+                                                make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -287,7 +304,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Traces,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(prepared, &mut client_pool);
+                                            let future =
+                                                make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -323,7 +341,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         }
                                     };
 
-                                    let future = make_export_future(prepared, &mut client_pool);
+                                    let future =
+                                        make_export_future(prepared, &mut client_pool);
                                     inflight.push(future);
                                 }
                             }
@@ -435,6 +454,29 @@ fn prepare_otlp_export(
     }
 }
 
+/// Applies the Ack/Nack side effects for a completed gRPC export and returns the reusable client.
+async fn process_completed_export(
+    completed: CompletedExport,
+    effect_handler: &EffectHandler<OtapPdata>,
+    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+) -> SignalClient {
+    let CompletedExport {
+        result,
+        context,
+        saved_payload,
+        signal_type,
+        client,
+    } = completed;
+
+    match handle_export_result(result, context, saved_payload, effect_handler).await {
+        Ok(()) => pdata_metrics.add_exported(signal_type, 1),
+        Err(_) => pdata_metrics.add_failed(signal_type, 1),
+    }
+
+    client
+}
+
+/// Builds an export future for the provided payload, borrowing a signal-specific client from the pool.
 fn make_export_future(prepared: PreparedExport, client_pool: &mut ClientPool) -> ExportFuture {
     let PreparedExport {
         bytes,
@@ -497,7 +539,7 @@ impl ExportFuture {
 impl Unpin for ExportFuture {}
 
 impl Future for ExportFuture {
-    type Output = ExportOutcome;
+    type Output = CompletedExport;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         let (result, client) = ready!(self.future.as_mut().poll(cx));
@@ -505,7 +547,7 @@ impl Future for ExportFuture {
             .outcome_data
             .take()
             .expect("outcome data already taken");
-        Poll::Ready(ExportOutcome {
+        Poll::Ready(CompletedExport {
             result,
             context,
             saved_payload,
@@ -515,27 +557,7 @@ impl Future for ExportFuture {
     }
 }
 
-async fn process_export_outcome(
-    outcome: ExportOutcome,
-    effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
-) -> SignalClient {
-    let ExportOutcome {
-        result,
-        context,
-        saved_payload,
-        signal_type,
-        client,
-    } = outcome;
-
-    match handle_export_result(result, context, saved_payload, effect_handler).await {
-        Ok(()) => pdata_metrics.add_exported(signal_type, 1),
-        Err(_) => pdata_metrics.add_failed(signal_type, 1),
-    }
-
-    client
-}
-
+/// FIFO-ish wrapper around the in-flight export RPCs.
 struct InFlightQueue {
     futures: Vec<ExportFuture>,
 }
@@ -559,7 +581,7 @@ impl InFlightQueue {
         self.futures.push(future);
     }
 
-    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<ExportOutcome>> {
+    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<CompletedExport>> {
         let mut index = 0;
         while index < self.futures.len() {
             let poll_result = {
@@ -568,9 +590,9 @@ impl InFlightQueue {
             };
 
             match poll_result {
-                Poll::Ready(outcome) => {
+                Poll::Ready(completed) => {
                     let _ = self.futures.swap_remove(index);
-                    return Poll::Ready(Some(outcome));
+                    return Poll::Ready(Some(completed));
                 }
                 Poll::Pending => {
                     index += 1;
@@ -584,8 +606,28 @@ impl InFlightQueue {
             Poll::Pending
         }
     }
+
+    /// Returns a future that resolves once the next export finishes.
+    fn next_completion(&mut self) -> NextCompletion<'_> {
+        NextCompletion { queue: self }
+    }
 }
 
+/// Drives the in-flight queue until the next export finishes.
+struct NextCompletion<'a> {
+    queue: &'a mut InFlightQueue,
+}
+
+impl Future for NextCompletion<'_> {
+    type Output = Option<CompletedExport>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        this.queue.poll_next(cx)
+    }
+}
+
+/// Keeps a small stash of gRPC clients so each export can reuse an existing connection.
 struct ClientPool {
     base_channel: Channel,
     compression: Option<CompressionEncoding>,
@@ -660,7 +702,8 @@ enum SignalClient {
     Traces(TraceServiceClient<Channel>),
 }
 
-struct ExportOutcome {
+/// Captures everything we need once a single export RPC has completed.
+struct CompletedExport {
     result: Result<(), tonic::Status>,
     context: Context,
     saved_payload: OtapPayload,
