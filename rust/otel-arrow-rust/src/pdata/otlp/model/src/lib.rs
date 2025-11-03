@@ -96,10 +96,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 vec!["resource_logs"],
             ),
             // Traces
-            (
-                "opentelemetry.proto.trace.v1.Span",
-                vec!["trace_id", "span_id", "name", "start_time_unix_nano"],
-            ),
+            ("opentelemetry.proto.trace.v1.Span", vec![]),
             ("opentelemetry.proto.trace.v1.ScopeSpans", vec!["scope"]),
             (
                 "opentelemetry.proto.trace.v1.ResourceSpans",

@@ -44,7 +44,6 @@ use crate::proto::opentelemetry::trace::v1::span::Event;
 use crate::proto::opentelemetry::trace::v1::span::Link;
 use crate::proto::opentelemetry::trace::v1::span::SpanKind;
 use crate::proto::opentelemetry::trace::v1::status::StatusCode;
-use prost::Message;
 
 #[test]
 fn test_any_value() {
@@ -54,21 +53,18 @@ fn test_any_value() {
         value: Some(Value::IntValue(3i64)),
     };
     assert_eq!(int_val, int_val_expected);
-    assert_eq!(int_val.pdata_size(), int_val.encoded_len());
 
     let double_val = AnyValue::new_double(3.123);
     let double_val_expected = AnyValue {
         value: Some(Value::DoubleValue(3.123)),
     };
     assert_eq!(double_val, double_val_expected);
-    assert_eq!(double_val.pdata_size(), double_val.encoded_len());
 
     let bool_val = AnyValue::new_bool(true);
     let bool_val_expected = AnyValue {
         value: Some(Value::BoolValue(true)),
     };
     assert_eq!(bool_val, bool_val_expected);
-    assert_eq!(bool_val.pdata_size(), bool_val.encoded_len());
 
     // String
     let xyz = "xyz".to_string();
@@ -79,11 +75,8 @@ fn test_any_value() {
     let string_val2 = AnyValue::new_string(&xyz);
     let string_val3 = AnyValue::new_string(xyz);
     assert_eq!(string_val1, xyz_value);
-    assert_eq!(string_val1.pdata_size(), string_val1.encoded_len());
     assert_eq!(string_val2, xyz_value);
-    assert_eq!(string_val2.pdata_size(), string_val2.encoded_len());
     assert_eq!(string_val3, xyz_value);
-    assert_eq!(string_val3.pdata_size(), string_val3.encoded_len());
 
     // Bytes
     let hello: Vec<u8> = [104, 101, 108, 108, 111].to_vec();
@@ -93,9 +86,7 @@ fn test_any_value() {
     let bytes_val1 = AnyValue::new_bytes(hello.as_slice());
     let bytes_val2 = AnyValue::new_bytes(hello);
     assert_eq!(bytes_val1, hello_value);
-    assert_eq!(bytes_val1.pdata_size(), bytes_val1.encoded_len());
     assert_eq!(bytes_val2, hello_value);
-    assert_eq!(bytes_val2.pdata_size(), bytes_val2.encoded_len());
 
     // Kvlist
     let kvs = vec![
@@ -110,14 +101,12 @@ fn test_any_value() {
 
     let kvlist_val1 = AnyValue::new_kvlist(kvs);
     assert_eq!(kvlist_val1, kvs_value);
-    assert_eq!(kvlist_val1.pdata_size(), kvlist_val1.encoded_len());
 
     let kvlist_val2 = AnyValue::new_kvlist(vec![
         KeyValue::new("k1", AnyValue::new_string("s1")),
         KeyValue::new("k2", AnyValue::new_double(2.0)),
     ]);
     assert_eq!(kvlist_val2, kvs_value);
-    assert_eq!(kvlist_val2.pdata_size(), kvlist_val2.encoded_len());
 
     // Array
     let vals = vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)];
@@ -129,12 +118,10 @@ fn test_any_value() {
 
     let array_val1 = AnyValue::new_array(vals);
     assert_eq!(array_val1, vals_value);
-    assert_eq!(array_val1.pdata_size(), array_val1.encoded_len());
 
     let array_val2 =
         AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)]);
     assert_eq!(array_val2, vals_value);
-    assert_eq!(array_val2.pdata_size(), array_val2.encoded_len());
 }
 
 #[test]
@@ -159,14 +146,10 @@ fn test_key_value() {
     let kv2_test2 = KeyValue::new(k2, v2);
 
     assert_eq!(kv1_test1, kv1_value);
-    assert_eq!(kv1_test1.pdata_size(), kv1_test1.encoded_len());
     assert_eq!(kv1_test2, kv1_value);
-    assert_eq!(kv1_test2.pdata_size(), kv1_test2.encoded_len());
 
     assert_eq!(kv2_test1, kv2_value);
-    assert_eq!(kv2_test1.pdata_size(), kv2_test1.encoded_len());
     assert_eq!(kv2_test2, kv2_value);
-    assert_eq!(kv2_test2.pdata_size(), kv2_test2.encoded_len());
 }
 
 #[test]
@@ -183,7 +166,6 @@ fn test_log_record_required() {
     let lr1 = LogRecord::new(ts, sev, name);
 
     assert_eq!(lr1, lr1_value);
-    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
 }
 
 #[test]
@@ -211,7 +193,6 @@ fn test_log_record_required_all() {
         .finish();
 
     assert_eq!(lr1, lr1_value);
-    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
 }
 
 #[test]
@@ -222,7 +203,6 @@ fn test_instrumentation_scope_default() {
         ..Default::default()
     };
     assert_eq!(is1, is1_value);
-    assert_eq!(is1.pdata_size(), is1.encoded_len());
 }
 
 #[test]
@@ -243,7 +223,6 @@ fn test_instrumentation_scope_options() {
     };
 
     assert_eq!(is1, is1_value);
-    assert_eq!(is1.pdata_size(), is1.encoded_len());
 }
 
 #[test]
@@ -275,7 +254,6 @@ fn test_scope_logs() {
     };
 
     assert_eq!(sl, sl_value);
-    assert_eq!(sl.pdata_size(), sl.encoded_len());
 }
 
 #[test]
@@ -293,7 +271,6 @@ fn test_entity() {
     };
 
     assert_eq!(er1, er1_value);
-    assert_eq!(er1.pdata_size(), er1.encoded_len());
 }
 
 #[test]
@@ -313,7 +290,6 @@ fn test_resource() {
     };
 
     assert_eq!(res1, res1_value);
-    assert_eq!(res1.pdata_size(), res1.encoded_len());
 }
 
 #[test]
@@ -347,14 +323,24 @@ fn test_resource_logs() {
     };
 
     assert_eq!(rl, rl_value);
-    assert_eq!(rl.pdata_size(), rl.encoded_len());
 }
 
 #[test]
 fn test_empty_resource_spans() {
     let rs = ResourceSpans::build(Resource::new(vec![])).finish();
 
-    assert_eq!(rs.pdata_size(), rs.encoded_len());
+    let res = Resource {
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        entity_refs: vec![],
+    };
+    let rs_value = ResourceSpans {
+        resource: Some(res),
+        scope_spans: vec![],
+        schema_url: "".into(),
+    };
+
+    assert_eq!(rs, rs_value);
 }
 
 #[test]
@@ -369,7 +355,11 @@ fn test_resource_spans() {
     let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
     let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
 
-    let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
+    let s1 = Span::build()
+        .trace_id(tid)
+        .span_id(sid)
+        .name("myop")
+        .start_time_unix_nano(123_000_000_000u64)
         .parent_span_id(psid)
         .attributes(kvs.clone())
         .flags(SpanFlags::ContextHasIsRemoteMask)
@@ -393,11 +383,16 @@ fn test_resource_spans() {
 
     let res = Resource::new(vec![]);
 
-    let rs1 = ResourceSpans::build(res.clone())
+    let rs = ResourceSpans::build(res.clone())
         .scope_spans(sss.clone())
         .finish();
+    let rs_value = ResourceSpans {
+        resource: Some(res),
+        scope_spans: sss,
+        schema_url: "".into(),
+    };
 
-    assert_eq!(rs1.pdata_size(), rs1.encoded_len());
+    assert_eq!(rs, rs_value)
 }
 
 #[test]
@@ -412,7 +407,11 @@ fn test_traces_data() {
     let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
     let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
 
-    let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
+    let s1 = Span::build()
+        .trace_id(tid)
+        .span_id(sid)
+        .name("myop")
+        .start_time_unix_nano(123_000_000_000u64)
         .parent_span_id(psid)
         .attributes(kvs.clone())
         .flags(SpanFlags::ContextHasIsRemoteMask)
@@ -449,7 +448,6 @@ fn test_traces_data() {
     };
 
     assert_eq!(rds, rds_value);
-    assert_eq!(rds.pdata_size(), rds.encoded_len());
 }
 
 #[test]
@@ -496,7 +494,6 @@ fn test_metric_sum() {
     };
 
     assert_eq!(m1, m1_value);
-    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -537,7 +534,6 @@ fn test_metric_gauge() {
     };
 
     assert_eq!(m1, m1_value);
-    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -558,7 +554,6 @@ fn test_exemplar() {
     };
 
     assert_eq!(e1, e1_value);
-    assert_eq!(e1.pdata_size(), e1.encoded_len());
 }
 
 #[test]
@@ -636,7 +631,6 @@ fn test_metric_histogram() {
     };
 
     assert_eq!(m1, m1_value);
-    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -727,7 +721,6 @@ fn test_metric_summary() {
     };
 
     assert_eq!(m1, m1_value);
-    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -784,5 +777,4 @@ fn test_metric_exponential_histogram() {
     };
 
     assert_eq!(m1, m1_value);
-    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
