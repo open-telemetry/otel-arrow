@@ -782,16 +782,15 @@ fn test_metric_exponential_histogram() {
         .data_exponential_histogram(ExponentialHistogram::new(
             AggregationTemporality::Delta,
             vec![
-                ExponentialHistogramDataPoint::build(
-                    125_000_000_000u64,
-                    7,
-                    Buckets::new(1, vec![3, 4, 5]),
-                )
-                .start_time_unix_nano(124_000_000_000u64)
-                .count(17u64)
-                .zero_count(2u64)
-                .negative(Buckets::new(0, vec![1, 2]))
-                .finish(),
+                ExponentialHistogramDataPoint::build()
+                    .time_unix_nano(125_000_000_000u64)
+                    .scale(7)
+                    .positive(Buckets::new(1, vec![3, 4, 5]))
+                    .start_time_unix_nano(124_000_000_000u64)
+                    .count(17u64)
+                    .zero_count(2u64)
+                    .negative(Buckets::new(0, vec![1, 2]))
+                    .finish(),
             ],
         ))
         .finish();
