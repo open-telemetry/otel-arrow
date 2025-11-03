@@ -390,7 +390,12 @@ fn test_resource_spans() {
         .kind(SpanKind::Server)
         .trace_state("ot=th:0")
         .links(vec![Link::build().trace_id(tid).span_id(sid).finish()])
-        .events(vec![Event::new("oops", 123_500_000_000u64)])
+        .events(vec![
+            Event::build()
+                .name("oops")
+                .time_unix_nano(123_500_000_000u64)
+                .finish(),
+        ])
         .end_time_unix_nano(124_000_000_000u64)
         .status(Status::new("oh my!", StatusCode::Error))
         .dropped_attributes_count(1u32)
@@ -442,7 +447,12 @@ fn test_traces_data() {
         .kind(SpanKind::Server)
         .trace_state("ot=th:0")
         .links(vec![Link::build().trace_id(tid).span_id(sid).finish()])
-        .events(vec![Event::new("oops", 123_500_000_000u64)])
+        .events(vec![
+            Event::build()
+                .name("oops")
+                .time_unix_nano(123_500_000_000u64)
+                .finish(),
+        ])
         .end_time_unix_nano(124_000_000_000u64)
         .status(Status::new("oh my!", StatusCode::Error))
         .dropped_attributes_count(1u32)
