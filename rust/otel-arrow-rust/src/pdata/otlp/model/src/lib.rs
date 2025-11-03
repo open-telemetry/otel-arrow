@@ -162,10 +162,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
             // BUILD EMPTY
             ("opentelemetry.proto.metrics.v1.Metric", vec![]),
             ("opentelemetry.proto.metrics.v1.NumberDataPoint", vec![]),
-            (
-                "opentelemetry.proto.metrics.v1.HistogramDataPoint",
-                vec!["time_unix_nano", "bucket_counts", "explicit_bounds"],
-            ),
+            ("opentelemetry.proto.metrics.v1.HistogramDataPoint", vec![]),
             (
                 "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
                 vec!["time_unix_nano", "scale", "positive"],

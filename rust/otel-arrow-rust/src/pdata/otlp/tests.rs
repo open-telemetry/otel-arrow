@@ -612,7 +612,10 @@ fn test_metric_histogram() {
         .data_histogram(Histogram::new(
             AggregationTemporality::Delta,
             vec![
-                HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
+                HistogramDataPoint::build()
+                    .time_unix_nano(125_000_000_000u64)
+                    .bucket_counts(&[1u64, 2u64, 3u64])
+                    .explicit_bounds(&[1.0, 10.0])
                     .start_time_unix_nano(124_000_000_000u64)
                     .exemplars(vec![
                         Exemplar::build_double(124_500_000_000u64, 10.1)
@@ -621,7 +624,10 @@ fn test_metric_histogram() {
                             .finish(),
                     ])
                     .finish(),
-                HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
+                HistogramDataPoint::build()
+                    .time_unix_nano(126_000_000_000u64)
+                    .bucket_counts([3u64, 2u64, 1u64])
+                    .explicit_bounds([1.0, 10.0])
                     .start_time_unix_nano(125_000_000_000u64)
                     .count(100u64)
                     .sum(1000.0)

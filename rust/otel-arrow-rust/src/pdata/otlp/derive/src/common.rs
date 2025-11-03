@@ -174,6 +174,9 @@ pub fn builder_default_initializer(info: &FieldInfo) -> TokenStream {
 
     if info.is_optional {
         quote! { #field_name: None, }
+    } else if info.is_repeated {
+        // Repeated fields are Vec types, use default
+        quote! { #field_name: ::core::default::Default::default(), }
     } else {
         match info.base_type_name.as_str() {
             "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => {
