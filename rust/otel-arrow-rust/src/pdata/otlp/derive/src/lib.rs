@@ -4,16 +4,12 @@
 //! This package defines four generators for OTLP message types
 ///
 /// - builder.rs: new(), Builder, and finish()
-/// - visitor.rs: Visitor, Visitable, and NoopVisitor
-/// - encoded_len: EncodedLen, Accumulator
 use proc_macro::TokenStream;
 
 mod builder;
 mod common;
-mod encoded_len;
 mod field_info;
 mod message_info;
-mod visitor;
 
 use message_info::MessageInfo;
 
@@ -49,8 +45,6 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         let mut tokens = TokenStream::new();
 
         tokens.extend(builder::derive(&message_info));
-        tokens.extend(visitor::derive(&message_info));
-        tokens.extend(encoded_len::derive(&message_info));
 
         tokens
     })

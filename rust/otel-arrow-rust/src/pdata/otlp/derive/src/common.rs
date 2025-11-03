@@ -6,7 +6,6 @@
 //! This module provides shared functionality used across the derive macro components
 //! to apply the DRY (Don't Repeat Yourself) principle and reduce code duplication.
 
-use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
@@ -14,35 +13,6 @@ use syn::Ident;
 use super::TokenVec;
 use super::field_info::FieldInfo;
 use otlp_model::OneofCase;
-
-/// Generate visitor method name from type name (e.g., "LogsData" -> "visit_logs_data")
-pub fn visitor_method_name(type_name: &Ident) -> Ident {
-    syn::Ident::new(
-        &format!("visit_{}", type_name).to_case(Case::Snake),
-        type_name.span(),
-    )
-}
-
-/// Generate visitable method name from type name (e.g., "LogsData" -> "accept_logs_data")
-pub fn visitable_method_name(type_name: &Ident) -> Ident {
-    // Handle raw identifiers by removing the "r#" prefix
-    let name_str = type_name.to_string();
-    let clean_name = if name_str.starts_with("r#") {
-        &name_str[2..] // Remove "r#" prefix
-    } else {
-        &name_str
-    };
-
-    syn::Ident::new(
-        &format!("accept_{}", clean_name).to_case(Case::Snake),
-        type_name.span(),
-    )
-}
-
-/// Generate oneof variant parameter name (e.g., "data_sum" for field "data" and case "sum")
-pub fn oneof_variant_field_or_method_name(field_name: &Ident, case_name: &str) -> Ident {
-    syn::Ident::new(&format!("{}_{}", field_name, case_name), field_name.span())
-}
 
 /// Process fields into parameter declarations and bounds for generic types
 pub fn builder_formal_parameters(

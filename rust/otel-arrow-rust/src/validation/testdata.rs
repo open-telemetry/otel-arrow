@@ -20,7 +20,11 @@ pub mod traces {
         let trace_id = TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         let span_id = SpanID::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
 
-        let span = Span::build(trace_id, span_id, "test_span", start_time)
+        let span = Span::build()
+            .trace_id(trace_id)
+            .span_id(span_id)
+            .name("test_span")
+            .start_time_unix_nano(start_time)
             .end_time_unix_nano(end_time)
             .attributes(vec![KeyValue::new(
                 "test.attribute",
