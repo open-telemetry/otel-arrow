@@ -77,10 +77,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
             ("opentelemetry.proto.common.v1.InstrumentationScope", vec![]),
             ("opentelemetry.proto.common.v1.EntityRef", vec![]),
             // Resource
-            (
-                "opentelemetry.proto.resource.v1.Resource",
-                vec!["attributes"],
-            ),
+            ("opentelemetry.proto.resource.v1.Resource", vec![]),
             // Logs
             (
                 "opentelemetry.proto.logs.v1.LogRecord",

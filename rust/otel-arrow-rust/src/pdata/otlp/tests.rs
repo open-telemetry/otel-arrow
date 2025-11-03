@@ -282,7 +282,8 @@ fn test_resource() {
 
     let erefs = vec![eref1, eref2];
 
-    let res1 = Resource::build(&[KeyValue::new("k1", AnyValue::new_double(1.23))])
+    let res1 = Resource::build()
+        .attributes(&[KeyValue::new("k1", AnyValue::new_double(1.23))])
         .entity_refs(erefs.clone())
         .finish();
     let res1_value = Resource {
@@ -312,7 +313,7 @@ fn test_resource_logs() {
     let sl2 = sl1.clone();
     let sls = vec![sl1, sl2];
 
-    let res = Resource::new(kvs);
+    let res = Resource::build().attributes(kvs).finish();
 
     let rl = ResourceLogs::build(res.clone())
         .scope_logs(sls.clone())
@@ -329,7 +330,7 @@ fn test_resource_logs() {
 
 #[test]
 fn test_empty_resource_spans() {
-    let rs = ResourceSpans::build(Resource::new(vec![])).finish();
+    let rs = ResourceSpans::build(Resource::build().attributes(vec![])).finish();
 
     let res = Resource {
         attributes: vec![],
@@ -383,7 +384,7 @@ fn test_resource_spans() {
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
-    let res = Resource::new(vec![]);
+    let res = Resource::new();
 
     let rs = ResourceSpans::build(res.clone())
         .scope_spans(sss.clone())
@@ -435,7 +436,7 @@ fn test_traces_data() {
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
-    let res = Resource::new(vec![]);
+    let res = Resource::new();
 
     let rs1 = ResourceSpans::build(res.clone())
         .scope_spans(sss.clone())
