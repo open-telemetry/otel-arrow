@@ -107,17 +107,19 @@ impl OtapBatchEngine {
             .curr_batch
             .set(exec_ctx.root_batch_payload_type()?, result);
 
-        // TODO this is a hack to get the correct batch in the right place before updating the children
-        exec_ctx.update_batch(exec_ctx.curr_batch.clone())?;
 
-        // // update the attributes
-        // // TODO -- we only need to do this if there was filtering applied to the root batch?
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
-            .await?;
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
-            .await?;
-        self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
-            .await?;
+        // TODO add this back when it's rewritten to use arrow compute kernels because that will be faster
+        {
+            // TODO this is a hack to get the correct batch in the right place before updating the children
+            // exec_ctx.update_batch(exec_ctx.curr_batch.clone())?;
+            // update the attributes
+            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
+            //     .await?;
+            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
+            //     .await?;
+            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
+            //     .await?;
+        }
 
         Ok(())
     }
@@ -1146,7 +1148,8 @@ mod test {
 
     #[tokio::test]
     async fn test_reuse_plans_simple() {
-        let query = "logs | where severity_text == \"WARN\"";
+        // let query = "logs | where severity_text == \"WARN\"";
+        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
         let pipeline_expr = KqlParser::parse(query).unwrap();
 
         let batch1 = generate_logs_batch(32, 100);
@@ -1157,32 +1160,40 @@ mod test {
         engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
         let result1 = exec_ctx.curr_batch.clone();
 
+
+
+        // TODO need to add some real asserts here
+
+        println!("plans b4 first result\n");
+        exec_ctx.print_phy_plans();
+
+        println!("\nresult1 logs:");
+        arrow::util::pretty::print_batches(&[result1.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        // println!("result1 log_attrs:");
+        // arrow::util::pretty::print_batches(&[result1
+        //     .get(ArrowPayloadType::LogAttrs)
+        //     .unwrap()
+        //     .clone()])
+        // .unwrap();
+
         let batch2 = generate_logs_batch(64, 200);
         exec_ctx.update_batch(batch2).unwrap();
 
         engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
         let result2 = exec_ctx.curr_batch.clone();
 
-        // TODO need to add some real asserts here
-
-        println!("result1 logs:");
-        arrow::util::pretty::print_batches(&[result1.get(ArrowPayloadType::Logs).unwrap().clone()])
-            .unwrap();
-        println!("result1 log_attrs:");
-        arrow::util::pretty::print_batches(&[result1
-            .get(ArrowPayloadType::LogAttrs)
-            .unwrap()
-            .clone()])
-        .unwrap();
+        println!("plans b4 2nd result\n");
+        exec_ctx.print_phy_plans();
 
         println!("result2 logs:");
         arrow::util::pretty::print_batches(&[result2.get(ArrowPayloadType::Logs).unwrap().clone()])
             .unwrap();
-        println!("result2 log_attrs:");
-        arrow::util::pretty::print_batches(&[result2
-            .get(ArrowPayloadType::LogAttrs)
-            .unwrap()
-            .clone()])
-        .unwrap();
+        // println!("result2 log_attrs:");
+        // arrow::util::pretty::print_batches(&[result2
+        //     .get(ArrowPayloadType::LogAttrs)
+        //     .unwrap()
+        //     .clone()])
+        // .unwrap();
     }
 }

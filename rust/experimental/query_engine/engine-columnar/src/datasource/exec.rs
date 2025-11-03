@@ -2,23 +2,130 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
-use std::fmt::{self, Formatter};
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::fmt::{self, Debug, Formatter};
+use std::sync::{Arc, RwLock};
 
 use arrow::array::{Array, Int16Array, RecordBatch, RunArray, new_null_array};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
+use datafusion::common::{SchemaReference, Statistics};
 use datafusion::config::ConfigOptions;
+use datafusion::datasource::source::DataSource;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::joins::HashJoinExec;
+use datafusion::physical_plan::execution_plan::SchedulingType;
+use datafusion::physical_plan::projection::ProjectionExpr;
 use datafusion::physical_plan::{
-    DisplayAs, ExecutionPlan, PlanProperties, with_new_children_if_necessary,
+    DisplayAs, ExecutionPlan, Partitioning, PlanProperties, with_new_children_if_necessary,
 };
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+// TODO comment on what this is doing
+#[derive(Debug)]
+pub struct OtapBatchDataSource {
+    curr_memory_source: RwLock<MemorySourceConfig>
+}
+
+impl OtapBatchDataSource {
+    pub fn try_new(
+        batch: RecordBatch,
+        // TODO maybe not optional?
+        projections: Option<Vec<usize>>,
+    ) -> Result<Self> {
+        let schema = batch.schema();
+        Ok(Self {
+            curr_memory_source: RwLock::new(MemorySourceConfig::try_new(
+                &vec![vec![batch]],
+                schema,
+                projections
+            )?)
+        })
+    }
+
+    fn original_schema(&self) -> SchemaRef {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.original_schema()
+    }
+
+    fn projection(&self) -> Option<Vec<usize>> {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        // TODO clone yuck
+        curr_source.projection().clone()
+    }
+
+    fn replace_batch(&self, next_batch: RecordBatch, projections: Option<Vec<usize>>) -> Result<()>{
+        let schema = next_batch.schema();
+        let next_source = MemorySourceConfig::try_new(&[vec![next_batch]], schema, projections)?;
+        let mut curr_source = self.curr_memory_source.write().unwrap();
+        *curr_source = next_source;
+        Ok(())
+    }
+}
+
+// TODO there might be certain cases where we do want to overwrite the behaviour so revisit this
+// TODO the current implementation here has a bunch of unwraps on the curr lock. pls fix
+impl DataSource for OtapBatchDataSource {
+    fn open(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.open(partition, context)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.fmt_as(t, f)
+    }
+
+    fn output_partitioning(&self) -> Partitioning {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.output_partitioning()
+    }
+
+    fn eq_properties(&self) -> EquivalenceProperties {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.eq_properties()
+    }
+
+    fn scheduling_type(&self) -> SchedulingType {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.scheduling_type()
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.statistics()
+    }
+
+    fn with_fetch(&self, _limit: Option<usize>) -> Option<Arc<dyn DataSource>> {
+        todo!("implement with_fetch")
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        let curr_source = self.curr_memory_source.read().unwrap();
+        curr_source.fetch()
+    }
+
+    fn try_swapping_with_projection(
+        &self,
+        _projection: &[ProjectionExpr],
+    ) -> Result<Option<Arc<dyn DataSource>>> {
+        todo!("implement try swapping with projections")
+    }
+}
 
 // TODO comment on what this is for
 #[derive(Clone, Debug)]
@@ -28,16 +135,22 @@ pub struct OtapDataSourceExec {
 }
 
 impl OtapDataSourceExec {
-    pub fn new(payload_type: ArrowPayloadType, data_source: MemorySourceConfig) -> Self {
+    pub fn new(
+        payload_type: ArrowPayloadType, 
+        data_source: OtapBatchDataSource
+        // data_source: MemorySourceConfig
+    ) -> Self {
         Self {
             payload_type,
             source_plan: DataSourceExec::new(Arc::new(data_source)),
         }
     }
 
-    pub fn try_with_next_batch(&self, mut next_batch: RecordBatch) -> Result<Self> {
+    // don't love the return type here ...
+    pub fn try_with_next_batch(&self, mut next_batch: RecordBatch) -> Result<Option<Self>> {
         let data_source = self.source_plan.data_source();
-        if let Some(curr_data_source) = data_source.as_any().downcast_ref::<MemorySourceConfig>() {
+        if let Some(curr_data_source) = data_source.as_any().downcast_ref::<OtapBatchDataSource>() {
+        // if let Some(curr_data_source) = data_source.as_any().downcast_ref::<MemorySourceConfig>() {
             let curr_batch_schema = curr_data_source.original_schema();
             let curr_batch_projection = curr_data_source.projection();
             let mut next_batch_schema = next_batch.schema();
@@ -77,16 +190,21 @@ impl OtapDataSourceExec {
                     .expect("can build new record batch");
             }
 
-            let next_data_source = MemorySourceConfig::try_new(
-                &[vec![next_batch]],
-                next_batch_schema,
-                Some(next_batch_projection),
-            )?;
+            // if blah blah
+            curr_data_source.replace_batch(next_batch, Some(next_batch_projection))?;
+            Ok(None)
 
-            Ok(Self {
-                payload_type: self.payload_type,
-                source_plan: DataSourceExec::new(Arc::new(next_data_source)),
-            })
+            // let next_data_source = OtapBatchDataSource::try_new(next_batch, Some(next_batch_projection))?;
+            // // let next_data_source = MemorySourceConfig::try_new(
+            // //     &[vec![next_batch]],
+            // //     next_batch_schema,
+            // //     Some(next_batch_projection)
+            // // )?;
+
+            // Ok(Some(Self {
+            //     payload_type: self.payload_type,
+            //     source_plan: DataSourceExec::new(Arc::new(next_data_source)),
+            // }))
         } else {
             todo!("throw")
         }
@@ -97,7 +215,7 @@ impl OtapDataSourceExec {
     // TODO - optimize
     fn next_project(
         &self,
-        curr_batch_projection: &Option<Vec<usize>>,
+        curr_batch_projection: Option<Vec<usize>>,
         curr_batch_schema: SchemaRef,
         next_batch_schema: SchemaRef,
     ) -> (Vec<usize>, Option<Vec<Field>>) {
@@ -287,7 +405,12 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                 .expect("can downcast to type");
             if let Some(rb) = self.otap_batch.get(curr_batch_exec.payload_type) {
                 let next_batch_exec = curr_batch_exec.try_with_next_batch(rb.clone())?;
-                Ok(Arc::new(next_batch_exec))
+                // TODO I guess the contract is currently that we return None if there's not a new plan
+                // it's good enough but could either be documented or more explicit
+                Ok(match next_batch_exec {
+                    Some(next_batch_exec) => Arc::new(next_batch_exec),
+                    None => plan
+                })
             } else {
                 // TODO if the plan selects a batch that doesn't contain some payload type, we should redo the planning
                 Err(DataFusionError::Plan(format!(
@@ -295,22 +418,37 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                     curr_batch_exec.payload_type
                 )))
             }
+        // } else if let Some(curr_coalesce_batch_exec) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+        //     // use datafusion::physical_plan::ExecutionPlan;
+        //     // curr_coalesce_batch_exec.with
+        //     // plan.reset_state()
+        //     // Ok(plan)
+        //     curr_coalesce_batch_exec.children().iter().map(|c| self.optimize(child.clone(), config))
+
         } else if let Some(curr_hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
             // TODO comment on why we do this
-            let left = self.optimize(curr_hash_join.left.clone(), config)?;
-            let right = self.optimize(curr_hash_join.right.clone(), config)?;
-            // println!("projection = {:?}", curr_hash_join.projection);
-            let new_hash_join = HashJoinExec::try_new(
-                left,
-                right,
-                curr_hash_join.on.clone(),
-                curr_hash_join.filter.clone(),
-                curr_hash_join.join_type(),
-                curr_hash_join.projection.clone(),
-                curr_hash_join.partition_mode().clone(),
-                curr_hash_join.null_equality.clone(),
-            )?;
-            Ok(Arc::new(new_hash_join))
+            let curr_left = curr_hash_join.left.clone();
+            let curr_right = curr_hash_join.right.clone();
+            let left = self.optimize(curr_left.clone(), config)?;
+            let right = self.optimize(curr_right.clone(), config)?;
+            // TODO not sure if this matters actually
+            if Arc::ptr_eq(&curr_left, &left) && Arc::ptr_eq(&curr_right, &right) {
+                // plan.reset_state()
+                Ok(plan)
+            } else {
+                // println!("projection = {:?}", curr_hash_join.projection);
+                let new_hash_join = HashJoinExec::try_new(
+                    left,
+                    right,
+                    curr_hash_join.on.clone(),
+                    curr_hash_join.filter.clone(),
+                    curr_hash_join.join_type(),
+                    curr_hash_join.projection.clone(),
+                    curr_hash_join.partition_mode().clone(),
+                    curr_hash_join.null_equality.clone(),
+                )?;
+                Ok(Arc::new(new_hash_join))
+            }
         } else {
             let children = plan
                 .children()

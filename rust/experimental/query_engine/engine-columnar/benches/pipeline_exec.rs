@@ -131,8 +131,8 @@ fn bench_exec_pipelines(c: &mut Criterion) {
         let _ = group.bench_with_input(benchmark_id, &batch_size, |b, batch_size| {
             b.iter_custom(|iters| {
                 let batch = generate_logs_batch(*batch_size);
-                let query = "logs | where severity_text == \"WARN\"";
-                // let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+                // let query = "logs | where severity_text == \"WARN\"";
+                let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
                 let pipeline = KqlParser::parse(query).expect("can parse pipeline");
                 rt.block_on(async move {
                     let mut exec_ctx = ExecutionContext::try_new(batch.clone()).await.unwrap();
