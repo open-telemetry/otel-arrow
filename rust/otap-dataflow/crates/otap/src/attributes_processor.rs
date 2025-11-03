@@ -44,15 +44,21 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::otap::{
     OtapArrowRecords,
-    transform::{AttributesTransform, transform_attributes},
+    transform::{
+        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+    },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
+
+mod metrics;
+use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otap:processor:attributes_processor";
@@ -108,8 +114,12 @@ pub struct Config {
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
-    // Selected attribute domains to transform
-    domains: HashSet<ApplyDomain>,
+    // Pre-computed flags for domain lookup
+    has_resource_domain: bool,
+    has_scope_domain: bool,
+    has_signal_domain: bool,
+    // Metrics handle (set at runtime in factory; None when parsed-only)
+    metrics: Option<MetricSet<AttributesProcessorMetrics>>,
 }
 
 impl AttributesProcessor {
@@ -118,17 +128,16 @@ impl AttributesProcessor {
     /// Transforms the Go collector-style configuration into the operations
     /// supported by the underlying Arrow attribute transform API.
     #[must_use = "AttributesProcessor creation may fail and return a ConfigError"]
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse AttributesProcessor configuration: {e}"),
             })?;
-        Ok(Self::new(cfg))
+        Self::new(cfg)
     }
 
     /// Creates a new AttributesProcessor with the given parsed configuration.
-    #[must_use]
-    fn new(config: Config) -> Self {
+    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
 
@@ -150,6 +159,11 @@ impl AttributesProcessor {
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
+        // Pre-compute domain checks
+        let has_resource_domain = domains.contains(&ApplyDomain::Resource);
+        let has_scope_domain = domains.contains(&ApplyDomain::Scope);
+        let has_signal_domain = domains.contains(&ApplyDomain::Signal);
+
         // TODO: Optimize action composition into a valid AttributesTransform that
         // still reflects the user's intended semantics. Consider:
         // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
@@ -157,21 +171,107 @@ impl AttributesProcessor {
         //   application of transforms when a composed map would be invalid.
         // For now, we compose a single transform and let transform_attributes
         // enforce validity (which may error for conflicting maps).
-        Self {
-            transform: AttributesTransform {
-                rename: if renames.is_empty() {
-                    None
-                } else {
-                    Some(renames)
-                },
-                delete: if deletes.is_empty() {
-                    None
-                } else {
-                    Some(deletes)
-                },
+        let transform = AttributesTransform {
+            rename: if renames.is_empty() {
+                None
+            } else {
+                Some(RenameTransform::new(renames))
             },
-            domains,
+            delete: if deletes.is_empty() {
+                None
+            } else {
+                Some(DeleteTransform::new(deletes))
+            },
+        };
+
+        transform
+            .validate()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Invalid attribute transform configuration: {e}"),
+            })?;
+
+        Ok(Self {
+            transform,
+            has_resource_domain,
+            has_scope_domain,
+            has_signal_domain,
+            metrics: None,
+        })
+    }
+
+    #[inline]
+    const fn is_noop(&self) -> bool {
+        self.transform.rename.is_none() && self.transform.delete.is_none()
+    }
+
+    #[inline]
+    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+        use payload_sets::*;
+
+        match (
+            self.has_resource_domain,
+            self.has_scope_domain,
+            self.has_signal_domain,
+            signal,
+        ) {
+            // Empty cases
+            (false, false, false, _) => EMPTY,
+
+            // Signal only
+            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
+            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
+            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
+
+            // Resource only
+            (true, false, false, _) => RESOURCE_ONLY,
+
+            // Scope only
+            (false, true, false, _) => SCOPE_ONLY,
+
+            // Resource + Signal
+            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
+            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
+
+            // Scope + Signal
+            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
+            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
+
+            // Resource + Scope (no signal)
+            (true, true, false, _) => RESOURCE_SCOPE,
+
+            // All three
+            (true, true, true, SignalType::Logs) => LOGS_ALL,
+            (true, true, true, SignalType::Metrics) => METRICS_ALL,
+            (true, true, true, SignalType::Traces) => TRACES_ALL,
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn apply_transform_with_stats(
+        &self,
+        records: &mut OtapArrowRecords,
+        signal: SignalType,
+    ) -> Result<(u64, u64), EngineError> {
+        let mut deleted_total: u64 = 0;
+        let mut renamed_total: u64 = 0;
+
+        // Only apply if we have transforms to apply
+        if !self.is_noop() {
+            let payloads = self.attrs_payloads(signal);
+            for &payload_ty in payloads {
+                if let Some(rb) = records.get(payload_ty) {
+                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
+                    deleted_total += stats.deleted_entries;
+                    renamed_total += stats.renamed_entries;
+                    records.set(payload_ty, rb);
+                }
+            }
+        }
+
+        Ok((deleted_total, renamed_total))
     }
 }
 
@@ -183,52 +283,86 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(_) => Ok(()),
+            Message::Control(control_msg) => match control_msg {
+                otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    if let Some(metrics) = self.metrics.as_mut() {
+                        let _ = metrics_reporter.report(metrics);
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
+            },
             Message::PData(pdata) => {
+                if let Some(m) = self.metrics.as_mut() {
+                    m.msgs_consumed.inc();
+                }
+
                 // Fast path: no actions to apply
-                if self.transform.rename.is_none() && self.transform.delete.is_none() {
-                    return effect_handler
+                if self.is_noop() {
+                    let res = effect_handler
                         .send_message(pdata)
                         .await
                         .map_err(|e| e.into());
+                    if res.is_ok() {
+                        if let Some(m) = self.metrics.as_mut() {
+                            m.msgs_forwarded.inc();
+                        }
+                    }
+                    return res;
                 }
 
                 let signal = pdata.signal_type();
-                let mut records: OtapArrowRecords = pdata.try_into()?;
+                let (context, payload) = pdata.into_parts();
 
-                // Apply transform across selected domains
-                apply_transform(&mut records, signal, &self.transform, &self.domains)?;
+                let mut records: OtapArrowRecords = payload.try_into()?;
 
-                effect_handler
-                    .send_message(records.into())
+                // Update domain counters (count once per message when domains are enabled)
+                if let Some(m) = self.metrics.as_mut() {
+                    if self.has_resource_domain {
+                        m.domains_resource.inc();
+                    }
+                    if self.has_scope_domain {
+                        m.domains_scope.inc();
+                    }
+                    if self.has_signal_domain {
+                        m.domains_signal.inc();
+                    }
+                }
+                // Apply transform across selected domains and collect exact stats
+                match self.apply_transform_with_stats(&mut records, signal) {
+                    Ok((deleted_total, renamed_total)) => {
+                        if let Some(m) = self.metrics.as_mut() {
+                            if deleted_total > 0 {
+                                m.deleted_entries.add(deleted_total);
+                            }
+                            if renamed_total > 0 {
+                                m.renamed_entries.add(renamed_total);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(m) = self.metrics.as_mut() {
+                            m.transform_failed.inc();
+                        }
+                        return Err(e);
+                    }
+                }
+
+                let res = effect_handler
+                    .send_message(OtapPdata::new(context, records.into()))
                     .await
-                    .map_err(|e| e.into())
+                    .map_err(|e| e.into());
+                if res.is_ok() {
+                    if let Some(m) = self.metrics.as_mut() {
+                        m.msgs_forwarded.inc();
+                    }
+                }
+                res
             }
         }
     }
-}
-
-#[allow(clippy::result_large_err)]
-fn apply_transform(
-    records: &mut OtapArrowRecords,
-    signal: SignalType,
-    transform: &AttributesTransform,
-    domains: &HashSet<ApplyDomain>,
-) -> Result<(), EngineError> {
-    let payloads = attrs_payloads(signal, domains);
-
-    // Only apply if we have transforms to apply
-    if transform.rename.is_some() || transform.delete.is_some() {
-        for payload_ty in payloads {
-            if let Some(rb) = records.get(payload_ty).cloned() {
-                let rb = transform_attributes(&rb, transform)
-                    .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                records.set(payload_ty, rb);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -269,39 +403,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
     set
 }
 
-fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<ArrowPayloadType> {
-    use ArrowPayloadType as A;
-    let mut out: Vec<ArrowPayloadType> = Vec::new();
-    // Domains are unioned
-    if domains.contains(&ApplyDomain::Resource) {
-        out.push(A::ResourceAttrs);
-    }
-    if domains.contains(&ApplyDomain::Scope) {
-        out.push(A::ScopeAttrs);
-    }
-    if domains.contains(&ApplyDomain::Signal) {
-        match signal {
-            SignalType::Logs => {
-                out.push(A::LogAttrs);
-            }
-            SignalType::Metrics => {
-                out.push(A::MetricAttrs);
-                out.push(A::NumberDpAttrs);
-                out.push(A::HistogramDpAttrs);
-                out.push(A::SummaryDpAttrs);
-                out.push(A::NumberDpExemplarAttrs);
-                out.push(A::HistogramDpExemplarAttrs);
-            }
-            SignalType::Traces => {
-                out.push(A::SpanAttrs);
-                out.push(A::SpanEventAttrs);
-                out.push(A::SpanLinkAttrs);
-            }
-        }
-    }
-    out
-}
-
 fn engine_err(msg: &str) -> EngineError {
     EngineError::PdataConversionError {
         error: msg.to_string(),
@@ -313,13 +414,15 @@ fn engine_err(msg: &str) -> EngineError {
 /// Accepts configuration in OpenTelemetry Collector attributes processor format.
 /// See the module documentation for configuration examples and supported operations.
 pub fn create_attributes_processor(
-    _pipeline_ctx: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    let mut proc = AttributesProcessor::from_config(&node_config.config)?;
+    proc.metrics = Some(pipeline_ctx.register_metrics::<AttributesProcessorMetrics>());
     Ok(ProcessorWrapper::local(
-        AttributesProcessor::from_config(&node_config.config)?,
+        proc,
         node,
         node_config,
         processor_config,
@@ -339,6 +442,90 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
             create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
     };
+
+// Pre-computed arrays for all domain combinations
+mod payload_sets {
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
+
+    pub(super) const EMPTY: &[A] = &[];
+
+    // Signal only
+    pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
+    pub(super) const METRICS_SIGNAL: &[A] = &[
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
+
+    // Resource only
+    pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
+
+    // Scope only
+    pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
+
+    // Resource + Signal
+    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
+    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
+        A::ResourceAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Scope + Signal
+    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+
+    // Resource + Scope
+    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
+
+    // All three: Resource + Scope + Signal
+    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
+    pub(super) const METRICS_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::MetricAttrs,
+        A::NumberDpAttrs,
+        A::HistogramDpAttrs,
+        A::SummaryDpAttrs,
+        A::NumberDpExemplarAttrs,
+        A::HistogramDpExemplarAttrs,
+    ];
+    pub(super) const TRACES_ALL: &[A] = &[
+        A::ResourceAttrs,
+        A::ScopeAttrs,
+        A::SpanAttrs,
+        A::SpanEventAttrs,
+        A::SpanLinkAttrs,
+    ];
+}
 
 #[cfg(test)]
 mod tests {
@@ -396,10 +583,10 @@ mod tests {
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
         // default apply_to should include Signal
-        assert!(parsed.domains.contains(&ApplyDomain::Signal));
+        assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
-        assert!(!parsed.domains.contains(&ApplyDomain::Resource));
-        assert!(!parsed.domains.contains(&ApplyDomain::Scope));
+        assert!(!parsed.has_resource_domain);
+        assert!(!parsed.has_scope_domain);
     }
 
     #[test]
@@ -440,14 +627,15 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 // capture output
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
 
                 // Convert output to OTLP bytes for easy assertions
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
@@ -520,13 +708,13 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
 
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
@@ -603,13 +791,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -677,13 +866,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -755,13 +945,14 @@ mod tests {
             .run_test(|mut ctx| async move {
                 let mut bytes = Vec::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output");
+                let first = out.into_iter().next().expect("one output").payload();
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
@@ -793,5 +984,145 @@ mod tests {
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
             })
             .validate(|_| async move {});
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use prost::Message as _;
+    use serde_json::json;
+
+    #[test]
+    fn test_metrics_collect_telemetry_reports_counters() {
+        use std::sync::Arc;
+
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let registry = rt.metrics_registry();
+        let metrics_reporter = rt.metrics_reporter();
+
+        // 2) Pipeline context sharing the same registry handle
+        let controller = ControllerContext::new(rt.metrics_registry().clone());
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+
+        // 3) Build processor with simple rename+delete (applies to signal domain by default)
+        let cfg = json!({
+            "actions": [
+                {"action": "rename", "source_key": "a", "destination_key": "b"},
+                {"action": "delete", "key": "x"}
+            ]
+        });
+        let mut node_cfg = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_cfg.config = cfg;
+        let proc_cfg = ProcessorConfig::new("attr_proc");
+        let node = test_node(proc_cfg.name.clone());
+        let proc = create_attributes_processor(pipeline_ctx, node, Arc::new(node_cfg), &proc_cfg)
+            .expect("create processor");
+
+        // 4) Build a minimal OTLP logs request that has a signal-level attribute 'a'
+        let input_bytes = {
+            use otel_arrow_rust::proto::opentelemetry::{
+                collector::logs::v1::ExportLogsServiceRequest,
+                common::v1::{
+                    AnyValue, InstrumentationScope, KeyValue, any_value::Value as AnyVal,
+                },
+                logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+                resource::v1::Resource,
+            };
+
+            let req = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            attributes: vec![],
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            time_unix_nano: 1,
+                            attributes: vec![
+                                KeyValue {
+                                    key: "a".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(AnyVal::StringValue("v".into())),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "x".to_string(), // ensure at least one deletion occurs
+                                    value: Some(AnyValue {
+                                        value: Some(AnyVal::StringValue("to_delete".into())),
+                                    }),
+                                },
+                            ],
+                            severity_number: SeverityNumber::Info as i32,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let mut bytes = Vec::new();
+            req.encode(&mut bytes).expect("encode");
+            bytes
+        };
+
+        // 5) Drive processor with TestRuntime; start collector inside and then request a telemetry snapshot
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                // Process one message
+                let pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(input_bytes).into());
+                ctx.process(Message::PData(pdata)).await.expect("pdata");
+
+                // Trigger telemetry snapshot
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect");
+            })
+            .validate(move |_| async move {
+                // Allow the collector to pull from the channel
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                // Inspect current metrics; fields with non-zero values should be present
+                let mut found_consumed = false;
+                let mut found_forwarded = false;
+                let mut found_renamed_entries = false;
+                let mut found_deleted_entries = false;
+                let mut found_domain_signal = false;
+
+                registry.visit_current_metrics(|desc, _attrs, iter| {
+                    if desc.name == "attributes.processor.metrics" {
+                        for (field, v) in iter {
+                            match (field.name, v) {
+                                ("msgs.consumed", x) if x >= 1 => found_consumed = true,
+                                ("msgs.forwarded", x) if x >= 1 => found_forwarded = true,
+                                ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
+                                ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
+                                ("domains.signal", x) if x >= 1 => found_domain_signal = true,
+                                _ => {}
+                            }
+                        }
+                    }
+                });
+
+                assert!(found_consumed, "msgs.consumed should be >= 1");
+                assert!(found_forwarded, "msgs.forwarded should be >= 1");
+                assert!(found_renamed_entries, "renamed.entries should be >= 1");
+                assert!(found_deleted_entries, "deleted.entries should be >= 1");
+                assert!(found_domain_signal, "domains.signal should be >= 1");
+            });
     }
 }

@@ -84,8 +84,8 @@ still fundamentally row-oriented.
 
 We are building an end-to-end OpenTelemetry Protocol with Apache Arrow
 (OTAP) pipeline and we believe this form of pipeline will have substantially
-lower overhead than a row-oriented architecture.  [See our Phase 2 design
-document](./docs/phase2-design.md).
+lower overhead than a row-oriented architecture.  [See our Phase 2 OTAP
+Dataflow engine documentation](./rust/otap-dataflow/README.md).
 
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:
@@ -239,6 +239,7 @@ you're more than welcome to participate!
 
 ### Maintainers
 
+- [Albert Lockett](https://github.com/albertlockett), F5
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
@@ -248,8 +249,8 @@ repository](https://github.com/open-telemetry/community/blob/main/community-memb
 
 ### Approvers
 
-- [Albert Lockett](https://github.com/albertlockett), F5
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#approver).

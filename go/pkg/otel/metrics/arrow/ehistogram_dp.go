@@ -52,6 +52,7 @@ var (
 		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 		{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		{Name: constants.ExpHistogramZeroThreshold, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	}, nil)
 )
 
@@ -76,6 +77,7 @@ type (
 		fb    *builder.Uint32Builder             // flags builder
 		hmib  *builder.Float64Builder            // histogram_min builder
 		hmab  *builder.Float64Builder            // histogram_max builder
+		ztb   *builder.Float64Builder            // zero_threshold builder
 
 		dataPointAccumulator *EHDPAccumulator
 		attrsAccu            *carrow.Attributes32Accumulator
@@ -135,6 +137,7 @@ func (b *EHistogramDataPointBuilder) init() {
 	b.fb = b.builder.Uint32Builder(constants.Flags)
 	b.hmib = b.builder.Float64Builder(constants.HistogramMin)
 	b.hmab = b.builder.Float64Builder(constants.HistogramMax)
+	b.ztb = b.builder.Float64Builder(constants.ExpHistogramZeroThreshold)
 }
 
 func (b *EHistogramDataPointBuilder) SetAttributesAccumulator(accu *carrow.Attributes32Accumulator) {
@@ -239,6 +242,7 @@ func (b *EHistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accu
 		b.AppendCountSum(*ehdp)
 		b.sb.Append(ehdp.Scale())
 		b.zcb.Append(ehdp.ZeroCount())
+		b.ztb.Append(ehdp.ZeroThreshold())
 		if err := b.pb.Append(ehdp.Positive()); err != nil {
 			return nil, werror.Wrap(err)
 		}

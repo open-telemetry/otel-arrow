@@ -30,6 +30,7 @@ type LogRecordIDs struct {
 	SpanID               int
 	SeverityNumber       int
 	SeverityText         int
+	EventName            int
 
 	Body       int
 	BodyType   int
@@ -153,6 +154,11 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
 
+		eventName, err := arrowutils.StringFromRecord(record, logRecordIDs.EventName, row)
+		if err != nil {
+			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
+		}
+
 		// Read the body value based on the body type
 		bodyStruct, err := arrowutils.StructFromRecord(record, logRecordIDs.Body, row)
 		if err != nil {
@@ -251,6 +257,7 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		logRecord.SetSeverityText(severityText)
 		logRecord.SetDroppedAttributesCount(droppedAttributesCount)
 		logRecord.SetFlags(plog.LogRecordFlags(flags))
+		logRecord.SetEventName(eventName)
 	}
 
 	return logs, nil
@@ -274,6 +281,7 @@ func SchemaToIDs(schema *arrow.Schema) (*LogRecordIDs, error) {
 	spanID, _ := arrowutils.FieldIDFromSchema(schema, constants.SpanId)
 	severityNumber, _ := arrowutils.FieldIDFromSchema(schema, constants.SeverityNumber)
 	severityText, _ := arrowutils.FieldIDFromSchema(schema, constants.SeverityText)
+	eventName, _ := arrowutils.FieldIDFromSchema(schema, constants.EventName)
 
 	body, bodyDT, err := arrowutils.StructFieldIDFromSchema(schema, constants.Body)
 	if err != nil {
@@ -322,6 +330,7 @@ func SchemaToIDs(schema *arrow.Schema) (*LogRecordIDs, error) {
 		SpanID:               spanID,
 		SeverityNumber:       severityNumber,
 		SeverityText:         severityText,
+		EventName:            eventName,
 
 		Body:       body,
 		BodyType:   bType,

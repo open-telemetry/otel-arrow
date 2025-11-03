@@ -9,10 +9,10 @@
 
 use crate::config::ProcessorConfig;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::error::Error;
+use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{MessageChannel, Receiver, Sender};
+use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -20,8 +20,10 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -150,7 +152,10 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Prepare the processor runtime components without starting the processing loop.
     /// This allows external control over the message processing loop.
-    pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error> {
+    pub async fn prepare_runtime(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -165,12 +170,18 @@ impl<PData> ProcessorWrapper<PData> {
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
+                        kind: ProcessorErrorKind::Configuration,
                         error: "The pdata receiver must be defined at this stage".to_owned(),
+                        source_detail: String::new(),
                     })?,
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    local::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = local::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -190,12 +201,18 @@ impl<PData> ProcessorWrapper<PData> {
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
+                        kind: ProcessorErrorKind::Configuration,
                         error: "The pdata receiver must be defined at this stage".to_owned(),
+                        source_detail: String::new(),
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler =
-                    shared::EffectHandler::new(node_id, pdata_senders, default_port);
+                let effect_handler = shared::EffectHandler::new(
+                    node_id,
+                    pdata_senders,
+                    default_port,
+                    metrics_reporter,
+                );
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -206,8 +223,12 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
-        let runtime = self.prepare_runtime().await?;
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<(), Error> {
+        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -218,9 +239,24 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+
+                // Start periodic telemetry collection
+                let telemetry_cancel_handle = effect_handler
+                    .start_periodic_telemetry(Duration::from_secs(1))
+                    .await?;
+
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Cancel periodic collection
+                _ = telemetry_cancel_handle.cancel().await;
+                // Collect final metrics before exiting
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -230,9 +266,24 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+
+                // Start periodic telemetry collection
+                let telemetry_cancel_handle = effect_handler
+                    .start_periodic_telemetry(Duration::from_secs(1))
+                    .await?;
+
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
+                // Cancel periodic collection
+                _ = telemetry_cancel_handle.cancel().await;
+                // Collect final metrics before exiting
+                processor
+                    .process(
+                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        &mut effect_handler,
+                    )
+                    .await?
             }
         }
         Ok(())
@@ -323,11 +374,15 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a local sender for PData".to_owned(),
+                source_detail: String::new(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a shared sender for PData".to_owned(),
+                source_detail: String::new(),
             }),
         }
     }
@@ -350,7 +405,9 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
             }
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
                 error: "Expected a shared receiver for PData".to_owned(),
+                source_detail: String::new(),
             }),
         }
     }
@@ -369,9 +426,10 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
+    use std::ops::Add;
     use std::pin::Pin;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A generic test processor that counts message events.
     /// Works with any type of processor !Send or Send.
@@ -475,7 +533,7 @@ mod tests {
 
                 // Process a Shutdown event.
                 ctx.process(Message::shutdown_ctrl_msg(
-                    Duration::from_millis(200),
+                    Instant::now().add(Duration::from_millis(200)),
                     "no reason",
                 ))
                 .await

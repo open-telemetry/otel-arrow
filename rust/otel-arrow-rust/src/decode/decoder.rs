@@ -4,9 +4,10 @@
 use crate::decode::record_message::RecordMessage;
 use crate::error;
 use crate::otap::{OtapArrowRecords, from_record_messages};
-use crate::otlp::logs::logs_from;
-use crate::otlp::metrics::metrics_from;
-use crate::otlp::traces::traces_from;
+use crate::otlp::logs::LogsProtoBytesEncoder;
+use crate::otlp::metrics::MetricsProtoBytesEncoder;
+use crate::otlp::traces::TracesProtoBytesEncoder;
+use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -14,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use prost::Message;
 use snafu::{ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -47,6 +49,10 @@ impl StreamConsumer {
 #[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
+    logs_proto_encoder: LogsProtoBytesEncoder,
+    metrics_proto_encoder: MetricsProtoBytesEncoder,
+    traces_proto_encoder: TracesProtoBytesEncoder,
+    proto_buffer: ProtoBuffer,
 }
 
 impl Consumer {
@@ -113,8 +119,18 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages));
-                metrics_from(otap_batch)
+                let mut otap_batch =
+                    OtapArrowRecords::Metrics(from_record_messages(record_messages));
+                self.proto_buffer.clear();
+                self.metrics_proto_encoder
+                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+                ExportMetricsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("error decoding proto serialization: {e:?}"),
+                    }
+                    .build()
+                })
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
@@ -133,8 +149,17 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
-                logs_from(otap_batch)
+                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
+                self.proto_buffer.clear();
+                self.logs_proto_encoder
+                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+                ExportLogsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("error decoding proto serialization: {e:?}"),
+                    }
+                    .build()
+                })
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
@@ -151,8 +176,18 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Spans => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages));
-                traces_from(otap_batch)
+                let mut otap_batch =
+                    OtapArrowRecords::Traces(from_record_messages(record_messages));
+                self.proto_buffer.clear();
+                self.traces_proto_encoder
+                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+                ExportTraceServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+                    error::UnexpectedRecordBatchStateSnafu {
+                        reason: format!("error decoding proto serialization {e:?}"),
+                    }
+                    .build()
+                })
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

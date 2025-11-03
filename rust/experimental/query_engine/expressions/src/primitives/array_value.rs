@@ -10,7 +10,7 @@ pub trait ArrayValue: Debug {
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue)>;
+    fn get(&self, index: usize) -> Option<&dyn AsValue>;
 
     // Note: Used to update the RefCell borrow when accessing sub-elements of
     // the source or variables which use interior mutability. In arrays that
@@ -72,6 +72,15 @@ impl ArrayRange {
         let start = self.start_range_inclusize.unwrap_or(0);
         let end = self.end_range_exclusive.unwrap_or(value.len());
         &value[start..end]
+    }
+}
+
+impl From<usize> for ArrayRange {
+    fn from(index: usize) -> Self {
+        Self {
+            start_range_inclusize: Some(index),
+            end_range_exclusive: Some(index + 1),
+        }
     }
 }
 

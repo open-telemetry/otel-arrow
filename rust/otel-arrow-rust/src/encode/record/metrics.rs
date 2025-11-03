@@ -17,10 +17,11 @@ use arrow::{
 use crate::{
     encode::record::{
         array::{
-            ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, CheckedArrayAppendSlice,
-            FixedSizeBinaryArrayBuilder, Float64ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder,
-            StringArrayBuilder, TimestampNanosecondArrayBuilder, UInt16ArrayBuilder,
-            UInt32ArrayBuilder, UInt64ArrayBuilder, dictionary::DictionaryOptions,
+            ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+            CheckedArrayAppendSlice, FixedSizeBinaryArrayBuilder, Float64ArrayBuilder,
+            Int32ArrayBuilder, Int64ArrayBuilder, TimestampNanosecondArrayBuilder,
+            UInt16ArrayBuilder, UInt32ArrayBuilder, UInt64ArrayBuilder, binary_to_utf8_array,
+            dictionary::DictionaryOptions,
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
@@ -42,11 +43,11 @@ pub struct MetricsRecordBatchBuilder {
     /// the builder for the scope struct for this metric record batch
     pub scope: ScopeBuilder,
 
-    scope_schema_url: StringArrayBuilder,
+    scope_schema_url: BinaryArrayBuilder,
     metric_type: UInt8ArrayBuilder,
-    name: StringArrayBuilder,
-    description: StringArrayBuilder,
-    unit: StringArrayBuilder,
+    name: BinaryArrayBuilder,
+    description: BinaryArrayBuilder,
+    unit: BinaryArrayBuilder,
     aggregation_temporality: Int32ArrayBuilder,
     is_monotonic: AdaptiveBooleanArrayBuilder,
 }
@@ -63,7 +64,7 @@ impl MetricsRecordBatchBuilder {
             }),
             resource: ResourceBuilder::new(),
             scope: ScopeBuilder::new(),
-            scope_schema_url: StringArrayBuilder::new(ArrayOptions {
+            scope_schema_url: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -73,17 +74,17 @@ impl MetricsRecordBatchBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            name: StringArrayBuilder::new(ArrayOptions {
+            name: BinaryArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
             }),
-            description: StringArrayBuilder::new(ArrayOptions {
+            description: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
             }),
-            unit: StringArrayBuilder::new(ArrayOptions {
+            unit: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict8()),
                 ..Default::default()
@@ -105,13 +106,13 @@ impl MetricsRecordBatchBuilder {
     }
 
     /// Append a value to the `scope_schema_url` array.
-    pub fn append_scope_schema_url(&mut self, val: &str) {
-        self.scope_schema_url.append_str(val);
+    pub fn append_scope_schema_url(&mut self, val: &[u8]) {
+        self.scope_schema_url.append_slice(val);
     }
 
     /// Append a value to the `scope_schema_url` array `count` times.
-    pub fn append_scope_schema_url_n(&mut self, val: &str, count: usize) {
-        self.scope_schema_url.append_str_n(val, count);
+    pub fn append_scope_schema_url_n(&mut self, val: &[u8], count: usize) {
+        self.scope_schema_url.append_slice_n(val, count);
     }
 
     /// Append a value to the `metric_type` array.
@@ -120,18 +121,18 @@ impl MetricsRecordBatchBuilder {
     }
 
     /// Append a value to the `name` array.
-    pub fn append_name(&mut self, val: &str) {
-        self.name.append_str(val);
+    pub fn append_name(&mut self, val: &[u8]) {
+        self.name.append_slice(val);
     }
 
     /// Append a value to the `description` array.
-    pub fn append_description(&mut self, val: &str) {
-        self.description.append_str(val);
+    pub fn append_description(&mut self, val: &[u8]) {
+        self.description.append_slice(val);
     }
 
     /// Append a value to the `unit` array.
-    pub fn append_unit(&mut self, val: &str) {
-        self.unit.append_str(val);
+    pub fn append_unit(&mut self, val: &[u8]) {
+        self.unit.append_slice(val);
     }
 
     /// Append a value to the `aggregation_temporality` array.
@@ -178,6 +179,7 @@ impl MetricsRecordBatchBuilder {
         }
 
         if let Some(array) = self.scope_schema_url.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::SCHEMA_URL,
                 array.data_type().clone(),
@@ -202,10 +204,12 @@ impl MetricsRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.name.finish().expect("finish returns `Some(array)`");
+        let array = binary_to_utf8_array(&array)?;
         fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
         columns.push(array);
 
         if let Some(array) = self.description.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(
                 consts::DESCRIPTION,
                 array.data_type().clone(),
@@ -215,6 +219,7 @@ impl MetricsRecordBatchBuilder {
         }
 
         if let Some(array) = self.unit.finish() {
+            let array = binary_to_utf8_array(&array)?;
             fields.push(Field::new(consts::UNIT, array.data_type().clone(), false));
             columns.push(array);
         }
@@ -1099,6 +1104,7 @@ pub struct ExponentialHistogramDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
     max: Float64ArrayBuilder,
+    zero_threshold: Float64ArrayBuilder,
 }
 
 impl ExponentialHistogramDataPointsRecordBatchBuilder {
@@ -1159,6 +1165,11 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
                 ..Default::default()
             }),
             max: Float64ArrayBuilder::new(ArrayOptions {
+                optional: true,
+                dictionary_options: None,
+                ..Default::default()
+            }),
+            zero_threshold: Float64ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
                 ..Default::default()
@@ -1228,6 +1239,11 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             Some(val) => self.max.append_value(&val),
             None => self.max.append_null(),
         }
+    }
+
+    /// Append a value to the `zero_threshold` array.
+    pub fn append_zero_threshold(&mut self, val: f64) {
+        self.zero_threshold.append_value(&val);
     }
 
     /// Construct an OTAP ExponentialHistogramDataPoints RecordBatch from the builders.
@@ -1342,6 +1358,15 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         if let Some(array) = self.max.finish() {
             fields.push(Field::new(
                 consts::HISTOGRAM_MAX,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if let Some(array) = self.zero_threshold.finish() {
+            fields.push(Field::new(
+                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
                 array.data_type().clone(),
                 true,
             ));

@@ -5,6 +5,11 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextScalarExpression {
+    /// Returns a string with the first captured value of a capture group index
+    /// or a named capture group using the provided regex and input string.
+    /// Returns null if nothing was captured or there was invalid input.
+    Capture(CaptureTextScalarExpression),
+
     /// Returns a string combining all the provided strings in a sequence.
     Concat(CombineScalarExpression),
 
@@ -23,6 +28,7 @@ impl TextScalarExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
+            TextScalarExpression::Capture(c) => c.try_resolve_value_type(scope),
             TextScalarExpression::Concat(c) => c.try_resolve_string_value_type(scope),
             TextScalarExpression::Join(j) => j.try_resolve_value_type(scope),
             TextScalarExpression::Replace(r) => r.try_resolve_value_type(scope),
@@ -32,8 +38,9 @@ impl TextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
+            TextScalarExpression::Capture(c) => c.try_resolve_static(scope),
             TextScalarExpression::Concat(c) => c.try_resolve_string_static(scope),
             TextScalarExpression::Join(j) => j.try_resolve_static(scope),
             TextScalarExpression::Replace(r) => r.try_resolve_static(scope),
@@ -44,6 +51,7 @@ impl TextScalarExpression {
 impl Expression for TextScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
+            TextScalarExpression::Capture(c) => c.get_query_location(),
             TextScalarExpression::Concat(c) => c.get_query_location(),
             TextScalarExpression::Join(j) => j.get_query_location(),
             TextScalarExpression::Replace(u) => u.get_query_location(),
@@ -52,9 +60,19 @@ impl Expression for TextScalarExpression {
 
     fn get_name(&self) -> &'static str {
         match self {
+            TextScalarExpression::Capture(_) => "TextScalar(Capture)",
             TextScalarExpression::Concat(_) => "TextScalar(Concat)",
             TextScalarExpression::Join(_) => "TextScalar(Join)",
             TextScalarExpression::Replace(_) => "TextScalar(Replace)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            TextScalarExpression::Capture(c) => c.fmt_with_indent(f, indent),
+            TextScalarExpression::Concat(c) => c.fmt_with_indent(f, indent),
+            TextScalarExpression::Join(j) => j.fmt_with_indent(f, indent),
+            TextScalarExpression::Replace(r) => r.fmt_with_indent(f, indent),
         }
     }
 }
@@ -126,7 +144,7 @@ impl ReplaceTextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         let haystack_static = self.haystack_expression.try_resolve_static(scope)?;
         let needle_static = self.needle_expression.try_resolve_static(scope)?;
         let replacement_static = self.replacement_expression.try_resolve_static(scope)?;
@@ -170,6 +188,21 @@ impl Expression for ReplaceTextScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ReplaceTextScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Replace")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack_expression
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Needle(Scalar): ")?;
+        self.needle_expression
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        write!(f, "{indent}├── Replacement(Scalar): ")?;
+        self.replacement_expression
+            .fmt_with_indent(f, format!("{indent}│                        ").as_str())?;
+        writeln!(f, "{indent}└── CaseInsensitive: {}", self.case_insensitive)?;
+        Ok(())
     }
 }
 
@@ -231,7 +264,9 @@ impl JoinTextScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
+        let values = self.values_expression.try_resolve_static(scope)?;
+
         let separator = match self.separator_expression.try_resolve_static(scope)? {
             None => return Ok(None),
             Some(s) => {
@@ -244,35 +279,8 @@ impl JoinTextScalarExpression {
             }
         };
 
-        let (mut values, len) = match self.values_expression.try_resolve_static(scope)? {
-            Some(ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Array(v))) => {
-                let value_expressions = v.get_values();
-
-                let mut len = 0;
-                let mut values = Vec::with_capacity(value_expressions.len());
-
-                for expression in value_expressions {
-                    let s = StringScalarExpression::new(
-                        expression.get_query_location().clone(),
-                        expression.to_value().to_string().as_str(),
-                    );
-
-                    len += s.get_value().len();
-
-                    if !values.is_empty() {
-                        len += separator.get_value().len();
-                        values.push(separator.clone());
-                    }
-
-                    values.push(s);
-                }
-
-                (values, len)
-            }
-            Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v)))
-            | Some(ResolvedStaticScalarExpression::FoldEligibleReference(
-                StaticScalarExpression::Array(v),
-            )) => {
+        let (mut values, len) = match values.as_ref().map(|v| v.as_ref()) {
+            Some(StaticScalarExpression::Array(v)) => {
                 let value_expressions = v.get_values();
 
                 let mut len = 0;
@@ -343,10 +351,136 @@ impl Expression for JoinTextScalarExpression {
     fn get_name(&self) -> &'static str {
         "JoinTextScalarExpression"
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Join")?;
+        write!(f, "{indent}├── Separator(Scalar): ")?;
+        self.separator_expression
+            .fmt_with_indent(f, format!("{indent}│                      ").as_str())?;
+        write!(f, "{indent}└── Values(Scalar): ")?;
+        self.values_expression
+            .fmt_with_indent(f, format!("{indent}                    ").as_str())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureTextScalarExpression {
+    query_location: QueryLocation,
+    haystack: Box<ScalarExpression>,
+    pattern: Box<ScalarExpression>,
+    capture_group: Box<ScalarExpression>,
+}
+
+impl CaptureTextScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        haystack: ScalarExpression,
+        pattern: ScalarExpression,
+        capture_group: ScalarExpression,
+    ) -> CaptureTextScalarExpression {
+        Self {
+            query_location,
+            haystack: haystack.into(),
+            pattern: pattern.into(),
+            capture_group: capture_group.into(),
+        }
+    }
+
+    pub fn get_haystack(&self) -> &ScalarExpression {
+        &self.haystack
+    }
+
+    pub fn get_pattern(&self) -> &ScalarExpression {
+        &self.pattern
+    }
+
+    pub fn get_capture_group(&self) -> &ScalarExpression {
+        &self.capture_group
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(v) = self.try_resolve_static(scope)? {
+            Ok(Some(v.get_value_type()))
+        } else {
+            let haystack = self.haystack.try_resolve_value_type(scope)?;
+
+            if haystack.is_some() && !matches!(haystack, Some(ValueType::String)) {
+                return Ok(Some(ValueType::Null));
+            }
+
+            // Note: Impossible to know if a String or Null will be returned for the
+            // capture so we return ambiguous result.
+
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        let haystack = self.haystack.try_resolve_static(scope)?;
+        let capture_group = self.capture_group.try_resolve_static(scope)?;
+        let pattern =
+            ResolvedStaticScalarExpression::try_resolve_static_regex(&mut self.pattern, scope)?;
+
+        match (
+            haystack.as_ref().map(|v| v.as_ref()),
+            pattern,
+            capture_group,
+        ) {
+            (Some(StaticScalarExpression::String(s)), Some(p), Some(c)) => {
+                match Value::capture(&self.query_location, s, &Value::Regex(p), &c.to_value())? {
+                    Some(r) => Ok(Some(ResolvedStaticScalarExpression::Computed(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            self.query_location.clone(),
+                            &s.get_value()[r],
+                        )),
+                    ))),
+                    None => Ok(Some(ResolvedStaticScalarExpression::Computed(
+                        StaticScalarExpression::Null(NullScalarExpression::new(
+                            self.query_location.clone(),
+                        )),
+                    ))),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Expression for CaptureTextScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CaptureTextScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Capture")?;
+        write!(f, "{indent}├── Haystack(Scalar): ")?;
+        self.haystack
+            .fmt_with_indent(f, format!("{indent}│                     ").as_str())?;
+        write!(f, "{indent}├── Pattern(Scalar): ")?;
+        self.pattern
+            .fmt_with_indent(f, format!("{indent}│                    ").as_str())?;
+        write!(f, "{indent}└── CaptureGroup(Scalar): ")?;
+        self.capture_group
+            .fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use regex::Regex;
+
     use super::*;
 
     #[test]
@@ -600,27 +734,42 @@ mod tests {
 
     #[test]
     pub fn test_join_text_scalar_expression_try_resolve() {
-        let run_test = |separator: ScalarExpression,
-                        values: ScalarExpression,
-                        expected_type: Option<ValueType>,
-                        expected_value: Option<&'static str>| {
-            let mut e = JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values);
+        let run_test =
+            |separator: ScalarExpression,
+             values: ScalarExpression,
+             expected_type: Option<ValueType>,
+             expected_value: Option<&'static str>,
+             expected_state: Option<(ScalarExpression, ScalarExpression)>| {
+                let mut e =
+                    JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values);
 
-            let pipeline: PipelineExpression = Default::default();
+                let pipeline = PipelineExpressionBuilder::new("")
+                    .with_constants(vec![StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )])
+                    .build()
+                    .unwrap();
 
-            let actual_type = e
-                .try_resolve_value_type(&pipeline.get_resolution_scope())
-                .unwrap();
-            assert_eq!(expected_type, actual_type);
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
+                assert_eq!(expected_type, actual_type);
 
-            let actual_value = e
-                .try_resolve_static(&pipeline.get_resolution_scope())
-                .unwrap();
-            assert_eq!(
-                expected_value.map(|v| v.into()),
-                actual_value.as_ref().map(|v| v.to_value().to_string())
-            );
-        };
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
+                assert_eq!(
+                    expected_value.map(|v| v.into()),
+                    actual_value.as_ref().map(|v| v.to_value().to_string())
+                );
+
+                if let Some((s, v)) = expected_state {
+                    assert_eq!(
+                        JoinTextScalarExpression::new(QueryLocation::new_fake(), s, v),
+                        e
+                    );
+                }
+            };
 
         run_test(
             ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
@@ -633,6 +782,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some(""),
+            None,
         );
 
         run_test(
@@ -655,6 +805,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some("hello|world"),
+            None,
         );
 
         run_test(
@@ -681,6 +832,7 @@ mod tests {
             ))),
             Some(ValueType::String),
             Some("hello, world, 18"),
+            None,
         );
 
         run_test(
@@ -693,6 +845,7 @@ mod tests {
             )),
             Some(ValueType::String),
             Some(""),
+            None,
         );
 
         run_test(
@@ -715,6 +868,7 @@ mod tests {
             )),
             Some(ValueType::String),
             Some("hello|18"),
+            None,
         );
 
         run_test(
@@ -737,6 +891,7 @@ mod tests {
             )),
             Some(ValueType::String),
             None,
+            None,
         );
 
         run_test(
@@ -751,6 +906,216 @@ mod tests {
             )),
             None,
             None,
+            None,
+        );
+
+        run_test(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new(),
+            )),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![ScalarExpression::Constant(
+                        ReferenceConstantScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueType::String,
+                            0,
+                            ValueAccessor::new(),
+                        ),
+                    )],
+                ),
+            )),
+            Some(ValueType::String),
+            None,
+            Some((
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::Constant(
+                            CopyConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                0,
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
+                            ),
+                        )],
+                    ),
+                )),
+            )),
+        );
+
+        run_test(
+            ScalarExpression::Constant(ReferenceConstantScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueType::String,
+                0,
+                ValueAccessor::new(),
+            )),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    ))],
+                ),
+            )),
+            Some(ValueType::String),
+            None,
+            Some((
+                ScalarExpression::Static(StaticScalarExpression::Constant(
+                    CopyConstantScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    ),
+                )),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        ))],
+                    ),
+                )),
+            )),
+        );
+    }
+
+    #[test]
+    pub fn test_capture_text_scalar_expression_try_resolve() {
+        let run_test = |haystack: ScalarExpression,
+                        pattern: ScalarExpression,
+                        capture_group: ScalarExpression,
+                        expected_type: Option<ValueType>,
+                        expected_value: Option<&'static str>,
+                        expected_state: Option<(
+            ScalarExpression,
+            ScalarExpression,
+            ScalarExpression,
+        )>| {
+            let mut e = CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                haystack,
+                pattern,
+                capture_group,
+            );
+
+            let pipeline = PipelineExpressionBuilder::new("")
+                .with_constants(vec![StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                )])
+                .build()
+                .unwrap();
+
+            let actual_type = e
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(expected_type, actual_type);
+
+            let actual_value = e
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(
+                expected_value.map(|v| v.into()),
+                actual_value.as_ref().map(|v| v.to_value().to_string())
+            );
+
+            if let Some((h, p, c)) = expected_state {
+                assert_eq!(
+                    CaptureTextScalarExpression::new(QueryLocation::new_fake(), h, p, c),
+                    e
+                );
+            }
+        };
+
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "(\\w*) world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
+            Some(ValueType::String),
+            Some("hello"),
+            None,
+        );
+
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "(?<name>\\w*) world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "name",
+            ))),
+            Some(ValueType::String),
+            Some("hello"),
+            None,
+        );
+
+        // Note: Test the string regex is folded into a static regex.
+        run_test(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "(\\w*) world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
+            None,
+            None,
+            Some((
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Regex(
+                    RegexScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Regex::new("(\\w*) world").unwrap(),
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            )),
         );
     }
 }

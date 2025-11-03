@@ -32,18 +32,22 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::control::NodeControlMsg;
+use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::time::Duration;
-use tokio::time::{Instant, Sleep, sleep_until};
+use std::time::{Duration, Instant};
+use tokio::time::{Sleep, sleep_until};
 
 /// A trait for egress exporters (Send definition).
 #[async_trait]
@@ -53,7 +57,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A channel for receiving control and pdata messages.
@@ -128,7 +132,7 @@ impl<PData> MessageChannel<PData> {
 
                 if sleep_until_deadline.is_none() {
                     // Create a sleep timer for the deadline
-                    sleep_until_deadline = Some(Box::pin(sleep_until(dl)));
+                    sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
                 }
 
                 // Drain pdata first, then timer, then other control msgs
@@ -166,15 +170,15 @@ impl<PData> MessageChannel<PData> {
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                     Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                        if deadline.is_zero() {
+                        if deadline.duration_since(Instant::now()).is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
-                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
+                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
-                        let when = Instant::now() + deadline;
+                        let when = deadline;
                         self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason });
+                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
                     Ok(msg) => return Ok(Message::Control(msg)),
@@ -206,16 +210,17 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
+    /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
+    /// exporter.
     #[must_use]
-    pub fn new(node_id: NodeId) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id),
+            core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
         }
     }
@@ -241,7 +246,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
@@ -249,8 +254,33 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
+    }
+
+    /// Reports metrics collected by the exporter.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.

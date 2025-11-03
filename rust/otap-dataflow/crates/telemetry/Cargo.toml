@@ -20,10 +20,10 @@ unchecked-arithmetic = []
 
 [dependencies]
 flume = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-slotmap = "1.0.7"
-parking_lot = "0.12.4"
-serde = { version = "1.0.219", features = ["derive"] }
+slotmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }

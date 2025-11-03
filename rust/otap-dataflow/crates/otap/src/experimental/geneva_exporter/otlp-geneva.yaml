@@ -1,0 +1,74 @@
+# Geneva Exporter Test Configuration with OTLP Receiver
+#
+# This configuration sets up an OTLP gRPC receiver that accepts telemetry
+# from instrumented applications and forwards it to Geneva.
+#
+# Usage:
+#   ./df_engine --pipeline test-config-otlp-receiver.yaml --num-cores 1
+#
+# Send data to this collector using:
+#   - OTLP/gRPC endpoint: localhost:4317
+#
+# NOTE: Environment Variable Support
+# -----------------------------------
+# The current config system does NOT support environment variable substitution (e.g., ${ENV_VAR}).
+# This is documented as a future enhancement in the config layer roadmap.
+#
+# Workarounds for sensitive data:
+# 1. Use a template processor (envsubst, sed) before passing to df_engine:
+#    envsubst < test-config.yaml | ./df_engine --pipeline /dev/stdin
+#
+# 2. Generate the config file at deployment time with your CI/CD tooling
+#
+# 3. For Kubernetes: Use a ConfigMap with values injected from Secrets
+
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  # OTLP gRPC Receiver - Accepts telemetry from instrumented apps
+  otlp-receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - geneva-exporter
+        dispatch_strategy: round_robin
+    config:
+      # The address to listen on for gRPC connections
+      listening_addr: "127.0.0.1:4317"
+
+  # Geneva exporter configuration
+  geneva-exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:geneva:exporter"
+    config:
+      # ============================================================
+      # REQUIRED FIELDS - Replace with your Geneva deployment values
+      # ============================================================
+      endpoint: "https://your-geneva-endpoint.com"
+      environment: "test"
+      account: "your-account-name"
+      namespace: "your-namespace"
+      region: "westus2"
+      config_major_version: 1
+      tenant: "your-tenant-name"
+      role_name: "otlp-collector"
+      role_instance: "collector-001"
+
+      # ============================================================
+      # AUTHENTICATION
+      # ============================================================
+      auth:
+        type: "certificate"
+        path: "/path/to/your/certificate.p12"
+        password: "your-cert-password"
+
+      # ============================================================
+      # OPTIONAL SETTINGS
+      # ============================================================
+      max_buffer_size: 1000
+      max_concurrent_uploads: 4

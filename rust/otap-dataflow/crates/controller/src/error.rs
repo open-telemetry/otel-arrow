@@ -20,6 +20,10 @@ pub enum Error {
     #[error("Admin module error: {0}")]
     AdminError(#[from] otap_df_admin::error::Error),
 
+    /// Observed state module error.
+    #[error("Observed state error: {0}")]
+    ObservedStateError(#[from] otap_df_state::error::Error),
+
     /// Telemetry system error.
     #[error("Telemetry error: {0}")]
     TelemetryError(#[from] otap_df_telemetry::error::Error),
@@ -45,6 +49,19 @@ pub enum Error {
     /// Failed to enumerate available CPU cores on this platform.
     #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
     CoreDetectionUnavailable,
+
+    /// Invalid or out-of-bounds requested CPU core ID range.
+    #[error("Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}")]
+    InvalidCoreRange {
+        /// Start of the requested range (inclusive).
+        start: usize,
+        /// End of the requested range (inclusive).
+        end: usize,
+        /// Error message.
+        message: String,
+        /// The available CPU core IDs detected on this system.
+        available: Vec<usize>,
+    },
 
     /// Core affinity error.
     #[error("Failed to set core affinity for thread {thread_id} to core {core_id}: {message}")]

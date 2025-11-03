@@ -106,6 +106,6 @@ def test_metrics_endpoint(client):
     lines = body.splitlines()
     keys = [line.split()[0] for line in lines]
 
-    assert "sent" in keys
+    assert "logs_produced" in keys
     assert "failed" in keys
     assert "bytes_sent" in keys

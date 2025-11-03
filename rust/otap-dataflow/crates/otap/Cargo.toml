@@ -24,43 +24,60 @@ humantime-serde.workspace = true
 log.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
-otap-df-engine = { path = "../engine" }
-otap-df-engine-macros = { path = "../engine-macros" }
-otap-df-channel = { path = "../channel" }
-otap-df-config = { path = "../config" }
-otap-df-otlp = { path = "../otlp", features = ["test-utils"]}
-otap-df-pdata-views = { path = "../pdata-views" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
 parquet.workspace = true
-tonic = { version = "0.13.1", default-features = false, features = [
-    "server",
-    "channel",
-    "router",
-    "transport",
-    "codegen",
-    "prost",
-    "zstd",
-    "gzip",
-    "deflate",
-] }
-tower-service = "0.3"
-fluke-hpack = "0.3.1"
-serde = {version="1", features=["derive"]}
-prost = "0.13.5"
-tokio-stream = "0.1.17"
-async-stream = "0.3.6"
 thiserror = { workspace = true }
+serde_with = { workspace = true }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true }
+simdutf8 = { workspace = true }
+slotmap = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
+tonic = { workspace = true }
+tonic-middleware = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+smallvec = { workspace = true }
+bitflags = { workspace = true }
+
+otap-df-engine = { path = "../engine" }
+otap-df-engine-macros = { path = "../engine-macros" }
+otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
+otap-df-pdata = { path = "../pdata" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
+
+chrono.workspace = true
+tower-service.workspace = true
+fluke-hpack.workspace = true
+serde.workspace = true
+tokio-stream.workspace = true
+async-stream.workspace = true
+humantime.workspace = true
+weaver_semconv.workspace = true
+weaver_resolved_schema.workspace = true
+weaver_resolver.workspace = true
+rand.workspace = true
+zip.workspace = true
+
+# Geneva exporter dependencies
+geneva-uploader = { version = "0.3.0", optional = true }
+opentelemetry-proto = { workspace = true, optional = true }
+
+[features]
+# Base experimental feature - enabled by all experimental exporters
+experimental-exporters = []
+# Experimental exporters
+geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
 
 [dev-dependencies]
-portpicker = "0.1.1"
-pretty_assertions = "1.4.1"
+flume = { workspace = true }
+portpicker.workspace = true
+pretty_assertions.workspace = true
 tempfile.workspace = true
 url.workspace = true
+tokio-util.workspace = true

@@ -165,6 +165,13 @@ impl Default for CtrlMsgCounters {
 /// Creates a single-threaded runtime with a local task set for testing components.
 #[must_use]
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
+    // Check if we're already inside a Tokio runtime
+    if tokio::runtime::Handle::try_current().is_ok() {
+        panic!(
+            "TestRuntime used inside an existing async runtime: change #[tokio::test] to #[test]."
+        );
+    }
+
     let rt = Builder::new_current_thread()
         .enable_all()
         .build()

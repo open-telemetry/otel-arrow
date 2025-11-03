@@ -26,19 +26,22 @@ use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
+use otap_df_engine::control::{AckMsg, NodeControlMsg};
+use otap_df_engine::error::{Error, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ExporterFactory, distributed_slice};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_rust::otap::OtapArrowRecords;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
@@ -100,6 +103,20 @@ impl PerfExporter {
             })?,
         ))
     }
+
+    fn terminal_state(&self, deadline: Instant) -> TerminalState {
+        let mut snapshots = Vec::new();
+
+        if self.metrics.needs_flush() {
+            snapshots.push(self.metrics.snapshot());
+        }
+
+        if self.pdata_metrics.needs_flush() {
+            snapshots.push(self.pdata_metrics.snapshot());
+        }
+
+        TerminalState::new(deadline, snapshots)
+    }
 }
 
 #[async_trait(?Send)]
@@ -108,7 +125,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
 
@@ -131,18 +148,21 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     _ = timer_cancel_handle.cancel().await;
-                    break;
+                    return Ok(self.terminal_state(deadline));
                 }
-                Message::PData(pdata) => {
+                Message::PData(mut pdata) => {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
                     // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let batch: OtapArrowRecords = match pdata.try_into() {
+                    let payload = pdata.take_payload();
+                    let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+
+                    let batch: OtapArrowRecords = match payload.try_into() {
                         Ok(batch) => batch,
                         Err(_) => {
                             self.pdata_metrics.inc_failed(signal_type);
@@ -208,12 +228,13 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 _ => {
                     return Err(Error::ExporterError {
                         exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Other,
                         error: "Unknown control message".to_owned(),
+                        source_detail: String::new(),
                     });
                 }
             }
         }
-        Ok(())
     }
 }
 
@@ -239,12 +260,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
 #[cfg(test)]
 mod tests {
-
     use crate::fixtures::{
         SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
         create_simple_metrics_arrow_record_batches, create_simple_trace_arrow_record_batches,
     };
-    use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
@@ -256,8 +275,12 @@ mod tests {
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otel_arrow_rust::Consumer;
+    use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
     use std::future::Future;
+    use std::ops::Add;
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::time::{Duration, sleep};
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
@@ -269,43 +292,69 @@ mod tests {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
                 for i in 0..3 {
-                    let traces_batch_data =
+                    let mut traces_batch_data =
                         create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    let logs_batch_data =
+                    let mut logs_batch_data =
                         create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i + 1,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    let metrics_batch_data =
+                    let mut metrics_batch_data =
                         create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
                             id_offset: 3 * i + 2,
                             num_rows: 5,
                             ..Default::default()
                         });
-                    // // Send a data message
-                    ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowLogs(logs_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowMetrics(metrics_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
+
+                    let trace_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut traces_batch_data)
+                            .unwrap(),
+                    );
+                    let logs_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut logs_batch_data)
+                            .unwrap(),
+                    );
+                    let metrics_batch_data = from_record_messages(
+                        Consumer::default()
+                            .consume_bar(&mut metrics_batch_data)
+                            .unwrap(),
+                    );
+
+                    // Send a data message
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Traces(trace_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Logs(logs_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(OtapPdata::new_default(
+                        OtapArrowRecords::Metrics(metrics_batch_data).into(),
+                    ))
+                    .await
+                    .expect("Failed to send data message");
                 }
 
                 // TODO ADD DELAY BETWEEN HERE
                 _ = sleep(Duration::from_millis(5000));
 
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(200), "test complete")
-                    .await
-                    .expect("Failed to send Shutdown");
+                ctx.send_shutdown(
+                    Instant::now().add(Duration::from_millis(200)),
+                    "test complete",
+                )
+                .await
+                .expect("Failed to send Shutdown");
             })
         }
     }

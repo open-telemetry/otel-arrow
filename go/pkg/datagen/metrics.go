@@ -811,6 +811,7 @@ func (dg *DataGenerator) ExpHistogramWithEverything(metric pmetric.Metric) {
 
 		dp.SetMin(dg.GenF64Range(0, 100))
 		dp.SetMax(dg.GenF64Range(0, 100))
+		dp.SetZeroThreshold(dg.GenF64Range(0, 100))
 		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
 	}
 }

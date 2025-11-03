@@ -8,7 +8,7 @@
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-FROM --platform=$BUILDPLATFORM docker.io/rust:1.89@sha256:e090f7b4adf86191313dba91260351d7f5e15cac0fe34f26706a805c0cb9641f AS dataflow-build
+FROM --platform=$BUILDPLATFORM docker.io/rust:1.90@sha256:e227f20ec42af3ea9a3c9c1dd1b2012aa15f12279b5e9d5fb890ca1c2bb5726c AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
@@ -28,7 +28,7 @@ COPY . /build/rust/dataflow/.
 RUN ./cross-arch-build.sh
 
 # The runtime image
-FROM docker.io/alpine:3.22@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+FROM docker.io/alpine:3.22@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
 LABEL maintainer="The OpenTelemetry Authors"
 RUN addgroup dataflow \
   && adduser \

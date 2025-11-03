@@ -11,8 +11,8 @@ use std::hint::black_box;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use otap_df_otap::encoder::encode_logs_otap_batch;
-use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::views::bench_helpers::visit_logs_data;
+use otap_df_pdata::views::bench_helpers::visit_logs_data;
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -20,10 +20,10 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 
-use mimalloc::MiMalloc;
+use mimalloc_rust::GlobalMiMalloc;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
 
 struct LogsDataGenParams {
     num_resources: usize,

@@ -88,7 +88,7 @@ impl ConvertScalarExpression {
     pub(crate) fn try_resolve_static(
         &mut self,
         scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+    ) -> ScalarStaticResolutionResult<'_> {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
@@ -241,6 +241,39 @@ impl Expression for ConvertScalarExpression {
             ConvertScalarExpression::Integer(_) => "ConvertScalar(Integer)",
             ConvertScalarExpression::String(_) => "ConvertScalar(String)",
             ConvertScalarExpression::TimeSpan(_) => "ConvertScalar(TimeSpan)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        let fmt_unary = |f: &mut std::fmt::Formatter<'_>,
+                         indent: &str,
+                         name: &str,
+                         inner: &ScalarExpression|
+         -> std::fmt::Result {
+            let header = format!("To{name}(Scalar): ");
+            write!(f, "{header}")?;
+            inner.fmt_with_indent(f, format!("{indent}{}", " ".repeat(header.len())).as_str())
+        };
+
+        match self {
+            ConvertScalarExpression::Boolean(c) => {
+                fmt_unary(f, indent, "Boolean", c.get_inner_expression())
+            }
+            ConvertScalarExpression::DateTime(c) => {
+                fmt_unary(f, indent, "DateTime", c.get_inner_expression())
+            }
+            ConvertScalarExpression::Double(c) => {
+                fmt_unary(f, indent, "Double", c.get_inner_expression())
+            }
+            ConvertScalarExpression::Integer(c) => {
+                fmt_unary(f, indent, "Integer", c.get_inner_expression())
+            }
+            ConvertScalarExpression::String(c) => {
+                fmt_unary(f, indent, "String", c.get_inner_expression())
+            }
+            ConvertScalarExpression::TimeSpan(c) => {
+                fmt_unary(f, indent, "TimeSpan", c.get_inner_expression())
+            }
         }
     }
 }

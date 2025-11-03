@@ -18,6 +18,15 @@ pub enum ParserError {
         diagnostic_id: &'static str,
         message: String,
     },
+
+    #[error("{0}")]
+    SchemaError(String),
+
+    #[error("The name '{key}' does not refer to any known key on the target map")]
+    KeyNotFound {
+        location: QueryLocation,
+        key: String,
+    },
 }
 
 impl From<&ExpressionError> for ParserError {

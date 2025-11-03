@@ -9,7 +9,24 @@ use crate::{
     Rule, logical_expressions::parse_logical_expression, scalar_expression::parse_scalar_expression,
 };
 
-pub(crate) fn parse_conditional_expression(
+pub(crate) fn parse_conditional_unary_expressions(
+    conditional_unary_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = conditional_unary_expressions_rule
+        .into_inner()
+        .next()
+        .unwrap();
+
+    match rule.as_rule() {
+        Rule::conditional_expression => parse_conditional_expression(rule, scope),
+        Rule::case_expression => parse_case_expression(rule, scope),
+        Rule::coalesce_expression => parse_coalesce_expression(rule, scope),
+        _ => panic!("Unexpected rule in conditional_unary_expressions: {rule}"),
+    }
+}
+
+fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -33,7 +50,7 @@ pub(crate) fn parse_conditional_expression(
     ))
 }
 
-pub(crate) fn parse_case_expression(
+fn parse_case_expression(
     case_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -88,7 +105,7 @@ pub(crate) fn parse_case_expression(
     )))
 }
 
-pub(crate) fn parse_coalesce_expression(
+fn parse_coalesce_expression(
     coalesce_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
@@ -183,7 +200,13 @@ mod tests {
     #[test]
     fn test_parse_case_expression() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let state = ParserState::new(input);
+            println!("Testing: {input}");
+
+            let state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_attached_data_names(&["resource"]),
+            );
+            state.push_variable_name("key");
 
             let mut result = KqlPestParser::parse(Rule::case_expression, input).unwrap();
 
@@ -252,94 +275,71 @@ mod tests {
             )),
         );
 
-        // Test case with complex OR conditions
-        let run_test_success_with_state = |input: &str, expected: ScalarExpression| {
-            let mut state = ParserState::new_with_options(
-                input,
-                ParserOptions::new().with_attached_data_names(&["resource"]),
-            );
-            state.push_variable_name("key");
-
-            let mut result = KqlPestParser::parse(Rule::case_expression, input).unwrap();
-
-            let expression = parse_case_expression(result.next().unwrap(), &state).unwrap();
-
-            assert_eq!(expected, expression);
-        };
-
-        // Create first condition: key == 'foo' or key == 'FOO'
-        let mut first_condition = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
-                    ValueAccessor::new(),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
-                )),
-                false,
-            )),
-        );
-        first_condition.push_or(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-            QueryLocation::new_fake(),
-            ScalarExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "key"),
-                ValueAccessor::new(),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "FOO",
-            ))),
-            false,
-        )));
-
-        // Create second condition: key == 'bar' or key == 'BAR'
-        let mut second_condition = ChainLogicalExpression::new(
-            QueryLocation::new_fake(),
-            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
-                    ValueAccessor::new(),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "bar"),
-                )),
-                false,
-            )),
-        );
-        second_condition.push_or(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-            QueryLocation::new_fake(),
-            ScalarExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "key"),
-                ValueAccessor::new(),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "BAR",
-            ))),
-            false,
-        )));
-
-        run_test_success_with_state(
+        run_test_success(
             "case(key == 'foo' or key == 'FOO', 1, key == 'bar' or key == 'BAR', 2, 3)",
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
                 vec![
                     (
-                        LogicalExpression::Chain(first_condition),
+                        LogicalExpression::Or(OrLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Variable(VariableScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                                )),
+                                false,
+                            )),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Variable(VariableScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "FOO"),
+                                )),
+                                false,
+                            )),
+                        )),
                         ScalarExpression::Static(StaticScalarExpression::Integer(
                             IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                         )),
                     ),
                     (
-                        LogicalExpression::Chain(second_condition),
+                        LogicalExpression::Or(OrLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Variable(VariableScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "bar"),
+                                )),
+                                false,
+                            )),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Variable(VariableScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "BAR"),
+                                )),
+                                false,
+                            )),
+                        )),
                         ScalarExpression::Static(StaticScalarExpression::Integer(
                             IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                         )),
