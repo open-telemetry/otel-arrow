@@ -67,6 +67,8 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
     LazyLock::new(|| {
         HashMap::from([
             // Common
+            //
+            // BUILD PARAMS
             ("opentelemetry.proto.common.v1.AnyValue", vec!["value"]),
             (
                 "opentelemetry.proto.common.v1.KeyValue",
@@ -74,20 +76,31 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
             ),
             ("opentelemetry.proto.common.v1.KeyValueList", vec!["values"]),
             ("opentelemetry.proto.common.v1.ArrayValue", vec!["values"]),
+            // Common
+            //
+            // BUILD EMPTY
             ("opentelemetry.proto.common.v1.InstrumentationScope", vec![]),
             ("opentelemetry.proto.common.v1.EntityRef", vec![]),
             // Resource
+            //
+            // BUILD EMPTY
             ("opentelemetry.proto.resource.v1.Resource", vec![]),
             // Logs
-            ("opentelemetry.proto.logs.v1.LogRecord", vec![]),
+            //
+            // BUILD PARAMS
             ("opentelemetry.proto.logs.v1.ScopeLogs", vec!["scope"]),
             ("opentelemetry.proto.logs.v1.ResourceLogs", vec!["resource"]),
             (
                 "opentelemetry.proto.logs.v1.LogsData",
                 vec!["resource_logs"],
             ),
+            // Logs
+            //
+            // BUILD EMPTY
+            ("opentelemetry.proto.logs.v1.LogRecord", vec![]),
             // Traces
-            ("opentelemetry.proto.trace.v1.Span", vec![]),
+            //
+            // BUILD PARAMS
             ("opentelemetry.proto.trace.v1.ScopeSpans", vec!["scope"]),
             (
                 "opentelemetry.proto.trace.v1.ResourceSpans",
@@ -101,9 +114,15 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.trace.v1.Status",
                 vec!["message", "code"],
             ),
+            // Traces
+            //
+            // BUILD EMPTY
+            ("opentelemetry.proto.trace.v1.Span", vec![]),
             ("opentelemetry.proto.trace.v1.Span.Link", vec![]),
             ("opentelemetry.proto.trace.v1.Span.Event", vec![]),
             // Metrics
+            //
+            // BUILD PARAMS
             ("opentelemetry.proto.metrics.v1.ScopeMetrics", vec!["scope"]),
             (
                 "opentelemetry.proto.metrics.v1.ResourceMetrics",
@@ -113,7 +132,6 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.metrics.v1.MetricsData",
                 vec!["resource_metrics"],
             ),
-            ("opentelemetry.proto.metrics.v1.Metric", vec![]),
             (
                 "opentelemetry.proto.metrics.v1.Sum",
                 vec!["aggregation_temporality", "is_monotonic", "data_points"],
@@ -132,9 +150,18 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 vec!["data_points"],
             ),
             (
-                "opentelemetry.proto.metrics.v1.NumberDataPoint",
-                vec!["time_unix_nano", "value"],
+                "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
+                vec!["offset", "bucket_counts"],
             ),
+            (
+                "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
+                vec!["quantile", "value"],
+            ),
+            // Metrics
+            //
+            // BUILD EMPTY
+            ("opentelemetry.proto.metrics.v1.Metric", vec![]),
+            ("opentelemetry.proto.metrics.v1.NumberDataPoint", vec![]),
             (
                 "opentelemetry.proto.metrics.v1.HistogramDataPoint",
                 vec!["time_unix_nano", "bucket_counts", "explicit_bounds"],
@@ -144,22 +171,16 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 vec!["time_unix_nano", "scale", "positive"],
             ),
             (
-                "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
-                vec!["offset", "bucket_counts"],
-            ),
-            (
                 "opentelemetry.proto.metrics.v1.SummaryDataPoint",
                 vec!["time_unix_nano", "quantile_values"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
-                vec!["quantile", "value"],
             ),
             (
                 "opentelemetry.proto.metrics.v1.Exemplar",
                 vec!["time_unix_nano", "value"],
             ),
             // Service
+            //
+            // BUILD SUPPORT
             (
                 "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest",
                 vec!["resource_logs"],

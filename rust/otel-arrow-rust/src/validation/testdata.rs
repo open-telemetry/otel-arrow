@@ -56,8 +56,10 @@ pub mod metrics {
     pub fn create_single_request() -> ExportMetricsServiceRequest {
         let timestamp = 1619712000000000000u64;
 
-        let data_point = NumberDataPoint::build_double(timestamp + 1000000000, 42.0)
+        let data_point = NumberDataPoint::build()
             .start_time_unix_nano(timestamp)
+            .time_unix_nano(timestamp + 1000000000)
+            .value_double(42.0)
             .attributes(vec![KeyValue::new(
                 "test.attribute",
                 AnyValue::new_string("test value"),

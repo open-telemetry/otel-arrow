@@ -492,8 +492,14 @@ fn test_metric_sum() {
             AggregationTemporality::Delta,
             true,
             vec![
-                NumberDataPoint::new_int(125_000_000_000u64, 123i64),
-                NumberDataPoint::new_double(125_000_000_000u64, 123f64),
+                NumberDataPoint::build()
+                    .time_unix_nano(125_000_000_000u64)
+                    .value_int(123i64)
+                    .finish(),
+                NumberDataPoint::build()
+                    .time_unix_nano(125_000_000_000u64)
+                    .value_double(123f64)
+                    .finish(),
             ],
         ))
         .finish();
@@ -535,8 +541,14 @@ fn test_metric_gauge() {
     let m1 = Metric::build()
         .name("gauge")
         .data_gauge(Gauge::new(vec![
-            NumberDataPoint::new_int(125_000_000_000u64, 123i64),
-            NumberDataPoint::new_double(125_000_000_000u64, 123f64),
+            NumberDataPoint::build()
+                .time_unix_nano(125_000_000_000u64)
+                .value_int(123i64)
+                .finish(),
+            NumberDataPoint::build()
+                .time_unix_nano(125_000_000_000u64)
+                .value_double(123f64)
+                .finish(),
         ]))
         .finish();
 
