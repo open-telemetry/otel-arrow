@@ -101,10 +101,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.trace.v1.Status",
                 vec!["message", "code"],
             ),
-            (
-                "opentelemetry.proto.trace.v1.Span.Link",
-                vec!["trace_id", "span_id"],
-            ),
+            ("opentelemetry.proto.trace.v1.Span.Link", vec![]),
             (
                 "opentelemetry.proto.trace.v1.Span.Event",
                 vec!["name", "time_unix_nano"],
