@@ -14,6 +14,23 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let outer_name = &msg.outer_name;
     let builder_name = msg.related_typename("Builder");
 
+    // Validate: either all fields are parameters or no fields are parameters
+    // Ignored fields are excluded from this count
+    let param_count = msg.param_names.len();
+    let ignored_count = msg.ignored_names.len();
+    let all_field_count = msg.all_fields.len();
+    let expected_param_count = all_field_count - ignored_count;
+
+    if param_count != 0 && param_count != expected_param_count {
+        panic!(
+            "Type '{}' must have either all non-ignored fields as parameters ({}) or no parameters (0), but has {} (with {} ignored)",
+            outer_name, expected_param_count, param_count, ignored_count
+        );
+    }
+
+    // Determine the mode: true = use new() constructors, false = use build() + builder pattern
+    let use_constructors = param_count > 0;
+
     // Generate generic type parameters names like ["T1", "T2", ...]
     let type_params = common::generic_type_names(msg.all_fields.len());
 
@@ -105,116 +122,100 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         })
         .collect();
 
-    // When there are no builder fields, we can skip the builder struct.
-    let derive_builder = !msg.builder_fields.is_empty();
-
-    // Function to build constructors used in oneof and normal cases.
+    // Function to build constructors - only generates new() methods in constructor mode
     let create_constructor =
         |suffix: String,
          cur_param_bounds: &[proc_macro2::TokenStream],
          cur_param_decls: &[proc_macro2::TokenStream],
-         cur_param_args: &[proc_macro2::TokenStream],
+         _cur_param_args: &[proc_macro2::TokenStream],
          cur_field_initializers: &[proc_macro2::TokenStream]| {
-            let build_name = create_ident(&format!("build{}", suffix));
             let new_name = create_ident(&format!("new{}", suffix));
 
-            let mut cons = quote! {
-            pub fn #new_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> Self {
-                        Self{
-                #(#cur_field_initializers)*
+            quote! {
+                pub fn #new_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> Self {
+                    Self{
+                        #(#cur_field_initializers)*
+                    }
                 }
             }
-            };
-            if derive_builder {
-                cons.extend(quote! {
-                pub fn #build_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> #builder_name {
-                            #builder_name{
-                    inner: #outer_name::#new_name(#(#cur_param_args),*),
-                            }
-                }
-                });
-            }
-            cons
         };
 
-    // Build constructors for both regular and oneof cases.
-    // Also collect oneof builder methods if oneof is not in parameters.
-    let (all_constructors, oneof_builder_methods): (TokenVec, TokenVec) = match msg.oneof_mapping.as_ref() {
-        None => (
-            vec![create_constructor(
-                "".to_string(),
-                &param_bounds,
-                &param_decls,
-                &param_args,
-                &all_field_initializers,
-            )],
-            vec![],
-        ),
-        Some(oneof_mapping) => {
-            let (oneof_path, _) = oneof_mapping;
-            let oneof_name = oneof_path.split('.').last().unwrap();
-            let oneof_in_params = msg.param_names.iter().any(|name| name.as_str() == oneof_name);
-            
-            if oneof_in_params {
-                // Generate separate constructors for each oneof variant
-                (
-                    common::builder_oneof_constructors(
-                        oneof_mapping,
-                        &msg.param_names,
-                        &param_bounds,
-                        &param_decls,
-                        &param_args,
-                        &all_field_initializers,
-                        &type_params,
-                        &create_constructor,
-                    ),
-                    vec![],
+    // Generate either constructors (mode 1) or builder pattern (mode 2), never both
+    let expanded = if use_constructors {
+        // Mode 1: Generate new() constructors (with oneof variants if applicable)
+        let all_constructors = match msg.oneof_mapping.as_ref() {
+            None => {
+                vec![create_constructor(
+                    "".to_string(),
+                    &param_bounds,
+                    &param_decls,
+                    &param_args,
+                    &all_field_initializers,
+                )]
+            }
+            Some(oneof_mapping) => {
+                // All fields are parameters, so oneof must be in parameters
+                common::builder_oneof_constructors(
+                    oneof_mapping,
+                    &msg.param_names,
+                    &param_bounds,
+                    &param_decls,
+                    &param_args,
+                    &all_field_initializers,
+                    &type_params,
+                    &create_constructor,
                 )
-            } else {
-                // Generate single constructor and builder methods for oneof variants
-                (
-                    vec![create_constructor(
-                        "".to_string(),
-                        &param_bounds,
-                        &param_decls,
-                        &param_args,
-                        &all_field_initializers,
-                    )],
-                    common::builder_oneof_methods(oneof_mapping),
-                )
+            }
+        };
+
+        quote! {
+            impl #outer_name {
+                #(#all_constructors)*
+            }
+        }
+    } else {
+        // Mode 2: Generate build() + builder pattern with setter methods
+        let oneof_builder_methods = msg
+            .oneof_mapping
+            .as_ref()
+            .map(|oneof_mapping| common::builder_oneof_methods(oneof_mapping))
+            .unwrap_or_else(Vec::new);
+
+        quote! {
+            impl #outer_name {
+                pub fn new() -> Self {
+                    Self {
+                        #(#all_field_initializers)*
+                    }
+                }
+
+                pub fn build() -> #builder_name {
+                    #builder_name {
+                        inner: #outer_name::new(),
+                    }
+                }
+            }
+
+            pub struct #builder_name {
+                inner: #outer_name,
+            }
+
+            impl #builder_name {
+                #(#builder_methods)*
+                #(#oneof_builder_methods)*
+
+                pub fn finish(self) -> #outer_name {
+                    self.inner
+                }
+            }
+
+            impl std::convert::From<#builder_name> for #outer_name {
+                fn from(builder: #builder_name) -> Self {
+                    builder.finish()
+                }
             }
         }
     };
-
-    // Produce expanded implementation
-    let mut expanded = quote! {
-            impl #outer_name {
-        #(#all_constructors)*
-        }
-    };
-
-    if derive_builder {
-        expanded.extend(quote! {
-                pub struct #builder_name {
-                    inner: #outer_name,
-                }
-
-                impl #builder_name {
-                    #(#builder_methods)*
-                    #(#oneof_builder_methods)*
-
-                    pub fn finish(self) -> #outer_name {
-                        self.inner
-                    }
-                }
-
-                impl std::convert::From<#builder_name> for #outer_name {
-                    fn from(builder: #builder_name) -> Self {
-                        builder.finish()
-                    }
-                }
-        });
-    }
 
     TokenStream::from(expanded)
 }

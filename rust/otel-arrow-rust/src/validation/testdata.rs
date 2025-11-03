@@ -33,15 +33,10 @@ pub mod traces {
             .status(Status::new("success", StatusCode::Ok))
             .finish();
 
-        ExportTraceServiceRequest::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::default())
-                        .spans(vec![span])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportTraceServiceRequest::new(vec![ResourceSpans::new(
+            Resource::default(),
+            vec![ScopeSpans::new(InstrumentationScope::default(), vec![span])],
+        )])
     }
 }
 
@@ -73,15 +68,13 @@ pub mod metrics {
             .unit("count")
             .finish();
 
-        ExportMetricsServiceRequest::new(vec![
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::default())
-                        .metrics(vec![metric])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportMetricsServiceRequest::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![metric],
+            )],
+        )])
     }
 }
 
@@ -97,15 +90,13 @@ pub mod logs {
     const TIMESTAMP: u64 = 1619712000000000000u64;
 
     pub fn to_export_logs_request(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::build().name("scope_name").finish())
-                        .log_records(log_records)
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("scope_name").finish(),
+                log_records,
+            )],
+        )])
     }
 
     pub fn create_single_request() -> ExportLogsServiceRequest {

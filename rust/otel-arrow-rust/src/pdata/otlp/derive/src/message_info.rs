@@ -10,6 +10,7 @@ use syn::{DeriveInput, parse_macro_input};
 pub struct MessageInfo {
     pub outer_name: syn::Ident,
     pub param_names: Vec<String>,
+    pub ignored_names: Vec<String>,
     pub param_fields: Vec<FieldInfo>,
     pub builder_fields: Vec<FieldInfo>,
     pub all_fields: Vec<FieldInfo>,
@@ -55,12 +56,21 @@ impl MessageInfo {
             ));
 
         // Get required parameters for this type.
-        let param_names: Vec<_> = otlp_model::REQUIRED_PARAMS
+        let param_config = otlp_model::REQUIRED_PARAMS
             .get(type_name.as_str())
             .expect(&format!(
                 "No required parameters found for OTLP type: {}",
                 type_name
-            ))
+            ));
+        
+        let param_names: Vec<_> = param_config
+            .required
+            .iter()
+            .map(|x| x.to_string())
+            .collect();
+        
+        let ignored_names: Vec<_> = param_config
+            .ignored
             .iter()
             .map(|x| x.to_string())
             .collect();
@@ -127,6 +137,7 @@ impl MessageInfo {
         f(MessageInfo {
             outer_name,
             param_names,
+            ignored_names,
             param_fields,
             builder_fields,
             all_fields,

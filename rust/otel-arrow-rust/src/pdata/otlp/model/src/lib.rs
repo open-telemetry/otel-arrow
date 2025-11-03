@@ -47,6 +47,36 @@ fn oneof(
 
 pub type OneofMapping = Option<(String, Vec<OneofCase>)>;
 
+/// Configuration for required parameters in constructor/builder pattern
+#[derive(Clone, Debug, Default)]
+pub struct ParamConfig {
+    /// Fields that are required parameters (either in new() or via builder)
+    pub required: Vec<&'static str>,
+    /// Fields that are explicitly ignored (not required, not in builder)
+    pub ignored: Vec<&'static str>,
+}
+
+/// Create a parameter config with required fields
+fn required(fields: Vec<&'static str>) -> ParamConfig {
+    ParamConfig {
+        required: fields,
+        ignored: vec![],
+    }
+}
+
+/// Create a parameter config with no required fields (all via builder)
+fn empty() -> ParamConfig {
+    ParamConfig {
+        required: vec![],
+        ignored: vec![],
+    }
+}
+
+/// Create a parameter config with some required and some ignored fields
+fn some_required(required: Vec<&'static str>, ignored: Vec<&'static str>) -> ParamConfig {
+    ParamConfig { required, ignored }
+}
+
 /// This provides detail about the underlying type of protobuf enum values.
 #[derive(Clone, Debug, Default)]
 pub struct EnumField {
@@ -63,153 +93,183 @@ fn enumfield(dt: &'static str, ft: &'static str) -> EnumField {
 
 /// This is required to contain an entry for each builder type with at
 /// least one new or builder parameter.
-pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
-    LazyLock::new(|| {
-        HashMap::from([
-            // Common
-            //
-            // BUILD PARAMS
-            ("opentelemetry.proto.common.v1.AnyValue", vec!["value"]),
-            (
-                "opentelemetry.proto.common.v1.KeyValue",
-                vec!["key", "value"],
-            ),
-            ("opentelemetry.proto.common.v1.KeyValueList", vec!["values"]),
-            ("opentelemetry.proto.common.v1.ArrayValue", vec!["values"]),
-            // Common
-            //
-            // BUILD EMPTY
-            ("opentelemetry.proto.common.v1.InstrumentationScope", vec![]),
-            ("opentelemetry.proto.common.v1.EntityRef", vec![]),
-            // Resource
-            //
-            // BUILD EMPTY
-            ("opentelemetry.proto.resource.v1.Resource", vec![]),
-            // Logs
-            //
-            // BUILD PARAMS
-            ("opentelemetry.proto.logs.v1.ScopeLogs", vec!["scope"]),
-            ("opentelemetry.proto.logs.v1.ResourceLogs", vec!["resource"]),
-            (
-                "opentelemetry.proto.logs.v1.LogsData",
-                vec!["resource_logs"],
-            ),
-            // Logs
-            //
-            // BUILD EMPTY
-            ("opentelemetry.proto.logs.v1.LogRecord", vec![]),
-            // Traces
-            //
-            // BUILD PARAMS
-            ("opentelemetry.proto.trace.v1.ScopeSpans", vec!["scope"]),
-            (
-                "opentelemetry.proto.trace.v1.ResourceSpans",
-                vec!["resource"],
-            ),
-            (
-                "opentelemetry.proto.trace.v1.TracesData",
-                vec!["resource_spans"],
-            ),
-            (
-                "opentelemetry.proto.trace.v1.Status",
-                vec!["message", "code"],
-            ),
-            // Traces
-            //
-            // BUILD EMPTY
-            ("opentelemetry.proto.trace.v1.Span", vec![]),
-            ("opentelemetry.proto.trace.v1.Span.Link", vec![]),
-            ("opentelemetry.proto.trace.v1.Span.Event", vec![]),
-            // Metrics
-            //
-            // BUILD PARAMS
-            ("opentelemetry.proto.metrics.v1.ScopeMetrics", vec!["scope"]),
-            (
-                "opentelemetry.proto.metrics.v1.ResourceMetrics",
-                vec!["resource"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.MetricsData",
-                vec!["resource_metrics"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.Sum",
-                vec!["aggregation_temporality", "is_monotonic", "data_points"],
-            ),
-            ("opentelemetry.proto.metrics.v1.Gauge", vec!["data_points"]),
-            (
-                "opentelemetry.proto.metrics.v1.Histogram",
-                vec!["aggregation_temporality", "data_points"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.ExponentialHistogram",
-                vec!["aggregation_temporality", "data_points"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.Summary",
-                vec!["data_points"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
-                vec!["offset", "bucket_counts"],
-            ),
-            (
-                "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
-                vec!["quantile", "value"],
-            ),
-            // Metrics
-            //
-            // BUILD EMPTY
-            ("opentelemetry.proto.metrics.v1.Metric", vec![]),
-            ("opentelemetry.proto.metrics.v1.NumberDataPoint", vec![]),
-            ("opentelemetry.proto.metrics.v1.HistogramDataPoint", vec![]),
-            (
-                "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
-                vec![],
-            ),
-            ("opentelemetry.proto.metrics.v1.SummaryDataPoint", vec![]),
-            ("opentelemetry.proto.metrics.v1.Exemplar", vec![]),
-            // Service
-            //
-            // BUILD SUPPORT
-            (
-                "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest",
-                vec!["resource_logs"],
-            ),
-            (
-                "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse",
-                vec!["partial_success"],
-            ),
-            (
-                "opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess",
-                vec!["rejected_log_records"],
-            ),
-            (
-                "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest",
-                vec!["resource_metrics"],
-            ),
-            (
-                "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse",
-                vec!["partial_success"],
-            ),
-            (
-                "opentelemetry.proto.collector.metrics.v1.ExportMetricsPartialSuccess",
-                vec!["rejected_data_points"],
-            ),
-            (
-                "opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest",
-                vec!["resource_spans"],
-            ),
-            (
-                "opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse",
-                vec!["partial_success"],
-            ),
-            (
-                "opentelemetry.proto.collector.trace.v1.ExportTracePartialSuccess",
-                vec!["rejected_spans"],
-            ),
-        ])
-    });
+pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, ParamConfig>> = LazyLock::new(|| {
+    HashMap::from([
+        // Common
+        //
+        // BUILD PARAMS
+        (
+            "opentelemetry.proto.common.v1.AnyValue",
+            required(vec!["value"]),
+        ),
+        (
+            "opentelemetry.proto.common.v1.KeyValue",
+            required(vec!["key", "value"]),
+        ),
+        (
+            "opentelemetry.proto.common.v1.KeyValueList",
+            required(vec!["values"]),
+        ),
+        (
+            "opentelemetry.proto.common.v1.ArrayValue",
+            required(vec!["values"]),
+        ),
+        // Common
+        //
+        // BUILD EMPTY
+        (
+            "opentelemetry.proto.common.v1.InstrumentationScope",
+            empty(),
+        ),
+        ("opentelemetry.proto.common.v1.EntityRef", empty()),
+        // Resource
+        //
+        // BUILD EMPTY
+        ("opentelemetry.proto.resource.v1.Resource", empty()),
+        // Logs
+        //
+        // BUILD PARAMS
+        (
+            "opentelemetry.proto.logs.v1.ScopeLogs",
+            some_required(vec!["scope", "log_records"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.logs.v1.ResourceLogs",
+            some_required(vec!["resource", "scope_logs"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.logs.v1.LogsData",
+            required(vec!["resource_logs"]),
+        ),
+        // Logs
+        //
+        // BUILD EMPTY
+        ("opentelemetry.proto.logs.v1.LogRecord", empty()),
+        // Traces
+        //
+        // BUILD PARAMS
+        (
+            "opentelemetry.proto.trace.v1.ScopeSpans",
+            some_required(vec!["scope", "spans"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.trace.v1.ResourceSpans",
+            some_required(vec!["resource", "scope_spans"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.trace.v1.TracesData",
+            required(vec!["resource_spans"]),
+        ),
+        (
+            "opentelemetry.proto.trace.v1.Status",
+            required(vec!["message", "code"]),
+        ),
+        // Traces
+        //
+        // BUILD EMPTY
+        ("opentelemetry.proto.trace.v1.Span", empty()),
+        ("opentelemetry.proto.trace.v1.Span.Link", empty()),
+        ("opentelemetry.proto.trace.v1.Span.Event", empty()),
+        // Metrics
+        //
+        // BUILD PARAMS
+        (
+            "opentelemetry.proto.metrics.v1.ScopeMetrics",
+            some_required(vec!["scope", "metrics"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.ResourceMetrics",
+            some_required(vec!["resource", "scope_metrics"], vec!["schema_url"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.MetricsData",
+            required(vec!["resource_metrics"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.Sum",
+            required(vec![
+                "aggregation_temporality",
+                "is_monotonic",
+                "data_points",
+            ]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.Gauge",
+            required(vec!["data_points"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.Histogram",
+            required(vec!["aggregation_temporality", "data_points"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.ExponentialHistogram",
+            required(vec!["aggregation_temporality", "data_points"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.Summary",
+            required(vec!["data_points"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
+            required(vec!["offset", "bucket_counts"]),
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
+            required(vec!["quantile", "value"]),
+        ),
+        // Metrics
+        //
+        // BUILD EMPTY
+        ("opentelemetry.proto.metrics.v1.Metric", empty()),
+        ("opentelemetry.proto.metrics.v1.NumberDataPoint", empty()),
+        ("opentelemetry.proto.metrics.v1.HistogramDataPoint", empty()),
+        (
+            "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
+            empty(),
+        ),
+        ("opentelemetry.proto.metrics.v1.SummaryDataPoint", empty()),
+        ("opentelemetry.proto.metrics.v1.Exemplar", empty()),
+        // Service
+        //
+        // BUILD SUPPORT
+        (
+            "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest",
+            required(vec!["resource_logs"]),
+        ),
+        (
+            "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse",
+            required(vec!["partial_success"]),
+        ),
+        (
+            "opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess",
+            required(vec!["rejected_log_records", "error_message"]),
+        ),
+        (
+            "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest",
+            required(vec!["resource_metrics"]),
+        ),
+        (
+            "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse",
+            required(vec!["partial_success"]),
+        ),
+        (
+            "opentelemetry.proto.collector.metrics.v1.ExportMetricsPartialSuccess",
+            required(vec!["rejected_data_points", "error_message"]),
+        ),
+        (
+            "opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest",
+            required(vec!["resource_spans"]),
+        ),
+        (
+            "opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse",
+            required(vec!["partial_success"]),
+        ),
+        (
+            "opentelemetry.proto.collector.trace.v1.ExportTracePartialSuccess",
+            required(vec!["rejected_spans", "error_message"]),
+        ),
+    ])
+});
 
 /// This lists all the known oneof fields in OpenTelemetry, with their cases.
 pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock::new(|| {

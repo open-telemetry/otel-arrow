@@ -256,10 +256,8 @@ fn test_scope_logs() {
         .finish();
     let lrs = vec![lr1, lr2];
 
-    let sl = ScopeLogs::build(is1.clone())
-        .log_records(lrs.clone())
-        .schema_url("http://schema.opentelemetry.io")
-        .finish();
+    let mut sl = ScopeLogs::new(is1.clone(), lrs.clone());
+    sl.schema_url = "http://schema.opentelemetry.io".into();
 
     let sl_value = ScopeLogs {
         scope: Some(is1),
@@ -328,17 +326,13 @@ fn test_resource_logs() {
         .finish();
     let lrs = vec![lr1, lr2];
 
-    let sl1 = ScopeLogs::build(is1.clone())
-        .log_records(lrs.clone())
-        .finish();
+    let sl1 = ScopeLogs::new(is1.clone(), lrs.clone());
     let sl2 = sl1.clone();
     let sls = vec![sl1, sl2];
 
     let res = Resource::build().attributes(kvs).finish();
 
-    let rl = ResourceLogs::build(res.clone())
-        .scope_logs(sls.clone())
-        .finish();
+    let rl = ResourceLogs::new(res.clone(), sls.clone());
 
     let rl_value = ResourceLogs {
         resource: Some(res),
@@ -351,7 +345,7 @@ fn test_resource_logs() {
 
 #[test]
 fn test_empty_resource_spans() {
-    let rs = ResourceSpans::build(Resource::build().attributes(vec![])).finish();
+    let rs = ResourceSpans::new(Resource::build().attributes(vec![]).finish(), vec![]);
 
     let res = Resource {
         attributes: vec![],
@@ -406,15 +400,13 @@ fn test_resource_spans() {
     let s2 = s1.clone();
     let sps = vec![s1, s2];
 
-    let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
+    let ss1 = ScopeSpans::new(is1.clone(), sps.clone());
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
     let res = Resource::new();
 
-    let rs = ResourceSpans::build(res.clone())
-        .scope_spans(sss.clone())
-        .finish();
+    let rs = ResourceSpans::new(res.clone(), sss.clone());
     let rs_value = ResourceSpans {
         resource: Some(res),
         scope_spans: sss,
@@ -463,15 +455,13 @@ fn test_traces_data() {
     let s2 = s1.clone();
     let sps = vec![s1, s2];
 
-    let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
+    let ss1 = ScopeSpans::new(is1.clone(), sps.clone());
     let ss2 = ss1.clone();
     let sss = vec![ss1, ss2];
 
     let res = Resource::new();
 
-    let rs1 = ResourceSpans::build(res.clone())
-        .scope_spans(sss.clone())
-        .finish();
+    let rs1 = ResourceSpans::new(res.clone(), sss.clone());
     let rs2 = rs1.clone();
     let rss = vec![rs1, rs2];
 
