@@ -167,10 +167,7 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
                 vec![],
             ),
-            (
-                "opentelemetry.proto.metrics.v1.SummaryDataPoint",
-                vec!["time_unix_nano", "quantile_values"],
-            ),
+            ("opentelemetry.proto.metrics.v1.SummaryDataPoint", vec![]),
             (
                 "opentelemetry.proto.metrics.v1.Exemplar",
                 vec!["time_unix_nano", "value"],

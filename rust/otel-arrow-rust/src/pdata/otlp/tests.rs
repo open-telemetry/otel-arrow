@@ -690,30 +690,28 @@ fn test_metric_summary() {
     let m1 = Metric::build()
         .name("summary")
         .data_summary(Summary::new(vec![
-            SummaryDataPoint::build(
-                125_000_000_000u64,
-                vec![
+            SummaryDataPoint::build()
+                .time_unix_nano(125_000_000_000u64)
+                .quantile_values(vec![
                     ValueAtQuantile::new(0.1, 0.1),
                     ValueAtQuantile::new(0.5, 2.1),
                     ValueAtQuantile::new(1.0, 10.1),
-                ],
-            )
-            .start_time_unix_nano(124_000_000_000u64)
-            .count(100u64)
-            .sum(1000.0)
-            .finish(),
-            SummaryDataPoint::build(
-                126_000_000_000u64,
-                vec![
+                ])
+                .start_time_unix_nano(124_000_000_000u64)
+                .count(100u64)
+                .sum(1000.0)
+                .finish(),
+            SummaryDataPoint::build()
+                .time_unix_nano(126_000_000_000u64)
+                .quantile_values(vec![
                     ValueAtQuantile::new(0.1, 0.5),
                     ValueAtQuantile::new(0.5, 2.5),
                     ValueAtQuantile::new(1.0, 10.5),
-                ],
-            )
-            .start_time_unix_nano(124_000_000_000u64)
-            .count(200u64)
-            .sum(2000.0)
-            .finish(),
+                ])
+                .start_time_unix_nano(124_000_000_000u64)
+                .count(200u64)
+                .sum(2000.0)
+                .finish(),
         ]))
         .finish();
 
