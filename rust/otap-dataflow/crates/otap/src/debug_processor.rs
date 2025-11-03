@@ -589,28 +589,28 @@ mod tests {
                 .expect("Processor failed on Shutdown");
                 assert!(ctx.drain_pdata().await.is_empty());
 
-                let logs_data = LogsData::new(vec![
-                    ResourceLogs::build(Resource::default())
-                        .scope_logs(vec![
-                            ScopeLogs::build(
-                                InstrumentationScope::build("library")
-                                    .version("scopev1")
-                                    .finish(),
-                            )
-                            .log_records(vec![
-                                LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                                    .observed_time_unix_nano(3_000_000_000u64)
-                                    .attributes(vec![KeyValue::new(
-                                        "log_attr1",
-                                        AnyValue::new_string("log_val_1"),
-                                    )])
-                                    .body(AnyValue::new_string("log_body"))
-                                    .finish(),
-                            ])
+                let logs_data = LogsData::new(vec![ResourceLogs::new(
+                    Resource::default(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
                             .finish(),
-                        ])
-                        .finish(),
-                ]);
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(2_000_000_000u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event1")
+                                .observed_time_unix_nano(3_000_000_000u64)
+                                .attributes(vec![KeyValue::new(
+                                    "log_attr1",
+                                    AnyValue::new_string("log_val_1"),
+                                )])
+                                .body(AnyValue::new_string("log_body"))
+                                .finish(),
+                        ],
+                    )],
+                )]);
 
                 //convert logsdata to otappdata
                 let mut bytes = vec![];
@@ -625,36 +625,38 @@ mod tests {
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1);
 
-                let metrics_data = MetricsData::new(vec![
-                    ResourceMetrics::build(Resource::default())
-                        .scope_metrics(vec![
-                            ScopeMetrics::build(
-                                InstrumentationScope::build("library")
-                                    .version("scopev1")
-                                    .finish(),
-                            )
-                            .metrics(vec![
-                                Metric::build_gauge(
-                                    "gauge name",
-                                    Gauge::new(vec![
-                                        NumberDataPoint::build_double(123u64, std::f64::consts::PI)
-                                            .attributes(vec![KeyValue::new(
-                                                "gauge_attr1",
-                                                AnyValue::new_string("gauge_val"),
-                                            )])
-                                            .start_time_unix_nano(456u64)
-                                            .exemplars(vec![
-                                                Exemplar::build_int(678u64, 234i64)
-                                                    .filtered_attributes(vec![KeyValue::new(
-                                                        "exemplar_attr",
-                                                        AnyValue::new_string("exemplar_val"),
-                                                    )])
-                                                    .finish(),
-                                            ])
-                                            .flags(1u32)
-                                            .finish(),
-                                    ]),
-                                )
+                let metrics_data = MetricsData::new(vec![ResourceMetrics::new(
+                    Resource::default(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .finish(),
+                        vec![
+                            Metric::build()
+                                .name("gauge name")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(123u64)
+                                        .value_double(std::f64::consts::PI)
+                                        .attributes(vec![KeyValue::new(
+                                            "gauge_attr1",
+                                            AnyValue::new_string("gauge_val"),
+                                        )])
+                                        .start_time_unix_nano(456u64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_int(234i64)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exemplar_attr",
+                                                    AnyValue::new_string("exemplar_val"),
+                                                )])
+                                                .finish(),
+                                        ])
+                                        .flags(1u32)
+                                        .finish(),
+                                ]))
                                 .description("here's a description")
                                 .unit("a unit")
                                 .metadata(vec![KeyValue::new(
@@ -662,11 +664,10 @@ mod tests {
                                     AnyValue::new_string("metric_val"),
                                 )])
                                 .finish(),
-                            ])
-                            .finish(),
-                        ])
-                        .finish(),
-                ]);
+                        ],
+                    )],
+                )]);
+
                 bytes = vec![];
                 metrics_data
                     .encode(&mut bytes)

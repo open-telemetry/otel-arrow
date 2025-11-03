@@ -26,24 +26,23 @@ use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
 pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
-    let scopes: Vec<ScopeSpans> = vec![
-        ScopeSpans::build(
-            InstrumentationScope::build(get_scope_name())
-                .version(get_scope_version())
-                .finish(),
-        )
-        .spans(spans(signal_count, registry))
-        .finish(),
-    ];
+    let scopes: Vec<ScopeSpans> = vec![ScopeSpans::new(
+        InstrumentationScope::build()
+            .name(get_scope_name())
+            .version(get_scope_version())
+            .finish(),
+        spans(signal_count, registry),
+    )];
 
-    let resources: Vec<ResourceSpans> = vec![
-        ResourceSpans::build(Resource::build(vec![KeyValue::new(
-            "fake_data_generator",
-            AnyValue::new_string("v1"),
-        )]))
-        .scope_spans(scopes)
-        .finish(),
-    ];
+    let resources: Vec<ResourceSpans> = vec![ResourceSpans::new(
+        Resource::build()
+            .attributes(vec![KeyValue::new(
+                "fake_data_generator",
+                AnyValue::new_string("v1"),
+            )])
+            .finish(),
+        scopes,
+    )];
     TracesData::new(resources)
 }
 
