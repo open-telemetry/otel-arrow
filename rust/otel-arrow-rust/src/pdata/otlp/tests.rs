@@ -197,7 +197,7 @@ fn test_log_record_required_all() {
 
 #[test]
 fn test_instrumentation_scope_default() {
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
     let is1_value = InstrumentationScope {
         name: "library".into(),
         ..Default::default()
@@ -210,7 +210,8 @@ fn test_instrumentation_scope_options() {
     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
     let kvs = vec![kv1, kv2];
-    let is1 = InstrumentationScope::build("library")
+    let is1 = InstrumentationScope::build()
+        .name("library")
         .version("v1.0")
         .attributes(kvs.clone())
         .dropped_attributes_count(1u32)
@@ -232,7 +233,7 @@ fn test_scope_logs() {
     let kvs1 = vec![kv1, kv2];
     let body2 = AnyValue::new_string("message text");
 
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
 
     let lr1 = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
         .attributes(kvs1.clone())
@@ -258,7 +259,8 @@ fn test_scope_logs() {
 
 #[test]
 fn test_entity() {
-    let er1 = EntityRef::build("entity")
+    let er1 = EntityRef::build()
+        .r#type("entity")
         .id_keys(&["a".to_string(), "b".to_string(), "c".to_string()])
         .description_keys(&["d".to_string(), "e".to_string(), "f".to_string()])
         .finish();
@@ -275,8 +277,8 @@ fn test_entity() {
 
 #[test]
 fn test_resource() {
-    let eref1 = EntityRef::new("etype1");
-    let eref2 = EntityRef::new("etype2");
+    let eref1 = EntityRef::build().r#type("etype1").finish();
+    let eref2 = EntityRef::build().r#type("etype2").finish();
 
     let erefs = vec![eref1, eref2];
 
@@ -298,7 +300,7 @@ fn test_resource_logs() {
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
     let kvs = vec![kv1, kv2];
 
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
 
     let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1");
     let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2");
@@ -349,7 +351,7 @@ fn test_resource_spans() {
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
     let kvs = vec![kv1, kv2];
 
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
 
     let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
     let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
@@ -401,7 +403,7 @@ fn test_traces_data() {
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
     let kvs = vec![kv1, kv2];
 
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
 
     let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
     let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();

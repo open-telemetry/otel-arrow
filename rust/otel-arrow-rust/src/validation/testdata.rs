@@ -96,7 +96,7 @@ pub mod logs {
         ExportLogsServiceRequest::new(vec![
             ResourceLogs::build(Resource::default())
                 .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::build("scope_name"))
+                    ScopeLogs::build(InstrumentationScope::build().name("scope_name").finish())
                         .log_records(log_records)
                         .finish(),
                 ])
