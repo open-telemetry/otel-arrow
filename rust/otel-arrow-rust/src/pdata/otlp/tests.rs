@@ -587,7 +587,9 @@ fn test_exemplar() {
     let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
     let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
 
-    let e1 = Exemplar::build_double(124_500_000_000u64, 10.1)
+    let e1 = Exemplar::build()
+        .time_unix_nano(124_500_000_000u64)
+        .value_double(10.1)
         .trace_id(tid)
         .span_id(sid)
         .finish();
@@ -618,7 +620,9 @@ fn test_metric_histogram() {
                     .explicit_bounds(&[1.0, 10.0])
                     .start_time_unix_nano(124_000_000_000u64)
                     .exemplars(vec![
-                        Exemplar::build_double(124_500_000_000u64, 10.1)
+                        Exemplar::build()
+                            .time_unix_nano(124_500_000_000u64)
+                            .value_int(10)
                             .span_id(sid)
                             .trace_id(tid)
                             .finish(),
@@ -653,7 +657,7 @@ fn test_metric_histogram() {
                         span_id: sid.0.to_vec(),
                         trace_id: tid.0.to_vec(),
                         time_unix_nano: 124_500_000_000u64,
-                        value: Some(ExemplarValue::AsDouble(10.1)),
+                        value: Some(ExemplarValue::AsInt(10)),
                     }],
                     flags: 0,
                     start_time_unix_nano: 124_000_000_000u64,
