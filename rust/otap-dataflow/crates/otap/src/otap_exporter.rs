@@ -55,9 +55,12 @@ use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio_stream::Stream;
 use std::time::Duration;
-use tokio::sync::{mpsc::{error::TrySendError, Receiver, Sender}, oneshot};
+use tokio::sync::{
+    mpsc::{Receiver, Sender, error::TrySendError},
+    oneshot,
+};
+use tokio_stream::Stream;
 use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
@@ -179,7 +182,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // TODO import so can use as just "channel" here
         // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
         let (logs_sender, logs_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
-        let (metrics_sender, metrics_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
+        let (metrics_sender, metrics_receiver) =
+            tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
         let (traces_sender, traces_receiver) = tokio::sync::mpsc::channel::<BatchArrowRecords>(64);
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -340,14 +344,8 @@ impl StreamingArrowService for ArrowTracesServiceClient<Channel> {
 
 #[derive(Clone, Copy)]
 enum PDataMetricsUpdate {
-    Exported {
-        signal: SignalType,
-        count: u64,
-    },
-    Failed {
-        signal: SignalType,
-        count: u64,
-    },
+    Exported { signal: SignalType, count: u64 },
+    Failed { signal: SignalType, count: u64 },
 }
 
 // Fast-path try_send keeps the exporter from yielding the single-threaded runtime every time it

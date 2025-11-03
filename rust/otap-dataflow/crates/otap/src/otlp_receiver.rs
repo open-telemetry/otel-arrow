@@ -252,8 +252,8 @@ mod tests {
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
-    use std::pin::Pin;
     use std::net::SocketAddr;
+    use std::pin::Pin;
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 

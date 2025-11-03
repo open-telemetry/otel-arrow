@@ -8,7 +8,8 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::future::poll_fn;
+use futures::ready;
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -171,21 +172,31 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::new();
-        let mut inflight: FuturesUnordered<ExportFuture> = FuturesUnordered::new();
+        let mut client_pool = ClientPool::new(channel, compression);
+        let mut inflight = InFlightQueue::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
         loop {
             if inflight.len() >= max_in_flight && pending_msg.is_some() {
-                if let Some(outcome) = inflight.next().await {
-                    process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
+                if let Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)).await {
+                    let client =
+                        process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics)
+                            .await;
+                    client_pool.release(client);
                 }
                 continue;
             }
 
             tokio::select! {
                 biased;
-                Some(outcome) = inflight.next(), if !inflight.is_empty() => {
-                    process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
+                Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)), if !inflight.is_empty() => {
+                    let client = process_export_outcome(
+                        outcome,
+                        &effect_handler,
+                        &mut self.pdata_metrics,
+                    )
+                    .await;
+                    client_pool.release(client);
                 }
                 msg = async {
                     if let Some(msg) = pending_msg.take() {
@@ -202,8 +213,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 pending_msg.is_none(),
                                 "pending message should have been drained before shutdown"
                             );
-                            while let Some(outcome) = inflight.next().await {
-                                process_export_outcome(outcome, &effect_handler, &mut self.pdata_metrics).await;
+                            while !inflight.is_empty() {
+                                if let Some(outcome) = poll_fn(|cx| inflight.poll_next(cx)).await {
+                                    let client = process_export_outcome(
+                                        outcome,
+                                        &effect_handler,
+                                        &mut self.pdata_metrics,
+                                    )
+                                    .await;
+                                    client_pool.release(client);
+                                }
                             }
                             _ = timer_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
@@ -232,11 +251,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Logs,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(
-                                                prepared,
-                                                channel.clone(),
-                                                compression,
-                                            );
+                                            let future = make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -254,11 +269,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Metrics,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(
-                                                prepared,
-                                                channel.clone(),
-                                                compression,
-                                            );
+                                            let future = make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -276,11 +287,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Traces,
                                     ) {
                                         Ok(prepared) => {
-                                            let future = make_export_future(
-                                                prepared,
-                                                channel.clone(),
-                                                compression,
-                                            );
+                                            let future = make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
                                         Err(_) => {
@@ -316,11 +323,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         }
                                     };
 
-                                    let future = make_export_future(
-                                        prepared,
-                                        channel.clone(),
-                                        compression,
-                                    );
+                                    let future = make_export_future(prepared, &mut client_pool);
                                     inflight.push(future);
                                 }
                             }
@@ -370,13 +373,6 @@ async fn handle_export_result<T>(
 
 struct PreparedExport {
     bytes: Bytes,
-    context: Context,
-    saved_payload: OtapPayload,
-    signal_type: SignalType,
-}
-
-struct ExportOutcome {
-    result: Result<(), tonic::Status>,
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
@@ -439,132 +435,83 @@ fn prepare_otlp_export(
     }
 }
 
-fn make_export_future(
-    prepared: PreparedExport,
-    channel: Channel,
-    compression: Option<CompressionEncoding>,
-) -> ExportFuture {
-    ExportFuture::new(prepared, channel, compression)
+fn make_export_future(prepared: PreparedExport, client_pool: &mut ClientPool) -> ExportFuture {
+    let PreparedExport {
+        bytes,
+        context,
+        saved_payload,
+        signal_type,
+    } = prepared;
+
+    let future: ExportTaskFuture = match signal_type {
+        SignalType::Logs => {
+            let mut client = client_pool.take_logs();
+            Box::pin(async move {
+                let result = client.export(bytes).await.map(|_| ());
+                (result, SignalClient::Logs(client))
+            })
+        }
+        SignalType::Metrics => {
+            let mut client = client_pool.take_metrics();
+            Box::pin(async move {
+                let result = client.export(bytes).await.map(|_| ());
+                (result, SignalClient::Metrics(client))
+            })
+        }
+        SignalType::Traces => {
+            let mut client = client_pool.take_traces();
+            Box::pin(async move {
+                let result = client.export(bytes).await.map(|_| ());
+                (result, SignalClient::Traces(client))
+            })
+        }
+    };
+
+    ExportFuture::new(future, context, saved_payload, signal_type)
 }
 
+type ExportTaskFuture =
+    Pin<Box<dyn Future<Output = (Result<(), tonic::Status>, SignalClient)> + 'static>>;
+
 struct ExportFuture {
-    state: ExportFutureState,
+    future: ExportTaskFuture,
     outcome_data: Option<(Context, OtapPayload)>,
     signal_type: SignalType,
 }
 
-enum ExportFutureState {
-    Pending(ExportFuturePending),
-    InFlight(Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>>),
-    Finished,
-}
-
-struct ExportFuturePending {
-    bytes: Bytes,
-    channel: Channel,
-    compression: Option<CompressionEncoding>,
-}
-
 impl ExportFuture {
     fn new(
-        prepared: PreparedExport,
-        channel: Channel,
-        compression: Option<CompressionEncoding>,
+        future: ExportTaskFuture,
+        context: Context,
+        saved_payload: OtapPayload,
+        signal_type: SignalType,
     ) -> Self {
-        let PreparedExport {
-            bytes,
-            context,
-            saved_payload,
-            signal_type,
-        } = prepared;
-
         Self {
-            state: ExportFutureState::Pending(ExportFuturePending {
-                bytes,
-                channel,
-                compression,
-            }),
+            future,
             outcome_data: Some((context, saved_payload)),
             signal_type,
         }
     }
 }
 
+impl Unpin for ExportFuture {}
+
 impl Future for ExportFuture {
     type Output = ExportOutcome;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        loop {
-            match &mut self.state {
-                ExportFutureState::Pending(_) => {
-                    let pending = match mem::replace(&mut self.state, ExportFutureState::Finished) {
-                        ExportFutureState::Pending(pending) => pending,
-                        other => {
-                            self.state = other;
-                            continue;
-                        }
-                    };
-                    let future = pending.into_future(self.signal_type);
-                    self.state = ExportFutureState::InFlight(future);
-                }
-                ExportFutureState::InFlight(future) => match future.as_mut().poll(cx) {
-                    Poll::Ready(result) => {
-                        self.state = ExportFutureState::Finished;
-                        let (context, saved_payload) = self
-                            .outcome_data
-                            .take()
-                            .expect("outcome data already taken");
-                        return Poll::Ready(ExportOutcome {
-                            result,
-                            context,
-                            saved_payload,
-                            signal_type: self.signal_type,
-                        });
-                    }
-                    Poll::Pending => return Poll::Pending,
-                },
-                ExportFutureState::Finished => {
-                    panic!("polled ExportFuture after completion");
-                }
-            }
-        }
-    }
-}
-
-impl ExportFuturePending {
-    fn into_future(
-        self,
-        signal_type: SignalType,
-    ) -> Pin<Box<dyn Future<Output = Result<(), tonic::Status>> + 'static>> {
-        let ExportFuturePending {
-            bytes,
-            channel,
-            compression,
-        } = self;
-
-        match signal_type {
-            SignalType::Logs => Box::pin(async move {
-                let mut client = LogsServiceClient::new(channel);
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }),
-            SignalType::Metrics => Box::pin(async move {
-                let mut client = MetricsServiceClient::new(channel);
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }),
-            SignalType::Traces => Box::pin(async move {
-                let mut client = TraceServiceClient::new(channel);
-                if let Some(encoding) = compression {
-                    client = client.send_compressed(encoding);
-                }
-                client.export(bytes).await.map(|_| ())
-            }),
-        }
+        let (result, client) = ready!(self.future.as_mut().poll(cx));
+        let (context, saved_payload) = self
+            .outcome_data
+            .take()
+            .expect("outcome data already taken");
+        Poll::Ready(ExportOutcome {
+            result,
+            context,
+            saved_payload,
+            signal_type: self.signal_type,
+            client,
+        })
     }
 }
 
@@ -572,18 +519,153 @@ async fn process_export_outcome(
     outcome: ExportOutcome,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
-) {
+) -> SignalClient {
     let ExportOutcome {
         result,
         context,
         saved_payload,
         signal_type,
+        client,
     } = outcome;
 
     match handle_export_result(result, context, saved_payload, effect_handler).await {
         Ok(()) => pdata_metrics.add_exported(signal_type, 1),
         Err(_) => pdata_metrics.add_failed(signal_type, 1),
     }
+
+    client
+}
+
+struct InFlightQueue {
+    futures: Vec<ExportFuture>,
+}
+
+impl InFlightQueue {
+    fn new() -> Self {
+        Self {
+            futures: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.futures.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.futures.is_empty()
+    }
+
+    fn push(&mut self, future: ExportFuture) {
+        self.futures.push(future);
+    }
+
+    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<ExportOutcome>> {
+        let mut index = 0;
+        while index < self.futures.len() {
+            let poll_result = {
+                let future = Pin::new(&mut self.futures[index]);
+                future.poll(cx)
+            };
+
+            match poll_result {
+                Poll::Ready(outcome) => {
+                    let _ = self.futures.swap_remove(index);
+                    return Poll::Ready(Some(outcome));
+                }
+                Poll::Pending => {
+                    index += 1;
+                }
+            }
+        }
+
+        if self.futures.is_empty() {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+struct ClientPool {
+    base_channel: Channel,
+    compression: Option<CompressionEncoding>,
+    logs: Vec<LogsServiceClient<Channel>>,
+    metrics: Vec<MetricsServiceClient<Channel>>,
+    traces: Vec<TraceServiceClient<Channel>>,
+}
+
+impl ClientPool {
+    fn new(base_channel: Channel, compression: Option<CompressionEncoding>) -> Self {
+        Self {
+            base_channel,
+            compression,
+            logs: Vec::new(),
+            metrics: Vec::new(),
+            traces: Vec::new(),
+        }
+    }
+
+    fn take_logs(&mut self) -> LogsServiceClient<Channel> {
+        self.logs.pop().unwrap_or_else(|| self.make_logs_client())
+    }
+
+    fn take_metrics(&mut self) -> MetricsServiceClient<Channel> {
+        self.metrics
+            .pop()
+            .unwrap_or_else(|| self.make_metrics_client())
+    }
+
+    fn take_traces(&mut self) -> TraceServiceClient<Channel> {
+        self.traces
+            .pop()
+            .unwrap_or_else(|| self.make_traces_client())
+    }
+
+    fn release(&mut self, client: SignalClient) {
+        match client {
+            SignalClient::Logs(client) => self.logs.push(client),
+            SignalClient::Metrics(client) => self.metrics.push(client),
+            SignalClient::Traces(client) => self.traces.push(client),
+        }
+    }
+
+    fn make_logs_client(&self) -> LogsServiceClient<Channel> {
+        let mut client = LogsServiceClient::new(self.base_channel.clone());
+        if let Some(encoding) = self.compression {
+            client = client.send_compressed(encoding);
+        }
+        client
+    }
+
+    fn make_metrics_client(&self) -> MetricsServiceClient<Channel> {
+        let mut client = MetricsServiceClient::new(self.base_channel.clone());
+        if let Some(encoding) = self.compression {
+            client = client.send_compressed(encoding);
+        }
+        client
+    }
+
+    fn make_traces_client(&self) -> TraceServiceClient<Channel> {
+        let mut client = TraceServiceClient::new(self.base_channel.clone());
+        if let Some(encoding) = self.compression {
+            client = client.send_compressed(encoding);
+        }
+        client
+    }
+}
+
+enum SignalClient {
+    Logs(LogsServiceClient<Channel>),
+    Metrics(MetricsServiceClient<Channel>),
+    Traces(TraceServiceClient<Channel>),
+}
+
+struct ExportOutcome {
+    result: Result<(), tonic::Status>,
+    context: Context,
+    saved_payload: OtapPayload,
+    signal_type: SignalType,
+    client: SignalClient,
 }
 
 #[cfg(test)]
