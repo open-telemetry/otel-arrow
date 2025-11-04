@@ -31,16 +31,16 @@ use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
 
-/// Shared state for binding requests with responses.  This map is
-/// generally optional depending on wait_for_result: true, we do not
-/// create or use the state when ack/nack is not required.
+/// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
+/// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
+/// map entirely.
 #[derive(Clone)]
-pub struct SharedState(
+pub struct AckSubscriptionState(
     // parking_lot mutex keeps the hot ACK/NACK path lock-free from poisoning.
     pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
 );
 
-impl SharedState {
+impl AckSubscriptionState {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
@@ -58,8 +58,8 @@ pub enum RouteResponse {
     Invalid,
 }
 
-impl SharedState {
-    /// Internal helper to route responses to slots
+impl AckSubscriptionState {
+    /// Routes the final outcome into the registered slot matching the provided `CallData`.
     #[must_use]
     pub fn route_response(
         &self,
@@ -219,11 +219,11 @@ fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
 /// not require Arc<Mutex<_>>.
 struct OtapBatchService {
     effect_handler: Option<EffectHandler<OtapPdata>>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
+    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<AckSubscriptionState>) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
@@ -235,7 +235,7 @@ impl OtapBatchService {
 /// drops the future.
 pub(crate) struct SlotGuard {
     pub(crate) key: SlotKey,
-    pub(crate) state: SharedState,
+    pub(crate) state: AckSubscriptionState,
 }
 
 impl Drop for SlotGuard {
@@ -330,14 +330,14 @@ fn unimplemented_resp() -> Response<Body> {
 #[derive(Clone)]
 pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
     settings: Settings,
 }
 
 impl ServerCommon {
     /// Get this server's shared state for Ack/Nack routing
     #[must_use]
-    pub fn state(&self) -> Option<SharedState> {
+    pub fn state(&self) -> Option<AckSubscriptionState> {
         self.state.clone()
     }
 
@@ -346,7 +346,7 @@ impl ServerCommon {
             effect_handler,
             state: settings
                 .wait_for_result
-                .then(|| SharedState::new(settings.max_concurrent_requests)),
+                .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
             settings: settings.clone(),
         }
     }

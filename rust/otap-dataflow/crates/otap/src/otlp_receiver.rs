@@ -1,9 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! # OTLP receiver architecture
+//!
+//! The receiver is registered in `OTAP_RECEIVER_FACTORIES` so the dataflow engine can spin it up
+//! from configuration. `OTLPReceiver::from_config` turns user provided configuration into the
+//! shared `GrpcServerConfig`.
+//!
+//! Once the TCP listener is bound the receiver builds three OTLP-specific gRPC servers (logs,
+//! metrics, traces). Each server is backed by the shared codecs in `otap_grpc::otlp::server`,
+//! producing lazily-decoded [`OtapPdata`](crate::pdata::OtapPdata) that are pushed straight into
+//! the pipeline. The `SignalAckRoutingState` bundle aggregates the per-signal subscription maps that
+//! connect incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
+//!
+//! A `tokio::select!` drives two responsibilities concurrently:
+//! - poll control messages from the engine (shutdown, telemetry collection, ACK/NACK forwarding)
+//! - serve the gRPC endpoints with the tuned concurrency settings derived from downstream channel
+//!   capacity.
+//!
+//! Periodic telemetry snapshots update the `OtlpReceiverMetrics` counters, which focus on ACK/NACK
+//! behaviour today. Additional instrumentation can be layered on the same metric set without
+//! changing the control loop.
+
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::GrpcServerConfig;
-use crate::otap_grpc::common::{self, SignalSharedStates};
+use crate::otap_grpc::common::{self, SignalAckRoutingState};
 use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
@@ -36,7 +57,7 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Shared gRPC server settings reused across receivers.
+    /// Shared gRPC configuration reused across gRPC-based receivers.
     #[serde(flatten)]
     pub grpc: GrpcServerConfig,
 }
@@ -47,8 +68,7 @@ pub struct OTLPReceiver {
     metrics: MetricSet<OtlpReceiverMetrics>,
 }
 
-/// Declares the OTLP receiver as a shared receiver factory
-///
+/// Declares the OTLP receiver as a shared receiver factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -129,13 +149,15 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let config = &self.config.grpc;
         let listener = effect_handler.tcp_listener(config.listening_addr)?;
+        // Wrap the raw listener to enforce keepalive/nodelay socket tuning on accepted streams.
         let incoming = config.build_tcp_incoming(listener);
         let settings = config.build_settings();
 
         let logs_server = LogsServiceServer::new(effect_handler.clone(), &settings);
         let metrics_server = MetricsServiceServer::new(effect_handler.clone(), &settings);
         let traces_server = TraceServiceServer::new(effect_handler.clone(), &settings);
-        let states = SignalSharedStates::new(
+        // Gather the per-signal subscription maps so ACK/NACK routing stays signal-aware.
+        let ack_routing_states = SignalAckRoutingState::new(
             logs_server.common.state(),
             metrics_server.common.state(),
             traces_server.common.state(),
@@ -168,7 +190,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = common::route_ack_response(&states, ack);
+                            let resp = common::route_ack_response(&ack_routing_states, ack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -177,7 +199,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             );
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = common::route_nack_response(&states, nack);
+                            let resp = common::route_nack_response(&ack_routing_states, nack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,

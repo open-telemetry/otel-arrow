@@ -29,7 +29,7 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    otap_grpc::otlp::server::{SharedState, SlotGuard},
+    otap_grpc::otlp::server::{AckSubscriptionState, SlotGuard},
     pdata::{Context, OtapPdata},
 };
 
@@ -52,7 +52,7 @@ pub struct Settings {
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
 }
 
 impl ArrowLogsServiceImpl {
@@ -63,20 +63,20 @@ impl ArrowLogsServiceImpl {
             effect_handler,
             state: settings
                 .wait_for_result
-                .then(|| SharedState::new(settings.max_concurrent_requests)),
+                .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
         }
     }
 
     /// Get this server's shared state for Ack/Nack routing
     #[must_use]
-    pub fn state(&self) -> Option<SharedState> {
+    pub fn state(&self) -> Option<AckSubscriptionState> {
         self.state.clone()
     }
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
 }
 
 impl ArrowMetricsServiceImpl {
@@ -87,13 +87,13 @@ impl ArrowMetricsServiceImpl {
             effect_handler,
             state: settings
                 .wait_for_result
-                .then(|| SharedState::new(settings.max_concurrent_requests)),
+                .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
         }
     }
 
     /// Get this server's shared state for Ack/Nack routing
     #[must_use]
-    pub fn state(&self) -> Option<SharedState> {
+    pub fn state(&self) -> Option<AckSubscriptionState> {
         self.state.clone()
     }
 }
@@ -101,7 +101,7 @@ impl ArrowMetricsServiceImpl {
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
 }
 
 impl ArrowTracesServiceImpl {
@@ -112,13 +112,13 @@ impl ArrowTracesServiceImpl {
             effect_handler,
             state: settings
                 .wait_for_result
-                .then(|| SharedState::new(settings.max_concurrent_requests)),
+                .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
         }
     }
 
     /// Get this server's shared state for Ack/Nack routing
     #[must_use]
-    pub fn state(&self) -> Option<SharedState> {
+    pub fn state(&self) -> Option<AckSubscriptionState> {
         self.state.clone()
     }
 }
@@ -184,7 +184,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 fn build_response_stream<T, F>(
     input_stream: tonic::Streaming<BatchArrowRecords>,
     effect_handler: shared::EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSubscriptionState>,
     otap_batch: F,
 ) -> Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>
 where
@@ -199,7 +199,7 @@ where
         input_stream: tonic::Streaming<BatchArrowRecords>,
         consumer: Consumer,
         effect_handler: shared::EffectHandler<OtapPdata>,
-        state: Option<SharedState>,
+        state: Option<AckSubscriptionState>,
         otap_batch: F,
         finished: bool,
         _marker: PhantomData<fn() -> T>,
