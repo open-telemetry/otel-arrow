@@ -780,7 +780,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 mod test_helpers {
     use super::*;
     use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
@@ -795,55 +795,63 @@ mod test_helpers {
 
     // Test helper constants to avoid magic strings in scope names
     pub(super) fn one_trace_record() -> OtapArrowRecords {
-        let traces = TracesData::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::new("lib"))
-                        .spans(vec![
-                            Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
-                                .status(Status::new("ok", StatusCode::Ok))
-                                .finish(),
-                        ])
+        let traces = TracesData::new(vec![ResourceSpans::new(
+            Resource::default(),
+            vec![ScopeSpans::new(
+                InstrumentationScope::build().name("lib").finish(),
+                vec![
+                    Span::build()
+                        .trace_id(vec![0; 16])
+                        .span_id(vec![1; 8])
+                        .name("span")
+                        .start_time_unix_nano(1u64)
+                        .status(Status::new("ok", StatusCode::Ok))
                         .finish(),
-                ])
-                .finish(),
-        ]);
+                ],
+            )],
+        )]);
         crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
     }
 
     pub(super) fn one_metric_record() -> OtapArrowRecords {
         // Minimal metrics: one Gauge with one NumberDataPoint
-        let md = MetricsData::new(vec![
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::new("lib"))
-                        .metrics(vec![
-                            Metric::build_gauge(
-                                "g",
-                                Gauge::new(vec![NumberDataPoint::build_double(0u64, 1.0).finish()]),
-                            )
-                            .finish(),
-                        ])
+        let md = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().name("lib").finish(),
+                vec![
+                    Metric::build()
+                        .name("g")
+                        .data_gauge(Gauge::new(vec![
+                            NumberDataPoint::build()
+                                .time_unix_nano(0u64)
+                                .value_double(1.0)
+                                .finish(),
+                        ]))
                         .finish(),
-                ])
-                .finish(),
-        ]);
+                ],
+            )],
+        )]);
         crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
     }
 
     pub(super) fn logs_record_with_n_entries(n: usize) -> OtapArrowRecords {
         let logs: Vec<LogRecord> = (0..n)
-            .map(|i| LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}")).finish())
+            .map(|i| {
+                LogRecord::build()
+                    .time_unix_nano(i as u64)
+                    .severity_number(SeverityNumber::Info)
+                    .body(AnyValue::new_string(format!("log{i}")))
+                    .finish()
+            })
             .collect();
-        let logs_data = LogsData::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("lib"))
-                        .log_records(logs)
-                        .finish(),
-                ])
-                .finish(),
-        ]);
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("lib").finish(),
+                logs,
+            )],
+        )]);
         crate::encoder::encode_logs_otap_batch(&logs_data).expect("encode logs")
     }
 

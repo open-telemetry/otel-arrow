@@ -550,25 +550,26 @@ mod tests {
         scope_attrs: Vec<KeyValue>,
         log_attrs: Vec<KeyValue>,
     ) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource {
+        ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource {
                 attributes: res_attrs,
                 ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope {
+            },
+            vec![ScopeLogs::new(
+                InstrumentationScope {
                     attributes: scope_attrs,
                     ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                },
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .event_name("")
                         .attributes(log_attrs)
                         .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-        ])
+                ],
+            )],
+        )])
     }
 
     #[test]
