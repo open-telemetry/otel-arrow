@@ -62,18 +62,14 @@ impl MessageInfo {
                 "No required parameters found for OTLP type: {}",
                 type_name
             ));
-        
+
         let param_names: Vec<_> = param_config
             .required
             .iter()
             .map(|x| x.to_string())
             .collect();
-        
-        let ignored_names: Vec<_> = param_config
-            .ignored
-            .iter()
-            .map(|x| x.to_string())
-            .collect();
+
+        let ignored_names: Vec<_> = param_config.ignored.iter().map(|x| x.to_string()).collect();
 
         // Check if this struct has a oneof field
         let oneof_mapping = otlp_model::ONEOF_MAPPINGS

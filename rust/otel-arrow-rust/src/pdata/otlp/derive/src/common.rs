@@ -92,9 +92,7 @@ where
 }
 
 /// Generate builder methods for oneof variants when oneof is not in parameters
-pub fn builder_oneof_methods(
-    oneof_mapping: &(String, Vec<OneofCase>),
-) -> Vec<TokenStream> {
+pub fn builder_oneof_methods(oneof_mapping: &(String, Vec<OneofCase>)) -> Vec<TokenStream> {
     let (oneof_path, oneof_cases) = oneof_mapping;
     let oneof_name = oneof_path.split('.').last().unwrap();
     let oneof_ident = syn::Ident::new(oneof_name, proc_macro2::Span::call_site());
