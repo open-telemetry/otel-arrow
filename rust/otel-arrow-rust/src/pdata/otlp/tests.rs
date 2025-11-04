@@ -256,8 +256,8 @@ fn test_scope_logs() {
         .finish();
     let lrs = vec![lr1, lr2];
 
-    let mut sl = ScopeLogs::new(is1.clone(), lrs.clone());
-    sl.schema_url = "http://schema.opentelemetry.io".into();
+    let sl =
+        ScopeLogs::new(is1.clone(), lrs.clone()).set_schema_url("http://schema.opentelemetry.io");
 
     let sl_value = ScopeLogs {
         scope: Some(is1),
@@ -332,12 +332,12 @@ fn test_resource_logs() {
 
     let res = Resource::build().attributes(kvs).finish();
 
-    let rl = ResourceLogs::new(res.clone(), sls.clone());
+    let rl = ResourceLogs::new(res.clone(), sls.clone()).set_schema_url("a url");
 
     let rl_value = ResourceLogs {
         resource: Some(res),
         scope_logs: sls,
-        schema_url: "".into(),
+        schema_url: "a url".into(),
     };
 
     assert_eq!(rl, rl_value);

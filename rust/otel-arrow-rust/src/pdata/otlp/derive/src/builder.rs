@@ -140,6 +140,26 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         };
 
+    // Generate setter methods for ignored fields
+    // These methods consume self and return Self for fluent API
+    let ignored_setters: TokenVec = msg
+        .all_fields
+        .iter()
+        .filter(|info| msg.ignored_names.contains(&info.ident.to_string()))
+        .map(|info| {
+            let field_name = &info.ident;
+            let setter_name = create_ident(&format!("set_{}", field_name));
+            let field_type = &info.full_type_name;
+
+            quote! {
+                pub fn #setter_name<T: Into<#field_type>>(mut self, #field_name: T) -> Self {
+                    self.#field_name = #field_name.into();
+                    self
+                }
+            }
+        })
+        .collect();
+
     // Generate either constructors (mode 1) or builder pattern (mode 2), never both
     let expanded = if use_constructors {
         // Mode 1: Generate new() constructors (with oneof variants if applicable)
@@ -171,6 +191,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         quote! {
             impl #outer_name {
                 #(#all_constructors)*
+                #(#ignored_setters)*
             }
         }
     } else {
@@ -190,6 +211,8 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                         },
                     }
                 }
+
+                #(#ignored_setters)*
             }
 
             pub struct #builder_name {
