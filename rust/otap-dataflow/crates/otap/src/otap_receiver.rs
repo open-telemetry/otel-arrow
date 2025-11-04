@@ -28,7 +28,7 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::common::{self, SignalSharedStates};
+use crate::otap_grpc::common::{self, SignalAckRoutingState};
 use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use crate::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, GrpcServerSettings,
@@ -167,7 +167,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let metrics_service = ArrowMetricsServiceImpl::new(effect_handler.clone(), &settings);
         let traces_service = ArrowTracesServiceImpl::new(effect_handler.clone(), &settings);
 
-        let states = SignalSharedStates::new(
+        let states = SignalAckRoutingState::new(
             logs_service.state(),
             metrics_service.state(),
             traces_service.state(),

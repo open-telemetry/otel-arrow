@@ -46,6 +46,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -126,7 +127,7 @@ impl<PData> ControlChannel<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     core: EffectHandlerCore<PData>,
-    senders: Arc<EffectHandlerSenders<PData>>,
+    senders: Rc<EffectHandlerSenders<PData>>,
 }
 
 struct EffectHandlerSenders<PData> {
@@ -160,7 +161,7 @@ impl<PData> EffectHandler<PData> {
             None
         };
 
-        let senders = Arc::new(EffectHandlerSenders {
+        let senders = Rc::new(EffectHandlerSenders {
             msg_senders,
             default_sender,
         });

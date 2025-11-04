@@ -4,30 +4,30 @@
 //! Shared helpers for gRPC receivers.
 
 use crate::otap_grpc::GrpcServerSettings;
-use crate::otap_grpc::otlp::server::{RouteResponse, SharedState};
+use crate::otap_grpc::otlp::server::{AckSubscriptionState, RouteResponse};
 use crate::pdata::OtapPdata;
 use otap_df_config::experimental::SignalType;
 use otap_df_engine::control::{AckMsg, NackMsg};
 use tonic::transport::Server;
 
-/// Bundle of shared states for routing acknowledgements.
+/// Aggregates the per-signal ACK subscription maps that let us route responses back to callers.
 #[derive(Clone, Default)]
-pub struct SignalSharedStates {
-    /// Shared state for log acknowledgements.
-    pub logs: Option<SharedState>,
-    /// Shared state for metric acknowledgements.
-    pub metrics: Option<SharedState>,
-    /// Shared state for trace acknowledgements.
-    pub traces: Option<SharedState>,
+pub struct SignalAckRoutingState {
+    /// Subscription map for log acknowledgements.
+    pub logs: Option<AckSubscriptionState>,
+    /// Subscription map for metric acknowledgements.
+    pub metrics: Option<AckSubscriptionState>,
+    /// Subscription map for trace acknowledgements.
+    pub traces: Option<AckSubscriptionState>,
 }
 
-impl SignalSharedStates {
-    /// Creates a new bundle of optional shared states.
+impl SignalAckRoutingState {
+    /// Creates a new bundle of optional subscription maps.
     #[must_use]
     pub fn new(
-        logs: Option<SharedState>,
-        metrics: Option<SharedState>,
-        traces: Option<SharedState>,
+        logs: Option<AckSubscriptionState>,
+        metrics: Option<AckSubscriptionState>,
+        traces: Option<AckSubscriptionState>,
     ) -> Self {
         Self {
             logs,
@@ -37,9 +37,9 @@ impl SignalSharedStates {
     }
 }
 
-/// Routes an Ack message to the appropriate shared state.
+/// Routes an Ack message to the appropriate signal's subscription map.
 #[must_use]
-pub fn route_ack_response(states: &SignalSharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
+pub fn route_ack_response(states: &SignalAckRoutingState, ack: AckMsg<OtapPdata>) -> RouteResponse {
     let calldata = ack.calldata;
     let resp = Ok(());
     let state = match ack.accepted.signal_type() {
@@ -56,7 +56,7 @@ pub fn route_ack_response(states: &SignalSharedStates, ack: AckMsg<OtapPdata>) -
 /// Routes a Nack message to the appropriate shared state.
 #[must_use]
 pub fn route_nack_response(
-    states: &SignalSharedStates,
+    states: &SignalAckRoutingState,
     mut nack: NackMsg<OtapPdata>,
 ) -> RouteResponse {
     let calldata = std::mem::take(&mut nack.calldata);
