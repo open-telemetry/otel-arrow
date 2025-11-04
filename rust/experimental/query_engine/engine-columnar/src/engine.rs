@@ -38,7 +38,8 @@ use crate::datasource::table_provider::OtapBatchTable;
 use crate::error::{Error, Result};
 use crate::filter::Filter;
 
-// TODO comment what this is for
+/// This is used to build a datafusion `LogicalPlan` from a [`PipelineExpression`]
+// TODO could add more descriptive comments
 #[derive(Clone)]
 pub struct PipelinePlanBuilder {
     pub session_ctx: SessionContext,
@@ -47,7 +48,6 @@ pub struct PipelinePlanBuilder {
 }
 
 impl PipelinePlanBuilder {
-    // TODO comments
     pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
         // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
         let root_batch_payload_type = match batch {
@@ -82,7 +82,8 @@ impl PipelinePlanBuilder {
         let table_df = session_ctx.table(table_name).await?;
         let logical_plan = LogicalPlanBuilder::from(table_df.logical_plan().clone());
 
-        // TODO need a more efficient version of this
+        // TODO need a more efficient version of this. Adding row numbers is slow and sometimes
+        // unnecessary depending on the plan
         let logical_plan = logical_plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
 
         Ok(Self {
@@ -92,7 +93,6 @@ impl PipelinePlanBuilder {
         })
     }
 
-    // TODO comments
     pub async fn plan(&mut self, pipeline: &PipelineExpression) -> Result<()> {
         for data_expr in pipeline.get_expressions() {
             self.plan_data_expr(data_expr).await?;
@@ -560,7 +560,9 @@ impl ExecutablePipeline {
             }
         })?;
 
-        // TODO unwraps
+        // TODO don't unwrap here - convert the error
+        // TODO profile these calls and see if there's a faster way to do this (initial profiling)
+        // shows this is somewhat of a performance bottleneck
         let child_mask = build_uint16_id_filter(target_ids, ids_set).unwrap();
         let result_children = filter_record_batch(child_rb, &child_mask).unwrap();
         self.curr_batch.set(payload_type, result_children);
