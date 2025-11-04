@@ -28,7 +28,7 @@ use prost::Message;
 use std::hint::black_box;
 use std::sync::Arc;
 
-use data_engine_columnar::engine::{ExecutionContext, OtapBatchEngine};
+// use data_engine_columnar::engine::{ExecutionContext, OtapBatchEngine};
 
 #[tokio::main]
 async fn main() -> Result<(), DataFusionError> {
