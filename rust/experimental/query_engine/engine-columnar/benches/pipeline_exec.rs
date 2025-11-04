@@ -6,12 +6,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use data_engine_columnar::engine::{ExecutionContext, OtapBatchEngine};
+use data_engine_columnar::engine::ExecutablePipeline;
 use data_engine_kql_parser::{KqlParser, Parser};
 use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use otap_df_otap::encoder::encode_logs_otap_batch;
 use otap_df_otap::proto::opentelemetry::logs::v1::SeverityNumber;
@@ -135,15 +134,18 @@ fn bench_exec_pipelines(c: &mut Criterion) {
                 let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
                 let pipeline = KqlParser::parse(query).expect("can parse pipeline");
                 rt.block_on(async move {
-                    let mut exec_ctx = ExecutionContext::try_new(batch.clone()).await.unwrap();
-                    let engine = OtapBatchEngine::new();
-                    engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
+                    // let mut exec_ctx = ExecutionContext::try_new(batch.clone()).await.unwrap();
+                    // let engine = OtapBatchEngine::new();
+                    // engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
                     // exec_ctx.print_phy_plans();
+                    let mut exec_pipeline = ExecutablePipeline::try_new(batch.clone(), pipeline)
+                        .await
+                        .unwrap();
 
                     let start = Instant::now();
                     for _ in 0..iters {
-                        exec_ctx.update_batch(batch.clone()).unwrap();
-                        engine.execute(&pipeline, &mut exec_ctx).await.unwrap();
+                        exec_pipeline.update_batch(batch.clone()).unwrap();
+                        exec_pipeline.execute().await.unwrap();
                     }
                     start.elapsed()
                 })

@@ -18,8 +18,8 @@ use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::display::DisplayFormatType;
-use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::execution_plan::SchedulingType;
+use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::projection::ProjectionExpr;
 use datafusion::physical_plan::{
     DisplayAs, ExecutionPlan, Partitioning, PlanProperties, with_new_children_if_necessary,
@@ -30,7 +30,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 // TODO comment on what this is doing
 #[derive(Debug)]
 pub struct OtapBatchDataSource {
-    curr_memory_source: RwLock<MemorySourceConfig>
+    curr_memory_source: RwLock<MemorySourceConfig>,
 }
 
 impl OtapBatchDataSource {
@@ -44,8 +44,8 @@ impl OtapBatchDataSource {
             curr_memory_source: RwLock::new(MemorySourceConfig::try_new(
                 &vec![vec![batch]],
                 schema,
-                projections
-            )?)
+                projections,
+            )?),
         })
     }
 
@@ -60,7 +60,11 @@ impl OtapBatchDataSource {
         curr_source.projection().clone()
     }
 
-    fn replace_batch(&self, next_batch: RecordBatch, projections: Option<Vec<usize>>) -> Result<()>{
+    fn replace_batch(
+        &self,
+        next_batch: RecordBatch,
+        projections: Option<Vec<usize>>,
+    ) -> Result<()> {
         let schema = next_batch.schema();
         let next_source = MemorySourceConfig::try_new(&[vec![next_batch]], schema, projections)?;
         let mut curr_source = self.curr_memory_source.write().unwrap();
@@ -135,11 +139,7 @@ pub struct OtapDataSourceExec {
 }
 
 impl OtapDataSourceExec {
-    pub fn new(
-        payload_type: ArrowPayloadType, 
-        data_source: OtapBatchDataSource
-        // data_source: MemorySourceConfig
-    ) -> Self {
+    pub fn new(payload_type: ArrowPayloadType, data_source: OtapBatchDataSource) -> Self {
         Self {
             payload_type,
             source_plan: DataSourceExec::new(Arc::new(data_source)),
@@ -150,15 +150,23 @@ impl OtapDataSourceExec {
     pub fn try_with_next_batch(&self, mut next_batch: RecordBatch) -> Result<Option<Self>> {
         let data_source = self.source_plan.data_source();
         if let Some(curr_data_source) = data_source.as_any().downcast_ref::<OtapBatchDataSource>() {
-        // if let Some(curr_data_source) = data_source.as_any().downcast_ref::<MemorySourceConfig>() {
             let curr_batch_schema = curr_data_source.original_schema();
             let curr_batch_projection = curr_data_source.projection();
             let mut next_batch_schema = next_batch.schema();
             let (next_batch_projection, placeholders) = self.next_project(
-                curr_batch_projection,
+                curr_batch_projection.as_deref(),
                 curr_batch_schema,
                 next_batch_schema.clone(),
             );
+
+            // the current batch has the same schema as the next batch, so we will just update the
+            // datasource's current batch and return
+            if Some(&next_batch_projection) == curr_batch_projection.as_ref()
+                && placeholders == None
+            {
+                curr_data_source.replace_batch(next_batch, Some(next_batch_projection))?;
+                return Ok(None);
+            }
 
             // some columns from the previous batch were not present in this batch, so we need to
             // add some all-null placeholders
@@ -190,21 +198,12 @@ impl OtapDataSourceExec {
                     .expect("can build new record batch");
             }
 
-            // if blah blah
-            curr_data_source.replace_batch(next_batch, Some(next_batch_projection))?;
-            Ok(None)
-
-            // let next_data_source = OtapBatchDataSource::try_new(next_batch, Some(next_batch_projection))?;
-            // // let next_data_source = MemorySourceConfig::try_new(
-            // //     &[vec![next_batch]],
-            // //     next_batch_schema,
-            // //     Some(next_batch_projection)
-            // // )?;
-
-            // Ok(Some(Self {
-            //     payload_type: self.payload_type,
-            //     source_plan: DataSourceExec::new(Arc::new(next_data_source)),
-            // }))
+            let next_data_source =
+                OtapBatchDataSource::try_new(next_batch, Some(next_batch_projection))?;
+            Ok(Some(Self {
+                payload_type: self.payload_type,
+                source_plan: DataSourceExec::new(Arc::new(next_data_source)),
+            }))
         } else {
             todo!("throw")
         }
@@ -215,7 +214,7 @@ impl OtapDataSourceExec {
     // TODO - optimize
     fn next_project(
         &self,
-        curr_batch_projection: Option<Vec<usize>>,
+        curr_batch_projection: Option<&[usize]>,
         curr_batch_schema: SchemaRef,
         next_batch_schema: SchemaRef,
     ) -> (Vec<usize>, Option<Vec<Field>>) {
@@ -225,10 +224,9 @@ impl OtapDataSourceExec {
 
         // first we want to project all columns from the next batch in the same order they were
         // projected in the previous batch
-        for curr_batch_field_id in ProjectionIter::new(
-            curr_batch_projection.as_deref(),
-            curr_batch_schema.fields.len(),
-        ) {
+        for curr_batch_field_id in
+            ProjectionIter::new(curr_batch_projection, curr_batch_schema.fields.len())
+        {
             let curr_batch_field = curr_batch_schema.field(curr_batch_field_id);
 
             // check if the next batch contains the same field in the same location. This would be
@@ -311,12 +309,6 @@ impl<'a> Iterator for ProjectionIter<'a> {
             ProjectionIter::Range(it) => it.next(),
         }
     }
-}
-
-// TODO refactor into using this
-struct BatchProjection {
-    columns: Vec<usize>,
-    placeholders: Option<Vec<Field>>,
 }
 
 impl DisplayAs for OtapDataSourceExec {
@@ -409,7 +401,7 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                 // it's good enough but could either be documented or more explicit
                 Ok(match next_batch_exec {
                     Some(next_batch_exec) => Arc::new(next_batch_exec),
-                    None => plan
+                    None => plan,
                 })
             } else {
                 // TODO if the plan selects a batch that doesn't contain some payload type, we should redo the planning
@@ -418,25 +410,19 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                     curr_batch_exec.payload_type
                 )))
             }
-        // } else if let Some(curr_coalesce_batch_exec) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
-        //     // use datafusion::physical_plan::ExecutionPlan;
-        //     // curr_coalesce_batch_exec.with
-        //     // plan.reset_state()
-        //     // Ok(plan)
-        //     curr_coalesce_batch_exec.children().iter().map(|c| self.optimize(child.clone(), config))
-
         } else if let Some(curr_hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
             // TODO comment on why we do this
             let curr_left = curr_hash_join.left.clone();
             let curr_right = curr_hash_join.right.clone();
             let left = self.optimize(curr_left.clone(), config)?;
             let right = self.optimize(curr_right.clone(), config)?;
-            // TODO not sure if this matters actually
+
+            // TODO not sure if this matters actually in terms of saving execution time, e.g. doing
+            // reset_state vs try_new
             if Arc::ptr_eq(&curr_left, &left) && Arc::ptr_eq(&curr_right, &right) {
-                // plan.reset_state()
-                Ok(plan)
+                plan.reset_state()
+                // Ok(plan)
             } else {
-                // println!("projection = {:?}", curr_hash_join.projection);
                 let new_hash_join = HashJoinExec::try_new(
                     left,
                     right,

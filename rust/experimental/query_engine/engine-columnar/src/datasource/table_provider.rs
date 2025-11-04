@@ -52,19 +52,8 @@ impl TableProvider for OtapBatchTable {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // println!("projection (table) = {:?}", projection);
-
-        let schema = self.current_batch.schema();
-        let data_source = OtapBatchDataSource::try_new(self.current_batch.clone(), projection.cloned())?;
-        // let data_source = MemorySourceConfig::try_new(
-        //     &[vec![
-        //         // TODO -- validate if it's somehow possible to avoid the clone here
-        //         self.current_batch.clone(),
-        //     ]],
-        //     schema,
-        //     projection.cloned(),
-        // )?;
-
+        let data_source =
+            OtapBatchDataSource::try_new(self.current_batch.clone(), projection.cloned())?;
         Ok(Arc::new(OtapDataSourceExec::new(
             self.payload_type,
             data_source,

@@ -40,7 +40,7 @@ mod test {
     use prost::Message;
 
     use crate::datasource::exec::UpdateDataSourceOptimizer;
-    use crate::engine::{ExecutionContext, OtapBatchEngine};
+    use crate::engine::{ExecutablePipeline, PipelinePlanBuilder};
 
     pub(crate) async fn apply_to_logs(
         record: ExportLogsServiceRequest,
@@ -50,10 +50,11 @@ mod test {
         record.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
         let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
-        let engine = OtapBatchEngine::new();
-        let mut exec_ctx = ExecutionContext::try_new(otap_batch).await.unwrap();
-        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
-        return exec_ctx.curr_batch;
+        let exec_pipeline = ExecutablePipeline::try_new(otap_batch, pipeline_expr)
+            .await
+            .unwrap();
+        exec_pipeline.execute().await.unwrap();
+        return exec_pipeline.curr_batch;
     }
 
     // TODO this might not be the right abstraction, it only works for filtering
@@ -160,16 +161,17 @@ mod test {
 
     #[tokio::test]
     async fn test_schema_modifications() {
+        // TODO should rewrite this test to use only the public facing APIs on ExecPipeline
+        // and should probably also move it back into the engine module
+
         let batch = generate_logs_batch(32, 100);
-        // let query = "logs | where attributes[\"k8s.ns\"] == \"prod\" or severity_text == \"WARN\"";
         let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
         let pipeline = KqlParser::parse(query).unwrap();
-        let engine = OtapBatchEngine::new();
-        let mut exec_ctx = ExecutionContext::try_new(batch).await.unwrap();
-        engine.plan(&mut exec_ctx, &pipeline).await.unwrap();
+        let mut pipeline_planner = PipelinePlanBuilder::try_new(batch).await.unwrap();
+        pipeline_planner.plan(&pipeline).await.unwrap();
 
-        let plan = exec_ctx.root_batch_plan().unwrap();
-        let ctx = exec_ctx.session_ctx.clone();
+        let plan = pipeline_planner.logical_plan.clone();
+        let ctx = pipeline_planner.session_ctx.clone();
         let logical_plan = plan.build().unwrap();
         println!("original logical plan:\n{}\n", logical_plan);
 

@@ -19,7 +19,7 @@ use crate::common::{
     try_static_scalar_to_literal,
 };
 use crate::consts::ROW_NUMBER_COL;
-use crate::engine::ExecutionContext;
+use crate::engine::PipelinePlanBuilder;
 use crate::error::{Error, Result};
 
 pub struct Filter {
@@ -29,15 +29,15 @@ pub struct Filter {
 
 impl Filter {
     pub async fn try_from_predicate(
-        exec_ctx: &ExecutionContext,
+        plan_builder: &PipelinePlanBuilder,
         predicate: &LogicalExpression,
     ) -> Result<Self> {
         match predicate {
             LogicalExpression::And(and_expr) => {
                 let left_filter =
-                    Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_left())).await?;
+                    Box::pin(Self::try_from_predicate(plan_builder, and_expr.get_left())).await?;
                 let right_filter =
-                    Box::pin(Self::try_from_predicate(exec_ctx, and_expr.get_right())).await?;
+                    Box::pin(Self::try_from_predicate(plan_builder, and_expr.get_right())).await?;
 
                 let filter_expr = match (left_filter.filter_expr, right_filter.filter_expr) {
                     (Some(left), Some(right)) => Some(left.and(right)),
@@ -47,7 +47,7 @@ impl Filter {
 
                 let join = match (left_filter.join, right_filter.join) {
                     (Some(left_join), Some(right_join)) => {
-                        let mut plan = exec_ctx.root_batch_plan()?;
+                        let mut plan = plan_builder.logical_plan.clone();
                         plan = left_join.join_to_plan(plan)?;
                         plan = right_join.join_to_plan(plan)?;
 
@@ -67,16 +67,16 @@ impl Filter {
                 Ok(Self { filter_expr, join })
             }
 
-            LogicalExpression::Or(or_expr) => Self::try_from_or_expr(exec_ctx, or_expr).await,
+            LogicalExpression::Or(or_expr) => Self::try_from_or_expr(plan_builder, or_expr).await,
 
             LogicalExpression::Not(not_expr) => {
                 let not_filter = Box::pin(Self::try_from_predicate(
-                    exec_ctx,
+                    plan_builder,
                     not_expr.get_inner_expression(),
                 ))
                 .await?;
                 if let Some(not_join) = not_filter.join {
-                    let mut plan = exec_ctx.root_batch_plan()?;
+                    let mut plan = plan_builder.logical_plan.clone();
                     if let Some(filter_expr) = not_filter.filter_expr {
                         plan = plan.filter(filter_expr)?;
                     }
@@ -103,7 +103,7 @@ impl Filter {
 
             LogicalExpression::EqualTo(eq_expr) => {
                 Self::try_from_binary_expr(
-                    exec_ctx,
+                    plan_builder,
                     Operator::Eq,
                     eq_expr.get_left(),
                     eq_expr.get_right(),
@@ -112,7 +112,7 @@ impl Filter {
             }
             LogicalExpression::GreaterThan(eq_expr) => {
                 Self::try_from_binary_expr(
-                    exec_ctx,
+                    plan_builder,
                     Operator::Gt,
                     eq_expr.get_left(),
                     eq_expr.get_right(),
@@ -121,7 +121,7 @@ impl Filter {
             }
             LogicalExpression::GreaterThanOrEqualTo(eq_expr) => {
                 Self::try_from_binary_expr(
-                    exec_ctx,
+                    plan_builder,
                     Operator::GtEq,
                     eq_expr.get_left(),
                     eq_expr.get_right(),
@@ -135,7 +135,7 @@ impl Filter {
     }
 
     async fn try_from_or_expr(
-        exec_ctx: &ExecutionContext,
+        plan_builder: &PipelinePlanBuilder,
         or_expr: &OrLogicalExpression,
     ) -> Result<Self> {
         // TODO -- there are two things that might be inefficient in the handling of filters
@@ -156,19 +156,20 @@ impl Filter {
         //   investigation.
         //
 
-        let left_filter = Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_left())).await?;
+        let left_filter =
+            Box::pin(Self::try_from_predicate(plan_builder, or_expr.get_left())).await?;
         let right_filter =
-            Box::pin(Self::try_from_predicate(exec_ctx, or_expr.get_right())).await?;
+            Box::pin(Self::try_from_predicate(plan_builder, or_expr.get_right())).await?;
 
         match (left_filter.join, right_filter.join) {
             (Some(left_join), Some(right_join)) => {
-                let mut left_plan = exec_ctx.root_batch_plan()?;
+                let mut left_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = left_filter.filter_expr {
                     left_plan = left_plan.filter(filter_expr)?;
                 }
                 left_plan = left_join.join_to_plan(left_plan)?;
 
-                let mut right_plan = exec_ctx.root_batch_plan()?;
+                let mut right_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = right_filter.filter_expr {
                     right_plan = right_plan.filter(filter_expr)?;
                 }
@@ -195,13 +196,13 @@ impl Filter {
             }
 
             (Some(left_join), None) => {
-                let mut left_plan = exec_ctx.root_batch_plan()?;
+                let mut left_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = left_filter.filter_expr {
                     left_plan = left_plan.filter(filter_expr)?;
                 }
                 left_plan = left_join.join_to_plan(left_plan)?;
 
-                let mut right_plan = exec_ctx.root_batch_plan()?;
+                let mut right_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = right_filter.filter_expr {
                     right_plan = right_plan.filter(filter_expr)?;
                 }
@@ -227,12 +228,12 @@ impl Filter {
             }
 
             (None, Some(right_join)) => {
-                let mut left_plan = exec_ctx.root_batch_plan()?;
+                let mut left_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = left_filter.filter_expr {
                     left_plan = left_plan.filter(filter_expr)?;
                 }
 
-                let mut right_plan = exec_ctx.root_batch_plan()?;
+                let mut right_plan = plan_builder.logical_plan.clone();
                 if let Some(filter_expr) = right_filter.filter_expr {
                     right_plan = right_plan.filter(filter_expr)?;
                 }
@@ -276,7 +277,7 @@ impl Filter {
     }
 
     async fn try_from_binary_expr(
-        exec_ctx: &ExecutionContext,
+        plan_builder: &PipelinePlanBuilder,
         operator: Operator,
         left: &ScalarExpression,
         right: &ScalarExpression,
@@ -286,7 +287,7 @@ impl Filter {
 
         match left_arg {
             BinaryArg::Column(left_col) => {
-                let left_col_exists = exec_ctx.column_exists(&left_col)?;
+                let left_col_exists = plan_builder.column_exists(&left_col)?;
                 match left_col {
                     ColumnAccessor::ColumnName(col_name) => match right_arg {
                         BinaryArg::Column(right_col) => Err(Error::NotYetSupportedError {
@@ -350,7 +351,7 @@ impl Filter {
 
                             let attrs_payload_type = match attrs_identifier {
                                 AttributesIdentifier::Root => {
-                                    match exec_ctx.root_batch_payload_type()? {
+                                    match plan_builder.root_batch_payload_type()? {
                                         ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
                                         ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
                                         ArrowPayloadType::MultivariateMetrics
@@ -364,7 +365,7 @@ impl Filter {
                                 }
                                 AttributesIdentifier::NonRoot(payload_type) => payload_type,
                             };
-                            let attrs_filter = exec_ctx
+                            let attrs_filter = plan_builder
                                 .scan_batch_plan(attrs_payload_type)
                                 .await?
                                 .filter(and(
@@ -490,7 +491,7 @@ mod test {
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
 
-    use crate::engine::{ExecutionContext, OtapBatchEngine};
+    use crate::engine::ExecutablePipeline;
     use crate::test::{logs_to_export_req, run_logs_test};
 
     #[tokio::test]
@@ -1164,18 +1165,16 @@ mod test {
         export_req.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
         let input = encode_logs_otap_batch(&logs_view).unwrap();
-        let mut exec_ctx = ExecutionContext::try_new(input.clone()).await.unwrap();
-        let mut engine = OtapBatchEngine::new();
+        // let mut exec_ctx = ExecutionContext::try_new(input.clone()).await.unwrap();
+        // let mut engine = OtapBatchEngine::new();
 
-        engine
-            .execute(
-                &KqlParser::parse("logs | where event_name == \"1\"").unwrap(),
-                &mut exec_ctx,
-            )
+        let pipeline = KqlParser::parse("logs | where event_name == \"1\"").unwrap();
+        let exec_pipeline = ExecutablePipeline::try_new(input.clone(), pipeline)
             .await
             .unwrap();
+        exec_pipeline.execute().await.unwrap();
 
-        let result = exec_ctx.curr_batch;
+        let result = exec_pipeline.curr_batch;
 
         for payload_type in [
             ArrowPayloadType::LogAttrs,

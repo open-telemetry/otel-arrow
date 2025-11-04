@@ -3,23 +3,18 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::compute::concat_batches;
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
     PipelineExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
-use datafusion::catalog::MemTable;
 use datafusion::common::JoinType;
 use datafusion::execution::TaskContext;
-use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::{displayable, execute_stream, ExecutionPlan};
+use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -34,113 +29,30 @@ use crate::datasource::table_provider::OtapBatchTable;
 use crate::error::{Error, Result};
 use crate::filter::Filter;
 
-#[derive(Default)]
-pub struct OtapBatchEngine {}
+// TODO comment what this is for
+#[derive(Clone)]
+pub struct PipelinePlanBuilder {
+    pub session_ctx: SessionContext,
+    pub logical_plan: LogicalPlanBuilder,
+    batch: OtapArrowRecords,
+}
 
-impl OtapBatchEngine {
-    pub fn new() -> Self {
-        Self::default()
+impl PipelinePlanBuilder {
+    // TODO comments
+    pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
+        todo!()
     }
 
-    pub async fn execute(
-        &self,
-        pipeline: &PipelineExpression,
-        mut exec_ctx: &mut ExecutionContext,
-    ) -> Result<()> {
-        if exec_ctx.planned_execution.is_none() {
-            self.plan(&mut exec_ctx, pipeline).await?;
-
-            // do physical planning (TODO this could be a method on exec_ctx)
-            let state = exec_ctx.session_ctx.state();
-            let mut logical_plan = exec_ctx.curr_plan.clone().build()?;
-            logical_plan = state.optimize(&logical_plan)?;
-            let physical_plan = state.create_physical_plan(&logical_plan).await?;
-
-            exec_ctx.planned_execution = Some(PlannedExecution {
-                task_context: Arc::new(TaskContext::from(&state)),
-                root_physical_plan: physical_plan,
-                // TODO I can't decide when to plan these, so just deferring it until we need them
-                // which may or may not be correct
-                root_attrs_filter: None,
-                scope_attrs_filter: None,
-                resource_attrs_filter: None,
-            })
-        }
-
-        let planned_exec = exec_ctx
-            .planned_execution
-            .as_ref()
-            .expect("should be initialized");
-
-        // TODO this could be a method on planned_exec
-        let stream = execute_stream(
-            Arc::clone(&planned_exec.root_physical_plan),
-            Arc::clone(&planned_exec.task_context),
-        )?;
-        let batches = collect(stream).await?;
-
-        let result = if !batches.is_empty() {
-            // TODO not sure concat_batches is necessary here as there should only be one batch.
-            // need to double check if any repartitioning happens that could cause multiple batches
-            // safety: this shouldn't fail because all the batches should have same schema
-            // (datafusion enforces this)
-            let mut result =
-                concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches");
-
-            // remove the ROW_ID col
-            if let Ok(col_idx) = result.schema_ref().index_of(ROW_NUMBER_COL) {
-                _ = result.remove_column(col_idx);
-            }
-
-            result
-        } else {
-            let root_batch = exec_ctx
-                .curr_batch
-                .get(exec_ctx.root_batch_payload_type()?)
-                .ok_or(Error::InvalidBatchError {
-                    reason: "received OTAP batch missing root RecordBatch".into(),
-                })?;
-            RecordBatch::new_empty(root_batch.schema())
-        };
-
-        exec_ctx
-            .curr_batch
-            .set(exec_ctx.root_batch_payload_type()?, result);
-
-
-        // TODO add this back when it's rewritten to use arrow compute kernels because that will be faster
-        {
-            // TODO this is a hack to get the correct batch in the right place before updating the children
-            // exec_ctx.update_batch(exec_ctx.curr_batch.clone())?;
-            // update the attributes
-            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::LogAttrs)
-            //     .await?;
-            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ResourceAttrs)
-            //     .await?;
-            // self.filter_attrs_for_root(&mut exec_ctx, ArrowPayloadType::ScopeAttrs)
-            //     .await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn plan(
-        &self,
-        exec_ctx: &mut ExecutionContext,
-        pipeline: &PipelineExpression,
-    ) -> Result<()> {
+    // TODO comments
+    pub async fn plan(&mut self, pipeline: &PipelineExpression) -> Result<()> {
         for data_expr in pipeline.get_expressions() {
-            self.plan_data_expr(exec_ctx, data_expr).await?;
+            self.plan_data_expr(data_expr).await?;
         }
 
         Ok(())
     }
 
-    async fn plan_data_expr(
-        &self,
-        exec_ctx: &mut ExecutionContext,
-        data_expr: &DataExpression,
-    ) -> Result<()> {
+    async fn plan_data_expr(&mut self, data_expr: &DataExpression) -> Result<()> {
         match data_expr {
             DataExpression::Discard(discard) => {
                 if let Some(predicate) = discard.get_predicate() {
@@ -148,8 +60,7 @@ impl OtapBatchEngine {
                         // we do opposite of the discard predicate. e.g. keep what would be discarded
                         // note: this is effectively where we're handling the "where" clause of OPL
                         LogicalExpression::Not(not_expr) => {
-                            self.plan_filter(exec_ctx, not_expr.get_inner_expression())
-                                .await?;
+                            self.plan_filter(not_expr.get_inner_expression()).await?;
                         }
                         _ => {
                             return Err(Error::InvalidPipelineError {
@@ -165,9 +76,7 @@ impl OtapBatchEngine {
 
             DataExpression::Transform(transform_expr) => {
                 match transform_expr {
-                    TransformExpression::Set(set_expr) => {
-                        self.plan_set_field(exec_ctx, set_expr).await?
-                    }
+                    TransformExpression::Set(set_expr) => self.plan_set_field(set_expr).await?,
 
                     // TODO handle other types of transforms like map reduction, map rename, etc.
                     expr => {
@@ -178,7 +87,7 @@ impl OtapBatchEngine {
                 }
             }
             DataExpression::Conditional(conditional_expr) => {
-                self.plan_conditional(exec_ctx, conditional_expr).await?
+                self.plan_conditional(conditional_expr).await?
             }
             DataExpression::Summary(_) => {
                 return Err(Error::InvalidPipelineError {
@@ -190,32 +99,24 @@ impl OtapBatchEngine {
         Ok(())
     }
 
-    async fn plan_filter(
-        &self,
-        exec_ctx: &mut ExecutionContext,
-        predicate: &LogicalExpression,
-    ) -> Result<()> {
-        let filter = Filter::try_from_predicate(exec_ctx, predicate).await?;
-        let mut root_plan = exec_ctx.root_batch_plan()?;
+    async fn plan_filter(&mut self, predicate: &LogicalExpression) -> Result<()> {
+        let filter = Filter::try_from_predicate(&self, predicate).await?;
+        let mut plan = self.logical_plan.clone();
         if let Some(expr) = filter.filter_expr {
-            root_plan = root_plan.filter(expr)?;
+            plan = plan.filter(expr)?;
         }
 
         if let Some(join) = filter.join {
-            root_plan = join.join_to_plan(root_plan)?;
+            plan = join.join_to_plan(plan)?;
         }
 
         // update the current plan now that filters are applied
-        exec_ctx.curr_plan = root_plan;
+        self.logical_plan = plan;
 
         Ok(())
     }
 
-    async fn plan_set_field(
-        &self,
-        exec_ctx: &mut ExecutionContext,
-        set: &SetTransformExpression,
-    ) -> Result<()> {
+    async fn plan_set_field(&mut self, set: &SetTransformExpression) -> Result<()> {
         // TODO here we're setting the column from a literal, which is not quite correct.
         // ideally, we'd want to figure out if this column can be dictionary encoded, and if so
         // what is the minimum key size, and use the dict builder to compute the column value.
@@ -259,12 +160,12 @@ impl OtapBatchEngine {
             }
         };
 
-        let root_plan = exec_ctx.root_batch_plan()?;
         let new_col = source_expr.alias(&column_name);
         let mut col_exists = false;
 
         // select all current columns, replacing the column we're setting by name
-        let mut selection: Vec<Expr> = root_plan
+        let mut selection: Vec<Expr> = self
+            .logical_plan
             .schema()
             .fields()
             .iter()
@@ -286,36 +187,35 @@ impl OtapBatchEngine {
 
         let select_exprs = selection.into_iter().map(SelectExpr::Expression);
 
-        exec_ctx.curr_plan = root_plan.project(select_exprs)?;
+        self.logical_plan = self.logical_plan.clone().project(select_exprs)?;
 
         Ok(())
     }
 
     async fn plan_conditional(
-        &self,
-        exec_ctx: &mut ExecutionContext,
+        &mut self,
         conditional_expr: &ConditionalDataExpression,
     ) -> Result<()> {
         let branches = conditional_expr.get_branches();
 
         // handle if branch
         let (if_cond, if_data_exprs) = &branches[0];
-        let mut if_exec_ctx = exec_ctx.clone();
-        self.plan_filter(&mut if_exec_ctx, if_cond).await?;
+        let mut if_plan_builder = self.clone();
+        if_plan_builder.plan_filter(if_cond).await?;
 
         // save the filtered_plan
-        let filtered_plan = if_exec_ctx.root_batch_plan()?;
+        let filtered_plan = if_plan_builder.logical_plan.clone();
 
         // apply the data expressions inside the if plan
         for data_expr in if_data_exprs {
             // note: Box::pin here is required for recursion in async
-            Box::pin(self.plan_data_expr(&mut if_exec_ctx, data_expr)).await?;
+            Box::pin(if_plan_builder.plan_data_expr(data_expr)).await?;
         }
 
-        let mut result_plan = if_exec_ctx.curr_plan;
+        let mut result_plan = if_plan_builder.logical_plan;
 
         // build the plan for everything not selected by the if statement
-        let root_plan = exec_ctx.root_batch_plan()?;
+        let root_plan = self.logical_plan.clone();
 
         // TODO -- if the filter condition didn't have joins, we could probably
         // actually just use a `not(filter_cond)` here and avoid the join
@@ -329,24 +229,23 @@ impl OtapBatchEngine {
         // handle all the `else if`s
         for branch in branches.iter().skip(1) {
             let (else_if_cond, else_if_data_exprs) = &branch;
-            let mut else_if_exec_ctx = exec_ctx.clone();
-            else_if_exec_ctx.curr_plan = next_branch_plan.clone();
+            let mut else_if_plan_builder = self.clone();
+            else_if_plan_builder.logical_plan = next_branch_plan.clone();
 
             // apply the filter steps to everything not selected in the if
-            self.plan_filter(&mut else_if_exec_ctx, else_if_cond)
-                .await?;
+            else_if_plan_builder.plan_filter(else_if_cond).await?;
 
             // save the filter plan
-            let filtered_plan = else_if_exec_ctx.root_batch_plan()?;
+            let filtered_plan = else_if_plan_builder.logical_plan.clone();
 
             // apply the data expressions to rows that matches the else if condition
             for data_expr in else_if_data_exprs {
-                Box::pin(self.plan_data_expr(&mut else_if_exec_ctx, data_expr)).await?;
+                Box::pin(else_if_plan_builder.plan_data_expr(data_expr)).await?;
             }
 
             // update the result to union the results of the `if` branch with the results of this
             // `else if` branch
-            result_plan = result_plan.union(else_if_exec_ctx.curr_plan.build()?)?;
+            result_plan = result_plan.union(else_if_plan_builder.logical_plan.build()?)?;
 
             // the next branch will receive everything that didn't match the previous branches
             // and also didn't match this branch's conditions
@@ -364,12 +263,12 @@ impl OtapBatchEngine {
         let else_plan = match conditional_expr.get_default_branch() {
             Some(else_data_exprs) => {
                 // apply the pipeline to the leftover data
-                let mut else_exec_ctx = exec_ctx.clone();
-                else_exec_ctx.curr_plan = next_branch_plan;
+                let mut else_plan_builder = self.clone();
+                else_plan_builder.logical_plan = next_branch_plan;
                 for data_expr in else_data_exprs {
-                    Box::pin(self.plan_data_expr(&mut else_exec_ctx, data_expr)).await?;
+                    Box::pin(else_plan_builder.plan_data_expr(data_expr)).await?;
                 }
-                else_exec_ctx.curr_plan
+                else_plan_builder.logical_plan
             }
 
             None => {
@@ -378,273 +277,13 @@ impl OtapBatchEngine {
             }
         };
 
-        exec_ctx.curr_plan = result_plan.union(else_plan.build()?)?;
+        self.logical_plan = result_plan.union(else_plan.build()?)?;
 
         Ok(())
-    }
-
-    async fn filter_attrs_for_root(
-        &self,
-        exec_ctx: &mut ExecutionContext,
-        payload_type: ArrowPayloadType,
-    ) -> Result<()> {
-        if let Some(attrs_rb) = exec_ctx.curr_batch.get(payload_type) {
-            // TODO tons of unwraps below
-
-            let stream = match payload_type {
-                ArrowPayloadType::ResourceAttrs => {
-                    if exec_ctx
-                        .planned_execution
-                        .as_ref()
-                        .unwrap()
-                        .resource_attrs_filter
-                        .is_none()
-                    {
-                        let attrs_table_scan = exec_ctx
-                            .scan_batch_plan(payload_type)
-                            .await?
-                            .join_on(
-                                exec_ctx.root_batch_plan()?.build()?,
-                                JoinType::LeftSemi,
-                                [col(consts::RESOURCE)
-                                    .field(consts::ID)
-                                    .eq(col(consts::PARENT_ID))],
-                            )?
-                            .build()?;
-                        let state = exec_ctx.session_ctx.state();
-                        let logical_plan = state.optimize(&attrs_table_scan)?;
-                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
-                        planned_exec.resource_attrs_filter = Some(physical_plan);
-                    }
-                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
-                    let phy_plan = planned_exec
-                        .resource_attrs_filter
-                        .as_ref()
-                        .expect("root attrs filter plan initialized");
-                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
-                }
-                ArrowPayloadType::ScopeAttrs => {
-                    if exec_ctx
-                        .planned_execution
-                        .as_ref()
-                        .unwrap()
-                        .scope_attrs_filter
-                        .is_none()
-                    {
-                        let attrs_table_scan = exec_ctx
-                            .scan_batch_plan(payload_type)
-                            .await?
-                            .join_on(
-                                exec_ctx.root_batch_plan()?.build()?,
-                                JoinType::LeftSemi,
-                                [col(consts::SCOPE)
-                                    .field(consts::ID)
-                                    .eq(col(consts::PARENT_ID))],
-                            )?
-                            .build()?;
-                        let state = exec_ctx.session_ctx.state();
-                        let logical_plan = state.optimize(&attrs_table_scan)?;
-                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
-                        planned_exec.scope_attrs_filter = Some(physical_plan);
-                    }
-                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
-                    let phy_plan = planned_exec
-                        .scope_attrs_filter
-                        .as_ref()
-                        .expect("root attrs filter plan initialized");
-                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
-                }
-
-                // root attributes
-                _ => {
-                    if exec_ctx
-                        .planned_execution
-                        .as_ref()
-                        .unwrap()
-                        .root_attrs_filter
-                        .is_none()
-                    {
-                        let attrs_table_scan = exec_ctx
-                            .scan_batch_plan(payload_type)
-                            .await?
-                            .join(
-                                // exec_ctx.root_batch_plan()?.build()?,
-                                exec_ctx.scan_batch_plan(ArrowPayloadType::Logs).await?.build()?,
-                                JoinType::LeftSemi,
-                                (vec![consts::PARENT_ID], vec![consts::ID]),
-                                None,
-                            )?
-                            .build()?;
-                        let state = exec_ctx.session_ctx.state();
-                        let logical_plan = state.optimize(&attrs_table_scan)?;
-                        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-                        let planned_exec = exec_ctx.planned_execution.as_mut().unwrap();
-                        planned_exec.root_attrs_filter = Some(physical_plan);
-                    }
-                    let planned_exec = exec_ctx.planned_execution.as_ref().unwrap();
-                    let phy_plan = planned_exec
-                        .root_attrs_filter
-                        .as_ref()
-                        .expect("root attrs filter plan initialized");
-                    execute_stream(Arc::clone(phy_plan), Arc::clone(&planned_exec.task_context))?
-                }
-            };
-
-            let batches = collect(stream).await?;
-            let result = if !batches.is_empty() {
-                // safety: this shouldn't fail unless batches don't have matching schemas, but they
-                // will b/c datafusion enforces this
-                concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches")
-            } else {
-                RecordBatch::new_empty(attrs_rb.schema())
-            };
-
-            exec_ctx.curr_batch.set(payload_type, result);
-        }
-
-        Ok(())
-    }
-}
-
-// TODO rethink how the internal state in this thing is structured.
-// Currently it weirdly contains planning stuff for both logical and
-// physical plans and only one can be used at a time
-#[derive(Clone)]
-pub struct ExecutionContext {
-    curr_plan: LogicalPlanBuilder,
-
-    // TODO doesn't maybe need to be pub these next 2 members?
-    pub curr_batch: OtapArrowRecords,
-    pub session_ctx: SessionContext,
-
-    planned_execution: Option<PlannedExecution>,
-}
-
-// TODO there is so much duplicated code in this struct mama mia
-impl ExecutionContext {
-    pub fn print_phy_plans(&self) {
-        let planned_ex = self.planned_execution.as_ref().unwrap();
-        let plan = planned_ex.root_physical_plan.as_ref();
-        
-        println!("\nroot plan");
-        let dp = displayable(plan);
-        println!("{}", dp.indent(true));
-
-        println!("\nroot attrs plan:");
-        if let Some(plan) = planned_ex.root_attrs_filter.as_ref() {
-            let dp = displayable(plan.as_ref());
-            println!("{}", dp.indent(true));
-        } else {
-            println!("None")
-        }
-
-        println!("\nscope attrs plan:");
-        if let Some(plan) = planned_ex.scope_attrs_filter.as_ref() {
-            let dp = displayable(plan.as_ref());
-            println!("{}", dp.indent(true));
-        } else {
-            println!("None")
-        }
-
-        println!("\nres attrs plan:");
-        if let Some(plan) = planned_ex.scope_attrs_filter.as_ref() {
-            let dp = displayable(plan.as_ref());
-            println!("{}", dp.indent(true));
-        } else {
-            println!("None")
-        }
-        
-    }
-
-    pub fn update_batch(&mut self, otap_batch: OtapArrowRecords) -> Result<()> {
-        let plan_batch_updater = UpdateDataSourceOptimizer::new(otap_batch);
-        // TODO avoid copying the config
-        let session_config = self.session_ctx.copied_config();
-        let config_options = session_config.options();
-
-        if let Some(planned_execution) = &mut self.planned_execution {
-            let updated_root_plan = plan_batch_updater.optimize(
-                planned_execution.root_physical_plan.clone(),
-                config_options.as_ref(),
-            )?;
-            planned_execution.root_physical_plan = updated_root_plan;
-
-            if let Some(attrs_plan) = planned_execution.root_attrs_filter.take() {
-                let updated_plan =
-                    plan_batch_updater.optimize(attrs_plan, config_options.as_ref())?;
-                planned_execution.root_attrs_filter = Some(updated_plan);
-            }
-
-            if let Some(res_attrs_plan) = planned_execution.resource_attrs_filter.take() {
-                let updated_plan =
-                    plan_batch_updater.optimize(res_attrs_plan, config_options.as_ref())?;
-                planned_execution.resource_attrs_filter = Some(updated_plan);
-            }
-
-            if let Some(scope_attrs_plan) = planned_execution.resource_attrs_filter.take() {
-                let updated_plan =
-                    plan_batch_updater.optimize(scope_attrs_plan, config_options.as_ref())?;
-                planned_execution.resource_attrs_filter = Some(updated_plan);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
-        // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
-        let root_batch_payload_type = match batch {
-            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
-            _ => {
-                return Err(Error::NotYetSupportedError {
-                    message: "Only logs signal type is currently supported".into(),
-                });
-            }
-        };
-        let root_rb = batch
-            .get(root_batch_payload_type)
-            .ok_or(Error::InvalidBatchError {
-                reason: "received OTAP batch missing root RecordBatch".into(),
-            })?;
-
-        // TODO this logic is temporarily duplicated from scan_batch until figure out whether it
-        // makes more sense to just register everything in session ctx
-
-        let session_config = SessionConfig::new()
-            // since we're executing always in single threaded runtime it doesn't really make
-            // sense to spawn repartition tasks to repartition to do things in parallel.
-            .with_target_partitions(1)
-            .with_repartition_joins(false)
-            .with_repartition_file_scans(false)
-            .with_repartition_windows(false)
-            .with_repartition_aggregations(false);
-
-        let session_ctx = SessionContext::new_with_config(session_config);
-
-        let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
-        let table = OtapBatchTable::new(root_batch_payload_type, root_rb.clone());
-        session_ctx.register_table(&table_name, Arc::new(table))?;
-
-        let table_df = session_ctx.table(table_name).await?;
-        let plan = LogicalPlanBuilder::from(table_df.logical_plan().clone());
-
-        // add a row number column
-        // TODO comment on why we're doing this
-        // TODO this is a performance issue
-        // let plan = plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
-
-        Ok(Self {
-            curr_batch: batch,
-            curr_plan: plan,
-            session_ctx,
-            planned_execution: None,
-        })
     }
 
     pub fn root_batch_payload_type(&self) -> Result<ArrowPayloadType> {
-        match self.curr_batch {
+        match self.batch {
             OtapArrowRecords::Logs(_) => Ok(ArrowPayloadType::Logs),
             _ => Err(Error::NotYetSupportedError {
                 message: "Only logs signal type is currently supported".into(),
@@ -652,15 +291,11 @@ impl ExecutionContext {
         }
     }
 
-    pub fn root_batch_plan(&self) -> Result<LogicalPlanBuilder> {
-        Ok(self.curr_plan.clone())
-    }
-
     pub async fn scan_batch_plan(
         &self,
         payload_type: ArrowPayloadType,
     ) -> Result<LogicalPlanBuilder> {
-        if let Some(rb) = self.curr_batch.get(payload_type) {
+        if let Some(rb) = self.batch.get(payload_type) {
             // TODO make this a method
             let table_name = format!("{:?}", payload_type).to_ascii_lowercase();
             if !self.session_ctx.table_exist(&table_name)? {
@@ -690,7 +325,7 @@ impl ExecutionContext {
             ColumnAccessor::ColumnName(column_name) => {
                 // TODO - eventually we might need to loosen the assumption that this is
                 // a column on the root batch
-                if let Some(rb) = self.curr_batch.get(self.root_batch_payload_type()?) {
+                if let Some(rb) = self.batch.get(self.root_batch_payload_type()?) {
                     rb.column_by_name(column_name).is_some()
                 } else {
                     // it'd be unusual if the root batch didn't exit
@@ -707,15 +342,57 @@ impl ExecutionContext {
     }
 }
 
-// TODO comments on what this is about
-#[derive(Clone)]
-pub struct PlannedExecution {
+pub struct ExecutablePipeline {
+    _session_ctx: SessionContext,
+    session_config: SessionConfig,
     task_context: Arc<TaskContext>,
-    root_physical_plan: Arc<dyn ExecutionPlan>,
+    physical_plan: Arc<dyn ExecutionPlan>,
+    pub curr_batch: OtapArrowRecords,
+}
 
-    root_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
-    scope_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
-    resource_attrs_filter: Option<Arc<dyn ExecutionPlan>>,
+impl ExecutablePipeline {
+    pub async fn try_new(batch: OtapArrowRecords, pipeline: PipelineExpression) -> Result<Self> {
+        // populate expressions on logical plan builder
+        let mut pipeline_plan_builder = PipelinePlanBuilder::try_new(batch.clone()).await?;
+        pipeline_plan_builder.plan(&pipeline).await?;
+
+        // build logical plan:
+        let session_ctx = pipeline_plan_builder.session_ctx;
+        let state = session_ctx.state();
+        let mut logical_plan = pipeline_plan_builder.logical_plan.build()?;
+        logical_plan = state.optimize(&logical_plan)?;
+
+        // build physical plan new Self
+        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+        let session_config = session_ctx.copied_config();
+        let task_context = Arc::new(TaskContext::from(&state));
+
+        Ok(Self {
+            _session_ctx: session_ctx,
+            session_config,
+            task_context,
+            physical_plan,
+            curr_batch: batch,
+        })
+    }
+
+    pub fn update_batch(&mut self, next_batch: OtapArrowRecords) -> Result<()> {
+        let batch_updater = UpdateDataSourceOptimizer::new(next_batch);
+        let updated_plan = batch_updater.optimize(
+            Arc::clone(&self.physical_plan),
+            self.session_config.options(),
+        )?;
+        self.physical_plan = updated_plan;
+
+        Ok(())
+    }
+
+    pub async fn execute(&self) -> Result<()> {
+        let stream = execute_stream(self.physical_plan.clone(), self.task_context.clone())?;
+        let batches = collect(stream).await?;
+
+        todo!()
+    }
 }
 
 impl ColumnAccessor {
@@ -812,7 +489,7 @@ mod test {
     use otel_arrow_rust::proto::opentelemetry::{arrow::v1::ArrowPayloadType, logs::v1::LogRecord};
     use otel_arrow_rust::schema::consts;
 
-    use crate::engine::{ExecutionContext, OtapBatchEngine};
+    use crate::engine::ExecutablePipeline;
     use crate::test::{apply_to_logs, generate_logs_batch, logs_to_export_req};
 
     #[tokio::test]
@@ -1153,19 +830,22 @@ mod test {
         let pipeline_expr = KqlParser::parse(query).unwrap();
 
         let batch1 = generate_logs_batch(32, 100);
-        let mut exec_ctx = ExecutionContext::try_new(batch1).await.unwrap();
+        // let mut exec_ctx = ExecutionContext::try_new(batch1).await.unwrap();
 
-        let engine = OtapBatchEngine::new();
+        // let engine = OtapBatchEngine::new();
+        let mut exec_pipeline = ExecutablePipeline::try_new(batch1, pipeline_expr)
+            .await
+            .unwrap();
+        exec_pipeline.execute();
+        let result1 = exec_pipeline.curr_batch.clone();
 
-        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
-        let result1 = exec_ctx.curr_batch.clone();
-
-
+        // engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
+        // let result1 = exec_ctx.curr_batch.clone();
 
         // TODO need to add some real asserts here
 
         println!("plans b4 first result\n");
-        exec_ctx.print_phy_plans();
+        // exec_ctx.print_phy_plans();
 
         println!("\nresult1 logs:");
         arrow::util::pretty::print_batches(&[result1.get(ArrowPayloadType::Logs).unwrap().clone()])
@@ -1178,13 +858,15 @@ mod test {
         // .unwrap();
 
         let batch2 = generate_logs_batch(64, 200);
-        exec_ctx.update_batch(batch2).unwrap();
+        exec_pipeline.update_batch(batch2).unwrap();
+        // exec_ctx.update_batch(batch2).unwrap();
 
-        engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
-        let result2 = exec_ctx.curr_batch.clone();
+        // engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
+        exec_pipeline.execute().await.unwrap();
+        let result2 = exec_pipeline.curr_batch.clone();
 
         println!("plans b4 2nd result\n");
-        exec_ctx.print_phy_plans();
+        // exec_ctx.print_phy_plans();
 
         println!("result2 logs:");
         arrow::util::pretty::print_batches(&[result2.get(ArrowPayloadType::Logs).unwrap().clone()])
