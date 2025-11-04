@@ -88,7 +88,6 @@ Use `cargo expand` to see the full macro derivation.
 
 ### Example derived code: simple type
 
-
 The `TracesData` message object derives the following code, for example:
 
 ```rust
