@@ -1,15 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional
+//! streaming.
 //!
-//! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional streaming
-//!
-//! Implements the necessary service traits for OTLP data
+//! Implements the necessary service traits for OTLP data.
 //!
 //! ToDo: Modify OTAPData -> Optimize message transport
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
-//!
 
 use futures::stream;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
@@ -180,7 +179,8 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
     }
 }
 
-/// handles sending the data down the pipeline via effect_handler and generating the appropriate response
+/// Handles sending the data down the pipeline via effect_handler and generating the appropriate
+/// response stream.
 fn build_response_stream<T, F>(
     input_stream: tonic::Streaming<BatchArrowRecords>,
     effect_handler: shared::EffectHandler<OtapPdata>,

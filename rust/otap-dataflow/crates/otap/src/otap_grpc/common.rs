@@ -90,7 +90,8 @@ pub fn handle_route_response<T, F, G>(
     }
 }
 
-/// Tunes the maximum concurrent requests relative to the downstream capacity.
+/// Tunes the maximum concurrent requests relative to the downstream capacity (channel connecting
+/// the receiver to the rest of the pipeline).
 pub fn tune_max_concurrent_requests(config: &mut GrpcServerSettings, downstream_capacity: usize) {
     // Fall back to the downstream channel capacity when it is tighter than the user setting.
     let safe_capacity = downstream_capacity.max(1);

@@ -157,6 +157,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let config = &self.config.grpc;
         let listener = effect_handler.tcp_listener(config.listening_addr)?;
         let incoming = config.build_tcp_incoming(listener);
+        // ToDo `Settings` could be embedded into the `GrpcServerSettings` to avoid this extra step.
         let settings = Settings {
             max_concurrent_requests: config.max_concurrent_requests,
             wait_for_result: config.wait_for_result,
