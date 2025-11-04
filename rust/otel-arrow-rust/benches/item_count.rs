@@ -8,9 +8,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use otel_arrow_rust::pdata::otlp::ItemCounter;
-use otel_arrow_rust::pdata::otlp::LogsVisitor;
-
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
 use otel_arrow_rust::proto::opentelemetry::logs::v1::*;
 use otel_arrow_rust::proto::opentelemetry::resource::v1::*;
@@ -23,27 +20,28 @@ fn create_logs_data() -> LogsData {
             KeyValue::new("k1", AnyValue::new_string("v1")),
             KeyValue::new("k2", AnyValue::new_string("v2")),
         ];
-        let res = Resource::new(kvs.clone());
+        let res = Resource::build().attributes(kvs.clone()).finish();
         let mut sls: Vec<ScopeLogs> = vec![];
         for _ in 0..10 {
-            let is1 = InstrumentationScope::new("library");
+            let is1 = InstrumentationScope::build().name("library").finish();
 
             let mut lrs: Vec<LogRecord> = vec![];
 
             for _ in 0..10 {
-                let lr = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                let lr = LogRecord::build()
+                    .time_unix_nano(2_000_000_000u64)
+                    .severity_number(SeverityNumber::Info)
+                    .event_name("event1")
                     .attributes(kvs.clone())
                     .finish();
                 lrs.push(lr);
             }
 
-            let sl = ScopeLogs::build(is1.clone())
-                .log_records(lrs.clone())
-                .schema_url("http://schema.opentelemetry.io")
-                .finish();
+            let sl = ScopeLogs::new(is1.clone(), lrs.clone())
+                .set_schema_url("http://schema.opentelemetry.io");
             sls.push(sl);
         }
-        rl.push(ResourceLogs::build(res).scope_logs(sls).finish())
+        rl.push(ResourceLogs::new(res, sls))
     }
 
     LogsData::new(rl)
@@ -53,11 +51,6 @@ fn count_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs counting");
 
     let logs = create_logs_data();
-    assert_eq!(1000, ItemCounter::default().visit_logs(&logs));
-
-    _ = group.bench_function("Visitor", |b| {
-        b.iter(|| ItemCounter::default().visit_logs(&logs))
-    });
 
     _ = group.bench_function("Manual", |b| {
         b.iter(|| {

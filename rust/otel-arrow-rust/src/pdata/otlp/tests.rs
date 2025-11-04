@@ -391,7 +391,7 @@ fn test_resource_spans() {
                 .finish(),
         ])
         .end_time_unix_nano(124_000_000_000u64)
-        .status(Status::new("oh my!", StatusCode::Error))
+        .status(Status::new(StatusCode::Error, "oh my!"))
         .dropped_attributes_count(1u32)
         .dropped_events_count(1u32)
         .dropped_links_count(1u32)
@@ -446,7 +446,7 @@ fn test_traces_data() {
                 .finish(),
         ])
         .end_time_unix_nano(124_000_000_000u64)
-        .status(Status::new("oh my!", StatusCode::Error))
+        .status(Status::new(StatusCode::Error, "oh my!"))
         .dropped_attributes_count(1u32)
         .dropped_events_count(1u32)
         .dropped_links_count(1u32)
@@ -606,8 +606,8 @@ fn test_metric_histogram() {
             vec![
                 HistogramDataPoint::build()
                     .time_unix_nano(125_000_000_000u64)
-                    .bucket_counts(&[1u64, 2u64, 3u64])
-                    .explicit_bounds(&[1.0, 10.0])
+                    .bucket_counts([1u64, 2u64, 3u64])
+                    .explicit_bounds([1.0, 10.0])
                     .start_time_unix_nano(124_000_000_000u64)
                     .exemplars(vec![
                         Exemplar::build()

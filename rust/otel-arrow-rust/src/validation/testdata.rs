@@ -30,7 +30,7 @@ pub mod traces {
                 "test.attribute",
                 AnyValue::new_string("test value"),
             )])
-            .status(Status::new("success", StatusCode::Ok))
+            .status(Status::new(StatusCode::Ok, "success"))
             .finish();
 
         ExportTraceServiceRequest::new(vec![ResourceSpans::new(

@@ -753,7 +753,7 @@ mod test {
                             .trace_id(4u128.to_le_bytes().to_vec())
                             .start_time_unix_nano(1u64)
                             .end_time_unix_nano(2u64)
-                            .status(Status::new("statusa", StatusCode::Ok))
+                            .status(Status::new(StatusCode::Ok, "statusa"))
                             .attributes(vec![KeyValue::new("ake2", AnyValue::new_string("aval"))])
                             .finish(),
                     ],
@@ -778,7 +778,7 @@ mod test {
                                     "bke2",
                                     AnyValue::new_string("bval"),
                                 )])
-                                .status(Status::new("statusb", StatusCode::Error))
+                                .status(Status::new(StatusCode::Error, "statusb"))
                                 .events(vec![
                                     Event {
                                         time_unix_nano: 1,
