@@ -8,7 +8,7 @@
 //! requires it
 
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
@@ -22,6 +22,7 @@ use otap_df_config::experimental::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
 use tokio::sync::oneshot;
@@ -35,6 +36,7 @@ use tonic::server::{Grpc, NamedService, UnaryService};
 /// create or use the state when ack/nack is not required.
 #[derive(Clone)]
 pub struct SharedState(
+    // parking_lot mutex keeps the hot ACK/NACK path lock-free from poisoning.
     pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
 );
 
@@ -71,12 +73,7 @@ impl SharedState {
         };
 
         // Try to take the channel from the slot under the mutex.
-        let chan = self
-            .0
-            .lock()
-            .map(|mut state| state.take(key))
-            .ok()
-            .flatten();
+        let chan = self.0.lock().take(key);
 
         // Try to send.
         if chan.and_then(|sender| sender.send(result).ok()).is_some() {
@@ -94,10 +91,12 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
+    /// Maximum size for inbound gRPC messages.
+    pub max_decoding_message_size: Option<usize>,
     /// Request compression allowed
-    pub accept_compression_encodings: EnabledCompressionEncodings,
+    pub request_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
-    pub send_compression_encodings: EnabledCompressionEncodings,
+    pub response_compression_encodings: EnabledCompressionEncodings,
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
@@ -201,9 +200,13 @@ impl Decoder for OtlpBytesDecoder {
 /// would require Arc<Mutex<_>>.
 fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal);
-    Grpc::new(codec).apply_compression_config(
-        settings.accept_compression_encodings,
-        settings.send_compression_encodings,
+    let mut grpc = Grpc::new(codec);
+    if let Some(limit) = settings.max_decoding_message_size {
+        grpc = grpc.max_decoding_message_size(limit);
+    }
+    grpc.apply_compression_config(
+        settings.request_compression_encodings,
+        settings.response_compression_encodings,
     )
 }
 
@@ -233,9 +236,7 @@ pub(crate) struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.0.lock() {
-            state.cancel(self.key);
-        }
+        self.state.0.lock().cancel(self.key);
     }
 }
 
@@ -254,17 +255,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         Box::pin(async move {
             let cancel_rx = if let Some(state) = state {
                 // Try to allocate a slot (under the mutex) for calldata.
-                let (key, rx) = match state
-                    .0
-                    .lock()
-                    .map(|mut state| state.allocate(|| oneshot::channel()))
-                {
-                    Err(_) => return Err(Status::internal("Mutex poisoned")),
-                    Ok(None) => {
+                let mut guard = state.0.lock();
+                let (key, rx) = match guard.allocate(|| oneshot::channel()) {
+                    None => {
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
-                    Ok(Some(pair)) => pair,
+                    Some(pair) => pair,
                 };
+                drop(guard);
 
                 // Enter the subscription. Slot key becomes calldata.
                 effect_handler.subscribe_to(

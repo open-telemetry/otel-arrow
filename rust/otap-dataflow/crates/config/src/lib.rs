@@ -13,6 +13,7 @@
 //! A pipeline is a collection of nodes interconnected in a directed acyclic graph (DAG).
 
 use std::borrow::Cow;
+pub mod byte_units;
 pub mod engine;
 pub mod error;
 pub mod experimental;
