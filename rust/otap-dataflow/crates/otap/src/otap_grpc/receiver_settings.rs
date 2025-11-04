@@ -16,7 +16,7 @@ use tonic::transport::server::TcpIncoming;
 /// Common configuration shared across gRPC receivers.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GrpcServerConfig {
+pub struct GrpcServerSettings {
     /// The endpoint details: protocol, name, port.
     pub listening_addr: SocketAddr,
 
@@ -178,7 +178,7 @@ pub struct GrpcServerConfig {
     pub timeout: Option<Duration>,
 }
 
-impl GrpcServerConfig {
+impl GrpcServerSettings {
     /// Returns the compression methods accepted for requests.
     #[must_use]
     pub fn request_compression_methods(&self) -> Vec<CompressionMethod> {
@@ -306,7 +306,7 @@ const fn default_wait_for_result() -> bool {
     false
 }
 
-impl Default for GrpcServerConfig {
+impl Default for GrpcServerSettings {
     fn default() -> Self {
         Self {
             listening_addr: ([0, 0, 0, 0], 0).into(),

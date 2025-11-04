@@ -31,7 +31,7 @@ use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::common::{self, SignalSharedStates};
 use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use crate::otap_grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, GrpcServerConfig,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, GrpcServerSettings,
     Settings,
 };
 use crate::pdata::OtapPdata;
@@ -71,7 +71,7 @@ const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 pub struct Config {
     /// Shared gRPC server settings reused across receivers.
     #[serde(flatten)]
-    pub grpc: GrpcServerConfig,
+    pub grpc: GrpcServerSettings,
 }
 
 /// A Receiver that listens for OTAP messages

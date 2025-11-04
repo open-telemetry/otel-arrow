@@ -6,7 +6,7 @@ use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, Tr
 use crate::pdata::OtapPdata;
 
 use crate::otap_grpc::common::SignalSharedStates;
-use crate::otap_grpc::{GrpcServerConfig, common};
+use crate::otap_grpc::{GrpcServerSettings, common};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -38,7 +38,7 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 pub struct Config {
     /// Shared gRPC server settings reused across receivers.
     #[serde(flatten)]
-    pub grpc: GrpcServerConfig,
+    pub grpc: GrpcServerSettings,
 }
 
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
@@ -260,7 +260,7 @@ mod tests {
     use tokio::time::timeout;
 
     fn test_config(addr: SocketAddr) -> Config {
-        let grpc = GrpcServerConfig {
+        let grpc = GrpcServerSettings {
             listening_addr: addr,
             max_concurrent_requests: 1000,
             wait_for_result: true,

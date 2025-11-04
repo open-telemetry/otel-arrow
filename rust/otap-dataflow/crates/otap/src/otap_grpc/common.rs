@@ -3,7 +3,7 @@
 
 //! Shared helpers for gRPC receivers.
 
-use crate::otap_grpc::GrpcServerConfig;
+use crate::otap_grpc::GrpcServerSettings;
 use crate::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use crate::pdata::OtapPdata;
 use otap_df_config::experimental::SignalType;
@@ -91,7 +91,7 @@ pub fn handle_route_response<T, F, G>(
 }
 
 /// Tunes the maximum concurrent requests relative to the downstream capacity.
-pub fn tune_max_concurrent_requests(config: &mut GrpcServerConfig, downstream_capacity: usize) {
+pub fn tune_max_concurrent_requests(config: &mut GrpcServerSettings, downstream_capacity: usize) {
     // Fall back to the downstream channel capacity when it is tighter than the user setting.
     let safe_capacity = downstream_capacity.max(1);
     if config.max_concurrent_requests == 0 || config.max_concurrent_requests > safe_capacity {
@@ -100,7 +100,7 @@ pub fn tune_max_concurrent_requests(config: &mut GrpcServerConfig, downstream_ca
 }
 
 /// Applies the shared server tuning options to a tonic server builder.
-pub fn apply_server_tuning<L>(builder: Server<L>, config: &GrpcServerConfig) -> Server<L> {
+pub fn apply_server_tuning<L>(builder: Server<L>, config: &GrpcServerSettings) -> Server<L> {
     let transport_limit = config
         .transport_concurrency_limit
         .and_then(|limit| if limit == 0 { None } else { Some(limit) })

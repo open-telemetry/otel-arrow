@@ -36,9 +36,9 @@ use crate::{
 pub mod common;
 pub mod middleware;
 pub mod otlp;
-pub mod receiver_config;
+pub mod receiver_settings;
 
-pub use receiver_config::GrpcServerConfig;
+pub use receiver_settings::GrpcServerSettings;
 
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
