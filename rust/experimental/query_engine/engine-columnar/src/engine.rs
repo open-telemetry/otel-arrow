@@ -561,7 +561,7 @@ impl ExecutablePipeline {
         })?;
 
         // TODO don't unwrap here - convert the error
-        // TODO profile these calls and see if there's a faster way to do this (initial profiling)
+        // TODO profile these calls and see if there's a faster way to do this. initial profiling
         // shows this is somewhat of a performance bottleneck
         let child_mask = build_uint16_id_filter(target_ids, ids_set).unwrap();
         let result_children = filter_record_batch(child_rb, &child_mask).unwrap();
