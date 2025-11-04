@@ -16,10 +16,10 @@ use datafusion::common::JoinType;
 use datafusion::execution::TaskContext;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
-use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col, logical_plan};
+use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use otel_arrow_rust::arrays::{
@@ -646,13 +646,11 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 mod test {
     use std::sync::Arc;
 
-    use arrow::array::{
-        DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
-    };
+    use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array};
     use arrow::compute::kernels::cast;
     use arrow::compute::take_record_batch;
     use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
-    use arrow::util::pretty::{pretty_format_batches, print_batches};
+    use arrow::util::pretty::pretty_format_batches;
     use data_engine_expressions::{
         ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
         PipelineExpressionBuilder,
@@ -662,8 +660,9 @@ mod test {
     use otel_arrow_rust::schema::consts;
     use pretty_assertions::assert_eq;
 
+    use crate::datagen::generate_logs_batch;
     use crate::engine::ExecutablePipeline;
-    use crate::test::{apply_to_logs, generate_logs_batch, logs_to_export_req};
+    use crate::test::{apply_to_logs, logs_to_export_req};
 
     #[tokio::test]
     async fn test_simple_extend_new_column() {

@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
-use datafusion::catalog::memory::MemorySourceConfig;
 use datafusion::common::Result;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;

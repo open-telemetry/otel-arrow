@@ -2,21 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
-use std::cell::RefCell;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, RwLock};
 
 use arrow::array::{Array, Int16Array, RecordBatch, RunArray, new_null_array};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
-use datafusion::common::{SchemaReference, Statistics};
+use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::execution_plan::SchedulingType;
 use datafusion::physical_plan::joins::HashJoinExec;
@@ -27,18 +25,17 @@ use datafusion::physical_plan::{
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-// TODO comment on what this is doing
+/// Custom implementation of [`DataSource`] that allows the in-memory batch and projections to
+/// be updated at runtime. The intention is for this to be used by [`OtapBatchDataSource`] so it
+/// can update the current batch the physical plan will receive as input, without having to
+/// rebuild the entire plan. This is done to get optimal performance.
 #[derive(Debug)]
 pub struct OtapBatchDataSource {
     curr_memory_source: RwLock<MemorySourceConfig>,
 }
 
 impl OtapBatchDataSource {
-    pub fn try_new(
-        batch: RecordBatch,
-        // TODO maybe not optional?
-        projections: Option<Vec<usize>>,
-    ) -> Result<Self> {
+    pub fn try_new(batch: RecordBatch, projections: Option<Vec<usize>>) -> Result<Self> {
         let schema = batch.schema();
         Ok(Self {
             curr_memory_source: RwLock::new(MemorySourceConfig::try_new(
@@ -56,7 +53,7 @@ impl OtapBatchDataSource {
 
     fn projection(&self) -> Option<Vec<usize>> {
         let curr_source = self.curr_memory_source.read().unwrap();
-        // TODO clone yuck
+        // TODO see if there's a way to avoid the clone here
         curr_source.projection().clone()
     }
 
@@ -131,7 +128,8 @@ impl DataSource for OtapBatchDataSource {
     }
 }
 
-// TODO comment on what this is for
+/// This is a light wrapper around [`DataSourceExec`] that can update the batch that will be
+/// produced when `execute` method is called.
 #[derive(Clone, Debug)]
 pub struct OtapDataSourceExec {
     pub payload_type: ArrowPayloadType,
@@ -146,7 +144,11 @@ impl OtapDataSourceExec {
         }
     }
 
-    // don't love the return type here ...
+    /// Update the [`DataSourceExec`] with the next batch. This will return a new instance of `self`
+    /// if columns that are produced will be modified. This is a signal to the caller that the
+    /// entire physical plan needs to be reconstructed due to the modified projection. If this
+    /// returns `None`, it means the [`DataSource`] was modified in place and the parent plan
+    /// can be reused.
     pub fn try_with_next_batch(&self, mut next_batch: RecordBatch) -> Result<Option<Self>> {
         let data_source = self.source_plan.data_source();
         if let Some(curr_data_source) = data_source.as_any().downcast_ref::<OtapBatchDataSource>() {
@@ -184,7 +186,7 @@ impl OtapDataSourceExec {
                 let run_ends = Int16Array::from_iter_values([next_batch.num_rows() as i16]);
 
                 for placeholder in placeholders {
-                    // safety: non of the criteria that would make run-end panic are met here:
+                    // safety: none of the criteria that would make run-end panic are met here:
                     // https://github.com/apache/arrow-rs/blob/57447434d1921701456543f9dfb92741e5d86734/arrow-array/src/array/run_array.rs#L109-L115
                     let new_column = RunArray::try_new(
                         &run_ends,
@@ -215,7 +217,19 @@ impl OtapDataSourceExec {
         }
     }
 
-    // TODO - comments
+    /// Computes the projection of the given batch based on the columns from the previous batch.
+    ///
+    /// We try to project the same columns in the same order because doing this allows the parent
+    /// physical plan to be reused. However, this is only possible the exact same set of columns is
+    /// present AND all the types are the same
+    ///
+    /// For columns that were present in the previous batch which are not found in the current
+    /// batch, placeholder definitions are returned that should be added to the next batch by the
+    /// caller.
+    ///
+    /// If any existing columns have a different type, the `must_replan` flag will be set to true
+    /// on the result.
+    //
     // TODO - tests
     // TODO - optimize
     fn next_project(
@@ -297,7 +311,6 @@ impl OtapDataSourceExec {
             }
         }
 
-        // (next_batch_projection, placeholders)
         NextProjection {
             projected_columns: next_batch_projection,
             placeholders,
@@ -312,9 +325,12 @@ pub struct NextProjection {
     must_replan: bool,
 }
 
-// TODO comment on what this is for
+/// Simple helper type for iterating over a column projection.
 enum ProjectionIter<'a> {
+    // iterate over some specific columns in a given order
     Slice(std::iter::Copied<std::slice::Iter<'a, usize>>),
+
+    /// iterate over all columns in the range of field IDs
     Range(std::ops::Range<usize>),
 }
 
@@ -382,9 +398,14 @@ impl ExecutionPlan for OtapDataSourceExec {
     }
 }
 
-// TODO:
-// - document what this is doing
-// - check the debug implementation if it spews out a bunch of data
+/// This implementation of [`PhysicalOptimizerRule`] is responsible for updating the current
+/// physical plan to process the batch that it contains. In practice, it gives us a way to reuse
+/// the physical plan in an inexpensive way, either by simply updating the underlying
+/// [`DataSource`] (if possible), or otherwise by creating a deep clone of the plan. This is less
+/// expensive than producing a new physical plan for each incoming batch.
+///
+// TODO: revisit the debug implementation. We don't want this thing to print all the data in the
+// current batch
 #[derive(Debug)]
 pub struct UpdateDataSourceOptimizer {
     otap_batch: OtapArrowRecords,
@@ -419,7 +440,7 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if plan.as_any().is::<OtapDataSourceExec>() {
-            // TODO combine this next statement with the if condition like if let Some(...
+            // TODO combine this next statement with the if condition like if let Some
             // safety: we've just checked the type
             let curr_batch_exec = plan
                 .as_any()
@@ -451,7 +472,6 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
             // reset_state vs try_new
             if Arc::ptr_eq(&curr_left, &left) && Arc::ptr_eq(&curr_right, &right) {
                 plan.reset_state()
-                // Ok(plan)
             } else {
                 let new_hash_join = HashJoinExec::try_new(
                     left,
