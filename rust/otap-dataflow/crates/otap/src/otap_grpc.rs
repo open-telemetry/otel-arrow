@@ -131,7 +131,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
         let input_stream = request.into_inner();
-        let output = build_response_stream::<Logs, _>(
+        let output = stream_arrow_batch_statuses::<Logs, _>(
             input_stream,
             self.effect_handler.clone(),
             self.state.clone(),
@@ -150,7 +150,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
         let input_stream = request.into_inner();
-        let output = build_response_stream::<Metrics, _>(
+        let output = stream_arrow_batch_statuses::<Metrics, _>(
             input_stream,
             self.effect_handler.clone(),
             self.state.clone(),
@@ -169,7 +169,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
         let input_stream = request.into_inner();
-        let output = build_response_stream::<Traces, _>(
+        let output = stream_arrow_batch_statuses::<Traces, _>(
             input_stream,
             self.effect_handler.clone(),
             self.state.clone(),
@@ -179,9 +179,25 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
     }
 }
 
-/// Handles sending the data down the pipeline via effect_handler and generating the appropriate
-/// response stream.
-fn build_response_stream<T, F>(
+/// Streams `BatchStatus` updates for the Arrow gRPC services.
+///
+/// `ArrowLogsServiceImpl::arrow_logs`, `ArrowMetricsServiceImpl::arrow_metrics`, and
+/// `ArrowTracesServiceImpl::arrow_traces` all delegate to this helper. Each service passes its
+/// inbound `Streaming<BatchArrowRecords>` plus a converter that turns a decoded batch into the
+/// signal-specific variant of `OtapArrowRecords`. The returned stream forwards every received Arrow
+/// batch to the pipeline and yields the corresponding `BatchStatus` updates the OTLP Arrow clients
+/// expect to read.
+///
+/// Internally an `ArrowBatchStreamState` pulls the next `BatchArrowRecords` from the tonic stream,
+/// decodes it into `OtapPdata`, and optionally registers an `AckSubscriptionState` slot when
+/// `wait_for_result` is enabled. Once the pipeline acknowledges (or rejects) the batch, the stream
+/// emits a success or error status before continuing with the next request.
+///
+/// This design replaces the previous channel-plus-background-task approach. Expressing the control
+/// flow as a single `Stream` keeps backpressure aligned with gRPC demand, removes the bookkeeping
+/// around extra channels/tasks, and makes it easier to follow how every request progresses through
+/// decoding, dispatch, and acknowledgement.
+fn stream_arrow_batch_statuses<T, F>(
     input_stream: tonic::Streaming<BatchArrowRecords>,
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<AckSubscriptionState>,
@@ -191,7 +207,7 @@ where
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {
-    struct StreamState<T, F>
+    struct ArrowBatchStreamState<T, F>
     where
         T: OtapBatchStore + 'static,
         F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
@@ -205,50 +221,50 @@ where
         _marker: PhantomData<fn() -> T>,
     }
 
-    enum NextItem {
+    enum StreamStep {
         Yield(Result<BatchStatus, Status>),
         Done,
     }
 
-    enum ProcessOutcome {
+    enum BatchProcessingResult {
         Emit(BatchStatus),
         Terminate,
     }
 
-    impl<T, F> StreamState<T, F>
+    impl<T, F> ArrowBatchStreamState<T, F>
     where
         T: OtapBatchStore + 'static,
         F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
     {
-        async fn next_item(&mut self) -> NextItem {
+        async fn next_item(&mut self) -> StreamStep {
             if self.finished {
-                return NextItem::Done;
+                return StreamStep::Done;
             }
 
             match self.input_stream.message().await {
                 Ok(Some(batch)) => match self.process_batch(batch).await {
-                    ProcessOutcome::Emit(status) => NextItem::Yield(Ok(status)),
-                    ProcessOutcome::Terminate => NextItem::Done,
+                    BatchProcessingResult::Emit(status) => StreamStep::Yield(Ok(status)),
+                    BatchProcessingResult::Terminate => StreamStep::Done,
                 },
                 Ok(None) => {
                     self.finished = true;
-                    NextItem::Done
+                    StreamStep::Done
                 }
                 Err(status) => {
                     self.finished = true;
-                    NextItem::Yield(Err(status))
+                    StreamStep::Yield(Err(status))
                 }
             }
         }
 
-        async fn process_batch(&mut self, mut batch: BatchArrowRecords) -> ProcessOutcome {
+        async fn process_batch(&mut self, mut batch: BatchArrowRecords) -> BatchProcessingResult {
             let batch_id = batch.batch_id;
 
             let batch = match self.consumer.consume_bar(&mut batch) {
                 Ok(batch) => batch,
                 Err(e) => {
                     log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
-                    return ProcessOutcome::Terminate;
+                    return BatchProcessingResult::Terminate;
                 }
             };
 
@@ -262,7 +278,7 @@ where
                 let (key, rx) = match allocation_result {
                     None => {
                         log::error!("Too many concurrent requests");
-                        return ProcessOutcome::Emit(BatchStatus {
+                        return BatchProcessingResult::Emit(BatchStatus {
                             batch_id,
                             status_code: StatusCode::Unavailable as i32,
                             status_message: format!(
@@ -286,14 +302,14 @@ where
 
             if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
                 log::error!("Failed to send to pipeline: {e}");
-                return ProcessOutcome::Terminate;
+                return BatchProcessingResult::Terminate;
             };
 
             if let Some((_cancel_guard, rx)) = cancel_rx {
                 match rx.await {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
-                        return ProcessOutcome::Emit(BatchStatus {
+                        return BatchProcessingResult::Emit(BatchStatus {
                             batch_id,
                             status_code: StatusCode::Unavailable as i32,
                             status_message: format!("Pipeline processing failed: {}", nack.reason),
@@ -301,12 +317,12 @@ where
                     }
                     Err(_) => {
                         log::error!("Response channel closed unexpectedly");
-                        return ProcessOutcome::Terminate;
+                        return BatchProcessingResult::Terminate;
                     }
                 }
             }
 
-            ProcessOutcome::Emit(BatchStatus {
+            BatchProcessingResult::Emit(BatchStatus {
                 batch_id,
                 status_code: StatusCode::Ok as i32,
                 status_message: "Successfully received".to_string(),
@@ -314,7 +330,7 @@ where
         }
     }
 
-    let state = StreamState::<T, F> {
+    let state = ArrowBatchStreamState::<T, F> {
         input_stream,
         consumer: Consumer::default(),
         effect_handler,
@@ -326,8 +342,8 @@ where
 
     let stream = stream::unfold(state, |mut state| async move {
         match state.next_item().await {
-            NextItem::Yield(item) => Some((item, state)),
-            NextItem::Done => None,
+            StreamStep::Yield(item) => Some((item, state)),
+            StreamStep::Done => None,
         }
     });
 
