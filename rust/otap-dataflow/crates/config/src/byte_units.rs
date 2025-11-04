@@ -35,8 +35,9 @@ where
 
     if bytes > u32::MAX as u128 {
         return Err(DeError::custom(format!(
-            "byte size {} exceeds u32::MAX ({} bytes)",
+            "byte size '{}' ({} bytes) exceeds u32::MAX ({} bytes)",
             repr,
+            bytes,
             u32::MAX
         )));
     }
