@@ -4,4 +4,5 @@
 //! # OpenTelemetry pipeline data
 //!
 
+pub mod proto;
 pub mod views;

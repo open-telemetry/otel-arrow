@@ -12,6 +12,8 @@ rust-version.workspace = true
 anyhow = "1.0.98"
 toml = "0.8.22"
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
+prost-build = { version = "0.14" }
+otlp-model = { path = "../../otel-arrow-rust/src/pdata/otlp/model" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
