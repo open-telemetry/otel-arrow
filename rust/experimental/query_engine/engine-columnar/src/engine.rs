@@ -149,7 +149,7 @@ impl PipelinePlanBuilder {
     }
 
     async fn plan_filter(&mut self, predicate: &LogicalExpression) -> Result<()> {
-        let filter = Filter::try_from_predicate(&self, predicate).await?;
+        let filter = Filter::try_from_predicate(self, predicate).await?;
         let mut plan = self.logical_plan.clone();
         if let Some(expr) = filter.filter_expr {
             plan = plan.filter(expr)?;
@@ -445,7 +445,9 @@ impl ExecutablePipeline {
         let root_payload_type = match self.curr_batch {
             OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
             _ => {
-                todo!()
+                return Err(Error::NotYetSupportedError {
+                    message: "only logs are currently supported".into(),
+                });
             }
         };
 
@@ -503,7 +505,9 @@ impl ExecutablePipeline {
         let root_payload_type = match self.curr_batch {
             OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
             _ => {
-                todo!()
+                return Err(Error::NotYetSupportedError {
+                    message: "only logs currently supported".into(),
+                });
             }
         };
         let root_rb = self
@@ -528,8 +532,13 @@ impl ExecutablePipeline {
                 consts::ID,
             ),
             _ => {
-                todo!()
-            } // TODO we could implement From for the error this returns instead of manually mapping
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "updating child payload type of {:?} not yet supported",
+                        payload_type
+                    ),
+                });
+            }
         }
         .map_err(|e| Error::InvalidBatchError {
             reason: format!("invalid batch: {e}"),
@@ -544,7 +553,7 @@ impl ExecutablePipeline {
                     reason: format!("expected u16 array, found type {}", source_ids.data_type()),
                 })?;
 
-        let ids_set: HashSet<u16> = ids_as_u16.iter().filter_map(|i| i).collect();
+        let ids_set: HashSet<u16> = ids_as_u16.iter().flatten().collect();
         let target_ids = get_required_array(child_rb, consts::PARENT_ID).map_err(|e| {
             Error::InvalidBatchError {
                 reason: format!("invalid batch: {e}"),
@@ -1313,7 +1322,7 @@ mod test {
             exec_pipeline.execute().await.unwrap();
             let result = exec_pipeline.curr_batch.clone();
             let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
-            let table_fmt = pretty_format_batches(&[logs_rb.clone()]).unwrap();
+            let table_fmt = pretty_format_batches(std::slice::from_ref(&logs_rb)).unwrap();
             let table_str = format!("\n{}", table_fmt);
             assert_eq!(
                 table_str,

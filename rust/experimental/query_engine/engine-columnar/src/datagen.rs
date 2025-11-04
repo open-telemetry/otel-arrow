@@ -14,29 +14,24 @@ use prost::Message;
 
 /// Generate a batch of logs for testing, development and examples
 pub fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords {
-    let logs = ((0 + offset)..(batch_size + offset))
+    let logs = (offset..(batch_size + offset))
         .map(|i| {
             let severity_number = SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).unwrap();
-            let severity_text = severity_number
-                .as_str_name()
-                .split("_")
-                .skip(2)
-                .next()
-                .unwrap();
+            let severity_text = severity_number.as_str_name().split("_").nth(2).unwrap();
             let event_name = format!("event {}", i);
 
             let attrs = vec![
                 KeyValue::new("k8s.pod", AnyValue::new_string(format!("my-app-{}", i % 4))),
                 KeyValue::new(
                     "k8s.ns",
-                    AnyValue::new_string(format!(
-                        "{}",
-                        match i % 3 {
+                    AnyValue::new_string(
+                        (match i % 3 {
                             0 => "dev",
                             1 => "staging",
                             _ => "prod",
-                        }
-                    )),
+                        })
+                        .to_string(),
+                    ),
                 ),
                 KeyValue::new(
                     "region",
@@ -68,7 +63,6 @@ pub fn generate_logs_batch(batch_size: usize, offset: usize) -> OtapArrowRecords
     let mut bytes = vec![];
     log_req.encode(&mut bytes).expect("can encode to vec");
     let logs_view = RawLogsData::new(&bytes);
-    let otap_batch = encode_logs_otap_batch(&logs_view).expect("can convert to OTAP");
 
-    otap_batch
+    encode_logs_otap_batch(&logs_view).expect("can convert to OTAP")
 }

@@ -39,7 +39,7 @@ impl OtapBatchDataSource {
         let schema = batch.schema();
         Ok(Self {
             curr_memory_source: RwLock::new(MemorySourceConfig::try_new(
-                &vec![vec![batch]],
+                &[vec![batch]],
                 schema,
                 projections,
             )?),
@@ -164,8 +164,8 @@ impl OtapDataSourceExec {
             // the current batch has the same schema as the next batch, so we will just update the
             // datasource's current batch and return
             if Some(&next_batch_projection.projected_columns) == curr_batch_projection.as_ref()
-                && next_batch_projection.placeholders == None
-                && next_batch_projection.must_replan == false
+                && next_batch_projection.placeholders.is_none()
+                && !next_batch_projection.must_replan
             {
                 curr_data_source
                     .replace_batch(next_batch, Some(next_batch_projection.projected_columns))?;
@@ -213,7 +213,10 @@ impl OtapDataSourceExec {
                 source_plan: DataSourceExec::new(Arc::new(next_data_source)),
             }))
         } else {
-            todo!("throw")
+            Err(DataFusionError::Plan(format!(
+                "Invalid type of DataSource found in OtapDataSourceExec. Found {:?} but expected OtapBatchDataSource",
+                data_source
+            )))
         }
     }
 
@@ -301,9 +304,7 @@ impl OtapDataSourceExec {
         {
             // add the columns from the next batch that were not projected
             for next_batch_field_id in 0..next_batch_max_field_id {
-                let already_projected = next_batch_projection
-                    .iter()
-                    .any(|projected_field_id| *projected_field_id == next_batch_field_id);
+                let already_projected = next_batch_projection.contains(&next_batch_field_id);
                 if !already_projected {
                     next_batch_projection.push(next_batch_field_id)
                 }
@@ -436,7 +437,7 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        config: &ConfigOptions,
+        _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if let Some(curr_batch_exec) = plan.as_any().downcast_ref::<OtapDataSourceExec>() {
             if let Some(rb) = self.otap_batch.get(curr_batch_exec.payload_type) {
@@ -461,8 +462,8 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
             // traverse down both sides of the join and update the current batch.
             let curr_left = curr_hash_join.left.clone();
             let curr_right = curr_hash_join.right.clone();
-            let left = self.optimize(curr_left.clone(), config)?;
-            let right = self.optimize(curr_right.clone(), config)?;
+            let left = self.optimize(curr_left.clone(), _config)?;
+            let right = self.optimize(curr_right.clone(), _config)?;
 
             // if we are able to reuse the left/right side, just call reset_state or otherwise
             // create a whole new HashJoinExec plan.
@@ -479,8 +480,8 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
                     curr_hash_join.filter.clone(),
                     curr_hash_join.join_type(),
                     curr_hash_join.projection.clone(),
-                    curr_hash_join.partition_mode().clone(),
-                    curr_hash_join.null_equality.clone(),
+                    *curr_hash_join.partition_mode(),
+                    curr_hash_join.null_equality,
                 )?;
                 Ok(Arc::new(new_hash_join))
             }
@@ -488,7 +489,7 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
             let children = plan
                 .children()
                 .into_iter()
-                .map(|child| self.optimize(child.clone(), config))
+                .map(|child| self.optimize(child.clone(), _config))
                 .collect::<Result<Vec<_>>>()?;
             with_new_children_if_necessary(plan, children)
         }

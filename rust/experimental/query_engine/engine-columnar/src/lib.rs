@@ -52,7 +52,8 @@ mod test {
             .await
             .unwrap();
         exec_pipeline.execute().await.unwrap();
-        return exec_pipeline.curr_batch;
+
+        exec_pipeline.curr_batch
     }
 
     // TODO this might not be the right abstraction, it only works for filtering
