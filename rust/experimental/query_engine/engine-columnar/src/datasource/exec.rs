@@ -230,8 +230,7 @@ impl OtapDataSourceExec {
     /// If any existing columns have a different type, the `must_replan` flag will be set to true
     /// on the result.
     //
-    // TODO - tests
-    // TODO - optimize
+    // TODO - tests & optimization
     fn next_project(
         &self,
         curr_batch_projection: Option<&[usize]>,
@@ -439,37 +438,37 @@ impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if plan.as_any().is::<OtapDataSourceExec>() {
-            // TODO combine this next statement with the if condition like if let Some
-            // safety: we've just checked the type
-            let curr_batch_exec = plan
-                .as_any()
-                .downcast_ref::<OtapDataSourceExec>()
-                .expect("can downcast to type");
+        if let Some(curr_batch_exec) = plan.as_any().downcast_ref::<OtapDataSourceExec>() {
             if let Some(rb) = self.otap_batch.get(curr_batch_exec.payload_type) {
                 let next_batch_exec = curr_batch_exec.try_with_next_batch(rb.clone())?;
-                // TODO I guess the contract is currently that we return None if there's not a new plan
-                // it's good enough but could either be documented or more explicit
                 Ok(match next_batch_exec {
                     Some(next_batch_exec) => Arc::new(next_batch_exec),
-                    None => plan,
+                    None => plan, // reuse exiting plan
                 })
             } else {
-                // TODO if the plan selects a batch that doesn't contain some payload type, we should redo the planning
+                // TODO if the plan selects a batch that doesn't contain some payload type
+                // we should redo the planning
                 Err(DataFusionError::Plan(format!(
                     "received physical query plan selecting nonexistent OTAP batch {:?}",
                     curr_batch_exec.payload_type
                 )))
             }
         } else if let Some(curr_hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
-            // TODO comment on why we do this
+            // [`HashJoinExec`] is a special case we need to handle. Internally, it keeps a future
+            // of what the left-side of the join produces and this future is of a type that will
+            // only execute once. So for this case, we need to somehow reset the plan
+
+            // traverse down both sides of the join and update the current batch.
             let curr_left = curr_hash_join.left.clone();
             let curr_right = curr_hash_join.right.clone();
             let left = self.optimize(curr_left.clone(), config)?;
             let right = self.optimize(curr_right.clone(), config)?;
 
-            // TODO not sure if this matters actually in terms of saving execution time, e.g. doing
-            // reset_state vs try_new
+            // if we are able to reuse the left/right side, just call reset_state or otherwise
+            // create a whole new HashJoinExec plan.
+            //
+            // TODO not sure if this matters a lot in terms of saving execution time, e.g. doing
+            // reset_state vs try_new might not make a huge difference, need to remeasure.
             if Arc::ptr_eq(&curr_left, &left) && Arc::ptr_eq(&curr_right, &right) {
                 plan.reset_state()
             } else {
