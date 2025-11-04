@@ -28,17 +28,22 @@
 //! # use otap_df_otap::pdata::{Context, OtapPdata, OtapPayload, OtlpProtoBytes};
 //! # use prost::Message;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
-//!    ResourceLogs::build(Resource::default())
-//!       .scope_logs(vec![
-//!            ScopeLogs::build(InstrumentationScope::default())
-//!                .log_records(vec![
-//!                    LogRecord::build(2u64, SeverityNumber::Info, "event")
+//!    ResourceLogs::new(
+//!        Resource::default(),
+//!        vec![
+//!            ScopeLogs::new(
+//!                InstrumentationScope::default(),
+//!                vec![
+//!                    LogRecord::build()
+//!                        .time_unix_nano(2u64)
+//!                        .severity_number(SeverityNumber::Info)
+//!                        .event_name("event")
 //!                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
 //!                        .finish(),
-//!                ])
-//!                .finish(),
-//!        ])
-//!        .finish(),
+//!                ],
+//!            ),
+//!        ],
+//!    ),
 //!  ]);
 //! let mut buf = Vec::new();
 //! otlp_service_req.encode(&mut buf).unwrap();
@@ -807,63 +812,105 @@ mod test {
         // roundtrip encoding/decoding
 
         let otlp_service_req = ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope {
-                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+            ResourceLogs::new(
+                Resource {
+                    attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
                     ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "event1")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                    LogRecord::build(2u64, SeverityNumber::Info, "event1")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                        .finish(),
-                    LogRecord::build(3u64, SeverityNumber::Info, "event2")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
-                        .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-            ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope {
-                    name: "Scope2".into(),
-                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val2"))],
+                },
+                vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(1u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("event1")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                        LogRecord::build()
+                            .time_unix_nano(2u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("event1")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .time_unix_nano(3u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("event2")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
+                            .finish(),
+                    ],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource {
+                    attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
                     ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(4u64, SeverityNumber::Info, "event3")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
-                        .finish(),
-                    LogRecord::build(5u64, SeverityNumber::Info, "event1")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val5"))])
-                        .finish(),
-                ])
-                .finish(),
-                ScopeLogs::build(InstrumentationScope {
-                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
-                    ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(6u64, SeverityNumber::Info, "event1")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val6"))])
-                        .finish(),
-                    LogRecord::build(7u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val7"))])
-                        .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
+                },
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope {
+                            name: "Scope2".into(),
+                            attributes: vec![KeyValue::new(
+                                "scope_key",
+                                AnyValue::new_string("val2"),
+                            )],
+                            ..Default::default()
+                        },
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(4u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event3")
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val4"),
+                                )])
+                                .finish(),
+                            LogRecord::build()
+                                .time_unix_nano(5u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event1")
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val5"),
+                                )])
+                                .finish(),
+                        ],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope {
+                            attributes: vec![KeyValue::new(
+                                "scope_key",
+                                AnyValue::new_string("val3"),
+                            )],
+                            ..Default::default()
+                        },
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(6u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event1")
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val6"),
+                                )])
+                                .finish(),
+                            LogRecord::build()
+                                .time_unix_nano(7u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("")
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val7"),
+                                )])
+                                .finish(),
+                        ],
+                    ),
+                ],
+            ),
         ]);
 
         roundtrip_otlp_otap_logs(otlp_service_req);
@@ -877,62 +924,89 @@ mod test {
         // delta encoding is used for sequential runs of some key-value pairs).
 
         let otlp_service_req = ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::build("scope1").attributes(vec![
-                    KeyValue::new("scope_key", AnyValue::new_string("val")),
-                ]))
-                .log_records(vec![
-                    // Add some logs with repeated attributes
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+            ResourceLogs::new(
+                Resource {
+                    attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                    ..Default::default()
+                },
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope1")
+                        .attributes(vec![KeyValue::new(
+                            "scope_key",
+                            AnyValue::new_string("val"),
+                        )])
                         .finish(),
-                    LogRecord::build(2u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                    LogRecord::build(3u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
+                    vec![
+                        // Add some logs with repeated attributes
+                        LogRecord::build()
+                            .time_unix_nano(1u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                        LogRecord::build()
+                            .time_unix_nano(2u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                        LogRecord::build()
+                            .time_unix_nano(3u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                    ],
+                )],
+            ),
             // also add some scopes and resources where the attributes repeat ...
-            ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
-                    KeyValue::new("scope_key", AnyValue::new_string("val")),
-                ]))
-                .log_records(vec![
-                    LogRecord::build(4u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+            ResourceLogs::new(
+                Resource {
+                    attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                    ..Default::default()
+                },
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope2")
+                        .attributes(vec![KeyValue::new(
+                            "scope_key",
+                            AnyValue::new_string("val"),
+                        )])
                         .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-            ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
-                ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
-                    KeyValue::new("scope_key", AnyValue::new_string("val")),
-                ]))
-                .log_records(vec![
-                    LogRecord::build(7u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(4u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                    ],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource {
+                    attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                    ..Default::default()
+                },
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope2")
+                        .attributes(vec![KeyValue::new(
+                            "scope_key",
+                            AnyValue::new_string("val"),
+                        )])
                         .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(7u64)
+                            .severity_number(SeverityNumber::Info)
+                            .event_name("")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                    ],
+                )],
+            ),
         ]);
 
         roundtrip_otlp_otap_logs(otlp_service_req);
@@ -941,118 +1015,156 @@ mod test {
     #[test]
     fn test_otlp_otap_traces_roundtrip() {
         let otlp_service_req = ExportTraceServiceRequest::new(vec![
-            ResourceSpans::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
-                ..Default::default()
-            })
-            .scope_spans(vec![
-                ScopeSpans::build(InstrumentationScope {
-                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
-                    ..Default::default()
-                })
-                .spans(vec![
-                    Span::build(u128::to_be_bytes(1), u64::to_be_bytes(1), "albert", 1u64)
-                        .end_time_unix_nano(4u64)
-                        .status(Status::new("status1", StatusCode::Ok))
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                        .links(vec![
-                            Link::build(u128::to_be_bytes(10), u64::to_be_bytes(10)).finish(),
-                            // this Link's trace_id repeats with the next one. doing this to ensure
-                            // their parent IDs don't get interpreted as delta encoded
-                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(11))
-                                .attributes(vec![
-                                    KeyValue::new("link_key", AnyValue::new_string("val0")),
-                                    // repeating the attr here with the next one for same reason
-                                    // as repeating link with trace ID
-                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
-                                ])
-                                .finish(),
-                        ])
-                        .events(vec![
-                            Event::build("event0", 0u64).finish(),
-                            // this event has the repeating name with the next one. doing this to
-                            // ensure their parent IDs don't get interpreted as delta encoded
-                            Event::build("event1", 1u64)
-                                .attributes(vec![
-                                    KeyValue::new("evt_key", AnyValue::new_string("val0")),
-                                    // repeating the attr here with the next one for same reason
-                                    // as repeating link with trace ID
-                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
-                                ])
-                                .finish(),
-                        ])
+            ResourceSpans::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("res_key", AnyValue::new_string("val1"))])
+                    .finish(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new(
+                            "scope_key",
+                            AnyValue::new_string("val1"),
+                        )])
                         .finish(),
-                    Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
-                        .flags(SpanFlags::TraceFlagsMask)
-                        .end_time_unix_nano(3u64)
-                        .status(Status::new("status1", StatusCode::Ok))
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                        .links(vec![
-                            // this Link's trace_id repeats with the previous, and  next one.
-                            // doing this to ensure their parent IDs don't get interpreted as
-                            // delta encoded
-                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(20))
-                                .attributes(vec![
-                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
-                                    KeyValue::new("link_key", AnyValue::new_string("val2")),
-                                ])
-                                .flags(255u32)
-                                .finish(),
-                        ])
-                        .events(vec![
-                            // this event has the repeating name with the next one and previous one
-                            // doing this to ensure their parent IDs don't get interpreted as
-                            // delta encoded
-                            Event::build("event1", 1u64)
-                                .attributes(vec![
-                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
-                                    KeyValue::new("evt_key", AnyValue::new_string("val2")),
-                                ])
-                                .finish(),
-                        ])
+                    vec![
+                        Span::build()
+                            .trace_id(u128::to_be_bytes(1).to_vec())
+                            .span_id(u64::to_be_bytes(1).to_vec())
+                            .name("albert")
+                            .start_time_unix_nano(1u64)
+                            .end_time_unix_nano(4u64)
+                            .status(Status::new(StatusCode::Ok, "status1"))
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .links(vec![
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(10))
+                                    .span_id(u64::to_be_bytes(10))
+                                    .finish(),
+                                // this Link's trace_id repeats with the next one. doing this to ensure
+                                // their parent IDs don't get interpreted as delta encoded
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(11))
+                                    .span_id(u64::to_be_bytes(11))
+                                    .attributes(vec![
+                                        KeyValue::new("link_key", AnyValue::new_string("val0")),
+                                        // repeating the attr here with the next one for same reason
+                                        // as repeating link with trace ID
+                                        KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                    ])
+                                    .finish(),
+                            ])
+                            .events(vec![
+                                Event::build().name("event0").time_unix_nano(0u64).finish(),
+                                // this event has the repeating name with the next one. doing this to
+                                // ensure their parent IDs don't get interpreted as delta encoded
+                                Event::build()
+                                    .name("event1")
+                                    .time_unix_nano(1u64)
+                                    .attributes(vec![
+                                        KeyValue::new("evt_key", AnyValue::new_string("val0")),
+                                        // repeating the attr here with the next one for same reason
+                                        // as repeating link with trace ID
+                                        KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                    ])
+                                    .finish(),
+                            ])
+                            .finish(),
+                        Span::build()
+                            .trace_id(u128::to_be_bytes(2))
+                            .span_id(u64::to_be_bytes(2))
+                            .name("terry")
+                            .start_time_unix_nano(2u64)
+                            .flags(SpanFlags::TraceFlagsMask)
+                            .end_time_unix_nano(3u64)
+                            .status(Status::new(StatusCode::Ok, "status1"))
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .links(vec![
+                                // this Link's trace_id repeats with the previous, and  next one.
+                                // doing this to ensure their parent IDs don't get interpreted as
+                                // delta encoded
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(11))
+                                    .span_id(u64::to_be_bytes(20))
+                                    .attributes(vec![
+                                        KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                        KeyValue::new("link_key", AnyValue::new_string("val2")),
+                                    ])
+                                    .flags(255u32)
+                                    .finish(),
+                            ])
+                            .events(vec![
+                                // this event has the repeating name with the next one and previous one
+                                // doing this to ensure their parent IDs don't get interpreted as
+                                // delta encoded
+                                Event::build()
+                                    .name("event1")
+                                    .time_unix_nano(1u64)
+                                    .attributes(vec![
+                                        KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                        KeyValue::new("evt_key", AnyValue::new_string("val2")),
+                                    ])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                )],
+            ),
+            ResourceSpans::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("res_key", AnyValue::new_string("val2"))])
+                    .finish(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new(
+                            "scope_key",
+                            AnyValue::new_string("val3"),
+                        )])
                         .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-            ResourceSpans::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
-                ..Default::default()
-            })
-            .scope_spans(vec![
-                ScopeSpans::build(InstrumentationScope {
-                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
-                    ..Default::default()
-                })
-                .spans(vec![
-                    Span::build(u128::to_be_bytes(3), u64::to_be_bytes(3), "albert", 3u64)
-                        .end_time_unix_nano(4u64)
-                        .status(Status::new("status1", StatusCode::Ok))
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                        .links(vec![
-                            // this Link's trace_id repeats with the previous one. do this to ensure they
-                            // don't get interpreted as delta encoded
-                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(30)).finish(),
-                            Link::build(u128::to_be_bytes(31), u64::to_be_bytes(31)).finish(),
-                        ])
-                        .events(vec![
-                            // this event has the repeating name with the previous one. doing this
-                            // to ensure their parent IDs don't get interpreted as delta encoded
-                            Event::build("event1", 2u64).finish(),
-                        ])
-                        .finish(),
-                    Span::build(u128::to_be_bytes(4), u64::to_be_bytes(4), "terry", 4u64)
-                        .end_time_unix_nano(5u64)
-                        .status(Status::new("status1", StatusCode::Ok))
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
-                        .links(vec![
-                            Link::build(u128::to_be_bytes(40), u64::to_be_bytes(40)).finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
+                    vec![
+                        Span::build()
+                            .trace_id(u128::to_be_bytes(3))
+                            .span_id(u64::to_be_bytes(3))
+                            .name("albert")
+                            .start_time_unix_nano(3u64)
+                            .end_time_unix_nano(4u64)
+                            .status(Status::new(StatusCode::Ok, "status1"))
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .links(vec![
+                                // this Link's trace_id repeats with the previous one. do this to ensure they
+                                // don't get interpreted as delta encoded
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(11))
+                                    .span_id(u64::to_be_bytes(30))
+                                    .finish(),
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(31))
+                                    .span_id(u64::to_be_bytes(31))
+                                    .finish(),
+                            ])
+                            .events(vec![
+                                // this event has the repeating name with the previous one. doing this
+                                // to ensure their parent IDs don't get interpreted as delta encoded
+                                Event::build().name("event1").time_unix_nano(2u64).finish(),
+                            ])
+                            .finish(),
+                        Span::build()
+                            .trace_id(u128::to_be_bytes(4))
+                            .span_id(u64::to_be_bytes(4))
+                            .name("terry")
+                            .start_time_unix_nano(4u64)
+                            .end_time_unix_nano(5u64)
+                            .status(Status::new(StatusCode::Ok, "status1"))
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
+                            .links(vec![
+                                Link::build()
+                                    .trace_id(u128::to_be_bytes(40))
+                                    .span_id(u64::to_be_bytes(40))
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                )],
+            ),
         ]);
 
         roundtrip_otlp_otap_traces(otlp_service_req);

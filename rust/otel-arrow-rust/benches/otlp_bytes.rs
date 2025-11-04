@@ -8,7 +8,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
 
-use otel_arrow_rust::pdata::otlp::PrecomputedSizes;
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
 use otel_arrow_rust::proto::opentelemetry::logs::v1::*;
 use otel_arrow_rust::proto::opentelemetry::resource::v1::*;
@@ -18,20 +17,29 @@ fn create_logs_data() -> LogsData {
         KeyValue::new("k1", AnyValue::new_string("v1")),
         KeyValue::new("k2", AnyValue::new_string("v2")),
     ];
-    let res = Resource::new(kvs.clone());
+    let res = Resource::build().attributes(kvs.clone()).finish();
 
-    let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::build().name("library").finish();
 
-    let lr1 = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+    let lr1 = LogRecord::build()
+        .time_unix_nano(2_000_000_000u64)
+        .severity_number(SeverityNumber::Info)
+        .event_name("event1")
         .attributes(kvs.clone())
         .finish();
-    let lr2 = LogRecord::build(3_000_000_000u64, SeverityNumber::Info2, "event2")
+    let lr2 = LogRecord::build()
+        .time_unix_nano(3_000_000_000u64)
+        .severity_number(SeverityNumber::Info2)
+        .event_name("event2")
         .attributes(kvs.clone())
         .body(AnyValue::new_string("message text"))
         .severity_text("not on fire")
         .flags(LogRecordFlags::TraceFlagsMask)
         .finish();
-    let lr3 = LogRecord::build(3_000_000_000u64, SeverityNumber::Info2, "event3")
+    let lr3 = LogRecord::build()
+        .time_unix_nano(3_000_000_000u64)
+        .severity_number(SeverityNumber::Info2)
+        .event_name("event3")
         .attributes(kvs.clone())
         .body(AnyValue::new_string("here we go to 2us"))
         .flags(LogRecordFlags::TraceFlagsMask)
@@ -41,14 +49,12 @@ fn create_logs_data() -> LogsData {
         lrs.extend(vec![lr1.clone(), lr2.clone(), lr3.clone()]);
     }
 
-    let sl1 = ScopeLogs::build(is1.clone())
-        .log_records(lrs.clone())
-        .schema_url("http://schema.opentelemetry.io")
-        .finish();
+    let sl1 =
+        ScopeLogs::new(is1.clone(), lrs.clone()).set_schema_url("http://schema.opentelemetry.io");
     let sl2 = sl1.clone();
     let sls = vec![sl1, sl2];
 
-    LogsData::new(vec![ResourceLogs::build(res).scope_logs(sls).finish()])
+    LogsData::new(vec![ResourceLogs::new(res, sls)])
 }
 
 fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
@@ -74,16 +80,6 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
 
     _ = group.bench_function("LogsData Prost encoded_len", |b| {
         b.iter(|| logs.encoded_len())
-    });
-
-    _ = group.bench_function("LogsData Visitor precompute_sizes", |b| {
-        let mut ps = PrecomputedSizes::default();
-        b.iter(|| {
-            let mut reuse = PrecomputedSizes::default();
-            std::mem::swap(&mut ps, &mut reuse);
-            let (mut reuse, _total) = logs.precompute_sizes(reuse);
-            std::mem::swap(&mut ps, &mut reuse);
-        })
     });
 
     group.finish();

@@ -66,19 +66,20 @@ impl TryFrom<CallData> for TestCallData {
 /// Create minimal test data
 #[must_use]
 pub fn create_test_logs() -> ExportLogsServiceRequest {
-    ExportLogsServiceRequest::new(vec![
-        ResourceLogs::build(Resource::default())
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::default())
-                    .log_records(vec![
-                        LogRecord::build(2u64, SeverityNumber::Info, "event")
-                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                            .finish(),
-                    ])
+    ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+        Resource::default(),
+        vec![ScopeLogs::new(
+            InstrumentationScope::default(),
+            vec![
+                LogRecord::build()
+                    .time_unix_nano(2u64)
+                    .severity_number(SeverityNumber::Info)
+                    .event_name("event")
+                    .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                     .finish(),
-            ])
-            .finish(),
-    ])
+            ],
+        )],
+    )])
 }
 
 /// Create minimal test pdata

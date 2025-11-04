@@ -20,24 +20,23 @@ pub mod traces {
         let trace_id = TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         let span_id = SpanID::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
 
-        let span = Span::build(trace_id, span_id, "test_span", start_time)
+        let span = Span::build()
+            .trace_id(trace_id)
+            .span_id(span_id)
+            .name("test_span")
+            .start_time_unix_nano(start_time)
             .end_time_unix_nano(end_time)
             .attributes(vec![KeyValue::new(
                 "test.attribute",
                 AnyValue::new_string("test value"),
             )])
-            .status(Status::new("success", StatusCode::Ok))
+            .status(Status::new(StatusCode::Ok, "success"))
             .finish();
 
-        ExportTraceServiceRequest::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::default())
-                        .spans(vec![span])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportTraceServiceRequest::new(vec![ResourceSpans::new(
+            Resource::default(),
+            vec![ScopeSpans::new(InstrumentationScope::default(), vec![span])],
+        )])
     }
 }
 
@@ -52,28 +51,30 @@ pub mod metrics {
     pub fn create_single_request() -> ExportMetricsServiceRequest {
         let timestamp = 1619712000000000000u64;
 
-        let data_point = NumberDataPoint::build_double(timestamp + 1000000000, 42.0)
+        let data_point = NumberDataPoint::build()
             .start_time_unix_nano(timestamp)
+            .time_unix_nano(timestamp + 1000000000)
+            .value_double(42.0)
             .attributes(vec![KeyValue::new(
                 "test.attribute",
                 AnyValue::new_string("test value"),
             )])
             .finish();
 
-        let metric = Metric::build_gauge("test_gauge", Gauge::new(vec![data_point]))
+        let metric = Metric::build()
+            .name("test_gauge")
+            .data_gauge(Gauge::new(vec![data_point]))
             .description("Test metric".to_string())
             .unit("count")
             .finish();
 
-        ExportMetricsServiceRequest::new(vec![
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::default())
-                        .metrics(vec![metric])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportMetricsServiceRequest::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![metric],
+            )],
+        )])
     }
 }
 
@@ -89,19 +90,20 @@ pub mod logs {
     const TIMESTAMP: u64 = 1619712000000000000u64;
 
     pub fn to_export_logs_request(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::build("scope_name"))
-                        .log_records(log_records)
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("scope_name").finish(),
+                log_records,
+            )],
+        )])
     }
 
     pub fn create_single_request() -> ExportLogsServiceRequest {
-        let log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
+        let log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Info)
+            .event_name(EVENT_NAME)
             .severity_text("INFO")
             .body(AnyValue::new_string("Test log message".to_string()))
             .attributes(vec![
@@ -127,7 +129,10 @@ pub mod logs {
 
     /// Create requests where OTAP should serialize the log bodies using cbor
     pub fn create_request_with_serialized_bodies() -> ExportLogsServiceRequest {
-        let list_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
+        let list_body_log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Info)
+            .event_name(EVENT_NAME)
             .severity_text("INFO")
             .body(AnyValue::new_array(vec![
                 AnyValue::new_string("test1"),
@@ -141,7 +146,10 @@ pub mod logs {
             .span_id((0u8..8u8).collect::<Vec<u8>>())
             .finish();
 
-        let map_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Debug, EVENT_NAME)
+        let map_body_log_record = LogRecord::build()
+            .time_unix_nano(TIMESTAMP)
+            .severity_number(SeverityNumber::Debug)
+            .event_name(EVENT_NAME)
             .severity_text("DEBUG")
             .body(AnyValue::new_kvlist(vec![
                 // test serialization/deserialization of all supported types ..

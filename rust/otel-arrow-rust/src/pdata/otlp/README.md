@@ -2,228 +2,151 @@
 
 Status: **Development**
 
-This package aims to resemble the OpenTelemetry Collector "pdata"
-interface, but for Rust.  This package defines an OTLP pipeline data
-interface based on prost::Message objects
+This package resembles the OpenTelemetry Collector "pdata" interface,
+but for Rust.  This package defines an OTLP pipeline data interface
+based on prost::Message objects
 
-For each OTLP message object, a set of additional implementation,
-associated methods and traits are generated through the ./derive
-sub-crate of this directory. 
+For each OTLP message object, builder methods are generated through
+the `./derive` sub-crate in this directory. We define two approaches
+to building objects, depending on whether they are simple types and
+containers (<= 3 fields) compared with detailed protocol objects (>3 fields):
 
-This package defines OTLP-specific structs relevant for encoding OTLP
-as bytes. It does this by implementing a Visitor pattern, in which:
+1. Simple types and containers: use `Type::new(...)` with 1-3 parameters
+2. Detailed protocol objects: use `Type::build().field(value).finish()`.
 
-- Every OTLP message object has a corresponding Visitable trait, which is
-  the thing a Visitor will handle to visit the children of that message.
-- Every OTLP message object has a corresponding Visitor trait, which is how
-  to apply custom logic to OTLP-like data.
-- Every OTLP message object has also:
-  - NoopVisitor: a do-nothing Visitor implements all traits
-  - Builder: a builder pattern for defning test OTLP message objects,
-    along with a new() method covering obligatory fields.
-  - EncodedLen: a Visitor for computing the sizes of an OTLP object
-    to an intermediate `Vec<usize>`, uses Accumulator, has test-only
-    `pdata_size()` implementation.
-  - Accumulator: an impl for summing the encoded size of the children
-    of an OTLP message.
+There are cases where the builder pattern is not used because all
+fields are specified as parameters.
 
-The file `model/src/lib.rs` defines how each message type is treated,
-with a few fields in each type being declared as parameters (in order
-of importance), with remaining fields set through a builder
-pattern. There are cases where the builder pattern is not used because
-all fields are specified as parameters.
+A special case is supported for ignoring certain arguments in simple
+types when they are rarely used in OpenTelemetry. Currently, six
+"schema_url" fields are in this category; these "ignored" fields have
+a special setter derived instead of requiring a parameter in every
+`new()` statement.
 
-See the [tests](./tests.rs) for examples of the resulting syntax.
+There are several structs that contain a `oneof` field. Note that
+there are not more than one oneof field per struct. The `AnyValue`
+type distinguishes the oneof in its constructors (e.g., `new_string`,
+`new_int`, ...). The `Metric`, `NumberDataPoint`, and `Exemplar` types
+use the all use `build()` with oneof variants expressed through the
+particular field (e.g., `data_sum`, `data_gauge`, ...).
+
+## List of types
+
+### Simple types
+
+These all have `new(...)` constructor methods. For a constructor with
+a oneof, the type is used in the name as in `new_variant(...)`.
+
+In `crate::proto::opentelemetry::common::v1`:
+
+- AnyValue: Oneof (`string`, `int`, `double`, `bool`, `array`, `kvlist`)
+- KeyValue: Key, Value
+- KeyValueList: Value
+- ArrayValue: Value
+
+In `crate::proto::opentelemetry::logs::v1`:
+
+- LogsData: ResourceLogs
+- ResourceLogs: Resource, ScopeLogs
+- ScopeLogs: Scope, Records
+
+In `crate::proto::opentelemetry::trace::v1`:
+
+- TracesData: ResourceSpans
+- ResourceSpans: Resource, ScopeSpans
+- ScopeSpans: Scope, Spans
+- Status: Code, Message
+
+In `crate::proto::opentelemetry::metrics::v1`:
+
+- MetricsData: ResourceMetrics
+- ResourceMetrics: Resource, ScopeMetrics
+- ScopeMetrics: Scope, Metrics
+- Sum: AggregationTemporality, Monotonic, DataPoints
+- Gauge: DataPoints
+- Histogram: AggregationTemporality, DataPoints
+- ExponentialHistogram: AggregationTemporality, DataPoints
+- Summary: DataPoints
+- Buckets: Offset, BucketCounts
+- ValueAtQuantile: Quantile, Value
+
+All structs are simple for the OTLP request and response types defined
+in `crate::proto::opentelemetry::collector::*::v1`.
+
+Note: several types define `fn set_schema_url(self, ...) -> Self` for
+setting the ignored `schema_url` field in the resource and scope
+containers.
 
 ## Example generated code
 
-Derive rules on the `TracesData` message object derive the following code.
+See the [tests](./tests.rs) for examples of the resulting syntax.
+
+The file `model/src/lib.rs` defines how each message type is treated
+in a `REQUIRED_PARAMS` map.
+
+Use `cargo expand` to see the full macro derivation.
+
+### Example derived code: simple type
+
+The `TracesData` message object derives the following code, for example:
 
 ```rust
-                impl TracesData {
-                    pub fn new<T1: Into<::prost::alloc::vec::Vec<ResourceSpans>>>(
-                        resource_spans: T1,
-                    ) -> Self {
-                        Self {
-                            resource_spans: resource_spans.into(),
-                        }
-                    }
-                }
-                pub trait TracesDataVisitor<Argument> {
-                    fn visit_traces_data(
-                        &mut self,
-                        arg: Argument,
-                        v: impl TracesDataVisitable<Argument>,
-                    ) -> Argument;
-                }
-                pub trait TracesDataVisitable<Argument> {
-                    fn accept_traces_data(
-                        &mut self,
-                        arg: Argument,
-                        resource_spans: impl ResourceSpansVisitor<Argument>,
-                    ) -> Argument;
-                }
-                impl<Argument> TracesDataVisitor<Argument>
-                for crate::pdata::NoopVisitor {
-                    fn visit_traces_data(
-                        &mut self,
-                        arg: Argument,
-                        _v: impl TracesDataVisitable<Argument>,
-                    ) -> Argument {
-                        arg
-                    }
-                }
-                impl<Argument> TracesDataVisitable<Argument> for &TracesData {
-                    fn accept_traces_data(
-                        &mut self,
-                        mut arg: Argument,
-                        resource_spans: impl ResourceSpansVisitor<Argument>,
-                    ) -> Argument {
-                        let mut resource_spans = resource_spans;
-                        for item in &self.resource_spans {
-                            arg = resource_spans.visit_resource_spans(arg, item);
-                        }
-                        arg
-                    }
-                }
-                /// EncodedLen visitor for calculating protobuf encoded size
-                pub struct TracesDataEncodedLen<const TAG: u32, const OPTION: bool> {}
-                impl<
-                    const TAG: u32,
-                    const OPTION: bool,
-                > TracesDataEncodedLen<TAG, OPTION> {
-                    /// Create a new EncodedLen visitor.
-                    pub fn new() -> Self {
-                        Self {}
-                    }
-                    /// Calculate the sum of direct children's encoded lengths.
-                    fn visit_children(
-                        &mut self,
-                        mut arg: crate::pdata::otlp::PrecomputedSizes,
-                        mut v: impl TracesDataVisitable<
-                            crate::pdata::otlp::PrecomputedSizes,
-                        >,
-                    ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
-                        let mut total = 0;
-                        let mut resource_spans = crate::pdata::otlp::Accumulate::new(ResourceSpansEncodedLen::<
-                            1u32,
-                            true,
-                        > {});
-                        arg = v.accept_traces_data(arg, &mut resource_spans);
-                        total += resource_spans.total;
-                        (arg, total)
-                    }
-                }
-                impl<
-                    const TAG: u32,
-                    const OPTION: bool,
-                > TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>
-                for TracesDataEncodedLen<TAG, OPTION> {
-                    fn visit_traces_data(
-                        &mut self,
-                        mut arg: crate::pdata::otlp::PrecomputedSizes,
-                        mut v: impl TracesDataVisitable<
-                            crate::pdata::otlp::PrecomputedSizes,
-                        >,
-                    ) -> crate::pdata::otlp::PrecomputedSizes {
-                        let idx = arg.len();
-                        arg.reserve();
-                        let (mut arg, total_child_size) = self.visit_children(arg, v);
-                        arg.set_size(
-                            idx,
-                            crate::pdata::otlp::encoders::conditional_length_delimited_size::<
-                                TAG,
-                                OPTION,
-                            >(total_child_size),
-                        );
-                        arg
-                    }
-                }
-                impl TracesData {
-                    /// Calculate the precomputed sizing using an input to allow re-use.
-                    pub fn precompute_sizes(
-                        &self,
-                        mut input: crate::pdata::otlp::PrecomputedSizes,
-                    ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
-                        input.clear();
-                        let mut visitor = TracesDataEncodedLen::<0, false> {
-                        };
-                        visitor.visit_children(input, self)
-                    }
-                }
-                impl<
-                    V: TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>,
-                > TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>
-                for &mut crate::pdata::otlp::Accumulate<V> {
-                    fn visit_traces_data(
-                        &mut self,
-                        mut arg: crate::pdata::otlp::PrecomputedSizes,
-                        v: impl TracesDataVisitable<crate::pdata::otlp::PrecomputedSizes>,
-                    ) -> crate::pdata::otlp::PrecomputedSizes {
-                        let idx = arg.len();
-                        arg = self.inner.visit_traces_data(arg, v);
-                        self.total += arg.get_size(idx);
-                        arg
-                    }
-                }
+    // Type generated by Prost
+    pub struct TracesData {
+        #[prost(message, repeated, tag = "1")]
+        pub resource_spans: ::prost::alloc::vec::Vec<ResourceSpans>,
+    }
+    //
+    // Methods inserted by
+    // #[derive(Clone, Default, prost::Message, ...)]
+    //
+    // Methods inserted by this code:
+    impl TracesData {
+        pub fn new<T1: Into<::prost::alloc::vec::Vec<ResourceSpans>>>(
+            resource_spans: T1,
+        ) -> Self {
+            Self {
+                resource_spans: resource_spans.into(),
+            }
+        }
+    }
 ```
 
-## Copilot instructions
+### Example derived code: detail object
 
-## Procedural macros
+The `Span` message object derives the following code, for example:
 
-There are OTLP-specific procedural macros implemented in
-src/pdata/otlp/derive, these are invoked while generated the code in
-src/proto. The procedural macros in this file are complex and will
-require debugging, and it will help us to know how to recognize them.
-
-Errors in the derived code will show up like the following, where "X"
-characters denote arbitrary errors inside the derived code.
-
-```text
-error[E0XXX]: XXXXXXXXXXXXXXX
-  --> rust/otel-arrow-rust/src/proto/./././opentelemetry.proto.collector.metrics.v1.rs:16:1
-   |
-16 | #[crate::pdata::otlp::qualified("opentelemetry.proto.collector.metrics.v1.ExportMetricsPartialSuccess")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ XXXXXXXXX`
+```rust
+    impl Span {
+        pub fn build() -> SpanBuilder {
+            SpanBuilder {
+                inner: Self {
+                    // ... defaults ...
+                },
+            }
+        }
+    }
+    pub struct SpanBuilder {
+        inner: Span,
+    }
+    impl SpanBuilder {
+        pub fn trace_id<T: Into<::prost::alloc::vec::Vec<u8>>>(
+            mut self,
+            trace_id: T,
+        ) -> Self {
+            self.inner.trace_id = trace_id.into();
+            self
+        }
+        //
+        // ... one method per field
+        //
+        pub fn finish(self) -> Span {
+            self.inner
+        }
+    }
+    impl std::convert::From<SpanBuilder> for Span {
+        fn from(builder: SpanBuilder) -> Self {
+            builder.finish()
+        }
+    }
 ```
-
-When developing procedural macros, it is important to use "cargo
-expand" to generate code for understanding the problem. Combine this
-command with "grep -A N -B N pattern" will help understand the
-problem because the output is many KiB.
-
-In these development scenarios, we maintain a file named EXPANDED at
-the top of the workspace created by `cargo expand > EXPANDED`. This
-allows you to see the current macro expansion, which can be especially
-helpful to diagnose compilation errors caused by bugs in the macros.
-
-When you are looking to understand a type that is being generated
-through macros, refer to the EXPANDED file instead of searching
-through the macro library.  ALWAYS update the EXPANDED file to have
-the current expansion after modifying the procedural macros.
-
-If the derive macros are panicking, it becomes difficult to debug this
-way, and a backtrace of the Rust compiler tends to be difficult to
-interpret. In these cases, use `eprintln!("...")` to make progress.
-
-## Macro debugging cycle
-
-We will proceed to run a two commands in one:
-
-```bash
-cargo expand > EXPANDED 2> EXPAND_ERRORS; cargo check 2> CHECKED
-```
-
-Inspect CHECKED for compiler errors and EXPANDED for the raw source
-code produced by the derive generation logic and EXPAND_ERRORS for
-compiler errors during macro processing.
-
-When the check step succeeds, the next thing to verify are the tests:
-
-```bash
-cargo test > TEST_OUTPUT 2> TEST_ERROR
-```
-
-After the tests run, inspect both files to learn whether the tests
-passed or failed, then continue to iterate.

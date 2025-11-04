@@ -179,45 +179,54 @@ mod tests {
                 // send log message
                 let logs_data = LogsData::new(vec![
     // ResourceLogs for prod/checkout-service
-    ResourceLogs::build(Resource::build(vec![
-        KeyValue::new("version", AnyValue::new_string("2.0")),
-        KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
-        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
-        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
-        KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
-        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
-        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
-        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
-        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
-        KeyValue::new("process.pid", AnyValue::new_int(12345)),
-        KeyValue::new("team", AnyValue::new_string("payments")),
-        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
-    ]))
-    .scope_logs(vec![
-        ScopeLogs::build(
-            InstrumentationScope::build("library")
-                .version("scopev1")
-                .finish(),
-        )
-        .log_records(vec![
-            // WARN: passes include; will be removed by exclude via severity_texts/body
-            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
-                .attributes(vec![
+    ResourceLogs::new(
+        Resource::build()
+            .attributes(vec![
+                KeyValue::new("version", AnyValue::new_string("2.0")),
+                KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
+                KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
+                KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                KeyValue::new("team", AnyValue::new_string("payments")),
+                KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+            ])
+            .finish(),
+        vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("library")
+                    .version("scopev1")
+                    .finish(),
+                vec![
+                    // WARN: passes include; will be removed by exclude via severity_texts/body
+                    LogRecord::build()
+                        .time_unix_nano(2_200_000_000u64)
+                        .severity_number(SeverityNumber::Warn)
+                        .body(AnyValue::new_string("event"))
+                        .attributes(vec![
                     KeyValue::new("component", AnyValue::new_string("rest")),
                     KeyValue::new("http.method", AnyValue::new_string("POST")),
                     KeyValue::new("http.route", AnyValue::new_string("/api/checkout")),
                     KeyValue::new("http.status_code", AnyValue::new_int(200)),
                     KeyValue::new("retryable", AnyValue::new_bool(false)),
                     KeyValue::new("backoff_ms", AnyValue::new_int(0)),
-                    KeyValue::new("throttle_factor", AnyValue::new_double(0.0)),
-                ])
-                .severity_text("WARN")
-                .body(AnyValue::new_string("checkout started"))
-                .finish(),
+                            KeyValue::new("throttle_factor", AnyValue::new_double(0.0)),
+                        ])
+                        .severity_text("WARN")
+                        .body(AnyValue::new_string("checkout started"))
+                        .finish(),
 
-            // ERROR: passes include; not removed by exclude
-            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                    // ERROR: passes include; not removed by exclude
+                    LogRecord::build()
+                        .time_unix_nano(2_300_000_000u64)
+                        .severity_number(SeverityNumber::Error)
+                        .body(AnyValue::new_string("event"))
                 .attributes(vec![
                     KeyValue::new("exception.type", AnyValue::new_string("io::Error")),
                     KeyValue::new("exception.message", AnyValue::new_string("connection reset by peer")),
@@ -226,30 +235,35 @@ mod tests {
                     KeyValue::new("peer.port", AnyValue::new_int(5432)),
                     KeyValue::new("peer.tls", AnyValue::new_bool(true)),
                     KeyValue::new("bytes_sent", AnyValue::new_int(0)),
-                    KeyValue::new("jitter", AnyValue::new_double(0.003)),
-                ])
-                .severity_text("ERROR")
-                .body(AnyValue::new_string("failed to write to socket"))
-                .finish(),
+                            KeyValue::new("jitter", AnyValue::new_double(0.003)),
+                        ])
+                        .severity_text("ERROR")
+                        .body(AnyValue::new_string("failed to write to socket"))
+                        .finish(),
 
-            // WARN: component=db; fails exclude (component=db)
-            LogRecord::build(2_600_000_000u64, SeverityNumber::Warn, "event")
+                    // WARN: component=db; fails exclude (component=db)
+                    LogRecord::build()
+                        .time_unix_nano(2_600_000_000u64)
+                        .severity_number(SeverityNumber::Warn)
+                        .body(AnyValue::new_string("event"))
                 .attributes(vec![
                     KeyValue::new("component", AnyValue::new_string("db")),
                     KeyValue::new("query", AnyValue::new_string("UPDATE inventory SET count = count - 1 WHERE sku='ABC123'")),
                     KeyValue::new("rows_affected", AnyValue::new_int(1)),
-                    KeyValue::new("success", AnyValue::new_bool(true)),
-                ])
-                .severity_text("WARN")
-                .body(AnyValue::new_string("inventory updated"))
-                .finish(),
-        ])
-        .finish(),
-    ])
-    .finish(),
+                            KeyValue::new("success", AnyValue::new_bool(true)),
+                        ])
+                        .severity_text("WARN")
+                        .body(AnyValue::new_string("inventory updated"))
+                        .finish(),
+                ],
+            ),
+        ],
+    ),
 
     // ResourceLogs for staging/inventory-service (excluded by both filters)
-    ResourceLogs::build(Resource::build(vec![
+    ResourceLogs::new(
+        Resource::build()
+            .attributes(vec![
         KeyValue::new("version", AnyValue::new_string("2.0")),
         KeyValue::new("service.name", AnyValue::new_string("inventory-service")),
         KeyValue::new("service.version", AnyValue::new_string("0.9.1")),
@@ -261,39 +275,46 @@ mod tests {
         KeyValue::new("sampling.rate", AnyValue::new_double(0.10)),
         KeyValue::new("debug.enabled", AnyValue::new_bool(true)),
         KeyValue::new("process.pid", AnyValue::new_int(22222)),
-        KeyValue::new("team", AnyValue::new_string("inventory")),
-    ]))
-    .scope_logs(vec![
-        ScopeLogs::build(
-            InstrumentationScope::build("library")
-                .version("scopev2")
-                .finish(),
-        )
-        .log_records(vec![
-            LogRecord::build(3_000_000_000u64, SeverityNumber::Warn, "event")
+                KeyValue::new("team", AnyValue::new_string("inventory")),
+            ])
+            .finish(),
+        vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("library")
+                    .version("scopev2")
+                    .finish(),
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(3_000_000_000u64)
+                        .severity_number(SeverityNumber::Warn)
+                        .body(AnyValue::new_string("event"))
                 .attributes(vec![
                     KeyValue::new("component", AnyValue::new_string("rest")),
                     KeyValue::new("http.route", AnyValue::new_string("/api/internal/cache_warm")),
                     KeyValue::new("http.status_code", AnyValue::new_int(200)),
-                    KeyValue::new("success", AnyValue::new_bool(true)),
-                ])
-                .severity_text("WARN")
-                .body(AnyValue::new_string("warmup complete"))
-                .finish(),
+                            KeyValue::new("success", AnyValue::new_bool(true)),
+                        ])
+                        .severity_text("WARN")
+                        .body(AnyValue::new_string("warmup complete"))
+                        .finish(),
 
-            LogRecord::build(3_100_000_000u64, SeverityNumber::Info, "event")
+                    LogRecord::build()
+                        .time_unix_nano(3_100_000_000u64)
+                        .severity_number(SeverityNumber::Info)
+                        .body(AnyValue::new_string("event"))
                 .attributes(vec![
                     KeyValue::new("event.domain", AnyValue::new_string("ops")),
                     KeyValue::new("message", AnyValue::new_string("heartbeat")),
-                    KeyValue::new("uptime_sec", AnyValue::new_int(100)),
-                ])
-                .severity_text("INFO")
-                .body(AnyValue::new_string("heartbeat"))
-                .finish(),
-        ])
-        .finish(),
-    ])
-    .finish(),
+                            KeyValue::new("uptime_sec", AnyValue::new_int(100)),
+                        ])
+                        .severity_text("INFO")
+                        .body(AnyValue::new_string("heartbeat"))
+                        .finish(),
+                ],
+            ),
+        ],
+    ),
 ]);
 
                 //convert logsdata to otappdata
@@ -319,30 +340,34 @@ mod tests {
                     _ => panic!("expected logs type"),
                 };
 
-                let expected_logs_data = LogsData::new(vec![
-                    ResourceLogs::build(Resource::build(vec![
-                        KeyValue::new("version", AnyValue::new_string("2.0")),
-                        KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
-                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
-                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
-                        KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
-                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
-                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
-                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
-                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
-                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
-                        KeyValue::new("team", AnyValue::new_string("payments")),
-                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
-                    ]))
-                    .scope_logs(vec![
-                        ScopeLogs::build(
-                            InstrumentationScope::build("library")
-                                .version("scopev1")
-                                .finish(),
-                        )
-                        .log_records(vec![
-                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                let expected_logs_data = LogsData::new(vec![ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![
+                            KeyValue::new("version", AnyValue::new_string("2.0")),
+                            KeyValue::new("service.name", AnyValue::new_string("checkout-service")),
+                            KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                            KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                            KeyValue::new("deployment.environment", AnyValue::new_string("prod")),
+                            KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                            KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                            KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                            KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                            KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                            KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                            KeyValue::new("team", AnyValue::new_string("payments")),
+                            KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                        ])
+                        .finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(2_300_000_000u64)
+                                .severity_number(SeverityNumber::Error)
+                                .body(AnyValue::new_string("event"))
                                 .attributes(vec![
                                     KeyValue::new(
                                         "exception.type",
@@ -368,11 +393,9 @@ mod tests {
                                 .severity_text("ERROR")
                                 .body(AnyValue::new_string("failed to write to socket"))
                                 .finish(),
-                        ])
-                        .finish(),
-                    ])
-                    .finish(),
-                ]);
+                        ],
+                    )],
+                )]);
                 assert_eq!(received_logs_data, expected_logs_data);
             })
         }
@@ -461,35 +484,42 @@ mod tests {
         move |mut ctx| {
             Box::pin(async move {
                 // send log message
-                let logs_data = LogsData::new(vec![
-                    ResourceLogs::build(Resource::build(vec![
-                        KeyValue::new("version", AnyValue::new_string("2.0")),
-                        KeyValue::new(
-                            "service.name",
-                            AnyValue::new_string("payments-checkout-service"),
-                        ),
-                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
-                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
-                        // Use "production" to exercise regex ^prod(uction)?$
-                        KeyValue::new("deployment.environment", AnyValue::new_string("production")),
-                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
-                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
-                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
-                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
-                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
-                        KeyValue::new("team", AnyValue::new_string("payments")),
-                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
-                    ]))
-                    .scope_logs(vec![
-                        ScopeLogs::build(
-                            InstrumentationScope::build("library")
-                                .version("scopev1")
-                                .finish(),
-                        )
-                        .log_records(vec![
+                let logs_data = LogsData::new(vec![ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![
+                            KeyValue::new("version", AnyValue::new_string("2.0")),
+                            KeyValue::new(
+                                "service.name",
+                                AnyValue::new_string("payments-checkout-service"),
+                            ),
+                            KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                            KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                            // Use "production" to exercise regex ^prod(uction)?$
+                            KeyValue::new(
+                                "deployment.environment",
+                                AnyValue::new_string("production"),
+                            ),
+                            KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                            KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                            KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                            KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                            KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                            KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                            KeyValue::new("team", AnyValue::new_string("payments")),
+                            KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                        ])
+                        .finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .finish(),
+                        vec![
                             // Log A: WARN with string body; attributes include int/float/bool
-                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                            LogRecord::build()
+                                .time_unix_nano(2_200_000_000u64)
+                                .severity_number(SeverityNumber::Warn)
+                                .body(AnyValue::new_string("event"))
                                 .attributes(vec![
                                     KeyValue::new("component", AnyValue::new_string("rest")),
                                     KeyValue::new("http.status_code", AnyValue::new_int(200)),
@@ -501,7 +531,10 @@ mod tests {
                                 .body(AnyValue::new_string("ok checkout #1"))
                                 .finish(),
                             // Log B: ERROR with numeric (double) body; attributes include int/float/bool
-                            LogRecord::build(2_300_000_000u64, SeverityNumber::Error, "event")
+                            LogRecord::build()
+                                .time_unix_nano(2_300_000_000u64)
+                                .severity_number(SeverityNumber::Error)
+                                .body(AnyValue::new_string("event"))
                                 .attributes(vec![
                                     KeyValue::new("component", AnyValue::new_string("svc")),
                                     KeyValue::new("retryable", AnyValue::new_bool(false)),
@@ -511,11 +544,9 @@ mod tests {
                                 .severity_text("ERROR")
                                 .body(AnyValue::new_double(12.5))
                                 .finish(),
-                        ])
-                        .finish(),
-                    ])
-                    .finish(),
-                ]);
+                        ],
+                    )],
+                )]);
 
                 //convert logsdata to otappdata
                 let mut bytes = vec![];
@@ -540,34 +571,41 @@ mod tests {
                     _ => panic!("expected logs type"),
                 };
 
-                let expected_logs_data = LogsData::new(vec![
-                    ResourceLogs::build(Resource::build(vec![
-                        KeyValue::new("version", AnyValue::new_string("2.0")),
-                        KeyValue::new(
-                            "service.name",
-                            AnyValue::new_string("payments-checkout-service"),
-                        ),
-                        KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
-                        KeyValue::new("service.instance.number", AnyValue::new_int(42)),
-                        KeyValue::new("deployment.environment", AnyValue::new_string("production")),
-                        KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
-                        KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
-                        KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
-                        KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
-                        KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
-                        KeyValue::new("process.pid", AnyValue::new_int(12345)),
-                        KeyValue::new("team", AnyValue::new_string("payments")),
-                        KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
-                    ]))
-                    .scope_logs(vec![
-                        ScopeLogs::build(
-                            InstrumentationScope::build("library")
-                                .version("scopev1")
-                                .finish(),
-                        )
-                        .log_records(vec![
+                let expected_logs_data = LogsData::new(vec![ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![
+                            KeyValue::new("version", AnyValue::new_string("2.0")),
+                            KeyValue::new(
+                                "service.name",
+                                AnyValue::new_string("payments-checkout-service"),
+                            ),
+                            KeyValue::new("service.version", AnyValue::new_string("1.4.3")),
+                            KeyValue::new("service.instance.number", AnyValue::new_int(42)),
+                            KeyValue::new(
+                                "deployment.environment",
+                                AnyValue::new_string("production"),
+                            ),
+                            KeyValue::new("cloud.region", AnyValue::new_string("us-central1")),
+                            KeyValue::new("host.cpu_cores", AnyValue::new_int(8)),
+                            KeyValue::new("host.uptime_sec", AnyValue::new_int(86_400)),
+                            KeyValue::new("sampling.rate", AnyValue::new_double(0.25)),
+                            KeyValue::new("debug.enabled", AnyValue::new_bool(false)),
+                            KeyValue::new("process.pid", AnyValue::new_int(12345)),
+                            KeyValue::new("team", AnyValue::new_string("payments")),
+                            KeyValue::new("telemetry.sdk.language", AnyValue::new_string("rust")),
+                        ])
+                        .finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .finish(),
+                        vec![
                             // Kept: WARN with string body
-                            LogRecord::build(2_200_000_000u64, SeverityNumber::Warn, "event")
+                            LogRecord::build()
+                                .time_unix_nano(2_200_000_000u64)
+                                .severity_number(SeverityNumber::Warn)
+                                .body(AnyValue::new_string("event"))
                                 .attributes(vec![
                                     KeyValue::new("component", AnyValue::new_string("rest")),
                                     KeyValue::new("http.status_code", AnyValue::new_int(200)),
@@ -578,11 +616,9 @@ mod tests {
                                 .severity_text("WARN")
                                 .body(AnyValue::new_string("ok checkout #1"))
                                 .finish(),
-                        ])
-                        .finish(),
-                    ])
-                    .finish(),
-                ]);
+                        ],
+                    )],
+                )]);
                 assert_eq!(received_logs_data, expected_logs_data);
             })
         }

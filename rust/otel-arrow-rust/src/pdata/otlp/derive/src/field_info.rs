@@ -2,41 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Field analysis and metadata extraction for OTLP code generation.
-//!
-//! This module provides the `FieldInfo` struct and associated utilities for analyzing
-//! struct fields in the context of OpenTelemetry Protocol (OTLP) code generation.
-//! It handles the complex task of extracting protobuf metadata, type information,
-//! and visitor pattern details from Rust struct fields.
-//!
-//! ## Key Responsibilities
-//!
-//! - **Protobuf Analysis**: Parses `#[prost(...)]` attributes to extract tag numbers,
-//!   field types, and protobuf-specific characteristics (optional, repeated, message)
-//! - **Type Decomposition**: Breaks down complex Rust types into base names and module
-//!   qualifiers for proper trait generation and namespacing
-//! - **Visitor Pattern Support**: Precomputes visitor and visitable trait information
-//!   to support the visitor pattern used throughout the OTLP implementation
-//! - **Field Type Overrides**: Applies custom type mappings from configuration to
-//!   handle special cases like enum types
-//! - **Oneof Field Handling**: Manages protobuf oneof (union) fields and their
-//!   various case types
-//!
-//! ## Usage
-//!
-//! The primary entry point is `FieldInfo::new()`, which takes a `syn::Field` and
-//! contextual information to produce a comprehensive `FieldInfo` instance containing
-//! all metadata needed for code generation.
 
-use convert_case::Casing;
 use otlp_model::OneofCase;
 use otlp_model::OneofMapping;
-use quote::{ToTokens, quote};
+use quote::ToTokens;
 
 /// Comprehensive information about a struct field for OTLP code generation.
 ///
 /// This struct contains all the metadata needed to generate protobuf-compatible
-/// Rust code from struct fields, including visitor patterns, type information,
-/// and Protocol Buffer attributes.
+/// Rust code from struct fields, type information Protocol Buffer attributes.
+///
+/// Note the #[allow(dead_code)] stem from the removal of a Prost
+/// object visitor pattern, item counter, and OTLP bytes encoder
+/// feature. TODO PR NUMBER
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
     /// The Rust identifier for this field (e.g., `field_name`)
@@ -54,9 +32,11 @@ pub struct FieldInfo {
 
     /// Whether this field represents a primitive type at the protocol level, including bytes,
     /// String, integers, etc.
+    #[allow(dead_code)]
     pub is_primitive: bool,
 
     /// Whether it uses a 32- or 64-bit fixed size encoding.
+    #[allow(dead_code)]
     pub is_fixed: bool,
 
     /// For oneof fields: contains the possible cases that this field can represent.
@@ -75,9 +55,11 @@ pub struct FieldInfo {
 
     /// Module path qualifier for the field's type (e.g., `some::module` for `some::module::TypeName`).
     /// Used to generate proper trait implementations with correct namespacing.
+    #[allow(dead_code)]
     pub qualifier: Option<proc_macro2::TokenStream>,
 
     /// The protobuf field tag number for wire format serialization
+    #[allow(dead_code)]
     pub tag: u32,
 
     /// The base type name without any module qualification (e.g., "String", "MyMessage")
@@ -85,18 +67,6 @@ pub struct FieldInfo {
 
     /// The complete Rust type for this field, including containers like `Option<T>` or `Vec<T>`
     pub full_type_name: syn::Type,
-
-    // Visitor pattern precomputed information for efficient code generation
-    /// The visitor trait that should be implemented for this field type.
-    /// Precomputed to handle special cases like primitives, repeated fields, and bytes.
-    pub visitor_trait: proc_macro2::TokenStream,
-
-    /// The visitable trait that this field type should implement.
-    /// Precomputed for consistency with the corresponding visitor trait.
-    pub visitable_trait: proc_macro2::TokenStream,
-
-    /// Method name for the visit call in generated code (e.g., `visit_string`, `visit_message`)
-    pub visit_method_name: syn::Ident,
 }
 
 /// Helper function to parse protobuf tag values from prost attribute strings.
@@ -165,106 +135,6 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
     (0, "unknown".to_string())
 }
 
-/// Type information for primitive types in the visitor pattern.
-///
-/// Maps primitive Rust types to their corresponding trait names used in
-/// the visitor pattern code generation (e.g., "String" -> "StringVisitor").
-struct PrimitiveTypeInfo {
-    trait_name: &'static str,
-    rust_type: &'static str,
-}
-
-/// Mapping of base type names to their trait and Rust type information
-fn get_primitive_type_info(base_type_name: &str) -> Option<PrimitiveTypeInfo> {
-    match base_type_name {
-        "String" => Some(PrimitiveTypeInfo {
-            trait_name: "String",
-            rust_type: "String",
-        }),
-        "bool" => Some(PrimitiveTypeInfo {
-            trait_name: "Boolean",
-            rust_type: "bool",
-        }),
-        "i32" => Some(PrimitiveTypeInfo {
-            trait_name: "I32",
-            rust_type: "i32",
-        }),
-        "i64" => Some(PrimitiveTypeInfo {
-            trait_name: "I64",
-            rust_type: "i64",
-        }),
-        "u32" | "u8" => Some(PrimitiveTypeInfo {
-            trait_name: "U32",
-            rust_type: "u32",
-        }),
-        "u64" => Some(PrimitiveTypeInfo {
-            trait_name: "U64",
-            rust_type: "u64",
-        }),
-        "f32" | "f64" => Some(PrimitiveTypeInfo {
-            trait_name: "F64",
-            rust_type: "f64",
-        }),
-        _ => None,
-    }
-}
-
-/// Mapping for primitive types to their corresponding trait names
-fn get_primitive_trait_mapping(
-    base_type_name: &str,
-    trait_suffix: &str,
-) -> Option<proc_macro2::TokenStream> {
-    get_primitive_type_info(base_type_name).map(|info| {
-        let trait_name = format!("{}{}", info.trait_name, trait_suffix);
-        let trait_ident = syn::Ident::new(&trait_name, proc_macro2::Span::call_site());
-        quote! { crate::pdata::#trait_ident<Argument> }
-    })
-}
-
-/// Mapping for repeated primitive types to their corresponding slice trait names
-fn get_repeated_primitive_trait_mapping(
-    base_type_name: &str,
-    trait_suffix: &str,
-) -> Option<proc_macro2::TokenStream> {
-    get_primitive_type_info(base_type_name).map(|info| {
-        let slice_trait_name = format!("Slice{}", trait_suffix);
-        let slice_trait_ident = syn::Ident::new(&slice_trait_name, proc_macro2::Span::call_site());
-        let rust_type_ident = syn::Ident::new(info.rust_type, proc_macro2::Span::call_site());
-        quote! { crate::pdata::#slice_trait_ident<Argument, #rust_type_ident> }
-    })
-}
-
-/// Generate standard trait for non-primitive types
-fn generate_standard_trait(
-    base_type_name: &str,
-    qualifier: &Option<proc_macro2::TokenStream>,
-    trait_suffix: &str,
-) -> proc_macro2::TokenStream {
-    let needs_argument = trait_suffix == "Visitor" || trait_suffix == "Visitable";
-
-    if let Some(ref qualifier) = qualifier {
-        let base_with_suffix = syn::Ident::new(
-            &format!("{}{}", base_type_name, trait_suffix),
-            proc_macro2::Span::call_site(),
-        );
-        if needs_argument {
-            quote! { #qualifier::#base_with_suffix<Argument> }
-        } else {
-            quote! { #qualifier::#base_with_suffix }
-        }
-    } else {
-        let type_with_suffix = syn::Ident::new(
-            &format!("{}{}", base_type_name, trait_suffix),
-            proc_macro2::Span::call_site(),
-        );
-        if needs_argument {
-            quote! { #type_with_suffix<Argument> }
-        } else {
-            quote! { #type_with_suffix }
-        }
-    }
-}
-
 impl FieldInfo {
     /// Parse field type overrides and return (enum_type, as_type)
     fn parse_field_type_overrides(
@@ -288,65 +158,12 @@ impl FieldInfo {
             .unwrap_or((None, None))
     }
 
-    /// Compute visitor-related information for a field
-    fn compute_visitor_info(
-        field_ident: &syn::Ident,
-        proto_type: &str,
-        is_repeated: bool,
-        is_primitive: bool,
-        base_type_name: &str,
-        qualifier: &Option<proc_macro2::TokenStream>,
-    ) -> (
-        syn::Ident,
-        syn::Ident,
-        proc_macro2::TokenStream,
-        proc_macro2::TokenStream,
-    ) {
-        let field_name_str = field_ident.to_string();
-        let clean_field_name = if field_name_str.starts_with("r#") {
-            &field_name_str[2..]
-        } else {
-            &field_name_str
-        };
-
-        let visitor_param_name = syn::Ident::new(
-            &format!("{}_visitor", clean_field_name),
-            proc_macro2::Span::call_site(),
-        );
-
-        let visit_method_name =
-            Self::compute_visit_method_name(proto_type, is_repeated, is_primitive, base_type_name);
-
-        let visitor_trait = Self::compute_visitor_trait(
-            proto_type,
-            is_repeated,
-            is_primitive,
-            base_type_name,
-            qualifier,
-        );
-
-        let visitable_trait = Self::compute_visitable_trait(
-            proto_type,
-            is_repeated,
-            is_primitive,
-            base_type_name,
-            qualifier,
-        );
-
-        (
-            visitor_param_name,
-            visit_method_name,
-            visitor_trait,
-            visitable_trait,
-        )
-    }
     /// Creates a new FieldInfo instance by analyzing a struct field and its context.
     ///
     /// Performs comprehensive analysis of the field including:
     /// - Parsing prost annotations for protobuf information
     /// - Determining field characteristics (optional, repeated, message type)
     /// - Resolving type information and qualifiers
-    /// - Computing visitor pattern traits and method names
     /// - Applying field type overrides from configuration
     ///
     /// # Arguments
@@ -406,17 +223,6 @@ impl FieldInfo {
                 // Parse Prost tag
                 let (tag, proto_type) = parse_prost_tag_and_type(field);
 
-                // Compute visitor information
-                let (_visitor_param_name, visit_method_name, visitor_trait, visitable_trait) =
-                    Self::compute_visitor_info(
-                        ident,
-                        &proto_type,
-                        is_repeated,
-                        is_primitive,
-                        &base_type_name,
-                        &qualifier,
-                    );
-
                 // Create complete field info
                 FieldInfo {
                     ident: ident.clone(),
@@ -433,33 +239,9 @@ impl FieldInfo {
                     base_type_name,
                     full_type_name,
                     qualifier,
-                    visitor_trait,
-                    visitable_trait,
-                    visit_method_name,
                 }
             })
             .expect("has field name")
-    }
-
-    /// Generates the appropriate trait token stream for related types with the given suffix.
-    ///
-    /// This method handles special cases for "Visitor" and "Visitable" suffixes by using
-    /// precomputed trait information, while falling back to standard trait generation
-    /// for other suffixes. This ensures consistent trait naming and proper handling
-    /// of primitive types, repeated fields, and complex message types.
-    pub fn related_type(&self, suffix: &str) -> proc_macro2::TokenStream {
-        // For Visitor suffix, use precomputed visitor trait
-        if suffix == "Visitor" {
-            return self.visitor_trait.clone();
-        }
-
-        // For Visitable suffix, use precomputed visitable trait
-        if suffix == "Visitable" {
-            return self.visitable_trait.clone();
-        }
-
-        // For other suffixes, use standard trait generation logic
-        generate_standard_trait(&self.base_type_name, &self.qualifier, suffix)
     }
 
     /// Decomposes a Rust type into its base name and module qualifier.
@@ -603,116 +385,5 @@ impl FieldInfo {
         ];
 
         Self::has_any_prost_attr(field, PRIMITIVE_PATTERNS)
-    }
-
-    /// Determines the appropriate visit method name for this field in the visitor pattern.
-    ///
-    /// Generates method names based on the protobuf type and field characteristics:
-    /// - Bytes fields -> "visit_bytes"
-    /// - Repeated primitives -> "visit_slice"  
-    /// - Single primitives -> "visit_{type}" (e.g., "visit_string", "visit_i32")
-    /// - Messages -> "visit_{snake_case_name}" (e.g., "visit_my_message")
-    ///
-    /// This naming convention ensures consistency across the generated visitor code.
-    fn compute_visit_method_name(
-        proto_type: &str,
-        is_repeated: bool,
-        is_primitive: bool,
-        base_type_name: &str,
-    ) -> syn::Ident {
-        let method_name = if proto_type.contains("bytes") {
-            "visit_bytes".to_string()
-        } else if is_repeated && is_primitive {
-            "visit_slice".to_string()
-        } else if is_primitive {
-            // For non-bytes, non-repeated primitives, use the base type name in lowercase
-            format!("visit_{}", base_type_name.to_lowercase())
-        } else {
-            let type_name = base_type_name;
-            format!("visit_{}", type_name.to_case(convert_case::Case::Snake))
-        };
-
-        syn::Ident::new(&method_name, proc_macro2::Span::call_site())
-    }
-
-    /// Unified trait computation for both Visitor and Visitable traits.
-    ///
-    /// Handles special cases and mappings:
-    /// - Bytes fields -> BytesVisitor/BytesVisitable  
-    /// - Repeated primitives -> Slice{Type}Visitor/Slice{Type}Visitable
-    /// - Single primitives -> {Type}Visitor/{Type}Visitable (e.g., StringVisitor)
-    /// - Messages -> {TypeName}Visitor/{TypeName}Visitable
-    ///
-    /// Uses precomputed mappings for primitives and falls back to standard
-    /// trait generation for custom message types.
-    fn compute_trait(
-        proto_type: &str,
-        is_repeated: bool,
-        is_primitive: bool,
-        base_type_name: &str,
-        qualifier: &Option<proc_macro2::TokenStream>,
-        trait_suffix: &str,
-    ) -> proc_macro2::TokenStream {
-        // Handle bytes type specially
-        if proto_type.contains("bytes") {
-            let bytes_trait = format!("Bytes{}", trait_suffix);
-            let bytes_trait_ident = syn::Ident::new(&bytes_trait, proc_macro2::Span::call_site());
-            return quote! { crate::pdata::#bytes_trait_ident<Argument> };
-        }
-
-        // For repeated primitive fields, use slice traits
-        if is_repeated && is_primitive {
-            return get_repeated_primitive_trait_mapping(base_type_name, trait_suffix)
-                .unwrap_or_else(|| {
-                    // Fallback for unknown repeated primitive types
-                    if trait_suffix == "Visitable" {
-                        quote! { crate::pdata::UnknownVisitable<Argument> }
-                    } else {
-                        generate_standard_trait(base_type_name, qualifier, trait_suffix)
-                    }
-                });
-        }
-
-        // For primitive types, use type-specific traits
-        get_primitive_trait_mapping(base_type_name, trait_suffix).unwrap_or_else(|| {
-            // For non-primitive types, use standard trait generation
-            generate_standard_trait(base_type_name, qualifier, trait_suffix)
-        })
-    }
-
-    /// Compute the visitor trait for this field
-    fn compute_visitor_trait(
-        proto_type: &str,
-        is_repeated: bool,
-        is_primitive: bool,
-        base_type_name: &str,
-        qualifier: &Option<proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
-        Self::compute_trait(
-            proto_type,
-            is_repeated,
-            is_primitive,
-            base_type_name,
-            qualifier,
-            "Visitor",
-        )
-    }
-
-    /// Compute the visitable trait for this field
-    fn compute_visitable_trait(
-        proto_type: &str,
-        is_repeated: bool,
-        is_primitive: bool,
-        base_type_name: &str,
-        qualifier: &Option<proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
-        Self::compute_trait(
-            proto_type,
-            is_repeated,
-            is_primitive,
-            base_type_name,
-            qualifier,
-            "Visitable",
-        )
     }
 }

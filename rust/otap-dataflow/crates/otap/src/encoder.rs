@@ -1011,18 +1011,18 @@ mod test {
         let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
 
-        let metrics_data = MetricsData::new(vec![
-            ResourceMetrics::build(
-                Resource::build(vec![KeyValue::new(
+        let metrics_data = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new(
                     "resource_attr1",
                     AnyValue::new_string("resource_val"),
                 )])
                 .dropped_attributes_count(99u32)
                 .finish(),
-            )
-            .scope_metrics(vec![
-                ScopeMetrics::build(
-                    InstrumentationScope::build("library")
+            vec![{
+                ScopeMetrics::new(
+                    InstrumentationScope::build()
+                        .name("library")
                         .version("scopev1")
                         .attributes(vec![KeyValue::new(
                             "scope_attr1",
@@ -1030,170 +1030,174 @@ mod test {
                         )])
                         .dropped_attributes_count(17u32)
                         .finish(),
-                )
-                .schema_url("another url")
-                .metrics(vec![
-                    Metric::build_gauge(
-                        "gauge name",
-                        Gauge::new(vec![
-                            NumberDataPoint::build_double(123u64, std::f64::consts::PI)
-                                .attributes(vec![KeyValue::new(
-                                    "gauge_attr1",
-                                    AnyValue::new_string("gauge_val"),
-                                )])
-                                .start_time_unix_nano(456u64)
-                                .exemplars(vec![
-                                    Exemplar::build_int(678u64, 234i64)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "exemplar_attr",
-                                            AnyValue::new_string("exemplar_val"),
-                                        )])
-                                        .span_id(a_span_id)
-                                        .trace_id(a_trace_id)
-                                        .finish(),
-                                ])
-                                .flags(1u32)
-                                .finish(),
-                        ]),
-                    )
-                    .description("here's a description")
-                    .unit("a unit")
-                    .metadata(vec![KeyValue::new(
-                        "metric_attr",
-                        AnyValue::new_string("metric_val"),
-                    )])
-                    .finish(),
-                    Metric::build_sum(
-                        "sum name",
-                        Sum::new(
-                            2,
-                            false,
-                            vec![
-                                NumberDataPoint::build_int(34u64, 47i64)
+                    vec![
+                        Metric::build()
+                            .name("gauge name")
+                            .data_gauge(Gauge::new(vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(123u64)
+                                    .value_double(std::f64::consts::PI)
+                                    .attributes(vec![KeyValue::new(
+                                        "gauge_attr1",
+                                        AnyValue::new_string("gauge_val"),
+                                    )])
+                                    .start_time_unix_nano(456u64)
                                     .exemplars(vec![
-                                        Exemplar::build_double(11u64, 22.5)
+                                        Exemplar::build()
+                                            .time_unix_nano(678u64)
+                                            .value_int(234i64)
                                             .filtered_attributes(vec![KeyValue::new(
-                                                "exemplar_attr2",
-                                                AnyValue::new_string("exemplar_val2"),
+                                                "exemplar_attr",
+                                                AnyValue::new_string("exemplar_val"),
                                             )])
                                             .span_id(a_span_id)
                                             .trace_id(a_trace_id)
                                             .finish(),
                                     ])
+                                    .flags(1u32)
                                     .finish(),
-                            ],
-                        ),
-                    )
-                    .finish(),
-                    Metric::build_summary(
-                        "a summary",
-                        Summary::new(vec![
-                            SummaryDataPoint::build(
-                                765u64,
-                                vec![
-                                    ValueAtQuantile::new(0., 123.),
-                                    ValueAtQuantile::new(0.5, 29.),
-                                ],
-                            )
-                            .attributes(vec![KeyValue::new(
-                                "summary_attr",
-                                AnyValue::new_string("summary_val"),
+                            ]))
+                            .description("here's a description")
+                            .unit("a unit")
+                            .metadata(vec![KeyValue::new(
+                                "metric_attr",
+                                AnyValue::new_string("metric_val"),
                             )])
-                            .start_time_unix_nano(543u64)
-                            .count(23u64)
-                            .sum(34.0)
-                            .flags(2u32)
                             .finish(),
-                        ]),
-                    )
-                    .finish(),
-                    Metric::build_histogram(
-                        "a histogram",
-                        Histogram::new(
-                            1,
-                            vec![
-                                HistogramDataPoint::build(
-                                    567u64,
-                                    vec![3, 4, 5],
-                                    vec![5.0, 6.0, 7.0],
-                                )
-                                .attributes(vec![KeyValue::new(
-                                    "hist_attr",
-                                    AnyValue::new_string("hist_val"),
-                                )])
-                                .start_time_unix_nano(23u64)
-                                .count(9u64)
-                                .sum(8)
-                                .exemplars(vec![
-                                    Exemplar::build_int(678u64, 235i64)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "hist_exemplar_attr",
-                                            AnyValue::new_string("hist_exemplar_val"),
+                        Metric::build()
+                            .name("sum name")
+                            .data_sum(Sum::new(
+                                2,
+                                false,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(34u64)
+                                        .value_int(47i64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(11u64)
+                                                .value_double(22.5)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exemplar_attr2",
+                                                    AnyValue::new_string("exemplar_val2"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                        Metric::build()
+                            .name("a summary")
+                            .data_summary(Summary::new(vec![
+                                SummaryDataPoint::build()
+                                    .time_unix_nano(765u64)
+                                    .quantile_values(vec![
+                                        ValueAtQuantile::new(0., 123.),
+                                        ValueAtQuantile::new(0.5, 29.),
+                                    ])
+                                    .attributes(vec![KeyValue::new(
+                                        "summary_attr",
+                                        AnyValue::new_string("summary_val"),
+                                    )])
+                                    .start_time_unix_nano(543u64)
+                                    .count(23u64)
+                                    .sum(34.0)
+                                    .flags(2u32)
+                                    .finish(),
+                            ]))
+                            .finish(),
+                        Metric::build()
+                            .name("a histogram")
+                            .data_histogram(Histogram::new(
+                                1,
+                                vec![
+                                    HistogramDataPoint::build()
+                                        .time_unix_nano(567u64)
+                                        .bucket_counts(vec![3, 4, 5])
+                                        .explicit_bounds(vec![5.0, 6.0, 7.0])
+                                        .attributes(vec![KeyValue::new(
+                                            "hist_attr",
+                                            AnyValue::new_string("hist_val"),
                                         )])
-                                        .span_id(a_span_id)
-                                        .trace_id(a_trace_id)
+                                        .start_time_unix_nano(23u64)
+                                        .count(9u64)
+                                        .sum(8)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_int(235i64)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "hist_exemplar_attr",
+                                                    AnyValue::new_string("hist_exemplar_val"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_double(235.)
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .flags(1u32)
+                                        .min(1.)
+                                        .max(2.)
                                         .finish(),
-                                    Exemplar::build_double(678u64, 235.)
-                                        .span_id(a_span_id)
-                                        .trace_id(a_trace_id)
-                                        .finish(),
-                                ])
-                                .flags(1u32)
-                                .min(1.)
-                                .max(2.)
-                                .finish(),
-                            ],
-                        ),
-                    )
-                    .finish(),
-                    Metric::build_exponential_histogram(
-                        "exp hist",
-                        ExponentialHistogram::new(
-                            3,
-                            vec![
-                                ExponentialHistogramDataPoint::build(
-                                    345u64,
-                                    67,
-                                    Buckets::new(2, vec![34, 45, 67]),
-                                )
-                                .attributes(vec![KeyValue::new(
-                                    "exp_hist_attr",
-                                    AnyValue::new_string("exp_hist_val"),
-                                )])
-                                .start_time_unix_nano(234u64)
-                                .count(9999u64)
-                                .sum(123.)
-                                .zero_count(7u64)
-                                .exemplars(vec![
-                                    Exemplar::build_int(678u64, 235i64)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "exp_hist_exemplar_attr",
-                                            AnyValue::new_string("exp_hist_exemplar_val"),
+                                ],
+                            ))
+                            .finish(),
+                        Metric::build()
+                            .name("exp hist")
+                            .data_exponential_histogram(ExponentialHistogram::new(
+                                3,
+                                vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .time_unix_nano(345u64)
+                                        .scale(67)
+                                        .positive(Buckets::new(2, vec![34, 45, 67]))
+                                        .attributes(vec![KeyValue::new(
+                                            "exp_hist_attr",
+                                            AnyValue::new_string("exp_hist_val"),
                                         )])
-                                        .span_id(a_span_id)
-                                        .trace_id(a_trace_id)
+                                        .start_time_unix_nano(234u64)
+                                        .count(9999u64)
+                                        .sum(123.)
+                                        .zero_count(7u64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_int(235i64)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exp_hist_exemplar_attr",
+                                                    AnyValue::new_string("exp_hist_exemplar_val"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_double(235.)
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .flags(5u32)
+                                        .min(4.)
+                                        .max(44.)
+                                        .zero_threshold(-1.1)
                                         .finish(),
-                                    Exemplar::build_double(678u64, 235.)
-                                        .span_id(a_span_id)
-                                        .trace_id(a_trace_id)
-                                        .finish(),
-                                ])
-                                .flags(5u32)
-                                .min(4.)
-                                .max(44.)
-                                .zero_threshold(-1.1)
-                                .finish(),
-                            ],
-                        ),
-                    )
-                    .finish(),
-                ])
-                .finish(),
-            ])
-            .schema_url("a url")
-            .finish(),
-        ]);
-
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )
+                .set_schema_url("another url")
+            }],
+        )]);
         let otap_batch = encode_metrics_otap_batch(&metrics_data).unwrap();
         let metrics = otap_batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         let expected_metrics_batch = RecordBatch::try_new(
@@ -2361,29 +2365,31 @@ mod test {
     }
 
     fn _generate_logs_for_verify_all_columns() -> LogsData {
-        LogsData::new(vec![
-            ResourceLogs::build(
-                Resource::build(vec![KeyValue::new(
-                    "resource_attr1",
-                    AnyValue::new_string("resource_value"),
-                )])
-                .dropped_attributes_count(1u32),
-            )
-            .schema_url("https://schema.opentelemetry.io/resource_schema")
-            .scope_logs(vec![
-                ScopeLogs::build(
-                    InstrumentationScope::build("library")
-                        .version("scopev1")
-                        .attributes(vec![KeyValue::new(
-                            "scope_attr1",
-                            AnyValue::new_string("scope_val1"),
-                        )])
-                        .dropped_attributes_count(2u32)
-                        .finish(),
-                )
-                .schema_url("https://schema.opentelemetry.io/scope_schema")
-                .log_records(vec![
-                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+        LogsData::new(vec![{
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "resource_attr1",
+                        AnyValue::new_string("resource_value"),
+                    )])
+                    .dropped_attributes_count(1u32)
+                    .finish(),
+                vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("library")
+                    .version("scopev1")
+                    .attributes(vec![KeyValue::new(
+                        "scope_attr1",
+                        AnyValue::new_string("scope_val1"),
+                    )])
+                    .dropped_attributes_count(2u32)
+                    .finish(),
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(2_000_000_000u64)
+                        .severity_number(SeverityNumber::Info)
+                        .event_name("event1")
                         .observed_time_unix_nano(3_000_000_000u64)
                         .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
                         .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
@@ -2394,17 +2400,16 @@ mod test {
                             KeyValue::new("syslog_type", AnyValue::new_string("syslog rfc3164")),
                             KeyValue::new("az.service_request_id", AnyValue::new_string("00000000-0000-0000-0000-000000000000")),
                             KeyValue::new("cloud.resource_id", AnyValue::new_string("/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>")),
-
                         ])
                         .dropped_attributes_count(3u32)
                         .flags(LogRecordFlags::TraceFlagsMask)
                         .body(AnyValue::new_string("log_body"))
                         .finish(),
+                ],
+            ).set_schema_url("https://schema.opentelemetry.io/scope_schema")
                 ])
-                .finish(),
-            ])
-            .finish(),
-        ])
+                .set_schema_url("https://schema.opentelemetry.io/resource_schema")
+        }])
     }
 
     fn _test_encode_logs_verify_all_columns_generic<T>(logs_data: T)
@@ -2931,19 +2936,22 @@ mod test {
     }
 
     fn _generate_logs_no_attributes() -> LogsData {
-        LogsData::new(vec![
-            ResourceLogs::build(Resource::new(vec![]))
-                .schema_url("https://schema.opentelemetry.io/resource_schema")
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("scope"))
-                        .log_records(vec![
-                            LogRecord::build(2_000_000_000u64, SeverityNumber::Debug, "event")
-                                .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        LogsData::new(vec![{
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope").finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(2_000_000_000u64)
+                            .severity_number(SeverityNumber::Debug)
+                            .event_name("event")
+                            .finish(),
+                    ],
+                )],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema")
+        }])
     }
 
     fn _test_logs_logs_no_attributes<T>(logs_view: &T)
@@ -3101,41 +3109,54 @@ mod test {
 
     fn _generate_logs_multiple_logs_and_attrs() -> LogsData {
         LogsData::new(vec![
-            ResourceLogs::build(Resource::new(vec![]))
-                .schema_url("https://schema.opentelemetry.io/resource_schema")
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("scope"))
-                        .log_records(vec![
-                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope").finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(0u64)
+                                .severity_number(SeverityNumber::Debug)
+                                .event_name("event")
                                 .attributes(vec![
                                     KeyValue::new("key1", AnyValue::new_string("val1")),
                                     KeyValue::new("key2", AnyValue::new_string("val2")),
                                 ])
                                 .finish(),
-                        ])
-                        .finish(),
-                    ScopeLogs::build(InstrumentationScope::new("scope2"))
-                        .log_records(vec![
-                            LogRecord::build(0u64, SeverityNumber::Info, "event").finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-            ResourceLogs::build(Resource::new(vec![]))
-                .schema_url("https://schema.opentelemetry.io/resource_schema")
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("scope"))
-                        .log_records(vec![
-                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
-                                .attributes(vec![
-                                    KeyValue::new("key1", AnyValue::new_string("val1")),
-                                    KeyValue::new("key2", AnyValue::new_string("val2.b")),
-                                ])
+                        ],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(0u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event")
                                 .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
+                        ],
+                    ),
+                ],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope").finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(0u64)
+                            .severity_number(SeverityNumber::Debug)
+                            .event_name("event")
+                            .attributes(vec![
+                                KeyValue::new("key1", AnyValue::new_string("val1")),
+                                KeyValue::new("key2", AnyValue::new_string("val2.b")),
+                            ])
+                            .finish(),
+                    ],
+                )],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
         ])
     }
 
@@ -3354,14 +3375,20 @@ mod test {
 
         let mut log_records = vec![
             // log with empty body
-            LogRecord::build(5u64, SeverityNumber::Info, "event").finish(),
+            LogRecord::build()
+                .time_unix_nano(5u64)
+                .severity_number(SeverityNumber::Info)
+                .event_name("event")
+                .finish(),
         ];
         log_records.append(
             &mut log_bodies
                 .clone()
                 .into_iter()
                 .map(|body| {
-                    LogRecord::build(5u64, SeverityNumber::Info, "event")
+                    LogRecord::build()
+                        .time_unix_nano(5u64)
+                        .severity_number(SeverityNumber::Info)
                         .body(body)
                         .finish()
                 })
@@ -3604,7 +3631,10 @@ mod test {
                 scope: None,
                 schema_url: "".to_string(),
                 log_records: vec![
-                    LogRecord::build(0u64, SeverityNumber::Info, "")
+                    LogRecord::build()
+                        .time_unix_nano(0u64)
+                        .severity_number(SeverityNumber::Info)
+                        .body(AnyValue::new_string(""))
                         .attributes(attributes)
                         .finish(),
                 ],
@@ -3825,21 +3855,22 @@ mod test {
         // Build logs with at least one attribute per record so log ids are set
         let logs: Vec<LogRecord> = (0..3)
             .map(|i| {
-                LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}"))
+                LogRecord::build()
+                    .time_unix_nano(i as u64)
+                    .severity_number(SeverityNumber::Info)
+                    .body(AnyValue::new_string(format!("log{i}")))
                     .attributes(vec![KeyValue::new("k", AnyValue::new_string("v"))])
                     .finish()
             })
             .collect();
 
-        let logs_data = LogsData::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("lib"))
-                        .log_records(logs)
-                        .finish(),
-                ])
-                .finish(),
-        ]);
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("lib").finish(),
+                logs,
+            )],
+        )]);
 
         let rec = encode_logs_otap_batch(&logs_data).expect("encode logs");
         assert!(matches!(rec, OtapArrowRecords::Logs(_)));
@@ -3853,68 +3884,72 @@ mod test {
         let a_parent_span_id: SpanId = [27, 28, 19, 20, 21, 22, 23, 24];
 
         TracesData::new(vec![
-            ResourceSpans::build(
-                Resource::build(vec![KeyValue::new(
-                    "attr1",
-                    AnyValue::new_string("some_value"),
-                )])
-                .dropped_attributes_count(123u32),
-            )
-            .schema_url("https://schema.opentelemetry.io/resource_schema")
-            .scope_spans(vec![
-                ScopeSpans::build(
-                    InstrumentationScope::build("library")
-                        .version("scopev1")
-                        .attributes(vec![KeyValue::new(
-                            "scope_attr1",
-                            AnyValue::new_string("scope_val1"),
-                        )])
-                        .dropped_attributes_count(17u32)
-                        .finish(),
-                )
-                .schema_url("https://schema.opentelemetry.io/scope_schema")
-                .spans(vec![
-                    Span::build(
-                        a_trace_id.to_vec(),
-                        a_span_id.to_vec(),
-                        "span_name_1",
-                        999u64,
-                    )
-                    .trace_state("some_state")
-                    .end_time_unix_nano(1999u64)
-                    .parent_span_id(a_parent_span_id.to_vec())
-                    .flags(SpanFlags::TraceFlagsMask)
-                    .dropped_attributes_count(7u32)
-                    .dropped_events_count(11u32)
-                    .dropped_links_count(29u32)
-                    .kind(SpanKind::Consumer)
-                    .status(Status::new("something happened", StatusCode::Error))
-                    .events(vec![
-                        Event::build("an_event", 456u64)
-                            .attributes(vec![KeyValue::new(
-                                "event_attr1",
-                                AnyValue::new_string("hi"),
-                            )])
-                            .dropped_attributes_count(12345u32)
-                            .finish(),
-                    ])
-                    .links(vec![
-                        Link::build(a_trace_id.to_vec(), a_span_id.to_vec())
-                            .trace_state("some link state")
-                            .dropped_attributes_count(567u32)
-                            .flags(7u32)
-                            .attributes(vec![KeyValue::new(
-                                "link_attr1",
-                                AnyValue::new_string("hello"),
-                            )])
-                            .flags(255u32)
-                            .finish(),
-                    ])
+            ResourceSpans::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "attr1",
+                        AnyValue::new_string("some_value"),
+                    )])
+                    .dropped_attributes_count(123u32)
                     .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .attributes(vec![KeyValue::new(
+                                "scope_attr1",
+                                AnyValue::new_string("scope_val1"),
+                            )])
+                            .dropped_attributes_count(17u32)
+                            .finish(),
+                        vec![
+                            Span::build()
+                                .trace_id(a_trace_id.to_vec())
+                                .span_id(a_span_id.to_vec())
+                                .name("span_name_1")
+                                .start_time_unix_nano(999u64)
+                                .trace_state("some_state")
+                                .end_time_unix_nano(1999u64)
+                                .parent_span_id(a_parent_span_id.to_vec())
+                                .flags(SpanFlags::TraceFlagsMask)
+                                .dropped_attributes_count(7u32)
+                                .dropped_events_count(11u32)
+                                .dropped_links_count(29u32)
+                                .kind(SpanKind::Consumer)
+                                .status(Status::new(StatusCode::Error, "something happened"))
+                                .events(vec![
+                                    Event::build()
+                                        .name("an_event")
+                                        .time_unix_nano(456u64)
+                                        .attributes(vec![KeyValue::new(
+                                            "event_attr1",
+                                            AnyValue::new_string("hi"),
+                                        )])
+                                        .dropped_attributes_count(12345u32)
+                                        .finish(),
+                                ])
+                                .links(vec![
+                                    Link::build()
+                                        .trace_id(a_trace_id.to_vec())
+                                        .span_id(a_span_id.to_vec())
+                                        .trace_state("some link state")
+                                        .dropped_attributes_count(567u32)
+                                        .flags(7u32)
+                                        .attributes(vec![KeyValue::new(
+                                            "link_attr1",
+                                            AnyValue::new_string("hello"),
+                                        )])
+                                        .flags(255u32)
+                                        .finish(),
+                                ])
+                                .finish(),
+                        ],
+                    )
+                    .set_schema_url("https://schema.opentelemetry.io/scope_schema"),
+                ],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
         ])
     }
 
