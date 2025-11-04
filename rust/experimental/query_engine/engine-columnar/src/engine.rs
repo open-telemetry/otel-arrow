@@ -1,10 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::compute::concat_batches;
+use arrow::array::{RecordBatch, UInt16Array};
+use arrow::compute::{concat_batches, filter_record_batch};
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
     PipelineExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression,
@@ -20,6 +21,8 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
+use otel_arrow_rust::arrays::{get_required_array, get_required_array_from_struct_array_from_record_batch};
+use otel_arrow_rust::otap::filter::build_uint16_id_filter;
 use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
@@ -464,6 +467,61 @@ impl ExecutablePipeline {
         };
 
         self.curr_batch.set(root_payload_type, root_batch);
+
+        self.update_child_batch(ArrowPayloadType::LogAttrs)?;
+        self.update_child_batch(ArrowPayloadType::ResourceAttrs)?;
+        self.update_child_batch(ArrowPayloadType::ScopeAttrs)?;
+
+        Ok(())
+    }
+
+    fn update_child_batch(&mut self, payload_type: ArrowPayloadType) -> Result<()> {
+        let child_rb = match self.curr_batch.get(payload_type) {
+            Some(rb) => rb,
+            None => return Ok(())
+        };
+
+        let root_payload_type = match self.curr_batch {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            _ => {
+                todo!()
+            }
+        };
+        let root_rb = self.curr_batch.get(root_payload_type).ok_or(Error::InvalidBatchError { 
+            reason: "missing root record batch".into()
+        })?;
+
+
+        let source_ids = match payload_type {
+            ArrowPayloadType::LogAttrs => {
+                get_required_array(root_rb, consts::ID)
+            },
+            ArrowPayloadType::ResourceAttrs => {
+                get_required_array_from_struct_array_from_record_batch(root_rb, consts::RESOURCE, consts::ID)
+            },
+            ArrowPayloadType::ScopeAttrs => {
+                get_required_array_from_struct_array_from_record_batch(root_rb, consts::SCOPE, consts::ID)
+            }
+            _ => {
+                todo!()
+            }
+        // TODO we could implement From for the error this returns instead of manually mapping
+        }.map_err(|e| Error::InvalidBatchError { reason: format!("invalid batch: {e}") })?;
+
+        // TODO not have this hard-coded to u16 IDs
+        let ids_as_u16 = source_ids.as_any().downcast_ref::<UInt16Array>().ok_or(Error::InvalidBatchError {
+            reason: format!("expected u16 array, found type {}", source_ids.data_type())
+         })?;
+
+         let ids_set: HashSet<u16> = ids_as_u16.iter().filter_map(|i| i).collect();
+         let target_ids = get_required_array(child_rb, consts::PARENT_ID).map_err(|e| Error::InvalidBatchError { 
+            reason: format!("invalid batch: {e}")
+        })?;
+        
+        // TODO unwraps
+        let child_mask = build_uint16_id_filter(target_ids, ids_set).unwrap();
+        let result_children = filter_record_batch(child_rb, &child_mask).unwrap();
+        self.curr_batch.set(payload_type, result_children);
 
         Ok(())
     }
