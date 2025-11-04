@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use arrow::array::{RecordBatch, UInt16Array};
 use arrow::compute::{concat_batches, filter_record_batch};
+use arrow::datatypes::DataType;
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
     PipelineExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression,
@@ -469,8 +470,19 @@ impl ExecutablePipeline {
             }
         };
 
+        // remove the row_number column if it's there ...
         if let Ok(row_num_col_index) = schema.index_of(ROW_NUMBER_COL) {
             _ = root_batch.remove_column(row_num_col_index);
+        }
+
+        // remove any placeholder columns that were inserted by the `UpdateDataSourceOptimizer`
+        for field_id in (0..schema.fields().len()).rev() {
+            if matches!(
+                schema.field(field_id).data_type(),
+                DataType::RunEndEncoded(_, _)
+            ) {
+                _ = root_batch.remove_column(field_id)
+            }
         }
 
         self.curr_batch.set(root_payload_type, root_batch);
@@ -632,9 +644,15 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{DictionaryArray, StringArray, UInt8Array};
+    use std::sync::Arc;
+
+    use arrow::array::{
+        DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
+    };
+    use arrow::compute::kernels::cast;
     use arrow::compute::take_record_batch;
-    use arrow::datatypes::UInt8Type;
+    use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+    use arrow::util::pretty::{pretty_format_batches, print_batches};
     use data_engine_expressions::{
         ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
         PipelineExpressionBuilder,
@@ -642,6 +660,7 @@ mod test {
     use data_engine_kql_parser::{KqlParser, Parser, ParserOptions};
     use otel_arrow_rust::proto::opentelemetry::{arrow::v1::ArrowPayloadType, logs::v1::LogRecord};
     use otel_arrow_rust::schema::consts;
+    use pretty_assertions::assert_eq;
 
     use crate::engine::ExecutablePipeline;
     use crate::test::{apply_to_logs, generate_logs_batch, logs_to_export_req};
@@ -1092,5 +1111,233 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reuse_plans_schema_changes_simple() {}
+    async fn test_reuse_plans_schema_column_changes_simple() {
+        let batch = generate_logs_batch(32, 100);
+        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+        let pipeline = KqlParser::parse(query).unwrap();
+
+        let mut exec_pipeline = ExecutablePipeline::try_new(batch, pipeline).await.unwrap();
+
+        exec_pipeline.execute().await.unwrap();
+        let result = exec_pipeline.curr_batch.clone();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+        let table_fmt = pretty_format_batches(&[logs_rb]).unwrap();
+        let table_str = format!("\n{}", table_fmt);
+        assert_eq!(
+            table_str,
+            r#"
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_number | severity_text | event_name |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| 1  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000101 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 101  |
+| 4  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000104 | 1970-01-01T00:00:00     | 1               | TRACE         | event 104  |
+| 7  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000107 | 1970-01-01T00:00:00     | 13              | WARN          | event 107  |
+| 10 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000110 | 1970-01-01T00:00:00     | 9               | INFO          | event 110  |
+| 13 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000113 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 113  |
+| 16 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000116 | 1970-01-01T00:00:00     | 1               | TRACE         | event 116  |
+| 19 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000119 | 1970-01-01T00:00:00     | 13              | WARN          | event 119  |
+| 22 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000122 | 1970-01-01T00:00:00     | 9               | INFO          | event 122  |
+| 25 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000125 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 125  |
+| 28 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000128 | 1970-01-01T00:00:00     | 1               | TRACE         | event 128  |
+| 31 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000131 | 1970-01-01T00:00:00     | 13              | WARN          | event 131  |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+"#
+        );
+
+        // add a column that did not exist beforehand ...
+        let mut batch = generate_logs_batch(32, 200);
+        let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+        let new_column = UInt32Array::from_iter_values((0..logs_rb.num_rows()).map(|_| 1u32));
+        let new_field = Arc::new(Field::new(
+            consts::DROPPED_ATTRIBUTES_COUNT,
+            DataType::UInt32,
+            true,
+        ));
+        let mut new_columns = logs_rb.columns().to_vec();
+        new_columns.push(Arc::new(new_column));
+        let mut new_fields = logs_rb.schema().fields().to_vec();
+        new_fields.push(new_field);
+        let new_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
+        batch.set(ArrowPayloadType::Logs, new_rb);
+
+        exec_pipeline.update_batch(batch).unwrap();
+        exec_pipeline.execute().await.unwrap();
+        let result = exec_pipeline.curr_batch.clone();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+        let table_fmt = pretty_format_batches(&[logs_rb]).unwrap();
+        let table_str = format!("\n{}", table_fmt);
+        assert_eq!(
+            table_str,
+            r#"
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+--------------------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_number | severity_text | event_name | dropped_attributes_count |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+--------------------------+
+| 0  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000200 | 1970-01-01T00:00:00     | 1               | TRACE         | event 200  | 1                        |
+| 3  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000203 | 1970-01-01T00:00:00     | 13              | WARN          | event 203  | 1                        |
+| 6  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000206 | 1970-01-01T00:00:00     | 9               | INFO          | event 206  | 1                        |
+| 9  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000209 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 209  | 1                        |
+| 12 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000212 | 1970-01-01T00:00:00     | 1               | TRACE         | event 212  | 1                        |
+| 15 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000215 | 1970-01-01T00:00:00     | 13              | WARN          | event 215  | 1                        |
+| 18 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000218 | 1970-01-01T00:00:00     | 9               | INFO          | event 218  | 1                        |
+| 21 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000221 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 221  | 1                        |
+| 24 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000224 | 1970-01-01T00:00:00     | 1               | TRACE         | event 224  | 1                        |
+| 27 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000227 | 1970-01-01T00:00:00     | 13              | WARN          | event 227  | 1                        |
+| 30 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000230 | 1970-01-01T00:00:00     | 9               | INFO          | event 230  | 1                        |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+--------------------------+"#
+        );
+
+        // remove a column
+        let mut batch = generate_logs_batch(32, 300);
+        let mut new_rb = batch.get(ArrowPayloadType::Logs).unwrap().clone();
+        _ = new_rb.remove_column(5);
+        batch.set(ArrowPayloadType::Logs, new_rb);
+
+        exec_pipeline.update_batch(batch).unwrap();
+        exec_pipeline.execute().await.unwrap();
+        let result = exec_pipeline.curr_batch.clone();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+        let table_fmt = pretty_format_batches(&[logs_rb]).unwrap();
+        let table_str = format!("\n{}", table_fmt);
+        assert_eq!(
+            table_str,
+            r#"
++----+----------+---------+-------------------------------+-------------------------+---------------+------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_text | event_name |
++----+----------+---------+-------------------------------+-------------------------+---------------+------------+
+| 2  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000302 | 1970-01-01T00:00:00     | INFO          | event 302  |
+| 5  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000305 | 1970-01-01T00:00:00     | DEBUG         | event 305  |
+| 8  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000308 | 1970-01-01T00:00:00     | TRACE         | event 308  |
+| 11 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000311 | 1970-01-01T00:00:00     | WARN          | event 311  |
+| 14 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000314 | 1970-01-01T00:00:00     | INFO          | event 314  |
+| 17 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000317 | 1970-01-01T00:00:00     | DEBUG         | event 317  |
+| 20 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000320 | 1970-01-01T00:00:00     | TRACE         | event 320  |
+| 23 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000323 | 1970-01-01T00:00:00     | WARN          | event 323  |
+| 26 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000326 | 1970-01-01T00:00:00     | INFO          | event 326  |
+| 29 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000329 | 1970-01-01T00:00:00     | DEBUG         | event 329  |
++----+----------+---------+-------------------------------+-------------------------+---------------+------------+"#
+        );
+
+        // change column orders
+        let mut batch = generate_logs_batch(32, 400);
+        let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+        let mut new_columns = logs_rb.columns().to_vec();
+        let mut new_fields = logs_rb.schema().fields().to_vec();
+        new_columns.swap(4, 5);
+        new_fields.swap(4, 5);
+        let new_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
+        batch.set(ArrowPayloadType::Logs, new_rb);
+        exec_pipeline.update_batch(batch).unwrap();
+        exec_pipeline.execute().await.unwrap();
+        let result = exec_pipeline.curr_batch.clone();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+        let table_fmt = pretty_format_batches(&[logs_rb]).unwrap();
+        let table_str = format!("\n{}", table_fmt);
+        // in this case, the column order shouldn't matter so we reuse the  original column order
+        assert_eq!(
+            table_str,
+            r#"
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_number | severity_text | event_name |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| 1  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000401 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 401  |
+| 4  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000404 | 1970-01-01T00:00:00     | 1               | TRACE         | event 404  |
+| 7  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000407 | 1970-01-01T00:00:00     | 13              | WARN          | event 407  |
+| 10 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000410 | 1970-01-01T00:00:00     | 9               | INFO          | event 410  |
+| 13 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000413 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 413  |
+| 16 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000416 | 1970-01-01T00:00:00     | 1               | TRACE         | event 416  |
+| 19 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000419 | 1970-01-01T00:00:00     | 13              | WARN          | event 419  |
+| 22 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000422 | 1970-01-01T00:00:00     | 9               | INFO          | event 422  |
+| 25 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000425 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 425  |
+| 28 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000428 | 1970-01-01T00:00:00     | 1               | TRACE         | event 428  |
+| 31 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000431 | 1970-01-01T00:00:00     | 13              | WARN          | event 431  |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+"#
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reuse_plans_schema_type_change() {
+        let batch = generate_logs_batch(32, 100);
+        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+        let pipeline = KqlParser::parse(query).unwrap();
+
+        let mut exec_pipeline = ExecutablePipeline::try_new(batch, pipeline).await.unwrap();
+
+        exec_pipeline.execute().await.unwrap();
+        let result = exec_pipeline.curr_batch.clone();
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+        let table_fmt = pretty_format_batches(&[logs_rb]).unwrap();
+        let table_str = format!("\n{}", table_fmt);
+        assert_eq!(
+            table_str,
+            r#"
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_number | severity_text | event_name |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| 1  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000101 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 101  |
+| 4  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000104 | 1970-01-01T00:00:00     | 1               | TRACE         | event 104  |
+| 7  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000107 | 1970-01-01T00:00:00     | 13              | WARN          | event 107  |
+| 10 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000110 | 1970-01-01T00:00:00     | 9               | INFO          | event 110  |
+| 13 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000113 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 113  |
+| 16 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000116 | 1970-01-01T00:00:00     | 1               | TRACE         | event 116  |
+| 19 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000119 | 1970-01-01T00:00:00     | 13              | WARN          | event 119  |
+| 22 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000122 | 1970-01-01T00:00:00     | 9               | INFO          | event 122  |
+| 25 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000125 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 125  |
+| 28 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000128 | 1970-01-01T00:00:00     | 1               | TRACE         | event 128  |
+| 31 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000131 | 1970-01-01T00:00:00     | 13              | WARN          | event 131  |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+"#
+        );
+
+        // sequence through a few different datatypes for the same column and ensure we handle it correctly
+        let target_data_types = [
+            DataType::Utf8,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            DataType::Utf8,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        ];
+
+        for target_data_type in target_data_types {
+            let mut batch = generate_logs_batch(32, 200);
+            let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+            let column = logs_rb.column_by_name(consts::SEVERITY_TEXT).unwrap();
+            let new_column = cast(&column, &target_data_type).unwrap();
+            let field_id = logs_rb.schema().index_of(consts::SEVERITY_TEXT).unwrap();
+            let mut new_columns = logs_rb.columns().to_vec();
+            let mut new_fields = logs_rb.schema().fields().to_vec();
+            let curr_field = new_fields[field_id].as_ref().clone();
+            new_fields[field_id] =
+                Arc::new(curr_field.with_data_type(new_column.data_type().clone()));
+            new_columns[field_id] = new_column;
+            let new_rb =
+                RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap();
+            batch.set(ArrowPayloadType::Logs, new_rb);
+
+            exec_pipeline.update_batch(batch).unwrap();
+            exec_pipeline.execute().await.unwrap();
+            let result = exec_pipeline.curr_batch.clone();
+            let logs_rb = result.get(ArrowPayloadType::Logs).unwrap().clone();
+            let table_fmt = pretty_format_batches(&[logs_rb.clone()]).unwrap();
+            let table_str = format!("\n{}", table_fmt);
+            assert_eq!(
+                table_str,
+                r#"
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| id | resource | scope   | time_unix_nano                | observed_time_unix_nano | severity_number | severity_text | event_name |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+
+| 0  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000200 | 1970-01-01T00:00:00     | 1               | TRACE         | event 200  |
+| 3  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000203 | 1970-01-01T00:00:00     | 13              | WARN          | event 203  |
+| 6  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000206 | 1970-01-01T00:00:00     | 9               | INFO          | event 206  |
+| 9  | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000209 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 209  |
+| 12 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000212 | 1970-01-01T00:00:00     | 1               | TRACE         | event 212  |
+| 15 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000215 | 1970-01-01T00:00:00     | 13              | WARN          | event 215  |
+| 18 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000218 | 1970-01-01T00:00:00     | 9               | INFO          | event 218  |
+| 21 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000221 | 1970-01-01T00:00:00     | 5               | DEBUG         | event 221  |
+| 24 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000224 | 1970-01-01T00:00:00     | 1               | TRACE         | event 224  |
+| 27 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000227 | 1970-01-01T00:00:00     | 13              | WARN          | event 227  |
+| 30 | {id: 0}  | {id: 0} | 1970-01-01T00:00:00.000000230 | 1970-01-01T00:00:00     | 9               | INFO          | event 230  |
++----+----------+---------+-------------------------------+-------------------------+-----------------+---------------+------------+"#
+            );
+
+            let column = logs_rb.column_by_name(consts::SEVERITY_TEXT).unwrap();
+            assert_eq!(column.data_type(), &target_data_type);
+        }
+    }
 }

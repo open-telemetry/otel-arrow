@@ -153,7 +153,7 @@ impl OtapDataSourceExec {
             let curr_batch_schema = curr_data_source.original_schema();
             let curr_batch_projection = curr_data_source.projection();
             let mut next_batch_schema = next_batch.schema();
-            let (next_batch_projection, placeholders) = self.next_project(
+            let next_batch_projection = self.next_project(
                 curr_batch_projection.as_deref(),
                 curr_batch_schema,
                 next_batch_schema.clone(),
@@ -161,16 +161,20 @@ impl OtapDataSourceExec {
 
             // the current batch has the same schema as the next batch, so we will just update the
             // datasource's current batch and return
-            if Some(&next_batch_projection) == curr_batch_projection.as_ref()
-                && placeholders == None
+            if Some(&next_batch_projection.projected_columns) == curr_batch_projection.as_ref()
+                && next_batch_projection.placeholders == None
+                && next_batch_projection.must_replan == false
             {
-                curr_data_source.replace_batch(next_batch, Some(next_batch_projection))?;
+                curr_data_source
+                    .replace_batch(next_batch, Some(next_batch_projection.projected_columns))?;
                 return Ok(None);
             }
 
             // some columns from the previous batch were not present in this batch, so we need to
             // add some all-null placeholders
-            if let Some(placeholders) = placeholders {
+            //
+            // TODO - not entirely sure this is necessary .. revisit this
+            if let Some(placeholders) = next_batch_projection.placeholders {
                 let mut new_columns = next_batch.columns().to_vec();
                 let mut new_fields = next_batch_schema.fields.to_vec();
 
@@ -198,8 +202,10 @@ impl OtapDataSourceExec {
                     .expect("can build new record batch");
             }
 
-            let next_data_source =
-                OtapBatchDataSource::try_new(next_batch, Some(next_batch_projection))?;
+            let next_data_source = OtapBatchDataSource::try_new(
+                next_batch,
+                Some(next_batch_projection.projected_columns),
+            )?;
             Ok(Some(Self {
                 payload_type: self.payload_type,
                 source_plan: DataSourceExec::new(Arc::new(next_data_source)),
@@ -217,7 +223,9 @@ impl OtapDataSourceExec {
         curr_batch_projection: Option<&[usize]>,
         curr_batch_schema: SchemaRef,
         next_batch_schema: SchemaRef,
-    ) -> (Vec<usize>, Option<Vec<Field>>) {
+    ) -> NextProjection {
+        let mut must_replan = false;
+
         let next_batch_max_field_id = next_batch_schema.fields.len();
         let mut next_batch_projection = Vec::with_capacity(next_batch_max_field_id);
         let mut placeholders = None;
@@ -228,29 +236,36 @@ impl OtapDataSourceExec {
             ProjectionIter::new(curr_batch_projection, curr_batch_schema.fields.len())
         {
             let curr_batch_field = curr_batch_schema.field(curr_batch_field_id);
+            let mut found_next_batch_field_id = None;
 
             // check if the next batch contains the same field in the same location. This would be
             // the most common case where two subsequent batches have identical schemas
             if curr_batch_field_id < next_batch_max_field_id {
                 let next_batch_field = next_batch_schema.field(curr_batch_field_id);
                 if curr_batch_field.name() == next_batch_field.name() {
-                    next_batch_projection.push(curr_batch_field_id);
-                    continue;
+                    found_next_batch_field_id = Some(curr_batch_field_id);
                 }
             }
 
-            // this field in next batch wasn't in the same location as previous batch
-            // so we search for it
-            let mut found_next_batch_field_id = None;
-            for next_batch_field_id in 0..next_batch_max_field_id {
-                let next_batch_field = next_batch_schema.field(next_batch_field_id);
-                if curr_batch_field.name() == next_batch_field.name() {
-                    found_next_batch_field_id = Some(next_batch_field_id);
-                    break;
+            // if this field in next batch wasn't in the same location as previous batch we search
+            if found_next_batch_field_id.is_none() {
+                for next_batch_field_id in 0..next_batch_max_field_id {
+                    let next_batch_field = next_batch_schema.field(next_batch_field_id);
+                    if curr_batch_field.name() == next_batch_field.name() {
+                        found_next_batch_field_id = Some(next_batch_field_id);
+                        break;
+                    }
                 }
             }
 
             if let Some(next_batch_field_id) = found_next_batch_field_id {
+                // we must do a light-weight replanning if the type of the column changes
+                let curr_data_type = curr_batch_schema.field(curr_batch_field_id).data_type();
+                let next_data_type = next_batch_schema.field(next_batch_field_id).data_type();
+                let changed_data_type = curr_data_type != next_data_type;
+                must_replan |= changed_data_type;
+
+                // push the field ID into the projection
                 next_batch_projection.push(next_batch_field_id);
                 continue;
             }
@@ -282,8 +297,19 @@ impl OtapDataSourceExec {
             }
         }
 
-        (next_batch_projection, placeholders)
+        // (next_batch_projection, placeholders)
+        NextProjection {
+            projected_columns: next_batch_projection,
+            placeholders,
+            must_replan,
+        }
     }
+}
+
+pub struct NextProjection {
+    projected_columns: Vec<usize>,
+    placeholders: Option<Vec<Field>>,
+    must_replan: bool,
 }
 
 // TODO comment on what this is for

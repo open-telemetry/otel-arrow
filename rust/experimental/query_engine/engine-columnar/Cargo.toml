@@ -23,6 +23,7 @@ otel-arrow-rust = { path = "../../../otel-arrow-rust" }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
+pretty_assertions = { workspace = true }
 tokio = { version="1", features=["full"] }
 
 
