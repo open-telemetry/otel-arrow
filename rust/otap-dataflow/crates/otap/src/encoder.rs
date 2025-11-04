@@ -1020,7 +1020,7 @@ mod test {
                 .dropped_attributes_count(99u32)
                 .finish(),
             vec![{
-                let mut scope_metrics = ScopeMetrics::new(
+                ScopeMetrics::new(
                     InstrumentationScope::build()
                         .name("library")
                         .version("scopev1")
@@ -1194,9 +1194,8 @@ mod test {
                             ))
                             .finish(),
                     ],
-                );
-                scope_metrics.schema_url = "another url".to_string();
-                scope_metrics
+                )
+                .set_schema_url("another url")
             }],
         )]);
         let otap_batch = encode_metrics_otap_batch(&metrics_data).unwrap();
@@ -2367,7 +2366,16 @@ mod test {
 
     fn _generate_logs_for_verify_all_columns() -> LogsData {
         LogsData::new(vec![{
-            let mut scope_logs = ScopeLogs::new(
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "resource_attr1",
+                        AnyValue::new_string("resource_value"),
+                    )])
+                    .dropped_attributes_count(1u32)
+                    .finish(),
+                vec![
+            ScopeLogs::new(
                 InstrumentationScope::build()
                     .name("library")
                     .version("scopev1")
@@ -2398,22 +2406,9 @@ mod test {
                         .body(AnyValue::new_string("log_body"))
                         .finish(),
                 ],
-            );
-            scope_logs.schema_url = "https://schema.opentelemetry.io/scope_schema".to_string();
-
-            let mut resource_logs = ResourceLogs::new(
-                Resource::build()
-                    .attributes(vec![KeyValue::new(
-                        "resource_attr1",
-                        AnyValue::new_string("resource_value"),
-                    )])
-                    .dropped_attributes_count(1u32)
-                    .finish(),
-                vec![scope_logs],
-            );
-            resource_logs.schema_url =
-                "https://schema.opentelemetry.io/resource_schema".to_string();
-            resource_logs
+            ).set_schema_url("https://schema.opentelemetry.io/scope_schema")
+                ])
+                .set_schema_url("https://schema.opentelemetry.io/resource_schema")
         }])
     }
 
@@ -2942,7 +2937,7 @@ mod test {
 
     fn _generate_logs_no_attributes() -> LogsData {
         LogsData::new(vec![{
-            let mut resource_logs = ResourceLogs::new(
+            ResourceLogs::new(
                 Resource::default(),
                 vec![ScopeLogs::new(
                     InstrumentationScope::build().name("scope").finish(),
@@ -2954,10 +2949,8 @@ mod test {
                             .finish(),
                     ],
                 )],
-            );
-            resource_logs.schema_url =
-                "https://schema.opentelemetry.io/resource_schema".to_string();
-            resource_logs
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema")
         }])
     }
 
@@ -3116,44 +3109,10 @@ mod test {
 
     fn _generate_logs_multiple_logs_and_attrs() -> LogsData {
         LogsData::new(vec![
-            {
-                let mut resource_logs = ResourceLogs::new(
-                    Resource::default(),
-                    vec![
-                        ScopeLogs::new(
-                            InstrumentationScope::build().name("scope").finish(),
-                            vec![
-                                LogRecord::build()
-                                    .time_unix_nano(0u64)
-                                    .severity_number(SeverityNumber::Debug)
-                                    .event_name("event")
-                                    .attributes(vec![
-                                        KeyValue::new("key1", AnyValue::new_string("val1")),
-                                        KeyValue::new("key2", AnyValue::new_string("val2")),
-                                    ])
-                                    .finish(),
-                            ],
-                        ),
-                        ScopeLogs::new(
-                            InstrumentationScope::build().name("scope2").finish(),
-                            vec![
-                                LogRecord::build()
-                                    .time_unix_nano(0u64)
-                                    .severity_number(SeverityNumber::Info)
-                                    .event_name("event")
-                                    .finish(),
-                            ],
-                        ),
-                    ],
-                );
-                resource_logs.schema_url =
-                    "https://schema.opentelemetry.io/resource_schema".to_string();
-                resource_logs
-            },
-            {
-                let mut resource_logs = ResourceLogs::new(
-                    Resource::default(),
-                    vec![ScopeLogs::new(
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
                         InstrumentationScope::build().name("scope").finish(),
                         vec![
                             LogRecord::build()
@@ -3162,16 +3121,42 @@ mod test {
                                 .event_name("event")
                                 .attributes(vec![
                                     KeyValue::new("key1", AnyValue::new_string("val1")),
-                                    KeyValue::new("key2", AnyValue::new_string("val2.b")),
+                                    KeyValue::new("key2", AnyValue::new_string("val2")),
                                 ])
                                 .finish(),
                         ],
-                    )],
-                );
-                resource_logs.schema_url =
-                    "https://schema.opentelemetry.io/resource_schema".to_string();
-                resource_logs
-            },
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(0u64)
+                                .severity_number(SeverityNumber::Info)
+                                .event_name("event")
+                                .finish(),
+                        ],
+                    ),
+                ],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope").finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(0u64)
+                            .severity_number(SeverityNumber::Debug)
+                            .event_name("event")
+                            .attributes(vec![
+                                KeyValue::new("key1", AnyValue::new_string("val1")),
+                                KeyValue::new("key2", AnyValue::new_string("val2.b")),
+                            ])
+                            .finish(),
+                    ],
+                )],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
         ])
     }
 
@@ -3898,74 +3883,74 @@ mod test {
         let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
         let a_parent_span_id: SpanId = [27, 28, 19, 20, 21, 22, 23, 24];
 
-        let mut scope_spans = ScopeSpans::new(
-            InstrumentationScope::build()
-                .name("library")
-                .version("scopev1")
-                .attributes(vec![KeyValue::new(
-                    "scope_attr1",
-                    AnyValue::new_string("scope_val1"),
-                )])
-                .dropped_attributes_count(17u32)
-                .finish(),
-            vec![
-                Span::build()
-                    .trace_id(a_trace_id.to_vec())
-                    .span_id(a_span_id.to_vec())
-                    .name("span_name_1")
-                    .start_time_unix_nano(999u64)
-                    .trace_state("some_state")
-                    .end_time_unix_nano(1999u64)
-                    .parent_span_id(a_parent_span_id.to_vec())
-                    .flags(SpanFlags::TraceFlagsMask)
-                    .dropped_attributes_count(7u32)
-                    .dropped_events_count(11u32)
-                    .dropped_links_count(29u32)
-                    .kind(SpanKind::Consumer)
-                    .status(Status::new("something happened", StatusCode::Error))
-                    .events(vec![
-                        Event::build()
-                            .name("an_event")
-                            .time_unix_nano(456u64)
-                            .attributes(vec![KeyValue::new(
-                                "event_attr1",
-                                AnyValue::new_string("hi"),
-                            )])
-                            .dropped_attributes_count(12345u32)
-                            .finish(),
-                    ])
-                    .links(vec![
-                        Link::build()
-                            .trace_id(a_trace_id.to_vec())
-                            .span_id(a_span_id.to_vec())
-                            .trace_state("some link state")
-                            .dropped_attributes_count(567u32)
-                            .flags(7u32)
-                            .attributes(vec![KeyValue::new(
-                                "link_attr1",
-                                AnyValue::new_string("hello"),
-                            )])
-                            .flags(255u32)
-                            .finish(),
-                    ])
+        TracesData::new(vec![
+            ResourceSpans::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "attr1",
+                        AnyValue::new_string("some_value"),
+                    )])
+                    .dropped_attributes_count(123u32)
                     .finish(),
-            ],
-        );
-        scope_spans.schema_url = "https://schema.opentelemetry.io/scope_schema".to_string();
-
-        let mut resource_spans = ResourceSpans::new(
-            Resource::build()
-                .attributes(vec![KeyValue::new(
-                    "attr1",
-                    AnyValue::new_string("some_value"),
-                )])
-                .dropped_attributes_count(123u32)
-                .finish(),
-            vec![scope_spans],
-        );
-        resource_spans.schema_url = "https://schema.opentelemetry.io/resource_schema".to_string();
-
-        TracesData::new(vec![resource_spans])
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("scopev1")
+                            .attributes(vec![KeyValue::new(
+                                "scope_attr1",
+                                AnyValue::new_string("scope_val1"),
+                            )])
+                            .dropped_attributes_count(17u32)
+                            .finish(),
+                        vec![
+                            Span::build()
+                                .trace_id(a_trace_id.to_vec())
+                                .span_id(a_span_id.to_vec())
+                                .name("span_name_1")
+                                .start_time_unix_nano(999u64)
+                                .trace_state("some_state")
+                                .end_time_unix_nano(1999u64)
+                                .parent_span_id(a_parent_span_id.to_vec())
+                                .flags(SpanFlags::TraceFlagsMask)
+                                .dropped_attributes_count(7u32)
+                                .dropped_events_count(11u32)
+                                .dropped_links_count(29u32)
+                                .kind(SpanKind::Consumer)
+                                .status(Status::new(StatusCode::Error, "something happened"))
+                                .events(vec![
+                                    Event::build()
+                                        .name("an_event")
+                                        .time_unix_nano(456u64)
+                                        .attributes(vec![KeyValue::new(
+                                            "event_attr1",
+                                            AnyValue::new_string("hi"),
+                                        )])
+                                        .dropped_attributes_count(12345u32)
+                                        .finish(),
+                                ])
+                                .links(vec![
+                                    Link::build()
+                                        .trace_id(a_trace_id.to_vec())
+                                        .span_id(a_span_id.to_vec())
+                                        .trace_state("some link state")
+                                        .dropped_attributes_count(567u32)
+                                        .flags(7u32)
+                                        .attributes(vec![KeyValue::new(
+                                            "link_attr1",
+                                            AnyValue::new_string("hello"),
+                                        )])
+                                        .flags(255u32)
+                                        .finish(),
+                                ])
+                                .finish(),
+                        ],
+                    )
+                    .set_schema_url("https://schema.opentelemetry.io/scope_schema"),
+                ],
+            )
+            .set_schema_url("https://schema.opentelemetry.io/resource_schema"),
+        ])
     }
 
     fn _test_traces_data_all_fields<T>(traces_view: &T)

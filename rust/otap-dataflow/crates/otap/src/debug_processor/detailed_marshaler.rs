@@ -852,58 +852,7 @@ mod tests {
     #[test]
     fn test_marshal_traces() {
         let trace = TracesData::new(vec![{
-            let mut scope_spans = ScopeSpans::new(
-                InstrumentationScope::build()
-                    .name("library")
-                    .version("v1")
-                    .attributes(vec![KeyValue::new(
-                        "hostname",
-                        AnyValue::new_string("host5.retailer.com"),
-                    )])
-                    .finish(),
-                vec![
-                    Span::build()
-                        .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
-                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                        .name("user-account")
-                        .start_time_unix_nano(1647648000000000106u64)
-                        .attributes(vec![KeyValue::new(
-                            "hostname",
-                            AnyValue::new_string("host4.gov"),
-                        )])
-                        .parent_span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                        .end_time_unix_nano(1647648000000000104u64)
-                        .status(Status::new("Error", StatusCode::Error))
-                        .trace_state("ended")
-                        .events(vec![
-                            Event::build()
-                                .name("message-receive")
-                                .time_unix_nano(1647648000000000108u64)
-                                .attributes(vec![KeyValue::new(
-                                    "hostname",
-                                    AnyValue::new_string("host5.retailer.com"),
-                                )])
-                                .dropped_attributes_count(0u32)
-                                .finish(),
-                        ])
-                        .links(vec![
-                            Link::build()
-                                .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
-                                .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                .trace_state("ended")
-                                .dropped_attributes_count(0u32)
-                                .attributes(vec![KeyValue::new(
-                                    "hostname",
-                                    AnyValue::new_string("host2.org"),
-                                )])
-                                .finish(),
-                        ])
-                        .finish(),
-                ],
-            );
-            scope_spans.schema_url = "http://schema.opentelemetry.io".to_string();
-
-            let mut resource_spans = ResourceSpans::new(
+            ResourceSpans::new(
                 Resource::build()
                     .attributes(vec![KeyValue::new(
                         "ip",
@@ -911,10 +860,62 @@ mod tests {
                     )])
                     .dropped_attributes_count(123u32)
                     .finish(),
-                vec![scope_spans],
-            );
-            resource_spans.schema_url = "http://schema.opentelemetry.io".to_string();
-            resource_spans
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("v1")
+                            .attributes(vec![KeyValue::new(
+                                "hostname",
+                                AnyValue::new_string("host5.retailer.com"),
+                            )])
+                            .finish(),
+                        vec![
+                            Span::build()
+                                .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
+                                .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                .name("user-account")
+                                .start_time_unix_nano(1647648000000000106u64)
+                                .attributes(vec![KeyValue::new(
+                                    "hostname",
+                                    AnyValue::new_string("host4.gov"),
+                                )])
+                                .parent_span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                .end_time_unix_nano(1647648000000000104u64)
+                                .status(Status::new(StatusCode::Error, "Error"))
+                                .trace_state("ended")
+                                .events(vec![
+                                    Event::build()
+                                        .name("message-receive")
+                                        .time_unix_nano(1647648000000000108u64)
+                                        .attributes(vec![KeyValue::new(
+                                            "hostname",
+                                            AnyValue::new_string("host5.retailer.com"),
+                                        )])
+                                        .dropped_attributes_count(0u32)
+                                        .finish(),
+                                ])
+                                .links(vec![
+                                    Link::build()
+                                        .trace_id(Vec::from(
+                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                        ))
+                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                        .trace_state("ended")
+                                        .dropped_attributes_count(0u32)
+                                        .attributes(vec![KeyValue::new(
+                                            "hostname",
+                                            AnyValue::new_string("host2.org"),
+                                        )])
+                                        .finish(),
+                                ])
+                                .finish(),
+                        ],
+                    )
+                    .set_schema_url("http://schema.opentelemetry.io"),
+                ],
+            )
+            .set_schema_url("http://schema.opentelemetry.io")
         }]);
         let marshaler = DetailedViewMarshaler;
         let marshaled_trace = marshaler.marshal_traces(trace);
@@ -1003,178 +1004,189 @@ mod tests {
     #[test]
     fn test_marshal_metrics() {
         let metric = MetricsData::new(vec![{
-            let mut scope_metrics = ScopeMetrics::new(
-                InstrumentationScope::build()
-                    .name("library")
-                    .version("v1")
-                    .attributes(vec![KeyValue::new(
-                        "instrumentation_scope_k1",
-                        AnyValue::new_string("k1 value"),
-                    )])
-                    .finish(),
-                vec![
-                    Metric::build()
-                        .name("system.cpu.time")
-                        .data_gauge(Gauge::new(vec![
-                            NumberDataPoint::build()
-                                .time_unix_nano(1663718400000001400u64)
-                                .value_int(0i64)
-                                .start_time_unix_nano(1650499200000000100u64)
-                                .flags(1u32)
-                                .finish(),
-                        ]))
-                        .description("time cpu has ran")
-                        .unit("s")
-                        .metadata(vec![])
-                        .finish(),
-                    Metric::build()
-                        .name("system.cpu.time")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            4,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(1663718400000001400u64)
-                                    .scale(1)
-                                    .positive(Buckets::new(0, vec![0]))
-                                    .attributes(vec![KeyValue::new(
-                                        "freq",
-                                        AnyValue::new_string("3GHz"),
-                                    )])
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(1663718400000001400u64)
-                                            .value_double(22.2)
-                                            .filtered_attributes(vec![KeyValue::new(
-                                                "cpu",
-                                                AnyValue::new_string("0"),
-                                            )])
-                                            .trace_id(Vec::from(
-                                                "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                            ))
-                                            .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                            .finish(),
-                                    ])
-                                    .start_time_unix_nano(1650499200000000000u64)
-                                    .count(0u64)
-                                    .sum(56)
-                                    .negative(Buckets::new(0, vec![0]))
-                                    .flags(5u32)
-                                    .min(12)
-                                    .max(100.1)
-                                    .zero_threshold(0.0)
-                                    .finish(),
-                            ],
-                        ))
-                        .description("time cpu has ran")
-                        .unit("s")
-                        .finish(),
-                    Metric::build()
-                        .name("system.cpu.time")
-                        .data_histogram(Histogram::new(
-                            4,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(1663718400000001400u64)
-                                    .bucket_counts(vec![0])
-                                    .explicit_bounds(vec![94.17542094619048, 65.66722851519177])
-                                    .attributes(vec![KeyValue::new(
-                                        "freq",
-                                        AnyValue::new_string("3GHz"),
-                                    )])
-                                    .start_time_unix_nano(1650499200000000000u64)
-                                    .count(0u64)
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(1663718400000001400u64)
-                                            .value_double(22.2)
-                                            .filtered_attributes(vec![KeyValue::new(
-                                                "cpu",
-                                                AnyValue::new_string("0"),
-                                            )])
-                                            .trace_id(Vec::from(
-                                                "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                            ))
-                                            .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                            .finish(),
-                                    ])
-                                    .sum(56)
-                                    .flags(0u32)
-                                    .min(12)
-                                    .max(100.1)
-                                    .finish(),
-                            ],
-                        ))
-                        .description("time cpu has ran")
-                        .unit("s")
-                        .finish(),
-                    Metric::build()
-                        .name("system.cpu.time")
-                        .data_sum(Sum::new(
-                            4,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1663718400000001400u64)
-                                    .value_int(0i64)
-                                    .start_time_unix_nano(1650499200000000000u64)
-                                    .attributes(vec![KeyValue::new(
-                                        "cpu_logical_processors",
-                                        AnyValue::new_string("8"),
-                                    )])
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(1663718400000001400u64)
-                                            .value_double(22.2)
-                                            .filtered_attributes(vec![KeyValue::new(
-                                                "************",
-                                                AnyValue::new_bool(true),
-                                            )])
-                                            .trace_id(Vec::from(
-                                                "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                            ))
-                                            .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                            .finish(),
-                                    ])
-                                    .finish(),
-                            ],
-                        ))
-                        .description("time cpu has ran")
-                        .unit("s")
-                        .finish(),
-                    Metric::build()
-                        .name("system.cpu.time")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .time_unix_nano(1663718400000001400u64)
-                                .quantile_values(vec![ValueAtQuantile::new(0., 0.)])
-                                .attributes(vec![KeyValue::new(
-                                    "cpu_cores",
-                                    AnyValue::new_string("4"),
-                                )])
-                                .start_time_unix_nano(1650499200000000100u64)
-                                .count(0u64)
-                                .sum(56.0)
-                                .flags(0u32)
-                                .finish(),
-                        ]))
-                        .description("time cpu has ran")
-                        .unit("s")
-                        .finish(),
-                ],
-            );
-            scope_metrics.schema_url = "http://schema.opentelemetry.io".to_string();
-
-            let mut resource_metrics = ResourceMetrics::new(
+            ResourceMetrics::new(
                 Resource::build()
                     .attributes(vec![KeyValue::new(
                         "ip",
                         AnyValue::new_string("192.168.0.2"),
                     )])
                     .finish(),
-                vec![scope_metrics],
-            );
-            resource_metrics.schema_url = "http://schema.opentelemetry.io".to_string();
-            resource_metrics
+                vec![
+                    ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("v1")
+                            .attributes(vec![KeyValue::new(
+                                "instrumentation_scope_k1",
+                                AnyValue::new_string("k1 value"),
+                            )])
+                            .finish(),
+                        vec![
+                            Metric::build()
+                                .name("system.cpu.time")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1663718400000001400u64)
+                                        .value_int(0i64)
+                                        .start_time_unix_nano(1650499200000000100u64)
+                                        .flags(1u32)
+                                        .finish(),
+                                ]))
+                                .description("time cpu has ran")
+                                .unit("s")
+                                .metadata(vec![])
+                                .finish(),
+                            Metric::build()
+                                .name("system.cpu.time")
+                                .data_exponential_histogram(ExponentialHistogram::new(
+                                    4,
+                                    vec![
+                                        ExponentialHistogramDataPoint::build()
+                                            .time_unix_nano(1663718400000001400u64)
+                                            .scale(1)
+                                            .positive(Buckets::new(0, vec![0]))
+                                            .attributes(vec![KeyValue::new(
+                                                "freq",
+                                                AnyValue::new_string("3GHz"),
+                                            )])
+                                            .exemplars(vec![
+                                                Exemplar::build()
+                                                    .time_unix_nano(1663718400000001400u64)
+                                                    .value_double(22.2)
+                                                    .filtered_attributes(vec![KeyValue::new(
+                                                        "cpu",
+                                                        AnyValue::new_string("0"),
+                                                    )])
+                                                    .trace_id(Vec::from(
+                                                        "4327e52011a22f9662eac217d77d1ec0"
+                                                            .as_bytes(),
+                                                    ))
+                                                    .span_id(Vec::from(
+                                                        "7271ee06d7e5925f".as_bytes(),
+                                                    ))
+                                                    .finish(),
+                                            ])
+                                            .start_time_unix_nano(1650499200000000000u64)
+                                            .count(0u64)
+                                            .sum(56)
+                                            .negative(Buckets::new(0, vec![0]))
+                                            .flags(5u32)
+                                            .min(12)
+                                            .max(100.1)
+                                            .zero_threshold(0.0)
+                                            .finish(),
+                                    ],
+                                ))
+                                .description("time cpu has ran")
+                                .unit("s")
+                                .finish(),
+                            Metric::build()
+                                .name("system.cpu.time")
+                                .data_histogram(Histogram::new(
+                                    4,
+                                    vec![
+                                        HistogramDataPoint::build()
+                                            .time_unix_nano(1663718400000001400u64)
+                                            .bucket_counts(vec![0])
+                                            .explicit_bounds(vec![
+                                                94.17542094619048,
+                                                65.66722851519177,
+                                            ])
+                                            .attributes(vec![KeyValue::new(
+                                                "freq",
+                                                AnyValue::new_string("3GHz"),
+                                            )])
+                                            .start_time_unix_nano(1650499200000000000u64)
+                                            .count(0u64)
+                                            .exemplars(vec![
+                                                Exemplar::build()
+                                                    .time_unix_nano(1663718400000001400u64)
+                                                    .value_double(22.2)
+                                                    .filtered_attributes(vec![KeyValue::new(
+                                                        "cpu",
+                                                        AnyValue::new_string("0"),
+                                                    )])
+                                                    .trace_id(Vec::from(
+                                                        "4327e52011a22f9662eac217d77d1ec0"
+                                                            .as_bytes(),
+                                                    ))
+                                                    .span_id(Vec::from(
+                                                        "7271ee06d7e5925f".as_bytes(),
+                                                    ))
+                                                    .finish(),
+                                            ])
+                                            .sum(56)
+                                            .flags(0u32)
+                                            .min(12)
+                                            .max(100.1)
+                                            .finish(),
+                                    ],
+                                ))
+                                .description("time cpu has ran")
+                                .unit("s")
+                                .finish(),
+                            Metric::build()
+                                .name("system.cpu.time")
+                                .data_sum(Sum::new(
+                                    4,
+                                    true,
+                                    vec![
+                                        NumberDataPoint::build()
+                                            .time_unix_nano(1663718400000001400u64)
+                                            .value_int(0i64)
+                                            .start_time_unix_nano(1650499200000000000u64)
+                                            .attributes(vec![KeyValue::new(
+                                                "cpu_logical_processors",
+                                                AnyValue::new_string("8"),
+                                            )])
+                                            .exemplars(vec![
+                                                Exemplar::build()
+                                                    .time_unix_nano(1663718400000001400u64)
+                                                    .value_double(22.2)
+                                                    .filtered_attributes(vec![KeyValue::new(
+                                                        "************",
+                                                        AnyValue::new_bool(true),
+                                                    )])
+                                                    .trace_id(Vec::from(
+                                                        "4327e52011a22f9662eac217d77d1ec0"
+                                                            .as_bytes(),
+                                                    ))
+                                                    .span_id(Vec::from(
+                                                        "7271ee06d7e5925f".as_bytes(),
+                                                    ))
+                                                    .finish(),
+                                            ])
+                                            .finish(),
+                                    ],
+                                ))
+                                .description("time cpu has ran")
+                                .unit("s")
+                                .finish(),
+                            Metric::build()
+                                .name("system.cpu.time")
+                                .data_summary(Summary::new(vec![
+                                    SummaryDataPoint::build()
+                                        .time_unix_nano(1663718400000001400u64)
+                                        .quantile_values(vec![ValueAtQuantile::new(0., 0.)])
+                                        .attributes(vec![KeyValue::new(
+                                            "cpu_cores",
+                                            AnyValue::new_string("4"),
+                                        )])
+                                        .start_time_unix_nano(1650499200000000100u64)
+                                        .count(0u64)
+                                        .sum(56.0)
+                                        .flags(0u32)
+                                        .finish(),
+                                ]))
+                                .description("time cpu has ran")
+                                .unit("s")
+                                .finish(),
+                        ],
+                    )
+                    .set_schema_url("http://schema.opentelemetry.io"),
+                ],
+            )
+            .set_schema_url("http://schema.opentelemetry.io")
         }]);
         let marshaler = DetailedViewMarshaler;
         let marshaled_metric = marshaler.marshal_metrics(metric);
@@ -1413,16 +1425,21 @@ mod tests {
     #[test]
     fn test_marshal_logs() {
         let logs = LogsData::new(vec![{
-            let mut scope_logs = ScopeLogs::new(
-                InstrumentationScope::build()
-                    .name("library")
-                    .version("v1")
-                    .attributes(vec![KeyValue::new(
-                        "hostname",
-                        AnyValue::new_string("host5.retailer.com"),
-                    )])
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("version", AnyValue::new_string("2.0"))])
                     .finish(),
                 vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("library")
+                            .version("v1")
+                            .attributes(vec![KeyValue::new(
+                                "hostname",
+                                AnyValue::new_string("host5.retailer.com"),
+                            )])
+                            .finish(),
+                        vec![
                     LogRecord::build()
                         .time_unix_nano(2_000_000_000u64)
                         .severity_number(SeverityNumber::Info)
@@ -1441,17 +1458,11 @@ mod tests {
                         ))
                         .finish(),
                 ],
-            );
-            scope_logs.schema_url = "http://schema.opentelemetry.io".to_string();
-
-            let mut resource_logs = ResourceLogs::new(
-                Resource::build()
-                    .attributes(vec![KeyValue::new("version", AnyValue::new_string("2.0"))])
-                    .finish(),
-                vec![scope_logs],
-            );
-            resource_logs.schema_url = "http://schema.opentelemetry.io".to_string();
-            resource_logs
+                    )
+                    .set_schema_url("http://schema.opentelemetry.io"),
+                ],
+            )
+            .set_schema_url("http://schema.opentelemetry.io")
         }]);
         let marshaler = DetailedViewMarshaler;
         let marshaled_logs = marshaler.marshal_logs(logs);
@@ -1568,7 +1579,7 @@ mod tests {
             )])
             .parent_span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
             .end_time_unix_nano(1647648000000000104u64)
-            .status(Status::new("Error", StatusCode::Error))
+            .status(Status::new(StatusCode::Error, "Error"))
             .trace_state("ended")
             .events(vec![
                 Event::build()

@@ -805,7 +805,7 @@ mod test_helpers {
                         .span_id(vec![1; 8])
                         .name("span")
                         .start_time_unix_nano(1u64)
-                        .status(Status::new("ok", StatusCode::Ok))
+                        .status(Status::new(StatusCode::Ok, "ok"))
                         .finish(),
                 ],
             )],

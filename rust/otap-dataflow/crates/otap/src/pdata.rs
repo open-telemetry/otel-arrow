@@ -1033,7 +1033,7 @@ mod test {
                             .name("albert")
                             .start_time_unix_nano(1u64)
                             .end_time_unix_nano(4u64)
-                            .status(Status::new("status1", StatusCode::Ok))
+                            .status(Status::new(StatusCode::Ok, "status1"))
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .links(vec![
                                 Link::build()
@@ -1076,7 +1076,7 @@ mod test {
                             .start_time_unix_nano(2u64)
                             .flags(SpanFlags::TraceFlagsMask)
                             .end_time_unix_nano(3u64)
-                            .status(Status::new("status1", StatusCode::Ok))
+                            .status(Status::new(StatusCode::Ok, "status1"))
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .links(vec![
                                 // this Link's trace_id repeats with the previous, and  next one.
@@ -1127,7 +1127,7 @@ mod test {
                             .name("albert")
                             .start_time_unix_nano(3u64)
                             .end_time_unix_nano(4u64)
-                            .status(Status::new("status1", StatusCode::Ok))
+                            .status(Status::new(StatusCode::Ok, "status1"))
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .links(vec![
                                 // this Link's trace_id repeats with the previous one. do this to ensure they
@@ -1153,7 +1153,7 @@ mod test {
                             .name("terry")
                             .start_time_unix_nano(4u64)
                             .end_time_unix_nano(5u64)
-                            .status(Status::new("status1", StatusCode::Ok))
+                            .status(Status::new(StatusCode::Ok, "status1"))
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
                             .links(vec![
                                 Link::build()

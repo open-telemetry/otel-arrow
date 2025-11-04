@@ -700,7 +700,7 @@ mod tests {
                                 .dropped_events_count(11u32)
                                 .dropped_links_count(29u32)
                                 .kind(SpanKind::Consumer)
-                                .status(Status::new("something happened", StatusCode::Error))
+                                .status(Status::new(StatusCode::Error, "something happened"))
                                 .events(vec![
                                     Event::build()
                                         .name("an_event")
