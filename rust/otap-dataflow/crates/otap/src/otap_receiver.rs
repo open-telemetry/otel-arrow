@@ -747,8 +747,10 @@ mod tests {
             "listening_addr": addr.to_string(),
         });
 
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
         let receiver = ReceiverWrapper::shared(
-            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            receiver,
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -946,8 +948,10 @@ mod tests {
             "wait_for_result": true  // Enable ACK handling
         });
 
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
         let receiver = ReceiverWrapper::shared(
-            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            receiver,
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -984,8 +988,10 @@ mod tests {
             "wait_for_result": true  // Enable NACK handling
         });
 
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
         let receiver = ReceiverWrapper::shared(
-            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            receiver,
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
