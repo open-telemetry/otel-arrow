@@ -50,7 +50,7 @@ mod test {
         record.encode(&mut bytes).unwrap();
         let logs_view = RawLogsData::new(&bytes);
         let otap_batch = encode_logs_otap_batch(&logs_view).unwrap();
-        let exec_pipeline = ExecutablePipeline::try_new(otap_batch, pipeline_expr)
+        let mut exec_pipeline = ExecutablePipeline::try_new(otap_batch, pipeline_expr)
             .await
             .unwrap();
         exec_pipeline.execute().await.unwrap();

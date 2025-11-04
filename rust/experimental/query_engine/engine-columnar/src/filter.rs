@@ -1169,7 +1169,7 @@ mod test {
         // let mut engine = OtapBatchEngine::new();
 
         let pipeline = KqlParser::parse("logs | where event_name == \"1\"").unwrap();
-        let exec_pipeline = ExecutablePipeline::try_new(input.clone(), pipeline)
+        let mut exec_pipeline = ExecutablePipeline::try_new(input.clone(), pipeline)
             .await
             .unwrap();
         exec_pipeline.execute().await.unwrap();

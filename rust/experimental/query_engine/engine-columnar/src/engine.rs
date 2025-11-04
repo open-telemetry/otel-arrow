@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use arrow::array::RecordBatch;
+use arrow::compute::concat_batches;
 use data_engine_expressions::{
     ConditionalDataExpression, DataExpression, LogicalExpression, MutableValueExpression,
     PipelineExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression,
@@ -10,8 +12,9 @@ use data_engine_expressions::{
 };
 use datafusion::common::JoinType;
 use datafusion::execution::TaskContext;
+use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::select_expr::SelectExpr;
-use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col};
+use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col, logical_plan};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
@@ -40,7 +43,47 @@ pub struct PipelinePlanBuilder {
 impl PipelinePlanBuilder {
     // TODO comments
     pub async fn try_new(batch: OtapArrowRecords) -> Result<Self> {
-        todo!()
+        // TODO this logic is also duplicated below (should this just be a method on OtapArrowRecords?)
+        let root_batch_payload_type = match batch {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            _ => {
+                return Err(Error::NotYetSupportedError {
+                    message: "Only logs signal type is currently supported".into(),
+                });
+            }
+        };
+        let root_rb = batch
+            .get(root_batch_payload_type)
+            .ok_or(Error::InvalidBatchError {
+                reason: "received OTAP batch missing root RecordBatch".into(),
+            })?;
+
+        let session_config = SessionConfig::new()
+            // since we're always executing in a single threaded runtime, it doesn't make sense
+            // to spawn repartition tasks and run things like join and filtering in parallel
+            .with_target_partitions(1)
+            .with_repartition_joins(false)
+            .with_repartition_file_scans(false)
+            .with_repartition_windows(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false);
+        let session_ctx = SessionContext::new_with_config(session_config);
+
+        let table_name = format!("{:?}", root_batch_payload_type).to_lowercase();
+        let table = OtapBatchTable::new(root_batch_payload_type, root_rb.clone());
+        session_ctx.register_table(&table_name, Arc::new(table))?;
+
+        let table_df = session_ctx.table(table_name).await?;
+        let logical_plan = LogicalPlanBuilder::from(table_df.logical_plan().clone());
+
+        // TODO need a more efficient version of this
+        let logical_plan = logical_plan.window(vec![row_number().alias(ROW_NUMBER_COL)])?;
+
+        Ok(Self {
+            session_ctx,
+            batch,
+            logical_plan,
+        })
     }
 
     // TODO comments
@@ -387,11 +430,42 @@ impl ExecutablePipeline {
         Ok(())
     }
 
-    pub async fn execute(&self) -> Result<()> {
+    pub async fn execute(&mut self) -> Result<()> {
         let stream = execute_stream(self.physical_plan.clone(), self.task_context.clone())?;
+        let schema = stream.schema();
         let batches = collect(stream).await?;
 
-        todo!()
+        let root_payload_type = match self.curr_batch {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            _ => {
+                todo!()
+            }
+        };
+
+        let root_batch = match batches.len() {
+            0 => {
+                // empty
+                RecordBatch::new_empty(schema)
+            }
+
+            1 => {
+                // single batch
+                batches[0].clone()
+            }
+
+            _ => {
+                // TODO this branch might not even be necessary because we do disable all
+                // partitioning so there should only be one batch? need to double check this
+                // assumption ...
+
+                // safety: this shouldn't fail because all the batches should have same schema
+                concat_batches(batches[0].schema_ref(), &batches).expect("can concat batches")
+            }
+        };
+
+        self.curr_batch.set(root_payload_type, root_batch);
+
+        Ok(())
     }
 }
 
@@ -836,7 +910,7 @@ mod test {
         let mut exec_pipeline = ExecutablePipeline::try_new(batch1, pipeline_expr)
             .await
             .unwrap();
-        exec_pipeline.execute();
+        exec_pipeline.execute().await.unwrap();
         let result1 = exec_pipeline.curr_batch.clone();
 
         // engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
