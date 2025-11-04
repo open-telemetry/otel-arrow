@@ -22,14 +22,15 @@
 //! * Export of a registry compatible with the semantic registry format
 //! * Client SDK generation with Weaver
 
-use crate::config::Config;
+use std::sync::Arc;
+
 use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
+use otap_df_config::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
 pub mod collector;
-pub mod config;
 pub mod descriptor;
 pub mod error;
 pub mod instrument;
@@ -53,19 +54,27 @@ pub struct MetricsSystem {
 
     /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
+
+    /// The dispatcher that handles the processing and dispatching of metrics.
+    dispatcher: Arc<metrics::dispatcher::MetricsDispatcher>,
 }
 
 impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     #[must_use]
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: TelemetryConfig) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
+
+        let metrics_dispatcher = metrics::dispatcher::MetricsDispatcher::new(
+            metrics_registry.clone(), config.metrics.clone());
+
         let (collector, reporter) =
             collector::MetricsCollector::new(config.clone(), metrics_registry.clone());
         Self {
             registry: metrics_registry,
             collector,
             reporter,
+            dispatcher: Arc::new(metrics_dispatcher),
         }
     }
 
@@ -81,9 +90,16 @@ impl MetricsSystem {
         self.reporter.clone()
     }
 
+    /// Returns a shareable handle to the metrics dispatcher.
+    #[must_use]
+    pub fn dispatcher(&self) -> Arc<metrics::dispatcher::MetricsDispatcher> {
+        self.dispatcher.clone()
+    }
+
     /// Starts the metrics collection loop and listens for a shutdown signal.
     /// This method returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
     pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
+
         // Run the collector and race it against the shutdown signal.
         let collector = self.collector;
 
@@ -110,6 +126,6 @@ impl MetricsSystem {
 
 impl Default for MetricsSystem {
     fn default() -> Self {
-        Self::new(Config::default())
+        Self::new(TelemetryConfig::default())
     }
 }

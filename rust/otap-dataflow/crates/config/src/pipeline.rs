@@ -86,6 +86,10 @@ pub struct PipelineSettings {
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
+
+    /// Internal telemetry configuration.
+    #[serde(default)]
+    pub telemetry_config: crate::telemetry::TelemetryConfig,
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -106,6 +110,7 @@ impl Default for PipelineSettings {
             default_pdata_channel_size: default_pdata_channel_size(),
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
+            telemetry_config: crate::telemetry::TelemetryConfig::default(),
         }
     }
 }

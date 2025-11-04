@@ -73,7 +73,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<(), Error> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let metrics_system = MetricsSystem::default();
+        let telemetry_config = pipeline.pipeline_settings().telemetry_config.clone();
+        let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
@@ -82,9 +83,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the metrics aggregation
         let metrics_registry = metrics_system.registry();
+        let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 metrics_system.run(cancellation_token)
+            })?;
+
+        // Start the metrics dispatcher
+
+        let metrics_dispatcher_handle =
+            spawn_thread_local_task("metrics-dispatcher", move |cancellation_token| {
+                metrics_dispatcher.run_dispatch_loop(cancellation_token)
             })?;
 
         // Start the observed state store background task
@@ -231,6 +240,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
+        metrics_dispatcher_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
 
         Ok(())

@@ -19,4 +19,8 @@ pub enum Error {
     /// The metrics channel was closed unexpectedly.
     #[error("Metrics channel was closed")]
     MetricsChannelClosed,
+
+    /// Serialization error.
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }

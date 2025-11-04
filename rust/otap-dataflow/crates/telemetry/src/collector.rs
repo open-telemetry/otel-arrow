@@ -3,7 +3,8 @@
 
 //! Task periodically collecting the metrics emitted by the engine and the pipelines.
 
-use crate::config::Config;
+use otap_df_config::telemetry::TelemetryConfig;
+
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
 use crate::registry::MetricsRegistryHandle;
@@ -25,7 +26,7 @@ pub struct MetricsCollector {
 
 impl MetricsCollector {
     /// Creates a new `MetricsCollector` with a pipeline.
-    pub(crate) fn new(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
+    pub(crate) fn new(config: TelemetryConfig, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) =
             flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
@@ -59,6 +60,9 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
+    use otap_df_config::telemetry::TelemetryConfig;
+    use otap_df_config::telemetry::metrics::MetricsDispatcherConfig;
+
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
@@ -162,11 +166,11 @@ mod tests {
         }
     }
 
-    fn create_test_config(_flush_interval_ms: u64) -> Config {
+    fn create_test_config(_flush_interval_ms: u64) -> TelemetryConfig {
         // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
-        Config {
+        TelemetryConfig {
             reporting_channel_size: 10,
-            flush_interval: Duration::from_millis(_flush_interval_ms),
+            metrics: MetricsDispatcherConfig::default(),
         }
     }
 

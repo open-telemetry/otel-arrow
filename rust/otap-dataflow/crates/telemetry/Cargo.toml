@@ -19,6 +19,7 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 [dependencies]
+otap-df-config = { path = "../config" }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -27,3 +28,6 @@ thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }

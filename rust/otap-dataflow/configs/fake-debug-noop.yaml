@@ -2,6 +2,20 @@ settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
+  telemetry_config:
+    metrics:
+      processors:
+      - type: filter
+        config:
+          exclude:
+            metric_names:
+              - "spans.produced"
+      exporters:
+      - type: logging
+      - type: prometheus
+        config:
+          host: "localhost"
+          port: 8080
 
 nodes:
   receiver:

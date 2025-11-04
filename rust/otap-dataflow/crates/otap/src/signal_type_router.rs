@@ -377,6 +377,7 @@ mod tests {
         use super::*;
         use crate::pdata::OtapPdata;
         use otap_df_channel::mpsc;
+        use otap_df_config::telemetry::TelemetryConfig;
         use otap_df_engine::context::ControllerContext;
         use otap_df_engine::control::NodeControlMsg;
         use otap_df_engine::local::message::LocalSender;
@@ -386,7 +387,6 @@ mod tests {
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_telemetry::MetricsSystem;
-        use otap_df_telemetry::config::Config as TelemetryConfig;
         use otap_df_telemetry::registry::MetricsRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
         use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
