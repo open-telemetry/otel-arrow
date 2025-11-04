@@ -87,6 +87,12 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    #[derive(Debug, Deserialize)]
+    struct ConfWithCompression {
+        #[serde(default, deserialize_with = "deserialize_compression_methods")]
+        methods: Option<Vec<CompressionMethod>>,
+    }
+
     #[test]
     fn compression_method_accepts_snake_case_only() {
         // Valid canonical snake_case values
@@ -103,43 +109,37 @@ mod tests {
         assert!(serde_json::from_str::<CompressionMethod>("\"Deflate\"").is_err());
     }
 
-    #[derive(Debug, Deserialize)]
-    struct Holder {
-        #[serde(default, deserialize_with = "deserialize_compression_methods")]
-        methods: Option<Vec<CompressionMethod>>,
-    }
-
     #[test]
     fn deserialize_supports_single_value() {
-        let holder: Holder = serde_json::from_str(r#"{ "methods": "gzip" }"#).unwrap();
-        assert_eq!(holder.methods, Some(vec![CompressionMethod::Gzip]));
+        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": "gzip" }"#).unwrap();
+        assert_eq!(conf.methods, Some(vec![CompressionMethod::Gzip]));
     }
 
     #[test]
     fn deserialize_supports_list() {
-        let holder: Holder =
+        let conf: ConfWithCompression =
             serde_json::from_str(r#"{ "methods": ["gzip", "zstd", "gzip"] }"#).unwrap();
         assert_eq!(
-            holder.methods,
+            conf.methods,
             Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
         );
     }
 
     #[test]
     fn deserialize_supports_none_keyword() {
-        let holder: Holder = serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
-        assert_eq!(holder.methods, Some(vec![]));
+        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
+        assert_eq!(conf.methods, Some(vec![]));
     }
 
     #[test]
     fn deserialize_absent_is_none() {
-        let holder: Holder = serde_json::from_str(r#"{}"#).unwrap();
-        assert!(holder.methods.is_none());
+        let conf: ConfWithCompression = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(conf.methods.is_none());
     }
 
     #[test]
     fn deserialize_null_is_none() {
-        let holder: Holder = serde_json::from_str(r#"{ "methods": null }"#).unwrap();
-        assert!(holder.methods.is_none());
+        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": null }"#).unwrap();
+        assert!(conf.methods.is_none());
     }
 }
