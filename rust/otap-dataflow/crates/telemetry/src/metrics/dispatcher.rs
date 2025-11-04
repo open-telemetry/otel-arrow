@@ -5,7 +5,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use otap_df_config::telemetry::metrics::{MetricExporterType, MetricsDispatcherConfig, ProcessorExporterType};
+use otap_df_config::service::telemetry::metrics::{MetricExporterType, MetricsDispatcherConfig, ProcessorExporterType};
 use serde::Serialize;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
@@ -251,7 +251,7 @@ mod tests {
     use crate::{attributes::AttributeSetHandler, descriptor::{AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsDescriptor}, metrics::{MetricSet, MetricSetHandler}};
 
     use super::*;
-    use otap_df_config::telemetry::metrics::{MetricExporterConfig, MetricProcessorConfig, ProcessorExporterType};
+    use otap_df_config::service::telemetry::metrics::{MetricExporterConfig, MetricProcessorConfig, ProcessorExporterType};
     use tokio::time::Duration;
 
     // Mock exporter for testing

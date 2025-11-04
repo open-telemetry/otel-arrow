@@ -377,7 +377,7 @@ mod tests {
         use super::*;
         use crate::pdata::OtapPdata;
         use otap_df_channel::mpsc;
-        use otap_df_config::telemetry::TelemetryConfig;
+        use otap_df_config::service::telemetry::TelemetryConfig;
         use otap_df_engine::context::ControllerContext;
         use otap_df_engine::control::NodeControlMsg;
         use otap_df_engine::local::message::LocalSender;

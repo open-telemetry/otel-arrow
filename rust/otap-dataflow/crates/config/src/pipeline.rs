@@ -7,6 +7,7 @@ use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
+use crate::service::ServiceConfig;
 use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,10 @@ pub struct PipelineConfig {
     /// Settings for this pipeline.
     #[serde(default)]
     settings: PipelineSettings,
+
+    /// Service configuration for this pipeline.
+    #[serde(default)]
+    service: ServiceConfig,
 
     /// All nodes in this pipeline, keyed by node ID.
     ///
@@ -86,10 +91,6 @@ pub struct PipelineSettings {
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
-
-    /// Internal telemetry configuration.
-    #[serde(default)]
-    pub telemetry_config: crate::telemetry::TelemetryConfig,
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -110,7 +111,6 @@ impl Default for PipelineSettings {
             default_pdata_channel_size: default_pdata_channel_size(),
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
-            telemetry_config: crate::telemetry::TelemetryConfig::default(),
         }
     }
 }
@@ -212,6 +212,12 @@ impl PipelineConfig {
     #[must_use]
     pub fn pipeline_settings(&self) -> &PipelineSettings {
         &self.settings
+    }
+
+    /// Returns the service configuration for this pipeline.
+    #[must_use]
+    pub fn service(&self) -> &ServiceConfig {
+        &self.service
     }
 
     /// Returns an iterator visiting all nodes in the pipeline.
@@ -604,6 +610,7 @@ impl PipelineConfigBuilder {
                     .collect(),
                 settings: PipelineSettings::default(),
                 r#type: pipeline_type,
+                service: ServiceConfig::default(),
             };
 
             spec.validate(&pipeline_group_id, &pipeline_id)?;

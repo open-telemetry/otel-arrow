@@ -3,7 +3,7 @@
 
 //! Task periodically collecting the metrics emitted by the engine and the pipelines.
 
-use otap_df_config::telemetry::TelemetryConfig;
+use otap_df_config::service::telemetry::TelemetryConfig;
 
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
@@ -60,8 +60,8 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::telemetry::TelemetryConfig;
-    use otap_df_config::telemetry::metrics::MetricsDispatcherConfig;
+    use otap_df_config::service::telemetry::TelemetryConfig;
+    use otap_df_config::service::telemetry::metrics::MetricsDispatcherConfig;
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};

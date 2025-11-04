@@ -73,7 +73,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<(), Error> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = pipeline.pipeline_settings().telemetry_config.clone();
+        let telemetry_config = pipeline.service().telemetry().clone();
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());

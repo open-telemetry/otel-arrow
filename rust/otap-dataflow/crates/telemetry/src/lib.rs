@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
-use otap_df_config::telemetry::TelemetryConfig;
+use otap_df_config::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
