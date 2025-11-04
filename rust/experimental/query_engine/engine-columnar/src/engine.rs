@@ -21,9 +21,11 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use otel_arrow_rust::arrays::{get_required_array, get_required_array_from_struct_array_from_record_batch};
-use otel_arrow_rust::otap::filter::build_uint16_id_filter;
+use otel_arrow_rust::arrays::{
+    get_required_array, get_required_array_from_struct_array_from_record_batch,
+};
 use otel_arrow_rust::otap::OtapArrowRecords;
+use otel_arrow_rust::otap::filter::build_uint16_id_filter;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::consts;
 
@@ -429,6 +431,7 @@ impl ExecutablePipeline {
             self.session_config.options(),
         )?;
         self.physical_plan = updated_plan;
+        self.curr_batch = batch_updater.take_batch();
 
         Ok(())
     }
@@ -445,10 +448,10 @@ impl ExecutablePipeline {
             }
         };
 
-        let root_batch = match batches.len() {
+        let mut root_batch = match batches.len() {
             0 => {
                 // empty
-                RecordBatch::new_empty(schema)
+                RecordBatch::new_empty(schema.clone())
             }
 
             1 => {
@@ -466,6 +469,10 @@ impl ExecutablePipeline {
             }
         };
 
+        if let Ok(row_num_col_index) = schema.index_of(ROW_NUMBER_COL) {
+            _ = root_batch.remove_column(row_num_col_index);
+        }
+
         self.curr_batch.set(root_payload_type, root_batch);
 
         self.update_child_batch(ArrowPayloadType::LogAttrs)?;
@@ -478,7 +485,7 @@ impl ExecutablePipeline {
     fn update_child_batch(&mut self, payload_type: ArrowPayloadType) -> Result<()> {
         let child_rb = match self.curr_batch.get(payload_type) {
             Some(rb) => rb,
-            None => return Ok(())
+            None => return Ok(()),
         };
 
         let root_payload_type = match self.curr_batch {
@@ -487,37 +494,51 @@ impl ExecutablePipeline {
                 todo!()
             }
         };
-        let root_rb = self.curr_batch.get(root_payload_type).ok_or(Error::InvalidBatchError { 
-            reason: "missing root record batch".into()
-        })?;
-
+        let root_rb = self
+            .curr_batch
+            .get(root_payload_type)
+            .ok_or(Error::InvalidBatchError {
+                reason: "missing root record batch".into(),
+            })?;
 
         let source_ids = match payload_type {
-            ArrowPayloadType::LogAttrs => {
-                get_required_array(root_rb, consts::ID)
-            },
+            ArrowPayloadType::LogAttrs => get_required_array(root_rb, consts::ID),
             ArrowPayloadType::ResourceAttrs => {
-                get_required_array_from_struct_array_from_record_batch(root_rb, consts::RESOURCE, consts::ID)
-            },
-            ArrowPayloadType::ScopeAttrs => {
-                get_required_array_from_struct_array_from_record_batch(root_rb, consts::SCOPE, consts::ID)
+                get_required_array_from_struct_array_from_record_batch(
+                    root_rb,
+                    consts::RESOURCE,
+                    consts::ID,
+                )
             }
+            ArrowPayloadType::ScopeAttrs => get_required_array_from_struct_array_from_record_batch(
+                root_rb,
+                consts::SCOPE,
+                consts::ID,
+            ),
             _ => {
                 todo!()
-            }
-        // TODO we could implement From for the error this returns instead of manually mapping
-        }.map_err(|e| Error::InvalidBatchError { reason: format!("invalid batch: {e}") })?;
+            } // TODO we could implement From for the error this returns instead of manually mapping
+        }
+        .map_err(|e| Error::InvalidBatchError {
+            reason: format!("invalid batch: {e}"),
+        })?;
 
         // TODO not have this hard-coded to u16 IDs
-        let ids_as_u16 = source_ids.as_any().downcast_ref::<UInt16Array>().ok_or(Error::InvalidBatchError {
-            reason: format!("expected u16 array, found type {}", source_ids.data_type())
-         })?;
+        let ids_as_u16 =
+            source_ids
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or(Error::InvalidBatchError {
+                    reason: format!("expected u16 array, found type {}", source_ids.data_type()),
+                })?;
 
-         let ids_set: HashSet<u16> = ids_as_u16.iter().filter_map(|i| i).collect();
-         let target_ids = get_required_array(child_rb, consts::PARENT_ID).map_err(|e| Error::InvalidBatchError { 
-            reason: format!("invalid batch: {e}")
+        let ids_set: HashSet<u16> = ids_as_u16.iter().filter_map(|i| i).collect();
+        let target_ids = get_required_array(child_rb, consts::PARENT_ID).map_err(|e| {
+            Error::InvalidBatchError {
+                reason: format!("invalid batch: {e}"),
+            }
         })?;
-        
+
         // TODO unwraps
         let child_mask = build_uint16_id_filter(target_ids, ids_set).unwrap();
         let result_children = filter_record_batch(child_rb, &child_mask).unwrap();
@@ -611,7 +632,8 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{DictionaryArray, StringArray};
+    use arrow::array::{DictionaryArray, StringArray, UInt8Array};
+    use arrow::compute::take_record_batch;
     use arrow::datatypes::UInt8Type;
     use data_engine_expressions::{
         ConditionalDataExpressionBuilder, DataExpression, LogicalExpression,
@@ -956,58 +978,119 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reuse_plans_simple() {
-        // let query = "logs | where severity_text == \"WARN\"";
-        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+    async fn test_reuse_plans_simple_filter() {
+        let query = "logs | where severity_text == \"WARN\"";
         let pipeline_expr = KqlParser::parse(query).unwrap();
 
         let batch1 = generate_logs_batch(32, 100);
-        // let mut exec_ctx = ExecutionContext::try_new(batch1).await.unwrap();
 
-        // let engine = OtapBatchEngine::new();
-        let mut exec_pipeline = ExecutablePipeline::try_new(batch1, pipeline_expr)
+        let mut exec_pipeline = ExecutablePipeline::try_new(batch1.clone(), pipeline_expr)
             .await
             .unwrap();
         exec_pipeline.execute().await.unwrap();
         let result1 = exec_pipeline.curr_batch.clone();
 
-        // engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
-        // let result1 = exec_ctx.curr_batch.clone();
-
-        // TODO need to add some real asserts here
-
-        println!("plans b4 first result\n");
-        // exec_ctx.print_phy_plans();
-
-        println!("\nresult1 logs:");
-        arrow::util::pretty::print_batches(&[result1.get(ArrowPayloadType::Logs).unwrap().clone()])
-            .unwrap();
-        // println!("result1 log_attrs:");
-        // arrow::util::pretty::print_batches(&[result1
-        //     .get(ArrowPayloadType::LogAttrs)
-        //     .unwrap()
-        //     .clone()])
-        // .unwrap();
+        let expected_result1_indices = [3, 7, 11, 15, 19, 23, 27, 31];
+        let expected_logs_result = take_record_batch(
+            batch1.get(ArrowPayloadType::Logs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result1_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result1.get(ArrowPayloadType::Logs).unwrap(),
+            &expected_logs_result
+        );
 
         let batch2 = generate_logs_batch(64, 200);
-        exec_pipeline.update_batch(batch2).unwrap();
-        // exec_ctx.update_batch(batch2).unwrap();
+        exec_pipeline.update_batch(batch2.clone()).unwrap();
 
-        // engine.execute(&pipeline_expr, &mut exec_ctx).await.unwrap();
         exec_pipeline.execute().await.unwrap();
         let result2 = exec_pipeline.curr_batch.clone();
 
-        println!("plans b4 2nd result\n");
-        // exec_ctx.print_phy_plans();
-
-        println!("result2 logs:");
-        arrow::util::pretty::print_batches(&[result2.get(ArrowPayloadType::Logs).unwrap().clone()])
-            .unwrap();
-        // println!("result2 log_attrs:");
-        // arrow::util::pretty::print_batches(&[result2
-        //     .get(ArrowPayloadType::LogAttrs)
-        //     .unwrap()
-        //     .clone()])
-        // .unwrap();
+        let expected_result2_indices =
+            [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63];
+        let expected_logs_result = take_record_batch(
+            batch2.get(ArrowPayloadType::Logs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result2_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result2.get(ArrowPayloadType::Logs).unwrap(),
+            &expected_logs_result
+        );
     }
+
+    #[tokio::test]
+    async fn test_reuse_plans_attr_filter() {
+        let query = "logs | where attributes[\"k8s.ns\"] == \"prod\"";
+        let pipeline_expr = KqlParser::parse(query).unwrap();
+
+        let batch1 = generate_logs_batch(32, 100);
+
+        let mut exec_pipeline = ExecutablePipeline::try_new(batch1.clone(), pipeline_expr)
+            .await
+            .unwrap();
+        exec_pipeline.execute().await.unwrap();
+        let result1 = exec_pipeline.curr_batch.clone();
+
+        let expected_result1_indices = [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31];
+        let expected_result1_attr_indices = expected_result1_indices
+            .iter()
+            .map(|i| i * 3)
+            .flat_map(|i| [i, i + 1, i + 2]);
+        let expected_logs_result = take_record_batch(
+            batch1.get(ArrowPayloadType::Logs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result1_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result1.get(ArrowPayloadType::Logs).unwrap(),
+            &expected_logs_result
+        );
+
+        let expected_log_attr_result = take_record_batch(
+            batch1.get(ArrowPayloadType::LogAttrs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result1_attr_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result1.get(ArrowPayloadType::LogAttrs).unwrap(),
+            &expected_log_attr_result
+        );
+
+        let batch2 = generate_logs_batch(64, 200);
+        exec_pipeline.update_batch(batch2.clone()).unwrap();
+
+        exec_pipeline.execute().await.unwrap();
+        let result2 = exec_pipeline.curr_batch.clone();
+
+        let expected_result2_indices = [
+            0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63,
+        ];
+        let expected_result2_attr_indices = expected_result2_indices
+            .iter()
+            .map(|i| i * 3)
+            .flat_map(|i| [i, i + 1, i + 2]);
+        let expected_logs_result = take_record_batch(
+            batch2.get(ArrowPayloadType::Logs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result2_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result2.get(ArrowPayloadType::Logs).unwrap(),
+            &expected_logs_result
+        );
+        let expected_log_attr_result = take_record_batch(
+            batch2.get(ArrowPayloadType::LogAttrs).unwrap(),
+            &UInt8Array::from_iter_values(expected_result2_attr_indices),
+        )
+        .unwrap();
+        assert_eq!(
+            result2.get(ArrowPayloadType::LogAttrs).unwrap(),
+            &expected_log_attr_result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reuse_plans_schema_changes_simple() {}
 }

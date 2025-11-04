@@ -368,6 +368,10 @@ impl UpdateDataSourceOptimizer {
     pub fn new(otap_batch: OtapArrowRecords) -> Self {
         Self { otap_batch }
     }
+
+    pub fn take_batch(self) -> OtapArrowRecords {
+        self.otap_batch
+    }
 }
 
 impl PhysicalOptimizerRule for UpdateDataSourceOptimizer {
