@@ -62,7 +62,22 @@ pub struct Config {
     pub grpc: GrpcServerSettings,
 }
 
-/// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
+/// gRPC receiver that ingests OTLP signals and forwards them into the OTAP pipeline.
+///
+/// The implementation mirrors the OTAP Arrow receiver layout: a shared [`GrpcServerConfig`] drives
+/// listener creation, per-signal tonic services are registered on a single server, and the receiver
+/// is wrapped in a [`ReceiverFactory`] so the dataflow engine can build it from configuration.
+/// 
+/// Several optimisations keep the hot path inexpensive:
+/// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
+///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server::OtlpBytesCodec), allowing downstream stages
+///   to decode lazily.
+/// - `tune_max_concurrent_requests` clamps the gRPC concurrency to the downstream channel capacity,
+///   preventing backlog buildup while still honouring user settings.
+/// - `SignalAckRoutingState` maintains per-signal ACK subscription slots so `wait_for_result`
+///   lookups avoid extra bookkeeping and route responses directly back to callers.
+/// - Metrics are wired through a `MetricSet`, letting periodic snapshots flush ACK/NACK counters
+///   without rebuilding instruments.
 pub struct OTLPReceiver {
     config: Config,
     metrics: MetricSet<OtlpReceiverMetrics>,
