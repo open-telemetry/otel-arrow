@@ -691,6 +691,10 @@ where
                 .scopes()
                 .map(|scope| scope.metrics().count())
                 .sum();
+            let schema_url = resource_metric.schema_url();
+            metrics
+                .resource
+                .append_schema_url_n(schema_url, metric_count);
             metrics.resource.append_id_n(curr_resource_id, metric_count);
             metrics.resource.append_dropped_attributes_count_n(
                 resource.dropped_attributes_count(),

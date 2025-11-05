@@ -151,8 +151,9 @@ impl ResourceMetricsView for ObjResourceMetrics<'_> {
         ScopeMetricsIter::new(self.inner.scope_metrics.iter())
     }
 
-    fn schema_url(&self) -> Str<'_> {
-        self.inner.schema_url.as_bytes()
+    fn schema_url(&self) -> Option<Str<'_>> {
+        let schema_url = self.inner.schema_url.as_bytes();
+        (!schema_url.is_empty()).then_some(schema_url)
     }
 }
 

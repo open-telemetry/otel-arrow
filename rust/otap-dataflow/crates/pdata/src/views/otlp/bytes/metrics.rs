@@ -80,7 +80,7 @@ impl FieldRanges for ResourceMetricsFieldRanges {
         if wire_type == wire_types::LEN {
             match field_num {
                 RESOURCE_METRICS_RESOURCE => self.resource.set(Some(range)),
-                RESOURCE_METRICS_SCHEMA_URL => self.resource.set(Some(range)),
+                RESOURCE_METRICS_SCHEMA_URL => self.schema_url.set(Some(range)),
                 RESOURCE_METRICS_SCOPE_METRICS => {
                     if self.first_scope_metrics.get().is_none() {
                         self.first_scope_metrics.set(Some(range))
@@ -133,7 +133,7 @@ impl FieldRanges for ScopeMetricsFieldRanges {
         if wire_type == wire_types::LEN {
             match field_num {
                 SCOPE_METRICS_SCOPE => self.scope.set(Some(range)),
-                SCOPE_METRICS_SCHEMA_URL => self.scope.set(Some(range)),
+                SCOPE_METRICS_SCHEMA_URL => self.schema_url.set(Some(range)),
                 SCOPE_METRICS_METRICS => {
                     if self.first_metric.get().is_none() {
                         self.first_metric.set(Some(range))
@@ -325,10 +325,9 @@ impl ResourceMetricsView for RawResourceMetrics<'_> {
     }
 
     #[inline]
-    fn schema_url(&self) -> Str<'_> {
+    fn schema_url(&self) -> Option<Str<'_>> {
         self.byte_parser
             .advance_to_find_field(RESOURCE_METRICS_SCHEMA_URL)
-            .unwrap_or_default()
     }
 
     #[inline]

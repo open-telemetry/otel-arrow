@@ -70,7 +70,7 @@ pub trait ResourceMetricsView {
     fn scopes(&self) -> Self::ScopesIter<'_>;
 
     /// The schema URL for the resource.
-    fn schema_url(&self) -> Str<'_>;
+    fn schema_url(&self) -> Option<Str<'_>>;
 }
 
 /// View for ScopeMetrics
