@@ -47,6 +47,11 @@ pub mod opentelemetry {
         pub mod v1;
     }
     #[path = "."]
+    pub mod profiles {
+        #[path = "opentelemetry.proto.profiles.v1development.rs"]
+        pub mod v1development;
+    }
+    #[path = "."]
     pub mod collector {
         #[path = "."]
         pub mod trace {
@@ -62,6 +67,11 @@ pub mod opentelemetry {
         pub mod metrics {
             #[path = "opentelemetry.proto.collector.metrics.v1.rs"]
             pub mod v1;
+        }
+        #[path = "."]
+        pub mod profiles {
+            #[path = "opentelemetry.proto.collector.profiles.v1development.rs"]
+            pub mod v1development;
         }
     }
 

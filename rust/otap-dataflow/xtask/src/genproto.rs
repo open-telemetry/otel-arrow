@@ -3,6 +3,13 @@
 
 use std::path::Path;
 
+// Note The original otel-arrow-rust build script included features to
+// disable the client and/or server sides of the OTAP protocol.  We
+// have not retained these:
+//
+//        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
+//        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
+
 pub(crate) fn compile_proto() -> anyhow::Result<()> {
     let out_dir = Path::new("crates/pdata/src/proto");
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
@@ -34,8 +41,6 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
     let builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
         .disable_comments(["."])
         .out_dir(out_dir);
 
@@ -54,13 +59,11 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
     let builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
         .disable_comments(["."])
         .out_dir(out_dir);
 
     // Note: this adds derive expressions for each OTLP message type.
-    let builder = otlp_model::add_type_attributes(builder);
+    let builder = otap_df_pdata_otlp_model::add_type_attributes(builder);
 
     builder
         .compile_with_config(
@@ -71,9 +74,11 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
                 "opentelemetry/proto/trace/v1/trace.proto",
                 "opentelemetry/proto/metrics/v1/metrics.proto",
                 "opentelemetry/proto/logs/v1/logs.proto",
+                "opentelemetry/proto/profiles/v1development/profiles.proto",
                 "opentelemetry/proto/collector/logs/v1/logs_service.proto",
                 "opentelemetry/proto/collector/trace/v1/trace_service.proto",
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
             ],
             &[format!("{base}/../../../proto/opentelemetry-proto").as_str()],
         )

@@ -181,7 +181,6 @@ impl StatusCode {
     }
 }
 /// Generated client implementations.
-#[cfg(feature = "client")]
 pub mod arrow_traces_service_client {
     #![allow(
         unused_variables,
@@ -305,7 +304,6 @@ pub mod arrow_traces_service_client {
     }
 }
 /// Generated server implementations.
-#[cfg(feature = "server")]
 pub mod arrow_traces_service_server {
     #![allow(
         unused_variables,
@@ -499,7 +497,6 @@ pub mod arrow_traces_service_server {
     }
 }
 /// Generated client implementations.
-#[cfg(feature = "client")]
 pub mod arrow_logs_service_client {
     #![allow(
         unused_variables,
@@ -623,7 +620,6 @@ pub mod arrow_logs_service_client {
     }
 }
 /// Generated server implementations.
-#[cfg(feature = "server")]
 pub mod arrow_logs_service_server {
     #![allow(
         unused_variables,
@@ -813,7 +809,6 @@ pub mod arrow_logs_service_server {
     }
 }
 /// Generated client implementations.
-#[cfg(feature = "client")]
 pub mod arrow_metrics_service_client {
     #![allow(
         unused_variables,
@@ -937,7 +932,6 @@ pub mod arrow_metrics_service_client {
     }
 }
 /// Generated server implementations.
-#[cfg(feature = "server")]
 pub mod arrow_metrics_service_server {
     #![allow(
         unused_variables,

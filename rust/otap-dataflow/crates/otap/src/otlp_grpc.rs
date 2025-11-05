@@ -8,7 +8,7 @@
 //! Implements the necessary service traits for OTLP data
 //!
 //! ToDo Modify OTLPData -> Optimize message transport
-use crate::proto::opentelemetry::collector::{
+use otap_df_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
     },
