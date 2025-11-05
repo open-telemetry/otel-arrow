@@ -218,7 +218,7 @@ pub trait DataView<'val> {
     /// Get the Histogram value
     fn as_histogram(&self) -> Option<Self::Histogram<'_>>;
 
-    /// Get the ExpoenentialHistogram value
+    /// Get the ExponentialHistogram value
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>>;
 
     /// Get the Summary value

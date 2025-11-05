@@ -157,6 +157,19 @@ where
 
         None
     }
+
+    /// Advances the parser to find one of the fields specified in the `field_nums` argument.
+    /// If found, it returns the the byte slice containing the value for this field and the
+    /// field number as a tuple.
+    pub fn advance_to_find_oneof(&self, field_nums: &[u64]) -> Option<(&'a [u8], u64)> {
+        for field_num in field_nums {
+            if let Some(buf) = self.advance_to_find_field(*field_num) {
+                return Some((buf, *field_num))
+            }
+        }
+
+        None
+    }
 }
 
 /// return the range of the positions in the byte slice containing values. The range is determined
