@@ -101,8 +101,7 @@ pub trait CheckedDictionaryAppendSlice {
 
 // This is the error type for the result that is returned by CheckedDictionaryArrayAppend trait.
 // It is the same as the error type for the regular `DictionaryArrayAppend` but with an extra
-// variant containing the underlying arrow error. We need a separate module for this due to how
-// snafu expects the errors definitions ot be organized.
+// variant containing the underlying arrow error.
 pub mod checked {
     use super::*;
 
