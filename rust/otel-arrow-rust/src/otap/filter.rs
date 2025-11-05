@@ -7,11 +7,10 @@ use arrow::array::{
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 
 use crate::otap::OtapArrowRecords;
-use crate::otap::error::{self, Result};
+use crate::otap::error::{Error, Result};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use serde::Deserialize;
-use snafu::{OptionExt, ResultExt};
 use std::collections::HashSet;
 use std::sync::Arc;
 pub mod logs;
@@ -163,19 +162,17 @@ fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
                 }
                 _ => {
                     // return error not correct column type
-                    Err(error::UnsupportedStringDictKeyTypeSnafu {
+                    Err(Error::UnsupportedStringDictKeyType {
                         data_type: *key.clone(),
-                    }
-                    .build())
+                    })
                 }
             }
         }
         _ => {
             // return error not correct column type
-            Err(error::UnsupportedStringColumnTypeSnafu {
+            Err(Error::UnsupportedStringColumnType {
                 data_type: src.data_type().clone(),
-            }
-            .build())
+            })
         }
     }
 }
@@ -200,7 +197,7 @@ fn build_uint16_id_filter(
             let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
                 .expect("can compare uint16 id column with uint16 scalar");
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
         Ok(combined_id_filter)
@@ -210,8 +207,8 @@ fn build_uint16_id_filter(
         let uint16_id_array = id_column
             .as_any()
             .downcast_ref::<UInt16Array>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::ID,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::ID.into(),
                 actual: id_column.data_type().clone(),
                 expect: DataType::UInt16,
             })?;
@@ -242,15 +239,15 @@ fn get_uint16_ids(
 ) -> Result<HashSet<u16>> {
     // get ids being removed
     // error out herre
-    let filtered_ids =
-        arrow::compute::filter(id_column, filter).context(error::ColumnLengthMismatchSnafu)?;
+    let filtered_ids = arrow::compute::filter(id_column, filter)
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
 
     // downcast id and get unique values
     let filtered_ids = filtered_ids
         .as_any()
         .downcast_ref::<UInt16Array>()
-        .with_context(|| error::ColumnDataTypeMismatchSnafu {
-            name: column_type,
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: column_type.into(),
             actual: filtered_ids.data_type().clone(),
             expect: DataType::UInt16,
         })?;
@@ -269,9 +266,9 @@ fn apply_filter(
 ) -> Result<()> {
     let record_batch = payload
         .get(payload_type)
-        .with_context(|| error::RecordBatchNotFoundSnafu { payload_type })?;
+        .ok_or_else(|| Error::RecordBatchNotFound { payload_type })?;
     let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
-        .context(error::ColumnLengthMismatchSnafu)?;
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
     payload.set(payload_type, filtered_record_batch);
     Ok(())
 }

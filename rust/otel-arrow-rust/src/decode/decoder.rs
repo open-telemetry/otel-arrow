@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::decode::record_message::RecordMessage;
-use crate::error;
+use crate::error::{Error, Result};
 use crate::otap::{OtapArrowRecords, from_record_messages};
 use crate::otlp::logs::LogsProtoBytesEncoder;
 use crate::otlp::metrics::MetricsProtoBytesEncoder;
@@ -16,7 +16,6 @@ use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use prost::Message;
-use snafu::{ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -26,10 +25,10 @@ pub struct StreamConsumer {
 }
 
 impl StreamConsumer {
-    fn try_new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> error::Result<Self> {
+    fn try_new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> Result<Self> {
         let data = Cursor::new(initial_bytes);
-        let stream_reader =
-            StreamReader::try_new(data.clone(), None).context(error::BuildStreamReaderSnafu)?;
+        let stream_reader = StreamReader::try_new(data.clone(), None)
+            .map_err(|e| Error::BuildStreamReader { source: e })?;
         Ok(Self {
             payload_type: payload,
             stream_reader,
@@ -40,7 +39,7 @@ impl StreamConsumer {
         *self.stream_reader.get_mut() = Cursor::new(bytes);
     }
 
-    fn next(&mut self) -> Option<Result<RecordBatch, ArrowError>> {
+    fn next(&mut self) -> Option<std::result::Result<RecordBatch, ArrowError>> {
         self.stream_reader.next()
     }
 }
@@ -57,10 +56,7 @@ pub struct Consumer {
 
 impl Consumer {
     /// consume and deserialize record batches
-    pub fn consume_bar(
-        &mut self,
-        bar: &mut BatchArrowRecords,
-    ) -> error::Result<Vec<RecordMessage>> {
+    pub fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
 
         for payload in std::mem::take(&mut bar.arrow_payloads) {
@@ -70,7 +66,7 @@ impl Consumer {
                 record,
             } = payload;
             let payload_type = ArrowPayloadType::try_from(r#type)
-                .map_err(|_| error::UnsupportedPayloadTypeSnafu { actual: r#type }.build())?;
+                .map_err(|_| Error::UnsupportedPayloadType { actual: r#type })?;
 
             let stream_consumer = match self.stream_consumers.get_mut(&schema_id) {
                 None => {
@@ -95,7 +91,7 @@ impl Consumer {
 
             if let Some(rs) = stream_consumer.next() {
                 // the encoder side ensures there should be only one record here.
-                let record = rs.context(error::ReadRecordBatchSnafu)?;
+                let record = rs.map_err(|e| Error::ReadRecordBatch { source: e })?;
                 records.push(RecordMessage {
                     batch_id: bar.batch_id,
                     schema_id,
@@ -115,7 +111,7 @@ impl Consumer {
     pub fn consume_metrics_batches(
         &mut self,
         records: &mut BatchArrowRecords,
-    ) -> error::Result<ExportMetricsServiceRequest> {
+    ) -> Result<ExportMetricsServiceRequest> {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
@@ -126,16 +122,14 @@ impl Consumer {
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
 
                 ExportMetricsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    error::UnexpectedRecordBatchStateSnafu {
+                    Error::UnexpectedRecordBatchState {
                         reason: format!("error decoding proto serialization: {e:?}"),
                     }
-                    .build()
                 })
             }
-            main_record_type => error::UnsupportedPayloadTypeSnafu {
-                actual: main_record_type,
-            }
-            .fail(),
+            main_record_type => Err(Error::UnsupportedPayloadType {
+                actual: main_record_type.into(),
+            }),
         }
     }
 
@@ -145,7 +139,7 @@ impl Consumer {
     pub fn consume_logs_batches(
         &mut self,
         records: &mut BatchArrowRecords,
-    ) -> error::Result<ExportLogsServiceRequest> {
+    ) -> Result<ExportLogsServiceRequest> {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
@@ -155,16 +149,14 @@ impl Consumer {
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
 
                 ExportLogsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    error::UnexpectedRecordBatchStateSnafu {
+                    Error::UnexpectedRecordBatchState {
                         reason: format!("error decoding proto serialization: {e:?}"),
                     }
-                    .build()
                 })
             }
-            main_record_type => error::UnsupportedPayloadTypeSnafu {
-                actual: main_record_type,
-            }
-            .fail(),
+            main_record_type => Err(Error::UnsupportedPayloadType {
+                actual: main_record_type.into(),
+            }),
         }
     }
 
@@ -172,7 +164,7 @@ impl Consumer {
     pub fn consume_traces_batches(
         &mut self,
         records: &mut BatchArrowRecords,
-    ) -> error::Result<ExportTraceServiceRequest> {
+    ) -> Result<ExportTraceServiceRequest> {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Spans => {
                 let record_messages = self.consume_bar(records)?;
@@ -183,31 +175,28 @@ impl Consumer {
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
 
                 ExportTraceServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    error::UnexpectedRecordBatchStateSnafu {
+                    Error::UnexpectedRecordBatchState {
                         reason: format!("error decoding proto serialization {e:?}"),
                     }
-                    .build()
                 })
             }
-            main_record_type => error::UnsupportedPayloadTypeSnafu {
-                actual: main_record_type,
-            }
-            .fail(),
+            main_record_type => Err(Error::UnsupportedPayloadType {
+                actual: main_record_type.into(),
+            }),
         }
     }
 }
 
 /// Get the main logs, metrics, or traces from a received BatchArrowRecords message.
-fn get_main_payload_type(records: &BatchArrowRecords) -> error::Result<ArrowPayloadType> {
-    ensure!(!records.arrow_payloads.is_empty(), error::EmptyBatchSnafu);
+fn get_main_payload_type(records: &BatchArrowRecords) -> Result<ArrowPayloadType> {
+    if records.arrow_payloads.is_empty() {
+        return Err(Error::EmptyBatch);
+    }
 
     // Per the specification, the main record type is the first payload
     let main_record_type = records.arrow_payloads[0].r#type;
-    ArrowPayloadType::try_from(main_record_type).map_err(|_| {
-        error::UnsupportedPayloadTypeSnafu {
-            actual: main_record_type,
-        }
-        .build()
+    ArrowPayloadType::try_from(main_record_type).map_err(|_| Error::UnsupportedPayloadType {
+        actual: main_record_type,
     })
 }
 

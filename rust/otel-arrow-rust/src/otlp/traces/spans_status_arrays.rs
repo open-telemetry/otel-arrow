@@ -4,7 +4,6 @@
 use crate::arrays::{
     Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
 };
-use crate::error;
 use crate::error::Error;
 use crate::proto::opentelemetry::trace::v1::Status;
 use crate::schema::consts;
@@ -32,7 +31,7 @@ impl NullableArrayAccessor for SpanStatusArrays<'_> {
 impl<'a> TryFrom<&'a StructArray> for SpanStatusArrays<'a> {
     type Error = Error;
 
-    fn try_from(status: &'a StructArray) -> error::Result<Self> {
+    fn try_from(status: &'a StructArray) -> Result<Self, Error> {
         let column_accessor = StructColumnAccessor::new(status);
         Ok(Self {
             status,

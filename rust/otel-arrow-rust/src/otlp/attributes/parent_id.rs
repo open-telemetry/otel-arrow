@@ -1,14 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error::{self, Result};
+use crate::error::{Error, Result};
 use crate::otlp::attributes::decoder::{
     Attrs16ParentIdDecoder, Attrs32ParentIdDecoder, AttrsParentIdDecoder,
 };
 use crate::schema::consts;
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use arrow::datatypes::{UInt16Type, UInt32Type};
-use snafu::OptionExt;
 use std::hash::Hash;
 use std::ops::{Add, AddAssign};
 
@@ -24,17 +23,16 @@ where
     fn get_parent_id_column(
         record_batch: &RecordBatch,
     ) -> Result<&PrimitiveArray<Self::ArrayType>> {
-        let parent_id_arr =
-            record_batch
-                .column_by_name(consts::PARENT_ID)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::PARENT_ID,
-                })?;
+        let parent_id_arr = record_batch
+            .column_by_name(consts::PARENT_ID)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: consts::PARENT_ID.into(),
+            })?;
         let parent_id_arr = parent_id_arr
             .as_any()
             .downcast_ref::<PrimitiveArray<Self::ArrayType>>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::PARENT_ID,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::PARENT_ID.into(),
                 expect: Self::ArrayType::DATA_TYPE,
                 actual: parent_id_arr.data_type().clone(),
             })?;

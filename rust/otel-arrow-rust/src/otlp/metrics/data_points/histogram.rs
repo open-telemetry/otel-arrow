@@ -5,7 +5,7 @@ use crate::arrays::{
     NullableArrayAccessor, get_f64_array_opt, get_timestamp_nanosecond_array_opt, get_u16_array,
     get_u32_array_opt, get_u64_array_opt,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
@@ -26,7 +26,6 @@ use arrow::array::{
 use arrow::datatypes::{
     ArrowNativeType, ArrowPrimitiveType, DataType, Field, FieldRef, Float64Type, UInt64Type,
 };
-use snafu::OptionExt;
 
 pub struct HistogramDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
@@ -92,8 +91,8 @@ where
     T: ArrowPrimitiveType,
 {
     pub fn try_new(list: &'a ArrayRef) -> Result<Self> {
-        let list = list.as_any().downcast_ref::<ListArray>().with_context(|| {
-            error::InvalidListArraySnafu {
+        let list = list.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+            Error::InvalidListArray {
                 //todo: maybe set the field name here.
                 expect_oneof: vec![DataType::List(FieldRef::new(Field::new(
                     "",
@@ -111,7 +110,7 @@ where
         let value = value_array
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
-            .with_context(|| error::InvalidListArraySnafu {
+            .ok_or_else(|| Error::InvalidListArray {
                 expect_oneof: vec![T::DATA_TYPE],
                 actual: value_array.data_type().clone(),
             })?;

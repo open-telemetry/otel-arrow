@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error::{self, Result};
+use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
@@ -10,14 +10,13 @@ use crate::proto::consts::field_num::common::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto_encode_len_delimited_unknown_size;
-use snafu::ResultExt;
 
 /// Decode bytes from a serialized attribute into protobuf bytes value.
 ///
 /// This should be used for values in the `ser` column of attributes and Log bodies.
 pub fn proto_encode_cbor_bytes(input: &[u8], result_buf: &mut ProtoBuffer) -> Result<()> {
     let value = ciborium::from_reader::<ciborium::Value, &[u8]>(input)
-        .context(error::InvalidSerializedAttributeBytesSnafu)?;
+        .map_err(|e| Error::InvalidSerializedAttributeBytes { source: e })?;
 
     proto_encode_cbor_value(&value, result_buf)?;
 
@@ -46,7 +45,7 @@ fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer
         ciborium::Value::Integer(int_val) => {
             let int_val: u64 = (*int_val)
                 .try_into()
-                .context(error::InvalidSerializedIntAttributeValueSnafu)?;
+                .map_err(|e| Error::InvalidSerializedIntAttributeValue { source: e })?;
             result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
             result_buf.encode_varint(int_val);
         }
@@ -65,10 +64,9 @@ fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer
             );
         }
         other => {
-            return error::UnsupportedSerializedAttributeValueSnafu {
+            return Err(Error::UnsupportedSerializedAttributeValue {
                 actual: other.clone(),
-            }
-            .fail();
+            });
         }
     }
 
@@ -118,10 +116,9 @@ fn proto_encode_cbor_kv(
             // empty key
         }
         other => {
-            return error::InvalidSerializedMapKeyTypeSnafu {
+            return Err(Error::InvalidSerializedMapKeyType {
                 actual: other.clone(),
-            }
-            .fail();
+            });
         }
     }
 

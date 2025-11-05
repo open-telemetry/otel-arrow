@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::Array;
-use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{
@@ -54,7 +53,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for TracesDataArrays<'a> {
     fn try_from(otap_batch: &'a OtapArrowRecords) -> Result<Self> {
         let spans_rb = otap_batch
             .get(ArrowPayloadType::Spans)
-            .context(error::SpanRecordNotFoundSnafu)?;
+            .ok_or(Error::SpanRecordNotFound)?;
 
         Ok(Self {
             span_arrays: SpansArrays::try_from(spans_rb)?,
@@ -127,7 +126,7 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
         // get the list of indices from the root record batch to visit in order
         let spans_rb = otap_batch
             .get(ArrowPayloadType::Spans)
-            .context(error::SpanRecordNotFoundSnafu)?;
+            .ok_or(Error::SpanRecordNotFound)?;
         self.batch_sorter
             .init_cursor_for_root_batch(spans_rb, &mut self.root_cursor)?;
 

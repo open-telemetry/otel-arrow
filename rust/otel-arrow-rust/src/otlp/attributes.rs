@@ -4,10 +4,9 @@
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use num_enum::TryFromPrimitive;
-use snafu::OptionExt;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
@@ -56,11 +55,11 @@ where
             consts::PARENT_ID,
         )?)?;
 
-        let key = rb.column_by_name(consts::ATTRIBUTE_KEY).with_context(|| {
-            error::ColumnNotFoundSnafu {
-                name: consts::ATTRIBUTE_KEY,
-            }
-        })?;
+        let key =
+            rb.column_by_name(consts::ATTRIBUTE_KEY)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: consts::ATTRIBUTE_KEY.into(),
+                })?;
         let attr_key = MaybeDictArrayAccessor::<StringArray>::try_new(key)?;
 
         let anyval_arrays = AnyValueArrays::try_from(rb)?;

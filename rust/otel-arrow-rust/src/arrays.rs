@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error;
+use crate::error::{Error, Result};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
     DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
@@ -12,7 +12,6 @@ use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Fields, TimeUnit, UInt8Type, UInt16Type,
 };
 use paste::paste;
-use snafu::{OptionExt, ensure};
 
 pub trait NullableArrayAccessor {
     type Native;
@@ -115,28 +114,28 @@ impl NullableArrayAccessor for StringArray {
 macro_rules! impl_downcast {
     ($suffix:ident, $data_type:expr, $array_type:ident) => {
         paste!{
-            pub fn [<get_ $suffix _array_opt> ]<'a>(rb: &'a RecordBatch, name: &str) -> error::Result<Option<&'a $array_type>> {
+            pub fn [<get_ $suffix _array_opt> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<Option<&'a $array_type>> {
                 use arrow::datatypes::DataType::*;
                 rb.column_by_name(name)
                     .map(|arr|{
                         arr.as_any()
                             .downcast_ref::<$array_type>()
-                            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                                name,
+                            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                                name: name.into(),
                                 expect: $data_type,
                                 actual: arr.data_type().clone(),
                             })
                 }).transpose()
             }
 
-              pub fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> error::Result<&'a $array_type> {
+              pub fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<&'a $array_type> {
                 use arrow::datatypes::DataType::*;
                 let arr = get_required_array(rb, name)?;
 
                  arr.as_any()
                             .downcast_ref::<$array_type>()
-                            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                                name,
+                            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                                name: name.into(),
                                 expect: $data_type,
                                 actual: arr.data_type().clone(),
                             })
@@ -172,10 +171,12 @@ impl_downcast!(
 pub fn get_required_array<'a>(
     record_batch: &'a RecordBatch,
     column_name: &str,
-) -> error::Result<&'a ArrayRef> {
+) -> Result<&'a ArrayRef> {
     record_batch
         .column_by_name(column_name)
-        .context(error::ColumnNotFoundSnafu { name: column_name })
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: column_name.into(),
+        })
 }
 
 /// Get reference to a struct array that the caller requires to be in the record batch.
@@ -184,15 +185,18 @@ pub fn get_required_array<'a>(
 pub fn get_required_struct_array<'a>(
     record_batch: &'a RecordBatch,
     column_name: &str,
-) -> error::Result<&'a StructArray> {
-    let struct_arr = record_batch
-        .column_by_name(column_name)
-        .context(error::ColumnNotFoundSnafu { name: column_name })?;
+) -> Result<&'a StructArray> {
+    let struct_arr =
+        record_batch
+            .column_by_name(column_name)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: column_name.into(),
+            })?;
     struct_arr
         .as_any()
         .downcast_ref::<StructArray>()
-        .with_context(|| error::ColumnDataTypeMismatchSnafu {
-            name: column_name,
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: column_name.into(),
             actual: struct_arr.data_type().clone(),
             expect: DataType::Struct(Fields::empty()),
         })
@@ -203,10 +207,12 @@ pub fn get_required_struct_array<'a>(
 pub fn get_required_array_from_struct_array<'a>(
     struct_arr: &'a StructArray,
     column_name: &str,
-) -> error::Result<&'a ArrayRef> {
+) -> Result<&'a ArrayRef> {
     struct_arr
         .column_by_name(column_name)
-        .context(error::ColumnNotFoundSnafu { name: column_name })
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: column_name.into(),
+        })
 }
 
 /// Get reference to array that the caller requires to be in a struct array
@@ -216,34 +222,34 @@ pub fn get_required_array_from_struct_array_from_record_batch<'a>(
     record_batch: &'a RecordBatch,
     record_batch_column_name: &str,
     struct_array_column_name: &str,
-) -> error::Result<&'a ArrayRef> {
+) -> Result<&'a ArrayRef> {
     let struct_arr = record_batch
         .column_by_name(record_batch_column_name)
-        .context(error::ColumnNotFoundSnafu {
-            name: record_batch_column_name,
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: record_batch_column_name.into(),
         })?;
 
     let struct_arr = struct_arr
         .as_any()
         .downcast_ref::<StructArray>()
-        .with_context(|| error::ColumnDataTypeMismatchSnafu {
-            name: record_batch_column_name,
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: record_batch_column_name.into(),
             actual: struct_arr.data_type().clone(),
             expect: DataType::Struct(Fields::empty()),
         })?;
     struct_arr
         .column_by_name(struct_array_column_name)
-        .context(error::ColumnNotFoundSnafu {
-            name: struct_array_column_name,
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: struct_array_column_name.into(),
         })
 }
 
 trait NullableInt64ArrayAccessor {
-    fn i64_at(&self, idx: usize) -> error::Result<Option<i64>>;
+    fn i64_at(&self, idx: usize) -> Result<Option<i64>>;
 }
 
 impl NullableInt64ArrayAccessor for &Int64Array {
-    fn i64_at(&self, idx: usize) -> error::Result<Option<i64>> {
+    fn i64_at(&self, idx: usize) -> Result<Option<i64>> {
         Ok(self.value_at(idx))
     }
 }
@@ -252,7 +258,7 @@ impl<T> NullableInt64ArrayAccessor for &DictionaryArray<T>
 where
     T: ArrowDictionaryKeyType,
 {
-    fn i64_at(&self, idx: usize) -> error::Result<Option<i64>> {
+    fn i64_at(&self, idx: usize) -> Result<Option<i64>> {
         let Some(idx) = self.keys().value_at(idx) else {
             return Ok(None);
         };
@@ -267,11 +273,11 @@ where
 }
 
 trait NullableF64ArrayAccessor {
-    fn f64_at(&self, idx: usize) -> error::Result<Option<f64>>;
+    fn f64_at(&self, idx: usize) -> Result<Option<f64>>;
 }
 
 impl NullableF64ArrayAccessor for &Float64Array {
-    fn f64_at(&self, idx: usize) -> error::Result<Option<f64>> {
+    fn f64_at(&self, idx: usize) -> Result<Option<f64>> {
         Ok(self.value_at(idx))
     }
 }
@@ -280,7 +286,7 @@ impl<T> NullableF64ArrayAccessor for &DictionaryArray<T>
 where
     T: ArrowDictionaryKeyType,
 {
-    fn f64_at(&self, idx: usize) -> error::Result<Option<f64>> {
+    fn f64_at(&self, idx: usize) -> Result<Option<f64>> {
         let Some(idx) = self.keys().value_at(idx) else {
             return Ok(None);
         };
@@ -304,14 +310,11 @@ pub enum ByteArrayAccessor<'a> {
 }
 
 impl<'a> ByteArrayAccessor<'a> {
-    pub fn try_new_for_column(
-        record_batch: &'a RecordBatch,
-        column_name: &str,
-    ) -> error::Result<Self> {
+    pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
-    pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
+    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         match arr.data_type() {
             DataType::Binary => {
                 MaybeDictArrayAccessor::<BinaryArray>::try_new(arr).map(Self::Binary)
@@ -328,13 +331,12 @@ impl<'a> ByteArrayAccessor<'a> {
                     MaybeDictArrayAccessor::<FixedSizeBinaryArray>::try_new(arr, dims)
                         .map(Self::FixedSizeBinary)
                 }
-                _ => error::UnsupportedDictionaryValueTypeSnafu {
+                _ => Err(Error::UnsupportedDictionaryValueType {
                     expect_oneof: vec![DataType::Binary, DataType::FixedSizeBinary(-1)],
                     actual: (**val).clone(),
-                }
-                .fail(),
+                }),
             },
-            _ => error::InvalidListArraySnafu {
+            _ => Err(Error::InvalidListArray {
                 expect_oneof: vec![
                     DataType::Binary,
                     DataType::FixedSizeBinary(-1),
@@ -350,8 +352,7 @@ impl<'a> ByteArrayAccessor<'a> {
                     ),
                 ],
                 actual: arr.data_type().clone(),
-            }
-            .fail(),
+            }),
         }
     }
 }
@@ -413,7 +414,7 @@ where
     ///
     /// Returns a wrapped native array if the type matches.
     /// Returns an error if the array type can't be treated as this datatype
-    fn try_new_with_datatype(data_type: DataType, arr: &'a ArrayRef) -> error::Result<Self> {
+    fn try_new_with_datatype(data_type: DataType, arr: &'a ArrayRef) -> Result<Self> {
         // if the type isn't a dictionary, we treat it as an unencoded array
         if *arr.data_type() == data_type {
             return Ok(Self::Native(
@@ -425,13 +426,12 @@ where
 
         // determine if the type is a dictionary where the value is the desired datatype
         if let DataType::Dictionary(key, v) = arr.data_type() {
-            ensure!(
-                **v == data_type,
-                error::UnsupportedDictionaryValueTypeSnafu {
+            if **v != data_type {
+                return Err(Error::UnsupportedDictionaryValueType {
                     expect_oneof: vec![data_type],
-                    actual: (**v).clone()
-                }
-            );
+                    actual: (**v).clone(),
+                });
+            }
 
             let result = match **key {
                 DataType::UInt8 => Self::Dictionary8(DictionaryArrayAccessor::new(
@@ -445,26 +445,24 @@ where
                         .expect("array can be downcast to DictionaryArray<UInt16Type>"),
                 )?),
                 _ => {
-                    return error::UnsupportedDictionaryKeyTypeSnafu {
+                    return Err(Error::UnsupportedDictionaryKeyType {
                         expect_oneof: vec![DataType::UInt8, DataType::UInt16],
                         actual: (**key).clone(),
-                    }
-                    .fail();
+                    });
                 }
             };
 
             return Ok(result);
         }
 
-        error::InvalidListArraySnafu {
+        Err(Error::InvalidListArray {
             expect_oneof: vec![
                 data_type.clone(),
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(data_type.clone())),
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(data_type.clone())),
             ],
             actual: arr.data_type().clone(),
-        }
-        .fail()
+        })
     }
 
     pub fn is_valid(&self, index: usize) -> bool {
@@ -480,14 +478,11 @@ impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
 where
     V: ArrowPrimitiveType,
 {
-    pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
+    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(V::DATA_TYPE, arr)
     }
 
-    pub fn try_new_for_column(
-        record_batch: &'a RecordBatch,
-        column_name: &str,
-    ) -> error::Result<Self> {
+    pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
@@ -501,7 +496,7 @@ where
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
-    pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
+    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
 
@@ -521,7 +516,7 @@ impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
-    pub fn try_new(arr: &'a ArrayRef, dims: i32) -> error::Result<Self> {
+    pub fn try_new(arr: &'a ArrayRef, dims: i32) -> Result<Self> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
     }
 
@@ -541,14 +536,11 @@ impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
-    pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
+    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(StringArray::DATA_TYPE, arr)
     }
 
-    pub fn try_new_for_column(
-        record_batch: &'a RecordBatch,
-        column_name: &str,
-    ) -> error::Result<Self> {
+    pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
@@ -587,15 +579,15 @@ where
     K: ArrowDictionaryKeyType,
     V: Array + NullableArrayAccessor + 'static,
 {
-    pub fn new(dict: &'a DictionaryArray<K>) -> error::Result<Self> {
-        let value = dict
-            .values()
-            .as_any()
-            .downcast_ref::<V>()
-            .with_context(|| error::InvalidListArraySnafu {
-                expect_oneof: Vec::new(),
-                actual: dict.values().data_type().clone(),
-            })?;
+    pub fn new(dict: &'a DictionaryArray<K>) -> Result<Self> {
+        let value =
+            dict.values()
+                .as_any()
+                .downcast_ref::<V>()
+                .ok_or_else(|| Error::InvalidListArray {
+                    expect_oneof: Vec::new(),
+                    actual: dict.values().data_type().clone(),
+                })?;
         Ok(Self { inner: dict, value })
     }
 
@@ -679,7 +671,7 @@ where
 ///
 /// Methods return various errors into this crate's Error type if
 /// if callers requirements for the struct columns are not met (for
-/// example `ColumnDataTypeMismatchSnafu`)
+/// example `ColumnDataTypeMismatch`)
 pub struct StructColumnAccessor<'a> {
     inner: &'a StructArray,
 }
@@ -692,9 +684,9 @@ impl<'a> StructColumnAccessor<'a> {
     pub fn primitive_column<T: ArrowPrimitiveType + 'static>(
         &self,
         column_name: &str,
-    ) -> error::Result<&'a PrimitiveArray<T>> {
+    ) -> Result<&'a PrimitiveArray<T>> {
         self.primitive_column_op(column_name)?
-            .with_context(|| error::ColumnNotFoundSnafu {
+            .ok_or_else(|| Error::ColumnNotFound {
                 name: column_name.to_string(),
             })
     }
@@ -702,13 +694,13 @@ impl<'a> StructColumnAccessor<'a> {
     pub fn primitive_column_op<T: ArrowPrimitiveType + 'static>(
         &self,
         column_name: &str,
-    ) -> error::Result<Option<&'a PrimitiveArray<T>>> {
+    ) -> Result<Option<&'a PrimitiveArray<T>>> {
         self.inner
             .column_by_name(column_name)
             .map(|arr| {
                 arr.as_any()
                     .downcast_ref::<PrimitiveArray<T>>()
-                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
                         name: column_name.to_string(),
                         expect: T::DATA_TYPE,
                         actual: arr.data_type().clone(),
@@ -717,13 +709,13 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn bool_column_op(&self, column_name: &str) -> error::Result<Option<&'a BooleanArray>> {
+    pub fn bool_column_op(&self, column_name: &str) -> Result<Option<&'a BooleanArray>> {
         self.inner
             .column_by_name(column_name)
             .map(|arr| {
                 arr.as_any()
                     .downcast_ref()
-                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
                         name: column_name.to_string(),
                         expect: DataType::Boolean,
                         actual: arr.data_type().clone(),
@@ -732,40 +724,28 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn string_column_op(
-        &self,
-        column_name: &str,
-    ) -> error::Result<Option<StringArrayAccessor<'a>>> {
+    pub fn string_column_op(&self, column_name: &str) -> Result<Option<StringArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(StringArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn byte_array_column_op(
-        &self,
-        column_name: &str,
-    ) -> error::Result<Option<ByteArrayAccessor<'a>>> {
+    pub fn byte_array_column_op(&self, column_name: &str) -> Result<Option<ByteArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(ByteArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn int32_column_op(
-        &self,
-        column_name: &str,
-    ) -> error::Result<Option<Int32ArrayAccessor<'a>>> {
+    pub fn int32_column_op(&self, column_name: &str) -> Result<Option<Int32ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int32ArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn int64_column_op(
-        &self,
-        column_name: &str,
-    ) -> error::Result<Option<Int64ArrayAccessor<'a>>> {
+    pub fn int64_column_op(&self, column_name: &str) -> Result<Option<Int64ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int64ArrayAccessor::try_new)

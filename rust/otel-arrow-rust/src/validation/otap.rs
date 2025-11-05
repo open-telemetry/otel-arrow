@@ -27,17 +27,16 @@ use tokio_stream::Stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::error;
+use super::error::{Error, Result};
 use crate::proto::opentelemetry::arrow::v1::arrow_traces_service_server::{
     ArrowTracesService, ArrowTracesServiceServer,
 };
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-use snafu::ResultExt;
 
 const OTAP_PROTOCOL_NAME: &str = "otelarrow"; // matches the exporter and receiver name
 
 type ArrowServiceResponseStream =
-    Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    Pin<Box<dyn Stream<Item = std::result::Result<BatchStatus, Status>> + Send + 'static>>;
 
 /// OTAP metrics service type for testing the OTAP-to-OTLP conversion
 /// for metrics in this crate.
@@ -66,7 +65,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
     async fn arrow_metrics(
         &self,
         request: Request<Streaming<BatchArrowRecords>>,
-    ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
+    ) -> std::result::Result<Response<Self::ArrowMetricsStream>, Status> {
         let mut input_stream = request.into_inner();
         let receiver = self.receiver.clone();
 
@@ -81,8 +80,8 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 consumer: &mut Consumer,
                 batch: &mut BatchArrowRecords,
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
-                tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
-            ) -> Result<(), ()> {
+                tx: &tokio::sync::mpsc::Sender<std::result::Result<BatchStatus, Status>>,
+            ) -> std::result::Result<(), ()> {
                 let status_result = match process_arrow_metrics(consumer, batch, receiver).await {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
                     Err(e) => (StatusCode::InvalidArgument, truncate_error(e.to_string())),
@@ -133,14 +132,14 @@ impl ServiceOutputType for OTAPMetricsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             let adapter = OTAPMetricsAdapter::new(receiver);
             Server::builder()
                 .add_service(ArrowMetricsServiceServer::new(adapter))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -150,17 +149,17 @@ async fn process_arrow_metrics(
     consumer: &mut Consumer,
     batch: &mut BatchArrowRecords,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
-) -> error::Result<()> {
+) -> Result<()> {
     let otlp_metrics = consumer
         .consume_metrics_batches(batch)
-        .context(error::OTelArrowSnafu)?;
+        .map_err(|e| Error::OTelArrow { source: e })?;
     let _ = receiver
         .process_export_request::<ExportMetricsServiceRequest>(
             Request::new(otlp_metrics),
             "metrics",
         )
         .await
-        .context(error::TonicStatusSnafu)?;
+        .map_err(|s| Error::TonicStatus { source: s })?;
 
     Ok(())
 }
@@ -188,7 +187,7 @@ impl ArrowLogsService for OTAPLogsAdapter {
     async fn arrow_logs(
         &self,
         request: Request<Streaming<BatchArrowRecords>>,
-    ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+    ) -> std::result::Result<Response<Self::ArrowLogsStream>, Status> {
         let mut input_stream = request.into_inner();
         let receiver = self.receiver.clone();
 
@@ -206,7 +205,7 @@ impl ArrowLogsService for OTAPLogsAdapter {
                                 "logs",
                             )
                             .await
-                            .context(error::TonicStatusSnafu)
+                            .map_err(|s| Error::TonicStatus { source: s })
                             .unwrap();
 
                         (StatusCode::Ok, "Successfully processed".to_string())
@@ -250,14 +249,14 @@ impl ServiceOutputType for OTAPLogsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             let adapter = OTAPLogsAdapter::new(receiver);
             Server::builder()
                 .add_service(ArrowLogsServiceServer::new(adapter))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -281,14 +280,14 @@ impl ServiceOutputType for OTAPTracesOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             let adapter = OTAPTracesAdapter::new(receiver);
             Server::builder()
                 .add_service(ArrowTracesServiceServer::new(adapter))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -310,7 +309,7 @@ impl ArrowTracesService for OTAPTracesAdapter {
     async fn arrow_traces(
         &self,
         request: Request<Streaming<BatchArrowRecords>>,
-    ) -> Result<Response<Self::ArrowTracesStream>, Status> {
+    ) -> std::result::Result<Response<Self::ArrowTracesStream>, Status> {
         let mut input_stream = request.into_inner();
         let receiver = self.receiver.clone();
 
@@ -328,7 +327,7 @@ impl ArrowTracesService for OTAPTracesAdapter {
                                 "traces",
                             )
                             .await
-                            .context(error::TonicStatusSnafu)
+                            .map_err(|e| Error::TonicStatus { source: e })
                             .unwrap();
 
                         (StatusCode::Ok, "Successfully processed".to_string())
