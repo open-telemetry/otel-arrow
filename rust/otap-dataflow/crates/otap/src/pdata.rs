@@ -1197,32 +1197,33 @@ mod test {
 
     #[test]
     fn test_otlp_otap_metrics_roundtrip() {
-        let otlp_service_req = ExportMetricsServiceRequest::new(vec![
-            ResourceMetrics::build(Resource {
+        let otlp_service_req = ExportMetricsServiceRequest::new(vec![ResourceMetrics {
+            schema_url: "resource1 schema url".into(),
+            resource: Some(Resource {
                 dropped_attributes_count: 1,
                 attributes: vec![KeyValue::new("res_attr1", AnyValue::new_string("res_val1"))],
                 // TODO support entity refs
                 entity_refs: Default::default(),
-            })
-            .scope_metrics(vec![
-                ScopeMetrics::build(InstrumentationScope {
+            }),
+
+            scope_metrics: vec![ScopeMetrics {
+                schema_url: "scope1 schema url".into(),
+                scope: Some(InstrumentationScope {
                     name: "scope1 name".into(),
                     version: "scope1 version".into(),
                     attributes: vec![KeyValue::new("scp_attr1", AnyValue::new_string("scp_val1"))],
                     dropped_attributes_count: 2,
-                })
-                .metrics(vec![Metric {
+                }),
+                metrics: vec![Metric {
                     name: "metric1".into(),
                     description: "metric1 desc".into(),
                     unit: "m1 unit".into(),
                     // TODO handle data
                     data: None,
                     metadata: vec![KeyValue::new("met_attr1", AnyValue::new_string("met_val1"))],
-                }])
-                .finish(),
-            ])
-            .finish(),
-        ]);
+                }],
+            }],
+        }]);
 
         roundtrip_otlp_otap_metrics(otlp_service_req);
     }
