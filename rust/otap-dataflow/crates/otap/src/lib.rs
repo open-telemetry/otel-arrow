@@ -32,9 +32,6 @@ pub mod retry_processor;
 /// Receiver that reads in syslog data
 pub mod syslog_cef_receiver;
 
-/// Generated protobuf files
-pub mod proto;
-
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
 
