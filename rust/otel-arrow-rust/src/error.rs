@@ -10,280 +10,161 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
-use snafu::{Location, Snafu};
-use std::{backtrace::Backtrace, num::TryFromIntError};
+use std::num::TryFromIntError;
 
 /// Result type
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors related to OTAP or OTLP pipeline data
+#[derive(thiserror::Error, Debug)]
 #[allow(missing_docs)]
-#[derive(Snafu, Debug)]
-#[snafu(visibility(pub))]
 pub enum Error {
-    #[snafu(display("Cannot find column: {}", name))]
-    ColumnNotFound { name: String, backtrace: Backtrace },
-    #[snafu(display(
+    #[error("Cannot find column: {}", name)]
+    ColumnNotFound { name: String },
+
+    #[error(
         "Column `{}` data type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual
-    ))]
+    )]
     ColumnDataTypeMismatch {
         name: String,
         expect: DataType,
         actual: DataType,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Failed to compare two columns with unequal length"))]
-    ColumnLengthMismatch {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to compare two columns with unequal length")]
+    ColumnLengthMismatch { source: ArrowError },
 
-    #[snafu(display("Cannot recognize metric type: {}", metric_type))]
+    #[error("Cannot recognize metric type: {metric_type}: {error}")]
     UnrecognizedMetricType {
         metric_type: i32,
-        #[snafu(source)]
         error: TryFromPrimitiveError<MetricType>,
-        #[snafu(implicit)]
-        location: Location,
-    },
-    #[snafu(display("Unable to handle empty metric type"))]
-    EmptyMetricType {
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Cannot recognize attribute value type"))]
+    #[error("Unable to handle empty metric type")]
+    EmptyMetricType,
+
+    #[error("Cannot recognize attribute value type")]
     UnrecognizedAttributeValueType {
-        #[snafu(source)]
+        #[from]
         error: TryFromPrimitiveError<AttributeValueType>,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Invalid bytes for serialized attribute value"))]
+    #[error("Invalid bytes for serialized attribute value")]
     InvalidSerializedAttributeBytes {
         source: ciborium::de::Error<std::io::Error>,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Invalid serialized integer attribute value"))]
-    InvalidSerializedIntAttributeValue {
-        source: TryFromIntError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Invalid serialized integer attribute value")]
+    InvalidSerializedIntAttributeValue { source: TryFromIntError },
 
-    #[snafu(display(
+    #[error(
         "Invalid serialized map key type, expected: String, actual: {:?}",
         actual
-    ))]
-    InvalidSerializedMapKeyType {
-        actual: ciborium::Value,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    )]
+    InvalidSerializedMapKeyType { actual: ciborium::Value },
 
-    #[snafu(display("Serialized attribute {:?} is not supported", actual))]
-    UnsupportedSerializedAttributeValue {
-        actual: ciborium::Value,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Serialized attribute {:?} is not supported", actual)]
+    UnsupportedSerializedAttributeValue { actual: ciborium::Value },
 
-    #[snafu(display("Invalid exemplar data, message: {}", message))]
-    InvalidExemplarData {
-        message: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Invalid exemplar data, message: {}", message)]
+    InvalidExemplarData { message: String },
 
-    #[snafu(display("Invalid span id in exemplar data, message: {}", message))]
-    InvalidSpanId {
-        message: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Invalid span id in exemplar data, message: {}", message)]
+    InvalidSpanId { message: String },
 
-    #[snafu(display("Invalid trace id in exemplar data, message: {}", message))]
-    InvalidTraceId {
-        message: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Invalid trace id in exemplar data, message: {}", message)]
+    InvalidTraceId { message: String },
 
-    #[snafu(display("Invalid trace id in exemplar data, message: {}", message))]
-    InvalidQuantileType {
-        message: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Invalid trace id in exemplar data, message: {}", message)]
+    InvalidQuantileType { message: String },
 
-    #[snafu(display(
+    #[error(
         "Invalid List array data type, expect one of {:?}, actual {}",
         expect_oneof,
         actual
-    ))]
+    )]
     InvalidListArray {
         expect_oneof: Vec<DataType>,
         actual: DataType,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Invalid attribute transform: {}", reason))]
+    #[error("Invalid attribute transform: {}", reason)]
     InvalidAttributeTransform { reason: String },
 
-    #[snafu(display("Unsupported parent id type. Expected u16 or u32, got: {}", actual))]
-    UnsupportedParentIdType {
-        actual: DataType,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Unsupported parent id type. Expected u16 or u32, got: {}", actual)]
+    UnsupportedParentIdType { actual: DataType },
 
-    #[snafu(display("Unsupported payload type, got: {}", actual))]
-    UnsupportedPayloadType {
-        actual: i32,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Unsupported payload type, got: {}", actual)]
+    UnsupportedPayloadType { actual: i32 },
 
-    #[snafu(display("Failed to build stream reader"))]
-    BuildStreamReader {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to build stream reader")]
+    BuildStreamReader { source: ArrowError },
 
-    #[snafu(display("Failed to build stream writer"))]
-    BuildStreamWriter {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to build stream writer")]
+    BuildStreamWriter { source: ArrowError },
 
-    #[snafu(display("Failed to read record batch"))]
-    ReadRecordBatch {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to read record batch")]
+    ReadRecordBatch { source: ArrowError },
 
-    #[snafu(display("Failed to write record batch"))]
-    WriteRecordBatch {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to write record batch")]
+    WriteRecordBatch { source: ArrowError },
 
-    #[snafu(display("Failed to batch OTAP data"))]
-    Batching {
-        #[snafu(source)]
-        source: ArrowError,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Failed to batch OTAP data")]
+    Batching { source: ArrowError },
 
-    #[snafu(display("Batch is empty"))]
-    EmptyBatch {
-        #[snafu(implicit)]
-        location: Location,
-    },
-    #[snafu(display("RecordBatch not found: {:?}", payload_type))]
-    RecordBatchNotFound {
-        payload_type: ArrowPayloadType,
-        #[snafu(implicit)]
-        location: Location,
-    },
-    #[snafu(display("Log record not found"))]
-    LogRecordNotFound {
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Batch is empty")]
+    EmptyBatch,
 
-    #[snafu(display("Metric record not found"))]
-    MetricRecordNotFound {
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("RecordBatch not found: {:?}", payload_type)]
+    RecordBatchNotFound { payload_type: ArrowPayloadType },
+    #[error("Log record not found")]
+    LogRecordNotFound,
 
-    #[snafu(display("Span record not found"))]
-    SpanRecordNotFound {
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Metric record not found")]
+    MetricRecordNotFound,
 
-    #[snafu(display("Record batch is in unexpected state. reason: {}", reason))]
-    UnexpectedRecordBatchState {
-        reason: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Span record not found")]
+    SpanRecordNotFound,
 
-    #[snafu(display(
+    #[error("Record batch is in unexpected state. reason: {}", reason)]
+    UnexpectedRecordBatchState { reason: String },
+
+    #[error(
         "Unsupported dictionary key type, expect one of {:?}, actual {}",
         expect_oneof,
         actual
-    ))]
+    )]
     UnsupportedDictionaryKeyType {
         expect_oneof: Vec<DataType>,
         actual: DataType,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display(
+    #[error(
         "Unsupported dictionary value type. expect {:?}, actual {}",
         expect_oneof,
         actual
-    ))]
+    )]
     UnsupportedDictionaryValueType {
         expect_oneof: Vec<DataType>,
         actual: DataType,
-        #[snafu(implicit)]
-        location: Location,
     },
 
-    #[snafu(display("Unsupported string column type, given: {}", data_type))]
-    UnsupportedStringColumnType {
-        data_type: DataType,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Unsupported string column type, given: {}", data_type)]
+    UnsupportedStringColumnType { data_type: DataType },
 
-    #[snafu(display("Unsupported string dictionary key type, given: {}", data_type))]
-    UnsupportedStringDictKeyType {
-        data_type: DataType,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Unsupported string dictionary key type, given: {}", data_type)]
+    UnsupportedStringDictKeyType { data_type: DataType },
 
-    #[snafu(display("Found duplicate field name: {}", name))]
-    DuplicateFieldName {
-        name: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    #[error("Found duplicate field name: {}", name)]
+    DuplicateFieldName { name: String },
 
-    #[snafu(display(
+    #[error(
         "Invalid byte slice for ID, expect len: {} ,given len: {}",
         expected,
         given
-    ))]
-    InvalidId {
-        expected: usize,
-        given: usize,
-        #[snafu(implicit)]
-        location: Location,
-    },
+    )]
+    InvalidId { expected: usize, given: usize },
 }

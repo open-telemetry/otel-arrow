@@ -25,13 +25,12 @@ use arrow::{
 };
 use itertools::Itertools;
 use smallvec::SmallVec;
-use snafu::{OptionExt, ResultExt};
 
 use crate::{
     otap::{
         DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore,
         POSITION_LOOKUP, Traces, batch_length, child_payload_types,
-        error::{self, Result},
+        error::{Error, Result},
         transform::sort_to_indices,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -375,10 +374,11 @@ enum IDColumn<'rb> {
 
 impl<'rb> IDColumn<'rb> {
     fn extract(input: &'rb RecordBatch, column_name: &'static str) -> Result<IDColumn<'rb>> {
-        use snafu::OptionExt;
         let id = input
             .column_by_name(column_name)
-            .context(error::ColumnNotFoundSnafu { name: column_name })?;
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: column_name.into(),
+            })?;
 
         Self::from_array(column_name, id)
     }
@@ -392,12 +392,11 @@ impl<'rb> IDColumn<'rb> {
             (None, Some(array)) => Ok(Self::U32(array)),
             (Some(_), Some(_)) => unreachable!(),
             (None, None) => {
-                error::ColumnDataTypeMismatchSnafu {
-                    name: column_name,
+                Err(Error::ColumnDataTypeMismatch {
+                    name: column_name.into(),
                     expect: DataType::UInt16, // Or UInt32, but we can only provide one
                     actual: id.data_type().clone(),
-                }
-                .fail()
+                })
             }
         }
     }
@@ -531,7 +530,7 @@ impl IDSeqs {
                 arrow::compute::concat(&refs)
             }
         }
-        .context(error::BatchingSnafu)?;
+        .map_err(|e| Error::Batching { source: e })?;
 
         let ids = IDColumn::from_array(column_name, &concatenated_array)?;
         Ok(Self::from_col(ids, &lengths))
@@ -815,10 +814,10 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
             .iter()
             .map(|c| take(c.as_ref(), &indices, None))
             .collect::<arrow::error::Result<Vec<_>>>()
-            .context(error::BatchingSnafu)?
+            .map_err(|e| Error::Batching { source: e })?
     };
 
-    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
+    RecordBatch::try_new(schema, columns).map_err(|e| Error::Batching { source: e })
 }
 
 // Code for merging batches (concatenation)
@@ -873,7 +872,7 @@ fn generic_schemaless_concatenate<const N: usize>(
         if select(batches, i).next().is_some() {
             let schema = Arc::new(
                 Schema::try_merge(select(batches, i).map(|rb| Arc::unwrap_or_clone(rb.schema())))
-                    .context(error::BatchingSnafu)?,
+                    .map_err(|e| Error::Batching { source: e })?,
             );
 
             let num_rows = select(batches, i).map(RecordBatch::num_rows).sum();
@@ -883,14 +882,14 @@ fn generic_schemaless_concatenate<const N: usize>(
                     batcher
                         .push_batch(
                             rb.with_schema(schema.clone())
-                                .context(error::BatchingSnafu)?,
+                                .map_err(|e| Error::Batching { source: e })?,
                         )
-                        .context(error::BatchingSnafu)?;
+                        .map_err(|e| Error::Batching { source: e })?;
                 }
             }
             batcher
                 .finish_buffered_batch()
-                .context(error::BatchingSnafu)?;
+                .map_err(|e| Error::Batching { source: e })?;
             let concatenated = batcher
                 .next_completed_batch()
                 .expect("by construction this should never be empty");
@@ -997,7 +996,7 @@ fn reindex_record_batch(
     }
 
     Ok((
-        RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?,
+        RecordBatch::try_new(schema, columns).map_err(|e| Error::Batching { source: e })?,
         next_starting_id,
     ))
 }
@@ -1287,7 +1286,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                     .next()
                     .expect("there should be at least one schema")]
                 .field_with_name(missing_field_name)
-                .context(error::BatchingSnafu)?
+                .map_err(|e| Error::Batching { source: e })?
                 .clone(),
             );
             assert!(field.is_nullable());
@@ -1301,8 +1300,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                     let schema = Arc::new(builder.finish());
 
                     columns.push(arrow::array::new_null_array(field.data_type(), num_rows));
-                    let batch =
-                        RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?;
+                    let batch = RecordBatch::try_new(schema, columns)
+                        .map_err(|e| Error::Batching { source: e })?;
 
                     let _ = batches[missing_batch_index][payload_type_index].replace(batch);
                 }
@@ -1372,11 +1371,10 @@ impl UnifiedDictionaryTypeSelector {
                     dict_col.values()
                 }
                 key_type => {
-                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                    return Err(Error::UnsupportedDictionaryKeyType {
                         expect_oneof: vec![DataType::UInt8, DataType::UInt32],
                         actual: key_type.clone(),
-                    }
-                    .build());
+                    });
                 }
             },
             _ => {
@@ -1914,7 +1912,7 @@ fn try_visit_struct_dictionary_values(
             Some(column) => column
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .with_context(|| error::InvalidListArraySnafu {
+                .ok_or_else(|| Error::InvalidListArray {
                     expect_oneof: vec![DataType::Struct(Fields::empty())],
                     actual: column.data_type().clone(),
                 })?,

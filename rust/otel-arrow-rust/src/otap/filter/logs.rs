@@ -10,7 +10,7 @@ use crate::arrays::{
     get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
 use crate::otap::OtapArrowRecords;
-use crate::otap::error::{self, Result};
+use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
     AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
     build_uint16_id_filter, default_match_type, get_uint16_ids, nulls_to_false, regex_match_column,
@@ -22,7 +22,6 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use serde::Deserialize;
-use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
 
 /// struct that describes the overall requirements to use in order to filter logs
@@ -117,13 +116,13 @@ impl LogFilter {
             &include_resource_attr_filter,
             &exclude_resource_attr_filter,
         )
-        .context(error::ColumnLengthMismatchSnafu)?;
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         let log_record_filter =
             arrow::compute::and_kleene(&include_log_record_filter, &exclude_log_record_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         let log_attr_filter =
             arrow::compute::and_kleene(&include_log_attr_filter, &exclude_log_attr_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
 
         let (resource_attr_filter, scope_attr_filter, log_record_filter, log_attr_filter) = self
             .sync_up_filters(
@@ -174,7 +173,7 @@ impl LogFilter {
         let resource_attrs = logs_payload.get(ArrowPayloadType::ResourceAttrs);
         let log_records = logs_payload
             .get(ArrowPayloadType::Logs)
-            .context(error::LogRecordNotFoundSnafu)?;
+            .ok_or_else(|| Error::LogRecordNotFound {})?;
         let log_attrs = logs_payload.get(ArrowPayloadType::LogAttrs);
         let scope_attrs = logs_payload.get(ArrowPayloadType::ScopeAttrs);
 
@@ -218,7 +217,7 @@ impl LogFilter {
                 // update the log_record_filter
                 log_record_filter =
                     arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
-                        .context(error::ColumnLengthMismatchSnafu)?;
+                        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
                 // apply current logic
             }
             None => {
@@ -250,7 +249,7 @@ impl LogFilter {
                     build_uint16_id_filter(log_record_ids_column, log_attr_parent_ids_filtered)?;
                 log_record_filter =
                     arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
-                        .context(error::ColumnLengthMismatchSnafu)?;
+                        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             }
             None => {
                 if log_attr_filter.true_count() == 0 {
@@ -278,7 +277,7 @@ impl LogFilter {
 
             Some(
                 arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
-                    .context(error::ColumnLengthMismatchSnafu)?,
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
             )
         } else {
             None
@@ -302,7 +301,7 @@ impl LogFilter {
             )?;
             Some(
                 arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
-                    .context(error::ColumnLengthMismatchSnafu)?,
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
             )
         } else {
             None
@@ -485,10 +484,10 @@ impl LogMatchProperties {
             };
             // build filter that checks for both matching key and value filter
             let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             // combine with overrall filter
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
         // using the attribute filter we need to get the ids of the rows that match and use that to build our final filter
@@ -499,7 +498,7 @@ impl LogMatchProperties {
         let parent_id_column = get_required_array(resource_attrs, consts::PARENT_ID)?;
         // the ids should show up self.resource_attr.len() times otherwise they don't have all the required attributes
         let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
-            .context(error::ColumnLengthMismatchSnafu)?;
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         // extract correct ids
         let ids = ids
             .as_any()
@@ -527,7 +526,7 @@ impl LogMatchProperties {
     fn get_log_record_filter(&self, logs_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         let log_records = logs_payload
             .get(ArrowPayloadType::Logs)
-            .context(error::LogRecordNotFoundSnafu)?;
+            .ok_or_else(|| Error::LogRecordNotFound)?;
         let num_rows = log_records.num_rows();
         // create filter for severity texts
         let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_set(num_rows));
@@ -557,10 +556,10 @@ impl LogMatchProperties {
                 };
                 severity_texts_filter =
                     arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
-                        .context(error::ColumnLengthMismatchSnafu)?;
+                        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             }
             filter = arrow::compute::and_kleene(&filter, &severity_texts_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
         if !&self.bodies.is_empty() {
@@ -638,11 +637,11 @@ impl LogMatchProperties {
                     }
                 };
                 bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
-                    .context(error::ColumnLengthMismatchSnafu)?;
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
                 // combine the filters
             }
             filter = arrow::compute::and_kleene(&filter, &bodies_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
         // if the severity_number field is defined then we create the severity_number filter
@@ -676,11 +675,11 @@ impl LogMatchProperties {
                     &severity_numbers_filter,
                     &unknown_severity_number_filter,
                 )
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             }
             // combine severity number filter to the log record filter
             filter = arrow::compute::and_kleene(&filter, &severity_numbers_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
         Ok(nulls_to_false(&filter))
     }
@@ -793,10 +792,10 @@ impl LogMatchProperties {
             };
             // build filter that checks for both matching key and value filter
             let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             // combine with rest of filters
             attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
-                .context(error::ColumnLengthMismatchSnafu)?;
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record

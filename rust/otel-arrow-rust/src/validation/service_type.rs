@@ -4,11 +4,10 @@
 // Service type abstractions for validation testing.  This abstraction
 // enables Logs, Traces, and Metrics to look generically similar.
 
-use snafu::ResultExt;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
 
-use super::error;
+use super::error::{Error, Result};
 use crate::validation::tcp_stream;
 
 /// A trait that abstracts over the input side of service types (client operations)
@@ -29,13 +28,11 @@ pub trait ServiceInputType: Debug + Send + Sync + 'static {
     fn protocol() -> &'static str;
 
     /// Create a new client for this service
-    async fn connect_client(endpoint: String) -> error::Result<Self::Client>;
+    async fn connect_client(endpoint: String) -> Result<Self::Client>;
 
     /// Send data through the client
-    async fn send_data(
-        client: &mut Self::Client,
-        request: Self::Request,
-    ) -> error::Result<Self::Response>;
+    async fn send_data(client: &mut Self::Client, request: Self::Request)
+    -> Result<Self::Response>;
 }
 
 /// A trait that abstracts over the output side of service types (server operations)
@@ -58,7 +55,7 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: tcp_stream::ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>>;
+    ) -> tokio::task::JoinHandle<Result<()>>;
 }
 
 /// Generic test receiver that can be used for any service
@@ -73,7 +70,7 @@ impl<T: Send + 'static> TestReceiver<T> {
         &self,
         request: tonic::Request<T>,
         service_name: &str,
-    ) -> Result<tonic::Response<R>, tonic::Status>
+    ) -> std::result::Result<tonic::Response<R>, tonic::Status>
     where
         R: Default,
     {
@@ -91,17 +88,21 @@ impl<T: Send + 'static> TestReceiver<T> {
 }
 
 /// Helper function to create a TCP listener with a dynamically allocated port
-async fn create_listener_with_port() -> error::Result<(tokio::net::TcpListener, u16)> {
+async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16)> {
     // Bind to a specific address with port 0 for dynamic port allocation
     let addr = "127.0.0.1:0";
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .context(error::InputOutputSnafu { desc: "bind" })?;
+        .map_err(|e| Error::InputOutput {
+            desc: "bind",
+            source: e,
+        })?;
 
     let port = listener
         .local_addr()
-        .context(error::InputOutputSnafu {
+        .map_err(|e| Error::InputOutput {
             desc: "local_address",
+            source: e,
         })?
         .port();
 
@@ -109,8 +110,8 @@ async fn create_listener_with_port() -> error::Result<(tokio::net::TcpListener, 
 }
 
 /// Helper function to start a test receiver for any service output type
-pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<(
-    tokio::task::JoinHandle<error::Result<()>>,
+pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<(
+    tokio::task::JoinHandle<Result<()>>,
     mpsc::Receiver<T::Request>,
     u16,                              // actual port number that was assigned
     tokio::sync::oneshot::Sender<()>, // shutdown channel
@@ -125,8 +126,8 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<(
 /// Generic helper function to create a TCP server for any service output type
 async fn create_service_server<T: ServiceOutputType + ?Sized>(
     listener: tokio::net::TcpListener,
-) -> error::Result<(
-    tokio::task::JoinHandle<error::Result<()>>,
+) -> Result<(
+    tokio::task::JoinHandle<Result<()>>,
     mpsc::Receiver<T::Request>,
     tokio::sync::oneshot::Sender<()>,
 )> {

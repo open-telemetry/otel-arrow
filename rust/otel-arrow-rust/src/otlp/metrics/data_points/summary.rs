@@ -5,7 +5,7 @@ use crate::arrays::{
     NullableArrayAccessor, get_f64_array_opt, get_timestamp_nanosecond_array_opt, get_u16_array,
     get_u32_array_opt, get_u64_array_opt,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
@@ -21,7 +21,6 @@ use arrow::array::{
     Array, ArrayRef, Float64Array, ListArray, RecordBatch, StructArray, TimestampNanosecondArray,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use snafu::OptionExt;
 
 pub struct SummaryDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
@@ -72,30 +71,29 @@ pub struct QuantileArrays<'a> {
 
 impl<'a> QuantileArrays<'a> {
     fn try_new(array: &'a ArrayRef) -> Result<Self> {
-        let list = array
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .with_context(|| error::InvalidQuantileTypeSnafu {
+        let list = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+            Error::InvalidQuantileType {
                 message: array.data_type().to_string(),
-            })?;
+            }
+        })?;
 
         let struct_array = list
             .values()
             .as_any()
             .downcast_ref::<StructArray>()
-            .with_context(|| error::InvalidQuantileTypeSnafu {
+            .ok_or_else(|| Error::InvalidQuantileType {
                 message: array.data_type().to_string(),
             })?;
         let downcast_f64 =
             |struct_array: &'a StructArray, name: &str| -> Result<&'a Float64Array> {
                 let field_column = struct_array
                     .column_by_name(name)
-                    .context(error::ColumnNotFoundSnafu { name })?;
+                    .ok_or_else(|| Error::ColumnNotFound { name: name.into() })?;
 
                 field_column
                     .as_any()
                     .downcast_ref::<Float64Array>()
-                    .with_context(|| error::InvalidQuantileTypeSnafu {
+                    .ok_or_else(|| Error::InvalidQuantileType {
                         message: field_column.data_type().to_string(),
                     })
             };

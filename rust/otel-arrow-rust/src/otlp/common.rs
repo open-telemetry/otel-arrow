@@ -6,7 +6,7 @@ use crate::arrays::{
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt,
     get_required_array, get_u8_array,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
@@ -25,7 +25,6 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
-use snafu::OptionExt;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -95,8 +94,8 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
         let struct_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::RESOURCE,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::RESOURCE.into(),
                 actual: struct_array.data_type().clone(),
                 expect: Self::data_type().clone(),
             })?;
@@ -146,8 +145,8 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
         let scope_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::RESOURCE,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::RESOURCE.into(),
                 actual: struct_array.data_type().clone(),
                 expect: Self::data_type().clone(),
             })?;
@@ -558,8 +557,8 @@ impl BatchSorter {
                 let resource_col = resource_col
                     .as_any()
                     .downcast_ref::<StructArray>()
-                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                        name: col_name,
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: col_name.into(),
                         expect: DataType::Struct(Fields::empty()),
                         actual: resource_col.data_type().clone(),
                     })?;
@@ -576,13 +575,8 @@ impl BatchSorter {
                 let rows = self
                     .row_converter
                     .convert_columns(&[resource_ids, scope_ids])
-                    .map_err(|e| {
-                        error::UnexpectedRecordBatchStateSnafu {
-                            reason: format!(
-                                "unexpected resource/scope ID columns for sorting: {e:?}"
-                            ),
-                        }
-                        .build()
+                    .map_err(|e| Error::UnexpectedRecordBatchState {
+                        reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
                     })?;
                 let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
                 sort.extend(rows.iter().enumerate());
@@ -596,14 +590,13 @@ impl BatchSorter {
 
             //there's only one ID column, so we'll visit in the order of this column.
             [Some(ids), None] => {
-                let ids = ids
-                    .as_any()
-                    .downcast_ref::<UInt16Array>()
-                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                        name: consts::ID,
+                let ids = ids.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
+                    Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
                         expect: DataType::UInt16,
                         actual: ids.data_type().clone(),
-                    })?;
+                    }
+                })?;
                 self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
 

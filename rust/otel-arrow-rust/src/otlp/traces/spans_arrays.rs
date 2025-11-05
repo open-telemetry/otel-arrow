@@ -5,12 +5,11 @@ use crate::arrays::{
     ByteArrayAccessor, DurationNanosArrayAccessor, Int32ArrayAccessor, StringArrayAccessor,
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
-use crate::error;
+use crate::error::{Error, Result};
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
 use crate::schema::consts;
 use arrow::array::{RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Fields};
-use snafu::OptionExt;
 
 pub(crate) struct SpansArrays<'a> {
     pub(crate) id: &'a UInt16Array,
@@ -31,9 +30,9 @@ pub(crate) struct SpansArrays<'a> {
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
-    type Error = error::Error;
+    type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> error::Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         let id = get_u16_array(rb, consts::ID)?;
         let schema_url = rb
             .column_by_name(consts::SCHEMA_URL)
@@ -80,13 +79,14 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
         let status = rb
             .column_by_name(consts::STATUS)
             .map(|arr| {
-                let status_struct = arr.as_any().downcast_ref::<StructArray>().context(
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::STATUS,
-                        actual: arr.data_type().clone(),
-                        expect: DataType::Struct(Fields::default()),
-                    },
-                )?;
+                let status_struct =
+                    arr.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                        Error::ColumnDataTypeMismatch {
+                            name: consts::STATUS.into(),
+                            actual: arr.data_type().clone(),
+                            expect: DataType::Struct(Fields::default()),
+                        }
+                    })?;
 
                 SpanStatusArrays::try_from(status_struct)
             })

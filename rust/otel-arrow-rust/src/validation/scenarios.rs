@@ -7,8 +7,7 @@
 use super::collector::{RECEIVER_TIMEOUT_SECONDS, TEST_TIMEOUT_SECONDS, run_test};
 use super::service_type::{ServiceInputType, ServiceOutputType};
 
-use super::error;
-use snafu::ResultExt;
+use super::error::{Error, Result};
 
 /// Test a single round-trip of data through the collector
 ///
@@ -42,7 +41,7 @@ pub async fn run_single_round_trip_test<I, O, F>(
 async fn run_single_round_trip<I, O, F>(
     create_request: F,
     expected_error: Option<&'static str>,
-) -> error::Result<()>
+) -> Result<()>
 where
     I: ServiceInputType,
     O: ServiceOutputType,
@@ -74,8 +73,8 @@ where
                         let received_request =
                             tokio::time::timeout(timeout_duration, context.request_rx.recv())
                                 .await
-                                .context(error::ReceiverTimeoutSnafu)?
-                                .ok_or(error::Error::NoResponse {})?;
+                                .map_err(|e| Error::ReceiverTimeout { source: e })?
+                                .ok_or(Error::NoResponse {})?;
 
                         // Compare the received data with what was sent.
                         let expected_output_request = O::Request::from(expected_request);
@@ -90,7 +89,7 @@ where
                                 .to_string()
                                 .contains(expected_msg)
                                 .then_some(())
-                                .ok_or_else(|| error::Error::PatternNotFound {
+                                .ok_or_else(|| Error::PatternNotFound {
                                     pattern: expected_msg.into(),
                                     input: status.to_string(),
                                 })
@@ -104,5 +103,5 @@ where
         }),
     )
     .await
-    .context(error::TestTimeoutSnafu)?
+    .map_err(|e| Error::TestTimeout { source: e })?
 }

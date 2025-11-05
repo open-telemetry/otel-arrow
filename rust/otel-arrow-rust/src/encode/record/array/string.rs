@@ -252,6 +252,6 @@ mod test {
         assert!(result.is_err());
 
         let err = result.unwrap_err();
-        assert!(matches!(err, Error::DictOverflow {}));
+        assert!(matches!(err, Error::DictOverflow));
     }
 }

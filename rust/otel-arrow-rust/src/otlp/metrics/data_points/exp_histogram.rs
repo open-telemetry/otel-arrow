@@ -5,7 +5,7 @@ use crate::arrays::{
     NullableArrayAccessor, get_f64_array_opt, get_i32_array_opt,
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
@@ -27,7 +27,6 @@ use arrow::array::{
     TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, UInt64Type};
-use snafu::OptionExt;
 
 pub struct ExpHistogramDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
@@ -118,37 +117,38 @@ impl<'a> PositiveNegativeArrayAccess<'a> {
         let struct_array = array
             .as_any()
             .downcast_ref::<StructArray>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: column_name,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: column_name.into(),
                 expect: Self::data_type(),
                 actual: array.data_type().clone(),
             })?;
 
         let offset_array = struct_array
             .column_by_name(consts::EXP_HISTOGRAM_OFFSET)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::EXP_HISTOGRAM_OFFSET,
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: consts::EXP_HISTOGRAM_OFFSET.into(),
             })?;
 
-        let offset_array = offset_array.as_any().downcast_ref::<Int32Array>().context(
-            error::ColumnDataTypeMismatchSnafu {
-                name: consts::EXP_HISTOGRAM_OFFSET,
+        let offset_array = offset_array
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::EXP_HISTOGRAM_OFFSET.into(),
                 expect: DataType::Int32,
                 actual: offset_array.data_type().clone(),
-            },
-        )?;
+            })?;
 
         let bucket_count_array = struct_array
             .column_by_name(consts::EXP_HISTOGRAM_BUCKET_COUNTS)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: consts::EXP_HISTOGRAM_BUCKET_COUNTS.into(),
             })?;
 
         let bucket_count_array = bucket_count_array
             .as_any()
             .downcast_ref::<ListArray>()
-            .with_context(|| error::ColumnDataTypeMismatchSnafu {
-                name: consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::EXP_HISTOGRAM_BUCKET_COUNTS.into(),
                 expect: Self::bucket_counts_data_type(),
                 actual: bucket_count_array.data_type().clone(),
             })?;
