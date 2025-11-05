@@ -57,19 +57,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Check disk space before operations
-          echo "=== Disk space check ==="
-          df -h
-
-          # Clean dnf cache to free up space
-          echo "=== Cleaning dnf cache ==="
-          sudo dnf clean all || true
-
-          # Clean up Docker to free space
-          docker system prune -f || true
-
-          echo "=== Disk space after cleanup ==="
-          df -h
+          # Run disk cleanup script
+          bash ./.github/workflows/scripts/disk-cleanup.sh
 
           sudo dnf -y install oracle-epel-release-el8 || true
           sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
