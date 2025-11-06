@@ -14,7 +14,6 @@ use arrow::{
     error::ArrowError,
 };
 use replace_with::replace_with_or_abort_and_return;
-use snafu::Snafu;
 
 use crate::{
     arrays::NullableArrayAccessor,
@@ -23,11 +22,10 @@ use crate::{
 
 use super::ArrayBuilderConstructor;
 
-#[derive(Snafu, Debug)]
-#[snafu(visibility(pub))]
+#[derive(thiserror::Error, Debug)]
 pub enum DictionaryBuilderError {
-    #[snafu(display("dict overflow"))]
-    DictOverflow {},
+    #[error("dict overflow")]
+    DictOverflow,
 }
 
 pub type Result<T> = std::result::Result<T, DictionaryBuilderError>;
@@ -103,20 +101,19 @@ pub trait CheckedDictionaryAppendSlice {
 
 // This is the error type for the result that is returned by CheckedDictionaryArrayAppend trait.
 // It is the same as the error type for the regular `DictionaryArrayAppend` but with an extra
-// variant containing the underlying arrow error. We need a separate module for this due to how
-// snafu expects the errors definitions ot be organized.
+// variant containing the underlying arrow error.
 pub mod checked {
     use super::*;
 
-    #[derive(Snafu, Debug)]
-    #[snafu(visibility(pub))]
+    // The checked form of dictionary overflow error.
+    #[derive(thiserror::Error, Debug)]
     pub enum DictionaryBuilderError {
-        #[snafu(display("dict overflow"))]
-        DictOverflow {},
+        #[error("dict overflow")]
+        DictOverflow,
 
-        #[snafu(display("checked builder error"))]
+        #[error("checked builder error")]
         CheckedBuilderError {
-            #[snafu(source)]
+            #[from]
             source: ArrowError,
         },
     }
@@ -227,7 +224,7 @@ where
                     // index type can hold, we don't want to upgrade
                     if self.max_cardinality <= u8::MAX.into() {
                         return (
-                            DictOverflowSnafu.fail(),
+                            Err(DictionaryBuilderError::DictOverflow),
                             DictIndexVariant::UInt8(u8_builder),
                         );
                     }
@@ -237,7 +234,7 @@ where
                 }
 
                 // in this case, the variant is not the u8 builder, so it cannot be upgraded
-                curr => (DictOverflowSnafu.fail(), curr),
+                curr => (Err(DictionaryBuilderError::DictOverflow), curr),
             }
         })
     }
@@ -386,7 +383,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     // retry in the next loop iteration
                 }
@@ -409,7 +406,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     // retry in the next loop iteration
                 }
@@ -438,7 +435,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     continue;
                 }
@@ -463,7 +460,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     continue;
                 }
@@ -493,7 +490,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     // retry after upgrading
                 }
@@ -518,7 +515,7 @@ where
                     }
                     return Ok(index);
                 }
-                Err(DictionaryBuilderError::DictOverflow {}) => {
+                Err(DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key()?;
                     // retry after upgrading
                 }
@@ -548,10 +545,10 @@ where
                     return Ok(index);
                 }
 
-                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                Err(checked::DictionaryBuilderError::DictOverflow) => {
                     // try to upgrade and continue loop
                     self.upgrade_key().map_err(|err| match err {
-                        DictionaryBuilderError::DictOverflow {} => {
+                        DictionaryBuilderError::DictOverflow => {
                             checked::DictionaryBuilderError::DictOverflow {}
                         }
                     })?;
@@ -584,9 +581,9 @@ where
                     }
                     return Ok(index);
                 }
-                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                Err(checked::DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key().map_err(|err| match err {
-                        DictionaryBuilderError::DictOverflow {} => {
+                        DictionaryBuilderError::DictOverflow => {
                             checked::DictionaryBuilderError::DictOverflow {}
                         }
                     })?;
@@ -612,9 +609,9 @@ where
                     }
                     return Ok(index);
                 }
-                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                Err(checked::DictionaryBuilderError::DictOverflow) => {
                     self.upgrade_key().map_err(|err| match err {
-                        DictionaryBuilderError::DictOverflow {} => {
+                        DictionaryBuilderError::DictOverflow => {
                             checked::DictionaryBuilderError::DictOverflow {}
                         }
                     })?;
@@ -901,10 +898,7 @@ mod test {
         let result = dict_builder.append_value_checked(&values_generator(1 + u16::MAX as usize));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(
-            err,
-            checked::DictionaryBuilderError::DictOverflow {}
-        ));
+        assert!(matches!(err, checked::DictionaryBuilderError::DictOverflow));
     }
 
     #[test]
@@ -947,7 +941,7 @@ mod test {
             "Expected an error due to exceeding max cardinality"
         );
         assert!(
-            matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow {}),
+            matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow),
             "Expected a DictOverflow error"
         );
     }
@@ -1016,7 +1010,7 @@ mod test {
         let result = dict_builder.append_value(&"e".to_string());
 
         assert!(
-            matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow {}),
+            matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow),
             "Expected a DictOverflow error"
         );
     }
@@ -1035,7 +1029,7 @@ mod test {
         let result = dict_builder.upgrade_key();
         assert!(matches!(
             result.unwrap_err(),
-            DictionaryBuilderError::DictOverflow {}
+            DictionaryBuilderError::DictOverflow
         ))
     }
 
@@ -1054,7 +1048,7 @@ mod test {
         // already the highest index type, so cannot upgrade
         assert!(matches!(
             result.unwrap_err(),
-            DictionaryBuilderError::DictOverflow {}
+            DictionaryBuilderError::DictOverflow
         ))
     }
 

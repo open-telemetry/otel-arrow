@@ -12,9 +12,8 @@ use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow_ipc::CompressionType;
 use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions};
-use snafu::ResultExt;
 
-use crate::error::{self, Result};
+use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
@@ -34,7 +33,7 @@ impl StreamProducer {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
         let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options)
-            .context(error::BuildStreamWriterSnafu)?;
+            .map_err(|e| Error::BuildStreamWriter { source: e })?;
 
         Ok(Self {
             stream_writer,
@@ -45,7 +44,7 @@ impl StreamProducer {
     fn serialize_batch(&mut self, record_batch: &RecordBatch) -> Result<Vec<u8>> {
         self.stream_writer
             .write(record_batch)
-            .context(error::WriteRecordBatchSnafu)?;
+            .map_err(|e| Error::WriteRecordBatch { source: e })?;
         let cursor = self.stream_writer.get_mut();
         let pos = cursor.position() as usize;
         let result = cursor.get_ref()[..pos].to_vec();

@@ -31,7 +31,7 @@ use otel_arrow_rust::{
     },
 };
 
-use otap_df_otap::proto::opentelemetry::collector::{
+use otap_df_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
         logs_service_server::{LogsService, LogsServiceServer},

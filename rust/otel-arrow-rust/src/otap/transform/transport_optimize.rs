@@ -22,11 +22,10 @@ use arrow::{
     compute::{SortColumn, SortOptions, and, take_record_batch},
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
 };
-use snafu::{OptionExt, ResultExt};
 
 use crate::{
     arrays::{NullableArrayAccessor, get_u8_array},
-    error::{self, Result},
+    error::{Error, Result},
     otap::transform::{
         create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
@@ -660,7 +659,7 @@ pub fn remap_parent_ids(
             let parent_id_col = parent_id_col
                 .as_any()
                 .downcast_ref::<UInt16Array>()
-                .with_context(|| error::InvalidListArraySnafu {
+                .ok_or_else(|| Error::InvalidListArray {
                     expect_oneof: vec![DataType::UInt16],
                     actual: parent_id_col.data_type().clone(),
                 })?;
@@ -670,7 +669,7 @@ pub fn remap_parent_ids(
             let parent_id_col = parent_id_col
                 .as_any()
                 .downcast_ref::<UInt32Array>()
-                .with_context(|| error::InvalidListArraySnafu {
+                .ok_or_else(|| Error::InvalidListArray {
                     expect_oneof: vec![DataType::UInt32],
                     actual: parent_id_col.data_type().clone(),
                 })?;
@@ -830,11 +829,10 @@ pub fn apply_transport_optimized_encodings(
                 apply_encoding_for_id_type::<UInt32Type>(&record_batch, column_encoding)?
             }
             _ => {
-                return Err(error::InvalidListArraySnafu {
+                return Err(Error::InvalidListArray {
                     expect_oneof: vec![DataType::UInt16, DataType::UInt32],
                     actual: column_encoding.data_type.clone(),
-                }
-                .build());
+                });
             }
         };
 
@@ -888,7 +886,7 @@ where
     let column = column
         .as_any()
         .downcast_ref::<PrimitiveArray<T>>()
-        .context(error::InvalidListArraySnafu {
+        .ok_or_else(|| Error::InvalidListArray {
             expect_oneof: vec![T::DATA_TYPE],
             actual: column.data_type().clone(),
         })?;
@@ -950,7 +948,7 @@ pub fn remove_transport_optimized_encodings(
                     let struct_ids = struct_ids
                         .as_any()
                         .downcast_ref::<UInt16Array>()
-                        .with_context(|| error::InvalidListArraySnafu {
+                        .ok_or_else(|| Error::InvalidListArray {
                             expect_oneof: vec![DataType::UInt16],
                             actual: struct_ids.data_type().clone(),
                         })?;
@@ -1068,18 +1066,17 @@ where
             .clone());
     }
 
-    let keys_arr =
-        record_batch
-            .column_by_name(consts::ATTRIBUTE_KEY)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::ATTRIBUTE_KEY,
-            })?;
+    let keys_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_KEY)
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_KEY.into(),
+        })?;
     let key_eq_next = create_next_eq_array_for_array(keys_arr);
 
     let type_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_TYPE)
-        .context(error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_TYPE,
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_TYPE.into(),
         })?;
     let types_eq_next = create_next_element_equality_array(type_arr)?;
     let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
@@ -1108,7 +1105,7 @@ where
         // when we find the range end, decode the parent ID values
         if found_range_end {
             let value_type = AttributeValueType::try_from(type_arr.value(curr_range_start))
-                .context(error::UnrecognizedAttributeValueTypeSnafu)?;
+                .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
             let value_arr = match value_type {
                 AttributeValueType::Str => val_str_arr,
                 AttributeValueType::Int => val_int_arr,

@@ -23,8 +23,7 @@ use crate::proto::opentelemetry::collector::trace::v1::{
 use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};
 use super::tcp_stream::ShutdownableTcpListenerStream;
 
-use super::error;
-use snafu::ResultExt;
+use super::error::{Error, Result};
 
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
@@ -66,21 +65,21 @@ impl ServiceInputType for OTLPTracesInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
         TraceServiceClient::connect(endpoint)
             .await
-            .context(error::TonicTransportSnafu)
+            .map_err(|e| Error::TonicTransport { source: e })
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> error::Result<Self::Response> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-            .context(error::TonicStatusSnafu)
+            .map_err(|s| Error::TonicStatus { source: s })
     }
 }
 
@@ -99,13 +98,13 @@ impl ServiceOutputType for OTLPTracesOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             Server::builder()
                 .add_service(TraceServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -123,21 +122,21 @@ impl ServiceInputType for OTLPMetricsInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
         MetricsServiceClient::connect(endpoint)
             .await
-            .context(error::TonicTransportSnafu)
+            .map_err(|s| Error::TonicTransport { source: s })
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> error::Result<Self::Response> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-            .context(error::TonicStatusSnafu)
+            .map_err(|s| Error::TonicStatus { source: s })
     }
 }
 
@@ -156,13 +155,13 @@ impl ServiceOutputType for OTLPMetricsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             Server::builder()
                 .add_service(MetricsServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -180,21 +179,21 @@ impl ServiceInputType for OTLPLogsInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
         LogsServiceClient::connect(endpoint)
             .await
-            .context(error::TonicTransportSnafu)
+            .map_err(|s| Error::TonicTransport { source: s })
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> error::Result<Self::Response> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-            .context(error::TonicStatusSnafu)
+            .map_err(|s| Error::TonicStatus { source: s })
     }
 }
 
@@ -213,13 +212,13 @@ impl ServiceOutputType for OTLPLogsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<error::Result<()>> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::spawn(async move {
             Server::builder()
                 .add_service(LogsServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-                .context(error::TonicTransportSnafu)
+                .map_err(|e| Error::TonicTransport { source: e })
         })
     }
 }
@@ -231,7 +230,7 @@ impl TraceService for TestReceiver<ExportTraceServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
+    ) -> std::result::Result<Response<ExportTraceServiceResponse>, Status> {
         self.process_export_request(request, "trace").await
     }
 }
@@ -241,7 +240,7 @@ impl MetricsService for TestReceiver<ExportMetricsServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+    ) -> std::result::Result<Response<ExportMetricsServiceResponse>, Status> {
         self.process_export_request(request, "metrics").await
     }
 }
@@ -251,7 +250,7 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+    ) -> std::result::Result<Response<ExportLogsServiceResponse>, Status> {
         self.process_export_request(request, "logs").await
     }
 }

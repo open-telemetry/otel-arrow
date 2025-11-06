@@ -288,7 +288,7 @@ mod test {
         let err = result.unwrap_err();
         assert!(matches!(
             err,
-            super::super::dictionary::checked::DictionaryBuilderError::DictOverflow {}
+            super::super::dictionary::checked::DictionaryBuilderError::DictOverflow
         ));
     }
 }

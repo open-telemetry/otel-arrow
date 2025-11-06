@@ -15,12 +15,11 @@ use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
 use arrow::row::{RowConverter, SortField};
-use snafu::{OptionExt, ResultExt};
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
 };
-use crate::error::{self, Result};
+use crate::error::{Error, Result};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
@@ -56,8 +55,8 @@ where
     let column = column
         .as_any()
         .downcast_ref::<PrimitiveArray<T>>()
-        .with_context(|| error::ColumnDataTypeMismatchSnafu {
-            name: column_name,
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: column_name.into(),
             actual: column.data_type().clone(),
             expect: T::DATA_TYPE,
         })?;
@@ -166,18 +165,17 @@ where
         return Ok(record_batch.clone());
     }
 
-    let keys_arr =
-        record_batch
-            .column_by_name(consts::ATTRIBUTE_KEY)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::ATTRIBUTE_KEY,
-            })?;
+    let keys_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_KEY)
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_KEY.into(),
+        })?;
     let key_eq_next = create_next_eq_array_for_array(keys_arr);
 
     let type_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_TYPE)
-        .context(error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_TYPE,
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_TYPE.into(),
         })?;
     let types_eq_next = create_next_element_equality_array(type_arr)?;
     let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
@@ -212,7 +210,7 @@ where
         // when we find the range end, decode the parent ID values
         if found_range_end {
             let value_type = AttributeValueType::try_from(type_arr.value(curr_range_start))
-                .context(error::UnrecognizedAttributeValueTypeSnafu)?;
+                .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
             let value_arr = match value_type {
                 AttributeValueType::Str => val_str_arr,
                 AttributeValueType::Int => val_int_arr,
@@ -412,10 +410,9 @@ fn replace_materialized_parent_id_column(
         .map(|(i, col)| {
             if i == parent_id_idx {
                 arrow::compute::cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
-                    error::UnexpectedRecordBatchStateSnafu {
+                    Error::UnexpectedRecordBatchState {
                         reason: format!("could not replace parent id {e}"),
                     }
-                    .build()
                 })
             } else {
                 Ok(col.clone())
@@ -431,11 +428,8 @@ fn replace_materialized_parent_id_column(
         encoding,
     );
 
-    RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
-        error::UnexpectedRecordBatchStateSnafu {
-            reason: format!("could not replace parent id {e}"),
-        }
-        .build()
+    RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| Error::UnexpectedRecordBatchState {
+        reason: format!("could not replace parent id {e}"),
     })
 }
 
@@ -466,11 +460,10 @@ pub(crate) fn create_next_element_equality_array(arr: &ArrayRef) -> Result<Boole
                     .expect("array can be downcast to DictionaryArray<UInt16Type>");
                 Ok(create_next_eq_array_for_array(dict.keys()))
             }
-            _ => error::UnsupportedDictionaryKeyTypeSnafu {
+            _ => Err(Error::UnsupportedDictionaryKeyType {
                 expect_oneof: vec![DataType::UInt8, DataType::UInt16],
                 actual: (**dict_key_type).clone(),
-            }
-            .fail(),
+            }),
         }
     } else {
         // array is not a dictionary, so just compare the values directly
@@ -555,16 +548,14 @@ impl AttributesTransform {
         if let Some(rename) = &self.rename {
             for (from, to) in rename.map.iter() {
                 if !all_keys.insert(from) {
-                    return Err(error::InvalidAttributeTransformSnafu {
+                    return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in rename: {from}"),
-                    }
-                    .build());
+                    });
                 }
                 if !all_keys.insert(to) {
-                    return Err(error::InvalidAttributeTransformSnafu {
+                    return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in rename target: {to}"),
-                    }
-                    .build());
+                    });
                 }
             }
         }
@@ -572,10 +563,9 @@ impl AttributesTransform {
         if let Some(delete) = &self.delete {
             for key in delete.set.iter() {
                 if !all_keys.insert(key) {
-                    return Err(error::InvalidAttributeTransformSnafu {
+                    return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in delete: {key}"),
-                    }
-                    .build());
+                    });
                 }
             }
         }
@@ -627,12 +617,12 @@ pub fn transform_attributes_with_stats(
     transform: &AttributesTransform,
 ) -> Result<(RecordBatch, TransformStats)> {
     let schema = attrs_record_batch.schema();
-    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
-        error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_KEY,
-        }
-        .build()
-    })?;
+    let key_column_idx =
+        schema
+            .index_of(consts::ATTRIBUTE_KEY)
+            .map_err(|_| Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_KEY.into(),
+            })?;
 
     match schema.field(key_column_idx).data_type() {
         DataType::Utf8 => {
@@ -721,11 +711,10 @@ pub fn transform_attributes_with_stats(
                     )
                 }
                 data_type => {
-                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                    return Err(Error::UnsupportedDictionaryKeyType {
                         expect_oneof: vec![DataType::UInt8, DataType::UInt16],
                         actual: data_type.clone(),
-                    }
-                    .build());
+                    });
                 }
             };
 
@@ -760,15 +749,14 @@ pub fn transform_attributes_with_stats(
                 .expect("can build record batch with same schema and columns");
             Ok((rb, stats))
         }
-        data_type => Err(error::InvalidListArraySnafu {
+        data_type => Err(Error::InvalidListArray {
             expect_oneof: vec![
                 DataType::Utf8,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             ],
             actual: data_type.clone(),
-        }
-        .build()),
+        }),
     }
 }
 
@@ -794,12 +782,12 @@ pub fn transform_attributes(
     transform.validate()?;
 
     let schema = attrs_record_batch.schema();
-    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
-        error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_KEY,
-        }
-        .build()
-    })?;
+    let key_column_idx =
+        schema
+            .index_of(consts::ATTRIBUTE_KEY)
+            .map_err(|_| Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_KEY.into(),
+            })?;
 
     match schema.field(key_column_idx).data_type() {
         DataType::Utf8 => {
@@ -874,11 +862,10 @@ pub fn transform_attributes(
                     (new_dict as ArrayRef, dict_imm_result.keep_ranges)
                 }
                 data_type => {
-                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                    return Err(Error::UnsupportedDictionaryKeyType {
                         expect_oneof: vec![DataType::UInt8, DataType::UInt16],
                         actual: data_type.clone(),
-                    }
-                    .build());
+                    });
                 }
             };
 
@@ -922,15 +909,14 @@ pub fn transform_attributes(
                 .expect("can build record batch with same schema and columns"))
         }
 
-        data_type => Err(error::InvalidListArraySnafu {
+        data_type => Err(Error::InvalidListArray {
             expect_oneof: vec![
                 DataType::Utf8,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             ],
             actual: data_type.clone(),
-        }
-        .build()),
+        }),
     }
 }
 
@@ -1216,8 +1202,8 @@ where
 {
     let dict_values = dict_arr.values();
     let dict_keys = dict_arr.keys();
-    let dict_values = dict_values.as_any().downcast_ref().with_context(|| {
-        error::UnsupportedDictionaryValueTypeSnafu {
+    let dict_values = dict_values.as_any().downcast_ref().ok_or_else(|| {
+        Error::UnsupportedDictionaryValueType {
             expect_oneof: vec![DataType::Utf8],
             actual: dict_values.data_type().clone(),
         }
@@ -1642,10 +1628,9 @@ fn find_matching_key_ranges(
     // we're going to access the raw offsets pointer directly while doing this range computation
     // (see comments below for reasoning), so this check is for safety
     if offsets.len() < array_len + 1 {
-        return Err(error::UnexpectedRecordBatchStateSnafu {
-            reason: "StringArray offsets has unexpected length",
-        }
-        .build());
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: "StringArray offsets has unexpected length".into(),
+        });
     }
 
     let offset_ptr = offsets.as_ptr();
@@ -1744,7 +1729,7 @@ where
         .map(|&(start, end)| array.slice(start, end - start))
         .collect();
     let borrowed_slices: Vec<&dyn Array> = slices.iter().map(|arr| arr.as_ref()).collect();
-    concat(&borrowed_slices).context(error::WriteRecordBatchSnafu)
+    concat(&borrowed_slices).map_err(|e| Error::WriteRecordBatch { source: e })
 }
 
 fn take_null_buffer_ranges(

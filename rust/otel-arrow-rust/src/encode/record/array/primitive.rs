@@ -246,7 +246,7 @@ mod test {
         let err = result.unwrap_err();
         assert!(matches!(
             err,
-            dictionary::DictionaryBuilderError::DictOverflow {}
+            dictionary::DictionaryBuilderError::DictOverflow
         ));
     }
 }

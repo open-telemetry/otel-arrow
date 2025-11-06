@@ -5,7 +5,7 @@ use crate::arrays::{
     Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     get_bool_array_opt, get_u8_array, get_u16_array,
 };
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{
@@ -39,7 +39,6 @@ use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{BooleanArray, RecordBatch, UInt8Array, UInt16Array};
 use num_enum::TryFromPrimitive;
-use snafu::{OptionExt, ResultExt};
 
 pub mod data_points;
 pub mod exemplar;
@@ -72,10 +71,12 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         let id = get_u16_array(rb, consts::ID)?;
         let metric_type = get_u8_array(rb, consts::METRIC_TYPE)?;
-        let name = StringArrayAccessor::try_new(
-            rb.column_by_name(consts::NAME)
-                .context(error::ColumnNotFoundSnafu { name: consts::NAME })?,
-        )?;
+        let name =
+            StringArrayAccessor::try_new(rb.column_by_name(consts::NAME).ok_or_else(|| {
+                Error::ColumnNotFound {
+                    name: consts::NAME.into(),
+                }
+            })?)?;
 
         let description = rb
             .column_by_name(consts::DESCRIPTION)
@@ -156,7 +157,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for MetricsDataArrays<'a> {
         let metrics_rb = otap_batch
             .get(ArrowPayloadType::UnivariateMetrics)
             .or_else(|| otap_batch.get(ArrowPayloadType::MultivariateMetrics))
-            .context(error::MetricRecordNotFoundSnafu)?;
+            .ok_or_else(|| Error::MetricRecordNotFound)?;
 
         Ok(Self {
             metrics_arrays: MetricsArrays::try_from(metrics_rb)?,
@@ -280,7 +281,7 @@ impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
         let metrics_rb = otap_batch
             .get(ArrowPayloadType::UnivariateMetrics)
             .or_else(|| otap_batch.get(ArrowPayloadType::MultivariateMetrics))
-            .context(error::MetricRecordNotFoundSnafu)?;
+            .ok_or(Error::MetricRecordNotFound)?;
         self.batch_sorter
             .init_cursor_for_root_batch(metrics_rb, &mut self.root_cursor)?;
 
@@ -626,11 +627,12 @@ impl MetricsProtoBytesEncoder {
         }
 
         if let Some(metric_type_val) = &metrics_arrays.metric_type.value_at(index) {
-            let metric_type = MetricType::try_from(*metric_type_val).context(
-                error::UnrecognizedMetricTypeSnafu {
-                    metric_type: *metric_type_val,
-                },
-            )?;
+            let metric_type = MetricType::try_from(*metric_type_val).map_err(|e| {
+                Error::UnrecognizedMetricType {
+                    error: e,
+                    metric_type: *metric_type_val as i32,
+                }
+            })?;
 
             if let Some(id) = metrics_arrays.id.value_at(index) {
                 let field_num = match metric_type {

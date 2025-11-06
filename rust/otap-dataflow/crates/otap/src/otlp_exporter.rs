@@ -385,11 +385,6 @@ mod tests {
 
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
-    };
     use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
@@ -404,6 +399,11 @@ mod tests {
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
+    };
+    use otap_df_pdata::proto::opentelemetry::collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
