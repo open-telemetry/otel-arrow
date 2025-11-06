@@ -5,7 +5,7 @@
 //! OTAP data / record batches
 
 use arrow::array::RecordBatch;
-
+use otap_df_config::SignalType;
 use transform::transport_optimize::{
     RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_transport_optimized_encodings, remap_parent_ids,
     remove_transport_optimized_encodings,
@@ -36,16 +36,6 @@ pub enum OtapArrowRecords {
     Metrics(Metrics),
     /// Represents a batch of spans data.
     Traces(Traces),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum OtapArrowRecordTag {
-    /// Logs data
-    Logs,
-    /// Metrics data
-    Metrics,
-    /// Spans data
-    Traces,
 }
 
 impl OtapArrowRecords {
@@ -104,11 +94,11 @@ impl OtapArrowRecords {
     }
 
     #[must_use]
-    const fn tag(&self) -> OtapArrowRecordTag {
+    const fn tag(&self) -> SignalType {
         match self {
-            Self::Logs(_) => OtapArrowRecordTag::Logs,
-            Self::Metrics(_) => OtapArrowRecordTag::Metrics,
-            Self::Traces(_) => OtapArrowRecordTag::Traces,
+            Self::Logs(_) => SignalType::Logs,
+            Self::Metrics(_) => SignalType::Metrics,
+            Self::Traces(_) => SignalType::Traces,
         }
     }
 
