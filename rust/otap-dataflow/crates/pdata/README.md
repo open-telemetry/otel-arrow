@@ -34,9 +34,9 @@ consuming OTLP bytes in the OTAP-Dataflow engine.
 Rust reference implementation for the [OpenTelemetry-Arrow Protocol
 (OTAP)](../../../../README.md). Here are some of the main data use-cases:
 
-# High-level interfaces
+## High-level interfaces
 
-## OTAP records to OTLP bytes
+### OTAP records to OTLP bytes
 
 The OTAP Records type is `otap_df_pdata::otap::OtapArrowRecords`.
 
@@ -49,7 +49,7 @@ In the OTAP-Dataflow engine, see
 `otap_df_otap::pdata::TryFrom<OtapArrowRecords>` for example, to
 translate from OTLP bytes into OTAP records.
 
-## OTLP bytes to OTAP records
+### OTLP bytes to OTAP records
 
 An OTAP Records struct varies by signal.
 
@@ -68,7 +68,7 @@ This translation into records is:
 3. `otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder`
   is a OTel-Arrow builder which assembles Arrow arrays as the output of traversal.
 
-## OTAP records to OTAP stream
+### OTAP records to OTAP stream
 
 The OTAP stream data type is
 `otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords`.
@@ -85,7 +85,7 @@ Arrow metadata for the indicator.
 See more documentation on this process in our [OTAP
 basics](../../docs/otap-basics.md) documentation.
 
-## OTAP stream to OTAP records
+### OTAP stream to OTAP records
 
 To convert from `BatchArrowRecords` to `OtapArrowRecords`, use a
 `otap_df_pdata::decode::decoder::Consumer`. The consumer manages
@@ -97,15 +97,15 @@ After passing through an intermediate representation,
 `otap_df_pdata::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
 `OtapArrowRecords` of the correct signal.
 
-# Sub-Modules
+## Sub-Modules
 
-## Schema
+### Schema
 
 The `otap_df_pdata::schema` module provides constants related to the
 OTAP records payload representation, defining the OpenTelemetry
 Protocol with Apache Arrow.
 
-## Proto
+### Proto
 
 The `otap_df_pdata::proto` module provides access to the original OTLP
 and OTAP protocol message objects, for reference and testing.  This
@@ -113,14 +113,14 @@ also exposes constants such as protocol tag numbers used for directly
 encoding and decoding OTLP bytes. These use the Prost and Tonic crates
 to generate structs and gRPC client/server stubs.
 
-## Views
+### Views
 
 The `otap_df_pdata::views` provides view abstractions and utilities
 for working with OTLP pdata (protocol data) structures without
 constructing protocol message objects, enabling efficient translation
 to and from the OTAP records data format
 
-## Validation
+### Validation
 
 This module runs simple end-to-end tests using the OTel-Arrow Go
 Collector components built in the top-level of this repository.
