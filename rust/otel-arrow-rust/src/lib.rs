@@ -7,7 +7,9 @@
 //! the rust implementation of pdata.
 
 #[allow(dead_code)]
-pub(crate) mod arrays;
+#[allow(missing_docs)] // TODO write docs
+pub mod arrays;
+
 mod decode;
 
 pub mod encode;

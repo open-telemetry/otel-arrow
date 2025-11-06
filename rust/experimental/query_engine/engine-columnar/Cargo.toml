@@ -11,3 +11,26 @@ rust-version.workspace = true
 [dependencies]
 arrow = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true}
+datafusion = { workspace = true }
+prost = { workspace = true }
+
+data_engine_expressions = { path = "../expressions" }
+data_engine_kql_parser = { path = "../kql-parser" }
+otap-df-otap = { path = "../../../otap-dataflow/crates/otap" }
+otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata"}
+otel-arrow-rust = { path = "../../../otel-arrow-rust" }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+pretty_assertions = { workspace = true }
+tokio = { version="1", features=["full"] }
+
+
+[[bench]]
+name = "pipeline_exec"
+harness = false
+
+[profile.bench]
+debug = "line-tables-only"
+strip = "none"
