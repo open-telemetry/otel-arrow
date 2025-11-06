@@ -29,7 +29,7 @@ pub(crate) const RECEIVER_TIMEOUT_SECONDS: u64 = 10;
 pub(crate) const TEST_TIMEOUT_SECONDS: u64 = 20;
 
 pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
-    let default_path = "../../bin/otelarrowcol";
+    let default_path = "../../../../bin/otelarrowcol";
     let path = env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
 
     if !Path::new(&path).exists() {

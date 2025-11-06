@@ -17,8 +17,8 @@
 //! # use std::sync::Arc;
 //! # use arrow::array::{RecordBatch, UInt16Array};
 //! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use otel_arrow_rust::otap::{OtapArrowRecords, Logs};
-//! # use otel_arrow_rust::proto::opentelemetry::{
+//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
+//! # use otap_df_pdata::proto::opentelemetry::{
 //!     arrow::v1::ArrowPayloadType,
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -68,7 +68,7 @@
 //!                                          │                 │
 //!                                          │                 │
 //!                                          ▼                 │
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from()
+//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
 //!                                          │                 ▲
 //!                                          │                 │
 //!                                          │                 │
