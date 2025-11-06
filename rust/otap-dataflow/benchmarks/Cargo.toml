@@ -42,10 +42,6 @@ tokio-stream.workspace = true
 workspace = true
 
 [[bench]]
-name = "config"
-harness = false
-
-[[bench]]
 name = "channel"
 harness = false
 
