@@ -171,9 +171,6 @@ impl From<&proto::metric::Data> for DataType {
 
 /// View for Data
 pub trait DataView<'val> {
-    // TODO verify if these associated type NumberDataPoint are needed on this trait
-    // (I don't think they are)
-
     /// The `NumberDataPointView` type associated with this implementation.
     type NumberDataPoint<'dp>: NumberDataPointView
     where
