@@ -164,9 +164,9 @@ pub struct MetricFieldRanges {
     unit: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_metadata: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 
-    // since data is a oneof, we also keep the field_num alongside the range. That way when
-    // `get_field_range` is called, we can avoid returning the data range for the wrong variant
-    // of the oneof field
+    // since this is a oneof, we also keep the field_num alongside the range. 
+    // That way when `get_field_range` is called, we can avoid returning the 
+    // data range for the wrong variant of the oneof field
     data: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
 }
 
@@ -292,9 +292,9 @@ pub struct NumberDataPointFieldRanges {
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 
-    // since data is a oneof, we also keep the field_num alongside the range. That way when
-    // `get_field_range` is called, we can avoid returning the data range for the wrong variant
-    // of the oneof field
+    // since this is a oneof, we also keep the field_num alongside the range. 
+    // That way when `get_field_range` is called, we can avoid returning the 
+    // data range for the wrong variant of the oneof field
     value: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
 }
 
