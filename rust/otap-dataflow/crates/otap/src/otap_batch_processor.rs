@@ -995,7 +995,7 @@ mod tests {
         let validation = phase.run_test(|mut ctx| async move {
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
-            // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
+            // TODO(telemetry-logs-rows): Once otap-df-pdata encodes non-empty logs batches (or
             // OtapArrowRecords::batch_length handles logs), switch assertions to consumed_items_logs.
             let pdata_logs: OtapPdata =
                 OtapPdata::new_default(logs_record_with_n_entries(3).into());
