@@ -88,34 +88,22 @@ impl SignalTypeRouterMetrics {
     fn inc_received(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
-            otap_df_config::SignalType::Metrics => {
-                self.signals_received_metrics.inc()
-            }
+            otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
         }
     }
     fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
-            otap_df_config::SignalType::Metrics => {
-                self.signals_routed_named_metrics.inc()
-            }
-            otap_df_config::SignalType::Traces => {
-                self.signals_routed_named_traces.inc()
-            }
+            otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
         }
     }
     fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
         match st {
-            otap_df_config::SignalType::Logs => {
-                self.signals_routed_default_logs.inc()
-            }
-            otap_df_config::SignalType::Metrics => {
-                self.signals_routed_default_metrics.inc()
-            }
-            otap_df_config::SignalType::Traces => {
-                self.signals_routed_default_traces.inc()
-            }
+            otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
         }
     }
     fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
