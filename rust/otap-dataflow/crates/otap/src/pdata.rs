@@ -723,11 +723,14 @@ mod test {
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             metrics::v1::{
-                metric::Data, number_data_point::Value, AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum
+                AggregationTemporality, Gauge, Histogram, Metric, NumberDataPoint, ResourceMetrics,
+                ScopeMetrics, Sum, metric::Data, number_data_point::Value,
             },
             resource::v1::Resource,
             trace::v1::{
-                span::{Event, Link}, status::StatusCode, ResourceSpans, ScopeSpans, Span, SpanFlags, Status
+                ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
+                span::{Event, Link},
+                status::StatusCode,
             },
         },
     };
@@ -1277,17 +1280,18 @@ mod test {
                         name: "metric3".into(),
                         description: "metric3 desc".into(),
                         unit: "m3 unit".into(),
-                        metadata: vec![
-                            KeyValue::new("met_attr2", AnyValue::new_string("met_val1"))
-                        ],
+                        metadata: vec![KeyValue::new(
+                            "met_attr2",
+                            AnyValue::new_string("met_val1"),
+                        )],
                         data: Some(Data::Sum(Sum {
                             aggregation_temporality: AggregationTemporality::Cumulative as i32,
                             is_monotonic: true,
                             data_points: vec![
                                 NumberDataPoint {
                                     attributes: vec![
-                                        KeyValue::new( "attr2", AnyValue::new_string("val1")),
-                                        KeyValue::new( "attr4", AnyValue::new_string("val1"))
+                                        KeyValue::new("attr2", AnyValue::new_string("val1")),
+                                        KeyValue::new("attr4", AnyValue::new_string("val1")),
                                     ],
                                     start_time_unix_nano: 16,
                                     time_unix_nano: 18,
@@ -1296,17 +1300,29 @@ mod test {
                                     value: Some(Value::AsInt(14)),
                                 },
                                 NumberDataPoint {
-                                    attributes: vec![
-                                        KeyValue::new("attr",AnyValue::new_string("val1"))
-                                    ],
+                                    attributes: vec![KeyValue::new(
+                                        "attr",
+                                        AnyValue::new_string("val1"),
+                                    )],
                                     start_time_unix_nano: 17,
                                     time_unix_nano: 18,
                                     exemplars: vec![],
                                     flags: 0,
                                     value: Some(Value::AsInt(14)),
                                 },
-                            ]
-                        }))  
+                            ],
+                        })),
+                    },
+                    Metric {
+                        name: "metric4".into(),
+                        description: "metric4 desc".into(),
+                        unit: "m4 unit".into(),
+                        metadata: vec![
+                            KeyValue::new("met_attr1", AnyValue::new_string("met_val2")),
+                            KeyValue::new("met_attr2", AnyValue::new_string("met_val2")),
+                            KeyValue::new("met_attr3", AnyValue::new_string("met_val1")),
+                        ],
+                        data: Some(Data::Histogram(Histogram::default())),
                     },
                 ],
             }],

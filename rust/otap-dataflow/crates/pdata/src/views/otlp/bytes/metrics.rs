@@ -8,8 +8,9 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
-    GAUGE_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
-    METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
+    GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
+    METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM,
+    METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
     METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
     NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
@@ -20,8 +21,9 @@ use crate::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
-    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, MetricView, MetricsView,
-    NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView, Value,
+    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, HistogramView,
+    MetricView, MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+    Value,
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
@@ -30,8 +32,9 @@ use crate::views::otlp::bytes::decode::{
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
-    ObjExponentialHistogram, ObjHistogram, ObjNumberDataPoint, ObjSummary,
+    ExemplarIter, HistogramDataPointIter as ObjHistogramDataPointIter,
+    NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar, ObjExponentialHistogram,
+    ObjHistogramDataPoint, ObjNumberDataPoint, ObjSummary,
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -281,7 +284,7 @@ impl FieldRanges for GaugeFieldRanges {
 
 /// Implementation of [`SumView`] backed by buffer containing proto serialized `Sum` Message
 pub struct RawSum<'a> {
-    bytes_parser: ProtoBytesParser<'a, SumFieldRanges>,
+    byte_parser: ProtoBytesParser<'a, SumFieldRanges>,
 }
 
 /// Known field ranges for fields on `Sum` message
@@ -329,6 +332,58 @@ impl FieldRanges for SumFieldRanges {
                 }
             }
             SUM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`HistogramView`] backed by byte buffer containing proto serialized
+/// `Histogram` message
+pub struct RawHistogram<'a> {
+    byte_parser: ProtoBytesParser<'a, HistogramFieldRanges>,
+}
+
+/// Known field ranges for fields on `Sum` message
+pub struct HistogramFieldRanges {
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for HistogramFieldRanges {
+    fn new() -> Self {
+        Self {
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            HISTOGRAM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            HISTOGRAM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            HISTOGRAM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            HISTOGRAM_DATA_POINTS => {
                 if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
                     self.first_data_point.set(Some(range))
                 }
@@ -699,7 +754,7 @@ impl DataView<'_> for RawData<'_> {
         Self: 'sum;
 
     type Histogram<'histogram>
-        = ObjHistogram<'histogram>
+        = RawHistogram<'histogram>
     where
         Self: 'histogram;
 
@@ -736,13 +791,14 @@ impl DataView<'_> for RawData<'_> {
 
     fn as_sum(&self) -> Option<Self::Sum<'_>> {
         (self.field_num == METRIC_SUM).then_some(RawSum {
-            bytes_parser: ProtoBytesParser::new(self.buf),
+            byte_parser: ProtoBytesParser::new(self.buf),
         })
     }
 
     fn as_histogram(&self) -> Option<Self::Histogram<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_HISTOGRAM).then_some(RawHistogram {
+            byte_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>> {
@@ -791,7 +847,7 @@ impl SumView for RawSum<'_> {
 
     fn aggregation_temporality(&self) -> AggregationTemporality {
         let val = self
-            .bytes_parser
+            .byte_parser
             .advance_to_find_field(SUM_AGGREGATION_TEMPORALITY)
             .and_then(|slice| read_varint(slice, 0))
             .map(|(val, _)| val)
@@ -802,7 +858,7 @@ impl SumView for RawSum<'_> {
 
     fn is_monotonic(&self) -> bool {
         let val = self
-            .bytes_parser
+            .byte_parser
             .advance_to_find_field(SUM_IS_MONOTONIC)
             .and_then(|slice| read_varint(slice, 0))
             .map(|(val, _)| val)
@@ -814,11 +870,39 @@ impl SumView for RawSum<'_> {
     fn data_points(&self) -> Self::NumberDataPointIter<'_> {
         NumberDataPointIter {
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.bytes_parser,
+                &self.byte_parser,
                 GAUGE_DATA_POINTS,
                 wire_types::LEN,
             ),
         }
+    }
+}
+
+impl HistogramView for RawHistogram<'_> {
+    // TODO tmp usage of ObjHistogramDataPoint
+    type HistogramDataPoint<'dp>
+        = ObjHistogramDataPoint<'dp>
+    where
+        Self: 'dp;
+    type HistogramDataPointIter<'dp>
+        = ObjHistogramDataPointIter<'dp>
+    where
+        Self: 'dp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn data_points(&self) -> Self::HistogramDataPointIter<'_> {
+        // TODO
+        ObjHistogramDataPointIter::new([].iter())
     }
 }
 
