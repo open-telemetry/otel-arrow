@@ -558,12 +558,12 @@ pub trait HistogramDataPointView {
         Self: 'att;
 
     /// Iterator type for yielding bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 
     /// Iterator type for yielding explicit bounds.
-    type ExplicitBoundsIter<'eb>: Iterator<Item = &'eb f64>
+    type ExplicitBoundsIter<'eb>: Iterator<Item = f64>
     where
         Self: 'eb;
 

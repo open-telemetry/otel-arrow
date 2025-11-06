@@ -4,6 +4,8 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp metrics.proto.
 
+use std::iter::Copied;
+
 use crate::proto::opentelemetry::metrics::v1::{
     Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
     HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
@@ -449,12 +451,12 @@ impl HistogramDataPointView for ObjHistogramDataPoint<'_> {
         Self: 'att;
 
     type BucketCountIter<'bc>
-        = std::slice::Iter<'bc, u64>
+        = Copied<std::slice::Iter<'bc, u64>>
     where
         Self: 'bc;
 
     type ExplicitBoundsIter<'eb>
-        = std::slice::Iter<'eb, f64>
+        = Copied<std::slice::Iter<'eb, f64>>
     where
         Self: 'eb;
 
@@ -489,11 +491,11 @@ impl HistogramDataPointView for ObjHistogramDataPoint<'_> {
     }
 
     fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
-        self.inner.bucket_counts.iter()
+        self.inner.bucket_counts.iter().copied()
     }
 
     fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
-        self.inner.explicit_bounds.iter()
+        self.inner.explicit_bounds.iter().copied()
     }
 
     fn exemplars(&self) -> Self::ExemplarIter<'_> {

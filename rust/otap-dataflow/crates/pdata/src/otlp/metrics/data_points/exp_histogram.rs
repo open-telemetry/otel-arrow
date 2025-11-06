@@ -100,7 +100,7 @@ pub struct PositiveNegativeArrayAccess<'a> {
 impl<'a> PositiveNegativeArrayAccess<'a> {
     fn bucket_counts_data_type() -> DataType {
         DataType::List(
-            FieldRef::new(Field::new("", DataType::UInt64, true)), //todo: find the inner name here
+            FieldRef::new(Field::new("item", DataType::UInt64, true)), //todo: find the inner name here
         )
     }
 

@@ -4,6 +4,7 @@
 //! various types & helper functions for decoding serialized protobuf data
 
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
@@ -322,6 +323,72 @@ where
         self.next_range = Some(range);
 
         Some(slice)
+    }
+}
+
+/// Iterator adapter for converting
+pub struct GenericFixed64Iter<'a, T: FieldRanges, V: FromFixed64> {
+    bytes_parser: RepeatedFieldProtoBytesParser<'a, T>,
+    _pd: PhantomData<V>,
+}
+
+impl<'a, T, V> GenericFixed64Iter<'a, T, V>
+where
+    T: FieldRanges,
+    V: FromFixed64,
+{
+    pub(crate) fn from_byte_parser(
+        bytes_parser: &'a ProtoBytesParser<'a, T>,
+        field_num: u64,
+    ) -> Self {
+        Self {
+            bytes_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                bytes_parser,
+                field_num,
+                wire_types::FIXED64,
+            ),
+            _pd: PhantomData::default(),
+        }
+    }
+}
+
+impl<'a, T, V> Iterator for GenericFixed64Iter<'a, T, V>
+where
+    T: FieldRanges,
+    V: FromFixed64,
+{
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let slice = self.bytes_parser.next()?;
+            let as_fixed_64_bytes: Option<[u8; 8]> = slice.try_into().ok();
+            if let Some(fixed_64_bytes) = as_fixed_64_bytes {
+                return Some(V::from_fixed64_slice(fixed_64_bytes));
+            }
+
+            // if here, the slice was for some reason the wrong length, we just ignore it
+            // and continue looping to the next value
+        }
+    }
+}
+
+/// Helper trait for converting an iterator of slices of ranges from a proto buffer into a value
+/// that can be produced from a byte slice with a wire type of FIXED64 (e.g. double)
+pub trait FromFixed64 {
+    /// create new value from a slice that was proto serialized with wire type FIXED64
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self;
+}
+
+impl FromFixed64 for f64 {
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self {
+        f64::from_le_bytes(slice)
+    }
+}
+
+impl FromFixed64 for u64 {
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self {
+        u64::from_le_bytes(slice)
     }
 }
 

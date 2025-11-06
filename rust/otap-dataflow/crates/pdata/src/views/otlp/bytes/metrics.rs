@@ -9,8 +9,11 @@ use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
     GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
-    METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM,
-    METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
+    HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
+    HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
+    HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM,
+    HISTOGRAM_DP_TIME_UNIX_NANO, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
+    METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
     METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
     NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
@@ -19,15 +22,16 @@ use crate::proto::consts::field_num::metrics::{
 };
 use crate::proto::consts::wire_types;
 
+use crate::schema::consts::{HISTOGRAM_BUCKET_COUNTS, HISTOGRAM_EXPLICIT_BOUNDS};
 use crate::views::common::Str;
 use crate::views::metrics::{
-    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, HistogramView,
-    MetricView, MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
-    Value,
+    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, Value,
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
-    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+    FieldRanges, GenericFixed64Iter, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
@@ -486,6 +490,119 @@ impl FieldRanges for NumberDataPointFieldRanges {
     }
 }
 
+/// Implementation of [`HistogramDataPointView`] backed by buffer containing proto serialized
+/// HistogramDataPoint message
+pub struct RawHistogramDataPoint<'a> {
+    byte_parser: ProtoBytesParser<'a, HistogramDataPointFieldRanges>,
+}
+
+/// Known field ranges for fields in proto serialized HistogramDataPoint message
+#[derive(Default)]
+pub struct HistogramDataPointFieldRanges {
+    start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    min: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    max: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_attributes: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_bucket_count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_explicit_bounds: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for HistogramDataPointFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            HISTOGRAM_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
+            HISTOGRAM_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            HISTOGRAM_DP_COUNT => self.count.get(),
+            HISTOGRAM_DP_SUM => self.sum.get(),
+            HISTOGRAM_DP_FLAGS => self.flags.get(),
+            HISTOGRAM_DP_MIN => self.min.get(),
+            HISTOGRAM_DP_MAX => self.max.get(),
+            HISTOGRAM_DP_ATTRIBUTES => self.first_attributes.get(),
+            HISTOGRAM_DP_BUCKET_COUNTS => self.first_bucket_count.get(),
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => self.first_explicit_bounds.get(),
+            HISTOGRAM_DP_EXEMPLARS => self.first_exemplar.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            HISTOGRAM_DP_START_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.start_time_unix_nano.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_COUNT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.count.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_SUM => {
+                if wire_type == wire_types::FIXED64 {
+                    self.sum.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_FLAGS => {
+                if wire_type == wire_types::VARINT {
+                    self.flags.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_MIN => {
+                if wire_type == wire_types::FIXED64 {
+                    self.min.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_MAX => {
+                if wire_type == wire_types::FIXED64 {
+                    self.max.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() {
+                    self.first_attributes.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_EXEMPLARS => {
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() {
+                    self.first_exemplar.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
+                if wire_type == wire_types::FIXED64 && self.first_explicit_bounds.get().is_none() {
+                    self.first_explicit_bounds.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_BUCKET_COUNTS => {
+                if wire_type == wire_types::FIXED64 && self.first_bucket_count.get().is_none() {
+                    self.first_bucket_count.set(Some(range));
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
 /// Iterator of ResourceMetrics - produces implementation of [`ResourceMetricsView`] from byte
@@ -553,7 +670,7 @@ impl<'a> Iterator for MetricIter<'a> {
     }
 }
 
-/// Iterator of NumberDataPoint - produces implementation pof [`NumberDataPointView`] from byte
+/// Iterator of NumberDataPoint - produces implementation of [`NumberDataPointView`] from byte
 /// array containing a serialized metric data message
 pub struct NumberDataPointIter<'a, T: FieldRanges> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, T>,
@@ -568,6 +685,23 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.byte_parser.next()?;
         Some(RawNumberDataPoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of HistogramDatapoint - produces implementation of [`HistogramDataPointView`]
+/// from byte array containing a serialized Histogram message
+pub struct HistogramDataPointIter<'a> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, HistogramFieldRanges>,
+}
+
+impl<'a> Iterator for HistogramDataPointIter<'a> {
+    type Item = RawHistogramDataPoint<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawHistogramDataPoint {
             byte_parser: ProtoBytesParser::new(slice),
         })
     }
@@ -879,13 +1013,12 @@ impl SumView for RawSum<'_> {
 }
 
 impl HistogramView for RawHistogram<'_> {
-    // TODO tmp usage of ObjHistogramDataPoint
     type HistogramDataPoint<'dp>
-        = ObjHistogramDataPoint<'dp>
+        = RawHistogramDataPoint<'dp>
     where
         Self: 'dp;
     type HistogramDataPointIter<'dp>
-        = ObjHistogramDataPointIter<'dp>
+        = HistogramDataPointIter<'dp>
     where
         Self: 'dp;
 
@@ -901,8 +1034,13 @@ impl HistogramView for RawHistogram<'_> {
     }
 
     fn data_points(&self) -> Self::HistogramDataPointIter<'_> {
-        // TODO
-        ObjHistogramDataPointIter::new([].iter())
+        HistogramDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                HISTOGRAM_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
     }
 }
 
@@ -987,6 +1125,114 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
             .map(|(val, _)| val as u32);
 
         DataPointFlags::new(flags.unwrap_or_default())
+    }
+}
+
+impl HistogramDataPointView for RawHistogramDataPoint<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, HistogramDataPointFieldRanges>
+    where
+        Self: 'att;
+
+    type BucketCountIter<'bc>
+        = GenericFixed64Iter<'bc, HistogramDataPointFieldRanges, u64>
+    where
+        Self: 'bc;
+
+    type ExplicitBoundsIter<'eb>
+        = GenericFixed64Iter<'eb, HistogramDataPointFieldRanges, f64>
+    where
+        Self: 'eb;
+
+    // TODO this is temporary
+    type Exemplar<'ex>
+        = ObjExemplar<'ex>
+    where
+        Self: 'ex;
+    type ExemplarIter<'ex>
+        = ExemplarIter<'ex>
+    where
+        Self: 'ex;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            HISTOGRAM_DP_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
+        GenericFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_BUCKET_COUNTS)
+    }
+
+    fn count(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_COUNT)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn exemplars(&self) -> Self::ExemplarIter<'_> {
+        // TODO
+        ExemplarIter::new([].iter())
+    }
+
+    fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
+        GenericFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_EXPLICIT_BOUNDS)
+    }
+
+    fn flags(&self) -> DataPointFlags {
+        let flags = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_FLAGS)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val as u32);
+
+        DataPointFlags::new(flags.unwrap_or_default())
+    }
+
+    fn max(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_MAX)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn min(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_MIN)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn start_time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_START_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn sum(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_SUM)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
     }
 }
 

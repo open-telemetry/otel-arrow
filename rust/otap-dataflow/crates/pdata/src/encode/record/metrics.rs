@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        Array, LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StructArray,
-        StructBuilder,
+        Array, LargeListArray, LargeListBuilder, ListBuilder, PrimitiveBuilder, RecordBatch,
+        StructArray, StructBuilder,
     },
     datatypes::{DataType, Field, Fields, Float64Type, Schema, UInt64Type},
     error::ArrowError,
@@ -852,8 +852,8 @@ pub struct HistogramDataPointsRecordBatchBuilder {
     start_time_unix_nano: TimestampNanosecondArrayBuilder,
     time_unix_nano: TimestampNanosecondArrayBuilder,
     count: UInt64ArrayBuilder,
-    bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
-    explicit_bounds: LargeListBuilder<PrimitiveBuilder<Float64Type>>,
+    bucket_counts: ListBuilder<PrimitiveBuilder<UInt64Type>>,
+    explicit_bounds: ListBuilder<PrimitiveBuilder<Float64Type>>,
     sum: Float64ArrayBuilder,
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
@@ -890,8 +890,8 @@ impl HistogramDataPointsRecordBatchBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            bucket_counts: LargeListBuilder::new(PrimitiveBuilder::new()),
-            explicit_bounds: LargeListBuilder::new(PrimitiveBuilder::new()),
+            bucket_counts: ListBuilder::new(PrimitiveBuilder::new()),
+            explicit_bounds: ListBuilder::new(PrimitiveBuilder::new()),
             sum: Float64ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
@@ -985,7 +985,9 @@ impl HistogramDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(11);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -995,11 +997,9 @@ impl HistogramDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {
@@ -1031,7 +1031,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         let array = no_nulls(self.bucket_counts.finish());
         if !array.is_empty() {
-            fields.push(Field::new_large_list(
+            fields.push(Field::new_list(
                 consts::HISTOGRAM_BUCKET_COUNTS,
                 Field::new_list_field(DataType::UInt64, false),
                 false,
@@ -1041,7 +1041,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         let array = no_nulls(self.explicit_bounds.finish());
         if !array.is_empty() {
-            fields.push(Field::new_large_list(
+            fields.push(Field::new_list(
                 consts::HISTOGRAM_EXPLICIT_BOUNDS,
                 Field::new("item", DataType::Float64, false),
                 false,
@@ -1382,7 +1382,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 /// offset of zero and an empty counts slice.
 pub struct BucketsRecordBatchBuilder {
     offset: Int32ArrayBuilder,
-    bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
+    bucket_counts: ListBuilder<PrimitiveBuilder<UInt64Type>>,
 }
 
 impl BucketsRecordBatchBuilder {
@@ -1395,7 +1395,7 @@ impl BucketsRecordBatchBuilder {
                 dictionary_options: None,
                 default_values_optional: false,
             }),
-            bucket_counts: LargeListBuilder::new(PrimitiveBuilder::new()),
+            bucket_counts: ListBuilder::new(PrimitiveBuilder::new()),
         }
     }
 
