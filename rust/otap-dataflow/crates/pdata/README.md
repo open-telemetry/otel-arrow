@@ -1,4 +1,4 @@
-## OTel-Arrow Rust
+# OTel-Arrow Pipeline Data
 
 PData refers generally to the pipeline data type used within an
 OpenTelemetry pipeline.  This package is the location of our core
@@ -34,12 +34,14 @@ consuming OTLP bytes in the OTAP-Dataflow engine.
 Rust reference implementation for the [OpenTelemetry-Arrow Protocol
 (OTAP)](../../../../README.md). Here are some of the main data use-cases:
 
+# High-level interfaces
+
 ## OTAP records to OTLP bytes
 
-The OTAP Records type is `otel_arrow_rust::otap::OtapArrowRecords`.
+The OTAP Records type is `otap_df_pdata::otap::OtapArrowRecords`.
 
 In the Logs signal, for example,
-`otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder` encodes OTLP
+`otap_df_pdata::otlp::logs::LogsProtoBytesEncoder` encodes OTLP
 bytes from OTAP records to a `&mut ProtoBuffer` output, likewise for
 `metrics::Metrics` and `traces::Traces`.
 
@@ -63,20 +65,20 @@ This translation into records is:
   view over the OTLP bytes for zero-copy traversal
 2. `otap_df_otap::encoder::encode_logs_otap_batch<T: LogsDataView>()`
   is a function to build OTAP records in a traversal
-3. `otel_arrow_rust::encode::record::logs::LogsRecordBatchBuilder`
+3. `otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder`
   is a OTel-Arrow builder which assembles Arrow arrays as the output of traversal.
 
 ## OTAP records to OTAP stream
 
 The OTAP stream data type is
-`otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords`.
+`otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords`.
 
 To translate a stream of OTAP Records to `BatchArrowRecords`, use
-`otel_arrow_rust::encode::producer::Producer`. The producer manages
+`otap_df_pdata::encode::producer::Producer`. The producer manages
 underlying `arrow::ipc::writer::StreamWriter` instances following the
 OTel-Arrow Phase 1 Golang reference implementation.
 
-Note that the `otel_arrow_rust::otap::OtapArrowRecords` type supports
+Note that the `otap_df_pdata::otap::OtapArrowRecords` type supports
 both transport-optimized and memory-optimized representations, using
 Arrow metadata for the indicator.
 
@@ -86,27 +88,24 @@ basics](../../docs/otap-basics.md) documentation.
 ## OTAP stream to OTAP records
 
 To convert from `BatchArrowRecords` to `OtapArrowRecords`, use a
-`otel_arrow_rust::decode::decoder::Consumer`. The consumer manages
+`otap_df_pdata::decode::decoder::Consumer`. The consumer manages
 underlying `arrow::ipc::reader::StreamReader` instances following the
 OTel-Arrow Phase 1 Golang reference implementation.
 
 After passing through an intermediate representation,
-`otel_arrow_rust::decode::record_message::RecordMessage`, an assembly process
-`otel_arrow_rust::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
+`otap_df_pdata::decode::record_message::RecordMessage`, an assembly process
+`otap_df_pdata::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
 `OtapArrowRecords` of the correct signal.
 
-## Reference implementation and verification
+# Module summary
 
-The production OTAP-Dataflow engine uses the `otap_df_pdata_views`
-crate to encode and decode OTLP bytes directly to and from OTAP
-records.
+## OTLP
 
-The Prost crate (`prost_build`) is used to derive OpenTelemetry
-Protocol (OTLP) message objects which are used as a reference
-implementation for test and validation steps in this repository.
+## OTAP
 
-See the repository-level [CONTRIBUTING](../../CONTRIBUTING.md) for
-details on building and testing this software.
+## Encode
+
+## Decode
 
 ## Schema
 
@@ -128,3 +127,8 @@ The `otap_df_pdata::views` provides view abstractions and utilities
 for working with OTLP pdata (protocol data) structures without
 constructing protocol message objects, enabling efficient translation
 to and from the OTAP records data format
+
+## Validation
+
+This module runs simple end-to-end tests using the OTel-Arrow Go
+Collector components built in the top-level of this repository.
