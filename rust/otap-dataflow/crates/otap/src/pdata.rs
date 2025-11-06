@@ -723,7 +723,8 @@ mod test {
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             metrics::v1::{
-                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric::Data,
+                AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric,
+                NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric::Data,
                 number_data_point::Value,
             },
             resource::v1::Resource,
@@ -1275,6 +1276,90 @@ mod test {
                             KeyValue::new("met_attr1", AnyValue::new_string("met_val2")),
                             KeyValue::new("met_attr2", AnyValue::new_string("met_val2")),
                         ],
+                    },
+                    Metric {
+                        name: "metric3".into(),
+                        description: "metric3 desc".into(),
+                        unit: "m3 unit".into(),
+                        metadata: vec![KeyValue::new(
+                            "met_attr2",
+                            AnyValue::new_string("met_val1"),
+                        )],
+                        data: Some(Data::Sum(Sum {
+                            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                            is_monotonic: true,
+                            data_points: vec![
+                                NumberDataPoint {
+                                    attributes: vec![
+                                        KeyValue::new("attr2", AnyValue::new_string("val1")),
+                                        KeyValue::new("attr4", AnyValue::new_string("val1")),
+                                    ],
+                                    start_time_unix_nano: 16,
+                                    time_unix_nano: 18,
+                                    exemplars: vec![],
+                                    flags: 19,
+                                    value: Some(Value::AsInt(14)),
+                                },
+                                NumberDataPoint {
+                                    attributes: vec![KeyValue::new(
+                                        "attr",
+                                        AnyValue::new_string("val1"),
+                                    )],
+                                    start_time_unix_nano: 17,
+                                    time_unix_nano: 18,
+                                    exemplars: vec![],
+                                    flags: 0,
+                                    value: Some(Value::AsInt(14)),
+                                },
+                            ],
+                        })),
+                    },
+                    Metric {
+                        name: "metric4".into(),
+                        description: "metric4 desc".into(),
+                        unit: "m4 unit".into(),
+                        metadata: vec![
+                            KeyValue::new("met_attr1", AnyValue::new_string("met_val2")),
+                            KeyValue::new("met_attr2", AnyValue::new_string("met_val2")),
+                            KeyValue::new("met_attr3", AnyValue::new_string("met_val1")),
+                        ],
+                        data: Some(Data::Histogram(Histogram {
+                            aggregation_temporality: AggregationTemporality::Delta as i32,
+                            data_points: vec![
+                                HistogramDataPoint {
+                                    time_unix_nano: 1,
+                                    start_time_unix_nano: 2,
+                                    attributes: vec![
+                                        KeyValue::new("attr1", AnyValue::new_string("val1")),
+                                        KeyValue::new("attr2", AnyValue::new_string("val2")),
+                                    ],
+                                    count: 3,
+                                    sum: Some(4.0),
+                                    bucket_counts: vec![1, 2],
+                                    exemplars: vec![],
+                                    explicit_bounds: vec![3.0, 4.0, 5.0],
+                                    flags: 6,
+                                    min: Some(7.0),
+                                    max: Some(8.0),
+                                },
+                                HistogramDataPoint {
+                                    time_unix_nano: 3,
+                                    start_time_unix_nano: 4,
+                                    attributes: vec![KeyValue::new(
+                                        "attr1",
+                                        AnyValue::new_string("val1"),
+                                    )],
+                                    count: 2,
+                                    sum: Some(5.0),
+                                    bucket_counts: vec![6, 7, 8],
+                                    exemplars: vec![], // TODO
+                                    explicit_bounds: vec![9.0, 10.0],
+                                    flags: 16,
+                                    min: Some(17.0),
+                                    max: Some(18.0),
+                                },
+                            ],
+                        })),
                     },
                 ],
             }],

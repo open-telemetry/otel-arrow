@@ -513,6 +513,16 @@ impl From<proto::AggregationTemporality> for AggregationTemporality {
     }
 }
 
+impl From<u32> for AggregationTemporality {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => AggregationTemporality::Delta,
+            2 => AggregationTemporality::Cumulative,
+            _ => AggregationTemporality::Unspecified,
+        }
+    }
+}
+
 /// View for Histogram
 pub trait HistogramView {
     /// The `HistogramDataPointView` type associated with this implementation.
@@ -545,12 +555,12 @@ pub trait HistogramDataPointView {
         Self: 'att;
 
     /// Iterator type for yielding bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 
     /// Iterator type for yielding explicit bounds.
-    type ExplicitBoundsIter<'eb>: Iterator<Item = &'eb f64>
+    type ExplicitBoundsIter<'eb>: Iterator<Item = f64>
     where
         Self: 'eb;
 

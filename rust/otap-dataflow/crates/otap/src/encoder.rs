@@ -839,8 +839,8 @@ where
                             hdp.append_start_time_unix_nano(hdp_view.start_time_unix_nano() as i64);
                             hdp.append_time_unix_nano(hdp_view.time_unix_nano() as i64);
                             hdp.append_count(hdp_view.count());
-                            hdp.append_bucket_counts(hdp_view.bucket_counts().copied());
-                            hdp.append_explicit_bounds(hdp_view.explicit_bounds().copied());
+                            hdp.append_bucket_counts(hdp_view.bucket_counts());
+                            hdp.append_explicit_bounds(hdp_view.explicit_bounds());
                             hdp.append_sum(hdp_view.sum());
                             hdp.append_flags(hdp_view.flags().into_inner());
                             hdp.append_min(hdp_view.min());
@@ -976,8 +976,9 @@ mod test {
     use arrow::array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
         DurationNanosecondArray, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array,
-        LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
-        StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        LargeListArray, LargeListBuilder, ListBuilder, PrimitiveBuilder, RecordBatch, StringArray,
+        StructArray, StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+        UInt64Array,
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{
@@ -1836,8 +1837,8 @@ mod test {
             .unwrap();
         let expected_hdp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1849,12 +1850,12 @@ mod test {
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
-                Field::new_large_list(
+                Field::new_list(
                     "bucket_counts",
                     Field::new_list_field(DataType::UInt64, false),
                     false,
                 ),
-                Field::new_large_list(
+                Field::new_list(
                     "explicit_bounds",
                     Field::new_list_field(DataType::Float64, false),
                     false,
@@ -2080,11 +2081,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
@@ -2096,11 +2093,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
@@ -2314,8 +2307,8 @@ mod test {
     fn make_bucket(offset_counts: Option<(i32, &[u64])>) -> Arc<dyn Array> {
         let (offset, counts) = offset_counts.unwrap_or((0, &[]));
         let offset = Int32Array::from_value(offset, 1);
-        let mut counts_builder: LargeListBuilder<PrimitiveBuilder<UInt64Type>> =
-            LargeListBuilder::new(PrimitiveBuilder::new());
+        let mut counts_builder: ListBuilder<PrimitiveBuilder<UInt64Type>> =
+            ListBuilder::new(PrimitiveBuilder::new());
         counts_builder.append_value(counts.iter().copied().map(Some));
 
         Arc::new(StructArray::new(
@@ -2323,7 +2316,7 @@ mod test {
                 Field::new("offset", DataType::Int32, false),
                 Field::new(
                     "bucket_counts",
-                    DataType::LargeList(Arc::new(Field::new("item", DataType::UInt64, false))),
+                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                     false,
                 ),
             ]),
@@ -2339,8 +2332,8 @@ mod test {
     where
         ArrowType: ArrowPrimitiveType,
     {
-        let mut builder: LargeListBuilder<PrimitiveBuilder<ArrowType>> =
-            LargeListBuilder::new(PrimitiveBuilder::new());
+        let mut builder: ListBuilder<PrimitiveBuilder<ArrowType>> =
+            ListBuilder::new(PrimitiveBuilder::new());
         builder.append_value(data.iter().copied().map(Some));
         Arc::new(no_nulls(builder.finish()))
     }
