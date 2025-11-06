@@ -124,10 +124,14 @@ impl RecordsGroup {
 
     /// Separate expecting only traces
     pub fn separate_traces(records: Vec<OtapArrowRecords>) -> Result<Self> {
+        eprintln!("[groups.rs] separate_traces: input {} records", records.len());
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
+        eprintln!("[groups.rs] separate_traces: separated into logs={} metrics={} traces={}", 
+                  logs.len(), metrics.len(), traces.len());
         if !logs.is_empty() || !metrics.is_empty() {
             Err(Error::MixedSignals)
         } else {
+            eprintln!("[groups.rs] separate_traces: returning traces with {} batches", traces.len());
             Ok(traces)
         }
     }
@@ -135,7 +139,8 @@ impl RecordsGroup {
     /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
     pub fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
-        Ok(match self {
+        eprintln!("[groups.rs] split: input {} batches, max_output_batch={}", self.len(), max_output_batch);
+        let result = match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
                 items,
                 max_output_batch,
@@ -154,12 +159,16 @@ impl RecordsGroup {
                 Traces::allowed_payload_types(),
                 ArrowPayloadType::Spans,
             )?),
-        })
+        };
+        eprintln!("[groups.rs] split: output {} batches", result.len());
+        Ok(result)
     }
 
     /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
     pub fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
-        Ok(match self {
+        eprintln!("[groups.rs] concatenate: input {} batches, max_output_batch={:?}", 
+                  self.len(), max_output_batch);
+        let result = match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(
                 items,
                 Logs::allowed_payload_types(),
@@ -175,26 +184,47 @@ impl RecordsGroup {
                 Traces::allowed_payload_types(),
                 max_output_batch,
             )?),
-        })
+        };
+        eprintln!("[groups.rs] concatenate: output {} batches", result.len());
+        Ok(result)
     }
 
     // FIXME: replace this with an Extend impl to avoid unnecessary allocations
     /// Convert into a sequence of `OtapArrowRecords`
     #[must_use]
     pub fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
+        eprintln!("[groups.rs] into_otap_arrow_records: input {} batches", self.len());
         match self {
-            RecordsGroup::Logs(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Logs(Logs { batches }))
-                .collect(),
-            RecordsGroup::Metrics(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Metrics(Metrics { batches }))
-                .collect(),
-            RecordsGroup::Traces(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Traces(Traces { batches }))
-                .collect(),
+            RecordsGroup::Logs(items) => {
+                let result: Vec<OtapArrowRecords> = items
+                    .into_iter()
+                    .map(|batches| OtapArrowRecords::Logs(Logs { batches }))
+                    .collect();
+                eprintln!("[groups.rs] into_otap_arrow_records: output {} OtapArrowRecords", result.len());
+                result
+            }
+            RecordsGroup::Metrics(items) => {
+                let result: Vec<OtapArrowRecords> = items
+                    .into_iter()
+                    .map(|batches| OtapArrowRecords::Metrics(Metrics { batches }))
+                    .collect();
+                eprintln!("[groups.rs] into_otap_arrow_records: output {} OtapArrowRecords", result.len());
+                result
+            }
+            RecordsGroup::Traces(items) => {
+                eprintln!("[groups.rs] into_otap_arrow_records: processing {} trace batches", items.len());
+                let result: Vec<OtapArrowRecords> = items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, batches)| {
+                        let batch_len = batch_length(&batches);
+                        eprintln!("[groups.rs]   batch[{}]: batch_length={}", idx, batch_len);
+                        OtapArrowRecords::Traces(Traces { batches })
+                    })
+                    .collect();
+                eprintln!("[groups.rs] into_otap_arrow_records: output {} OtapArrowRecords", result.len());
+                result
+            }
         }
     }
 
@@ -292,12 +322,16 @@ fn generic_split<const N: usize>(
     } else {
         split_non_metric_batches(max_output_batch, &batches)?
     };
+    
+    eprintln!("[generic_split] After split_*_batches: {} split ranges", splits.len());
+    
     let groups = splits.into_iter().chunk_by(|(batch_index, _)| *batch_index);
     let mut splits = Vec::new();
     let mut lengths = Vec::new();
     let mut split_primary = Vec::new();
 
     for (batch_index, ranges) in &groups {
+        eprintln!("[generic_split] Processing batch_index={}", batch_index);
         splits.clear();
         lengths.clear();
         split_primary.clear();
@@ -305,22 +339,32 @@ fn generic_split<const N: usize>(
 
         if let Some(rb) = std::mem::take(&mut batches[primary_offset]) {
             let original_length = rb.num_rows();
+            eprintln!("[generic_split]   Primary table original_length={}", original_length);
             splits.extend(ranges.map(|pair| pair.1));
+            eprintln!("[generic_split]   Split into {} ranges", splits.len());
             for range in splits.iter() {
                 let offset = range.start;
                 let length = range.end - range.start;
                 lengths.push(length);
                 split_primary.push(rb.slice(offset, length));
             }
+            eprintln!("[generic_split]   Lengths: {:?}", lengths);
             assert_eq!(original_length, lengths.iter().sum::<usize>());
             assert_eq!(
                 original_length,
                 split_primary.iter().map(|rb| rb.num_rows()).sum::<usize>()
             );
-            let ids = IDSeqs::from_col(IDColumn::extract(&rb, consts::ID)?, &lengths);
+            
+            // Extract IDs only if the column exists (needed for splitting child tables)
+            let ids_opt = if rb.column_by_name(consts::ID).is_some() {
+                Some(IDSeqs::from_col(IDColumn::extract(&rb, consts::ID)?, &lengths))
+            } else {
+                None
+            };
 
             // use ids to split the child tables: call split_child_record_batch
             let new_batch_count = split_primary.len();
+            eprintln!("[generic_split]   Creating {} new output batches", new_batch_count);
             result.extend(repeat_n([const { None }; N], new_batch_count));
             let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
             // this is where we're going to be writing the rest of this split batch into!
@@ -330,12 +374,16 @@ fn generic_split<const N: usize>(
             for (i, split_primary) in split_primary.drain(..).enumerate() {
                 new_batch[i][primary_offset] = Some(split_primary);
             }
-            for payload in allowed_payloads
-                .iter()
-                .filter(|payload| **payload != primary_payload)
-                .copied()
-            {
-                generic_split_helper(batches, payload, primary_payload, &ids, new_batch)?;
+            
+            // Only process child tables if we have IDs
+            if let Some(ids) = ids_opt.as_ref() {
+                for payload in allowed_payloads
+                    .iter()
+                    .filter(|payload| **payload != primary_payload)
+                    .copied()
+                {
+                    generic_split_helper(batches, payload, primary_payload, ids, new_batch)?;
+                }
             }
         } else {
             panic!("expected to have primary for every group");
@@ -674,6 +722,11 @@ fn split_metric_batches<const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
 ) -> Result<Vec<(usize, Range<usize>)>> {
     assert_eq!(N, Metrics::COUNT);
+    eprintln!("[split_metric_batches] Input: {} batches, max_output_batch={}", batches.len(), max_output_batch);
+    for (idx, batch_arr) in batches.iter().enumerate() {
+        eprintln!("[split_metric_batches]   input[{}]: batch_length={}", idx, batch_length(batch_arr));
+    }
+    
     // Because the metrics table has non-nullable 16-bit IDs, you can never have a batch with more
     // than u16::MAX metrics.
 
@@ -690,7 +743,8 @@ fn split_metric_batches<const N: usize>(
 
     let mut result = Vec::new();
     let max_output_batch = max_output_batch.get() as usize;
-    let mut batch_size = max_output_batch;
+    let mut batch_size_remaining = max_output_batch;
+    let mut accumulating_from: Option<usize> = None;
 
     for (batch_index, batches) in batches.iter().enumerate() {
         use arrow::array::as_primitive_array;
@@ -714,13 +768,19 @@ fn split_metric_batches<const N: usize>(
         // column can have gaps.
 
         let batch_len = batch_length(batches);
-        if batch_len <= batch_size {
-            // We know that this batch is too small to split, so don't bother computing
-            // `cumulative_child_counts`.
-            batch_size -= batch_len;
-            if batch_size == 0 {
-                result.push((batch_index, 0..metric_length));
-                batch_size = max_output_batch;
+        if batch_len <= batch_size_remaining {
+            // This batch fits in current accumulation
+            if accumulating_from.is_none() {
+                accumulating_from = Some(batch_index);
+            }
+            batch_size_remaining -= batch_len;
+            if batch_size_remaining == 0 {
+                // Emit all accumulated batches
+                for idx in accumulating_from.unwrap()..=batch_index {
+                    result.push((idx, 0..metric_length));
+                }
+                accumulating_from = None;
+                batch_size_remaining = max_output_batch;
             }
         } else {
             child_counts.clear();
@@ -752,12 +812,12 @@ fn split_metric_batches<const N: usize>(
 
             // We want to partition `cumulative_child_counts` into chunks where the difference
             // between the first and last value of each chunk is as close to but less than
-            // `batch_size`.
+            // `batch_size_remaining`.
             let mut last_cumulative_child_count = 0;
             let mut starting_index = 0;
             loop {
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
-                    cum_child_count < last_cumulative_child_count + batch_size as u64
+                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
                 });
                 last_cumulative_child_count = cumulative_child_counts
                     .get(candidate_index)
@@ -779,6 +839,24 @@ fn split_metric_batches<const N: usize>(
                 starting_index = ending_index;
             }
         }
+    }
+    
+    // Emit any remaining accumulated batches
+    if let Some(start_idx) = accumulating_from {
+        use arrow::array::as_primitive_array;
+        for idx in start_idx..batches.len() {
+            let batches_at_idx = &batches[idx];
+            let metrics = batches_at_idx[METRICS_INDEX].as_ref().unwrap();
+            let metric_ids: &PrimitiveArray<UInt16Type> = as_primitive_array(
+                metrics.column_by_name(consts::ID).expect("ID column should be present"),
+            );
+            result.push((idx, 0..metric_ids.len()));
+        }
+    }
+    
+    eprintln!("[split_metric_batches] Output: {} ranges", result.len());
+    for (idx, (batch_idx, range)) in result.iter().enumerate() {
+        eprintln!("[split_metric_batches]   range[{}]: batch={}, range={:?}", idx, batch_idx, range);
     }
     Ok(result)
 }
@@ -829,7 +907,11 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                     options,
                 }]
             }
-            _ => unreachable!(),
+            // No id or parent_id columns - nothing to sort, return as-is
+            _ => {
+                return RecordBatch::try_new(schema, columns)
+                    .map_err(|e| Error::Batching { source: e });
+            }
         };
 
     // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported
@@ -858,6 +940,11 @@ fn generic_concatenate<const N: usize>(
     allowed_payloads: &[ArrowPayloadType],
     max_output_batch: Option<NonZeroU64>,
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    eprintln!("[groups.rs] generic_concatenate: input {} batches", batches.len());
+    for (idx, batch_arr) in batches.iter().enumerate() {
+        eprintln!("[groups.rs]   input[{}]: batch_length={}", idx, batch_length(batch_arr));
+    }
+    
     let mut result = Vec::new();
 
     let mut current = Vec::new();
@@ -865,10 +952,12 @@ fn generic_concatenate<const N: usize>(
     for batches in batches {
         let emit_new_batch = max_output_batch
             .map(|max_output_batch| {
-                (current_batch_length + batch_length(&batches)) as u64 >= max_output_batch.get()
+                (current_batch_length + batch_length(&batches)) as u64 > max_output_batch.get()
             })
             .unwrap_or(false);
-        if emit_new_batch {
+        if emit_new_batch && !current.is_empty() {
+            eprintln!("[groups.rs] generic_concatenate: emitting batch (current_batch_length={}, current.len()={})", 
+                      current_batch_length, current.len());
             reindex(&mut current, allowed_payloads)?;
             result.push(generic_schemaless_concatenate(&mut current)?);
             current_batch_length = 0;
@@ -876,18 +965,25 @@ fn generic_concatenate<const N: usize>(
                 assert_eq!(batches, &[const { None }; N]);
             }
             current.clear();
-        } else {
-            current_batch_length += batch_length(&batches);
-            current.push(batches);
         }
+        // Always add the current batch to the accumulator
+        current_batch_length += batch_length(&batches);
+        current.push(batches);
     }
 
     if !current.is_empty() {
+        eprintln!("[groups.rs] generic_concatenate: final batch (current_batch_length={}, current.len()={})", 
+                  current_batch_length, current.len());
         reindex(&mut current, allowed_payloads)?;
         result.push(generic_schemaless_concatenate(&mut current)?);
         for batches in current.iter() {
             assert_eq!(batches, &[const { None }; N]);
         }
+    }
+    
+    eprintln!("[groups.rs] generic_concatenate: output {} batches", result.len());
+    for (idx, batch_arr) in result.iter().enumerate() {
+        eprintln!("[groups.rs]   output[{}]: batch_length={}", idx, batch_length(batch_arr));
     }
     Ok(result)
 }
@@ -1004,6 +1100,11 @@ fn reindex_record_batch(
     column_name: &'static str,
     mut next_starting_id: u32,
 ) -> Result<(RecordBatch, u32)> {
+    // If the column doesn't exist, return the batch unchanged
+    if rb.column_by_name(column_name).is_none() {
+        return Ok((rb, 0));
+    }
+    
     let id = IDColumn::extract(&rb, column_name)?;
 
     let maybe_new_ids = match id {
