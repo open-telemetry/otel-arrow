@@ -15,7 +15,7 @@ use otel_arrow_rust::proto::consts::field_num::metrics::{
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
     SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
 };
-use otel_arrow_rust::proto::consts::{field_num, wire_types};
+use otel_arrow_rust::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
@@ -29,8 +29,8 @@ use crate::views::otlp::bytes::decode::{
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjData, ObjExemplar,
-    ObjExponentialHistogram, ObjGauge, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary,
+    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
+    ObjExponentialHistogram, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary,
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -162,8 +162,12 @@ pub struct MetricFieldRanges {
     name: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     description: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     unit: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    data: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_metadata: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // since data is a oneof, we also keep the field_num alongside the range. That way when
+    // `get_field_range` is called, we can avoid returning the data range for the wrong variant
+    // of the oneof field
+    data: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
 }
 
 impl FieldRanges for MetricFieldRanges {
@@ -186,7 +190,10 @@ impl FieldRanges for MetricFieldRanges {
             | METRIC_SUM
             | METRIC_HISTOGRAM
             | METRIC_EXPONENTIAL_HISTOGRAM
-            | METRIC_SUMMARY => self.data.get(),
+            | METRIC_SUMMARY => {
+                let (range, actual_field_num) = self.data.get()?;
+                (field_num == actual_field_num).then_some(range)
+            }
             METRIC_METADATA => self.first_metadata.get(),
             _ => return None,
         };
@@ -209,7 +216,7 @@ impl FieldRanges for MetricFieldRanges {
                 | METRIC_SUM
                 | METRIC_HISTOGRAM
                 | METRIC_EXPONENTIAL_HISTOGRAM
-                | METRIC_SUMMARY => self.data.set(Some(range)),
+                | METRIC_SUMMARY => self.data.set(Some((range, field_num))),
                 METRIC_METADATA => {
                     if self.first_metadata.get().is_none() {
                         self.first_metadata.set(Some(range))
@@ -281,10 +288,14 @@ pub struct RawNumberDataPoint<'a> {
 pub struct NumberDataPointFieldRanges {
     start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    value: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // since data is a oneof, we also keep the field_num alongside the range. That way when
+    // `get_field_range` is called, we can avoid returning the data range for the wrong variant
+    // of the oneof field
+    value: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
 }
 
 impl FieldRanges for NumberDataPointFieldRanges {
@@ -304,10 +315,10 @@ impl FieldRanges for NumberDataPointFieldRanges {
             NUMBER_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
             NUMBER_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
             NUMBER_DP_FLAGS => self.flags.get(),
-            // TODO -- there's a bug to fix here (and in RawMetric) with the handling of oneofs
-            // where if we find the field for one field_num in the oneof and call get with another
-            // we return the range for the wrong field_num.
-            NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT => self.value.get(),
+            NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT => {
+                let (range, actual_field_num) = self.value.get()?;
+                (actual_field_num == field_num).then_some(range)
+            }
             NUMBER_DP_ATTRIBUTES => self.first_attribute.get(),
             NUMBER_DP_EXEMPLARS => self.first_exemplar.get(),
             _ => return None,
@@ -335,10 +346,9 @@ impl FieldRanges for NumberDataPointFieldRanges {
                 }
             }
 
-            // TODO ensure we cover both branches here in testing
             NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT => {
                 if wire_type == wire_types::FIXED64 {
-                    self.value.set(Some(range));
+                    self.value.set(Some((range, field_num)));
                 }
             }
             NUMBER_DP_ATTRIBUTES => {
@@ -761,8 +771,8 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
 
         match field_num {
             NUMBER_DP_AS_DOUBLE => {
-                let doub_bytes: [u8; 8] = slice.try_into().ok()?;
-                Some(Value::Double(f64::from_le_bytes(doub_bytes)))
+                let double_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Double(f64::from_le_bytes(double_bytes)))
             }
             NUMBER_DP_AS_INT => {
                 let int_bytes: [u8; 8] = slice.try_into().ok()?;
@@ -789,5 +799,45 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
             .map(|(val, _)| val as u32);
 
         DataPointFlags::new(flags.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+        Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
+    };
+    use prost::Message;
+
+    #[test]
+    fn test_oneof_double_reads() {
+        // this test is guarding against regressions of a bug where if multiple read calls
+        // were made to some view implementations to read the field of a oneof, we'd sometimes
+        // return the wrong type of value
+
+        let metric = Metric {
+            data: Some(Data::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let mut bytes = vec![];
+        metric.encode(&mut bytes).unwrap();
+        let metric_view = RawMetric {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        assert_eq!(metric_view.data().unwrap().value_type(), DataType::Sum);
+        assert_eq!(metric_view.data().unwrap().value_type(), DataType::Sum);
+
+        let number_dp = NumberDataPoint {
+            value: Some(number_data_point::Value::AsInt(1)),
+            ..Default::default()
+        };
+        let mut bytes = vec![];
+        number_dp.encode(&mut bytes).unwrap();
+        let number_dp_view = RawNumberDataPoint {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
+        assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
     }
 }
