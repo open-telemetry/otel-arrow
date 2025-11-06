@@ -24,7 +24,7 @@ use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
 use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::config::ExporterConfig;

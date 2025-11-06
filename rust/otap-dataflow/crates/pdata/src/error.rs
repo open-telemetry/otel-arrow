@@ -167,4 +167,7 @@ pub enum Error {
         given
     )]
     InvalidId { expected: usize, given: usize },
+
+    #[error("Mixed signals")]
+    MixedSignals,
 }

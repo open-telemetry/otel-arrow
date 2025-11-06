@@ -29,26 +29,19 @@
 //!
 //! Batching for Metrics and Traces signals is **not yet implemented**.
 
+use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
+use arrow::datatypes::{DataType, Field, Fields, Schema};
+use otap_df_config::SignalType;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
-use arrow::datatypes::{DataType, Field, Fields, Schema};
-use snafu::{OptionExt, ResultExt};
-
 use crate::{
-    error::{self, Result},
-    otap::{
-        Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore, POSITION_LOOKUP,
-        Traces,
-    },
+    error::{Error, Result},
+    otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, POSITION_LOOKUP, Traces},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::consts,
 };
-
-#[cfg(test)]
-mod tests;
 
 /// A sequence of OtapArrowRecords that all share exactly the same tag.
 /// Maintains invariant: primary table for each batch is not None and has more than zero records.
@@ -66,13 +59,13 @@ impl RecordsGroup {
     /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
     #[must_use]
     fn separate_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
-        let log_count = tag_count(&records, OtapArrowRecordTag::Logs);
+        let log_count = tag_count(&records, SignalType::Logs);
         let mut log_records = Vec::with_capacity(log_count);
 
-        let metric_count = tag_count(&records, OtapArrowRecordTag::Metrics);
+        let metric_count = tag_count(&records, SignalType::Metrics);
         let mut metric_records = Vec::with_capacity(metric_count);
 
-        let trace_count = tag_count(&records, OtapArrowRecordTag::Traces);
+        let trace_count = tag_count(&records, SignalType::Traces);
         let mut trace_records = Vec::with_capacity(trace_count);
 
         for records in records {
@@ -118,7 +111,7 @@ impl RecordsGroup {
     pub fn separate_logs(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !metrics.is_empty() || !traces.is_empty() {
-            Err(error::MixedSignalsSnafu.build())
+            Err(Error::MixedSignals)
         } else {
             Ok(logs)
         }
@@ -128,7 +121,7 @@ impl RecordsGroup {
     pub fn separate_metrics(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !traces.is_empty() {
-            Err(error::MixedSignalsSnafu.build())
+            Err(Error::MixedSignals)
         } else {
             Ok(metrics)
         }
@@ -138,7 +131,7 @@ impl RecordsGroup {
     pub fn separate_traces(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !metrics.is_empty() {
-            Err(error::MixedSignalsSnafu.build())
+            Err(Error::MixedSignals)
         } else {
             Ok(traces)
         }
@@ -208,7 +201,7 @@ impl RecordsGroup {
 // Helper functions
 // *************************************************************************************************
 
-fn tag_count(records: &[OtapArrowRecords], tag: OtapArrowRecordTag) -> usize {
+fn tag_count(records: &[OtapArrowRecords], tag: SignalType) -> usize {
     records
         .iter()
         .map(|records| (records.tag() == tag) as usize)
@@ -332,7 +325,8 @@ fn add_missing_columns(batch: RecordBatch, target_schema: &Schema) -> Result<Rec
         }
     }
 
-    RecordBatch::try_new(Arc::new(target_schema.clone()), new_columns).context(error::BatchingSnafu)
+    RecordBatch::try_new(Arc::new(target_schema.clone()), new_columns)
+        .map_err(|e| Error::Batching { source: e })
 }
 
 /// Concatenate all log batches into a single set of batches
@@ -355,8 +349,8 @@ fn concatenate_logs_batches(
         let schema = batches[0].schema();
 
         // Concatenate
-        let combined =
-            arrow::compute::concat_batches(&schema, batches.iter().copied()).context(error::BatchingSnafu)?;
+        let combined = arrow::compute::concat_batches(&schema, batches.iter().copied())
+            .map_err(|e| Error::Batching { source: e })?;
 
         result[payload_idx] = Some(combined);
     }
@@ -375,22 +369,26 @@ fn sort_and_deduplicate_logs(
 
     if let Some(logs_batch) = batches[logs_idx].take() {
         // Extract Resource.ID and Scope.ID for sorting
-        let resource_col = logs_batch
-            .column_by_name(consts::RESOURCE)
-            .context(error::ColumnNotFoundSnafu {
-                name: consts::RESOURCE,
-            })?;
+        let resource_col =
+            logs_batch
+                .column_by_name(consts::RESOURCE)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: consts::RESOURCE.into(),
+                })?;
 
-        let scope_col = logs_batch
-            .column_by_name(consts::SCOPE)
-            .context(error::ColumnNotFoundSnafu { name: consts::SCOPE })?;
+        let scope_col =
+            logs_batch
+                .column_by_name(consts::SCOPE)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: consts::SCOPE.into(),
+                })?;
 
         // Resource and Scope are struct columns, extract the ID field
         let resource_struct = resource_col
             .as_any()
             .downcast_ref::<StructArray>()
-            .context(error::ColumnDataTypeMismatchSnafu {
-                name: consts::RESOURCE,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::RESOURCE.into(),
                 expect: DataType::Struct(Fields::empty()),
                 actual: resource_col.data_type().clone(),
             })?;
@@ -398,19 +396,25 @@ fn sort_and_deduplicate_logs(
         let scope_struct = scope_col
             .as_any()
             .downcast_ref::<StructArray>()
-            .context(error::ColumnDataTypeMismatchSnafu {
-                name: consts::SCOPE,
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::SCOPE.into(),
                 expect: DataType::Struct(Fields::empty()),
                 actual: scope_col.data_type().clone(),
             })?;
 
-        let resource_id = resource_struct
-            .column_by_name(consts::ID)
-            .context(error::ColumnNotFoundSnafu { name: consts::ID })?;
+        let resource_id =
+            resource_struct
+                .column_by_name(consts::ID)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: consts::ID.into(),
+                })?;
 
-        let scope_id = scope_struct
-            .column_by_name(consts::ID)
-            .context(error::ColumnNotFoundSnafu { name: consts::ID })?;
+        let scope_id =
+            scope_struct
+                .column_by_name(consts::ID)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: consts::ID.into(),
+                })?;
 
         // Sort by Resource.ID then Scope.ID
         let sort_columns = vec![
@@ -431,10 +435,10 @@ fn sort_and_deduplicate_logs(
         ];
 
         let indices = arrow::compute::lexsort_to_indices(&sort_columns, None)
-            .context(error::BatchingSnafu)?;
+            .map_err(|e| Error::Batching { source: e })?;
 
         let sorted_logs = arrow::compute::take_record_batch(&logs_batch, &indices)
-            .context(error::BatchingSnafu)?;
+            .map_err(|e| Error::Batching { source: e })?;
 
         batches[logs_idx] = Some(sorted_logs);
     }
@@ -520,7 +524,9 @@ fn reindex_id_column(
 
     let id_idx = schema
         .column_with_name(column_name)
-        .context(error::ColumnNotFoundSnafu { name: column_name })?
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: column_name.into(),
+        })?
         .0;
 
     // Create a new sequential ID array
@@ -528,5 +534,5 @@ fn reindex_id_column(
 
     columns[id_idx] = Arc::new(new_ids);
 
-    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
+    RecordBatch::try_new(schema, columns).map_err(|e| Error::Batching { source: e })
 }

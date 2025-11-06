@@ -5,21 +5,22 @@
 //!
 //!
 
-use super::{OtapArrowRecordTag, OtapArrowRecords, error::Result, groups::RecordsGroup};
+use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
+use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
 /// Rebatch records to the appropriate size in a single pass.
 /// Returns error if not the same signal type.
 pub fn make_output_batches(
-    signal: OtapArrowRecordTag,
+    signal: SignalType,
     records: Vec<OtapArrowRecords>,
     max_output_batch: Option<NonZeroU64>,
 ) -> Result<Vec<OtapArrowRecords>> {
     // Separate by signal type and rebatch in one pass
     let records = match signal {
-        OtapArrowRecordTag::Logs => RecordsGroup::separate_logs(records),
-        OtapArrowRecordTag::Metrics => RecordsGroup::separate_metrics(records),
-        OtapArrowRecordTag::Traces => RecordsGroup::separate_traces(records),
+        SignalType::Logs => RecordsGroup::separate_logs(records),
+        SignalType::Metrics => RecordsGroup::separate_metrics(records),
+        SignalType::Traces => RecordsGroup::separate_traces(records),
     }?;
 
     // Rebatch: iterate through inputs once, building maximally-full output batches

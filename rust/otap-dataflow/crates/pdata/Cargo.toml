@@ -15,6 +15,7 @@ arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
 ciborium = { workspace = true }
 itertools = { workspace = true }
+otap-df-config = { workspace = true }
 otap-df-pdata-otlp-macros = { workspace = true }
 otap-df-pdata-otlp-model = { workspace = true }
 nix = { workspace = true }
