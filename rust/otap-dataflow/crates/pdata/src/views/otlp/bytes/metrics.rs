@@ -198,9 +198,11 @@ impl FieldRanges for MetricFieldRanges {
                 METRIC_NAME => self.name.set(Some(range)),
                 METRIC_DESCRIPTION => self.description.set(Some(range)),
                 METRIC_UNIT => self.unit.set(Some(range)),
-                METRIC_GAUGE | METRIC_SUM | METRIC_HISTOGRAM | METRIC_EXPONENTIAL_HISTOGRAM => {
-                    self.data.set(Some(range))
-                }
+                METRIC_GAUGE
+                | METRIC_SUM
+                | METRIC_HISTOGRAM
+                | METRIC_EXPONENTIAL_HISTOGRAM
+                | METRIC_SUMMARY => self.data.set(Some(range)),
                 METRIC_METADATA => {
                     if self.first_metadata.get().is_none() {
                         self.first_metadata.set(Some(range))
