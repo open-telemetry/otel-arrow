@@ -138,22 +138,22 @@ pub trait MetricView {
 pub enum DataType {
     /// Gauge represents the type of a scalar metric that always exports the "current value" for
     /// every data point.
-    Gauge = 5,
+    Gauge = 1,
 
     /// Sum represents the type of a scalar metric that is calculated as a sum of all reported
     /// measurements over a time interval.
-    Sum = 7,
+    Sum = 2,
 
     /// Histogram represents the type of a metric that is calculated by aggregating as a Histogram
     /// of all reported measurements over a time interval.
-    Histogram = 9,
+    Histogram = 3,
 
     /// ExponentialHistogram represents the type of a metric that is calculated by aggregating as a
     /// ExponentialHistogram of all reported double measurements over a time interval.
-    ExponentialHistogram = 10,
+    ExponentialHistogram = 4,
 
     /// Summary metric data are used to convey quantile summaries.
-    Summary = 11,
+    Summary = 5,
 }
 
 impl From<&proto::metric::Data> for DataType {
@@ -218,7 +218,7 @@ pub trait DataView<'val> {
     /// Get the Histogram value
     fn as_histogram(&self) -> Option<Self::Histogram<'_>>;
 
-    /// Get the ExpoenentialHistogram value
+    /// Get the ExponentialHistogram value
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>>;
 
     /// Get the Summary value

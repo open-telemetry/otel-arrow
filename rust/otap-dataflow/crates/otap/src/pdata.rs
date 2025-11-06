@@ -722,7 +722,10 @@ mod test {
             },
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-            metrics::v1::{Metric, ResourceMetrics, ScopeMetrics},
+            metrics::v1::{
+                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric::Data,
+                number_data_point::Value,
+            },
             resource::v1::Resource,
             trace::v1::{
                 ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
@@ -1214,14 +1217,66 @@ mod test {
                     attributes: vec![KeyValue::new("scp_attr1", AnyValue::new_string("scp_val1"))],
                     dropped_attributes_count: 2,
                 }),
-                metrics: vec![Metric {
-                    name: "metric1".into(),
-                    description: "metric1 desc".into(),
-                    unit: "m1 unit".into(),
-                    // TODO handle data
-                    data: None,
-                    metadata: vec![KeyValue::new("met_attr1", AnyValue::new_string("met_val1"))],
-                }],
+                metrics: vec![
+                    Metric {
+                        name: "metric1".into(),
+                        description: "metric1 desc".into(),
+                        unit: "m1 unit".into(),
+                        // Test empty data
+                        data: None,
+                        metadata: vec![KeyValue::new(
+                            "met_attr1",
+                            AnyValue::new_string("met_val1"),
+                        )],
+                    },
+                    Metric {
+                        name: "metric2".into(),
+                        description: "metric2 desc".into(),
+                        unit: "m2 unit".into(),
+                        data: Some(Data::Gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint {
+                                    attributes: vec![KeyValue::new(
+                                        "attr1",
+                                        AnyValue::new_string("val1"),
+                                    )],
+                                    start_time_unix_nano: 5,
+                                    time_unix_nano: 6,
+                                    // TODO add some exemplars to the test
+                                    exemplars: vec![],
+                                    flags: 8,
+                                    value: None, // Test None Value
+                                },
+                                NumberDataPoint {
+                                    attributes: vec![
+                                        KeyValue::new("attr1", AnyValue::new_string("val1")),
+                                        KeyValue::new("attr2", AnyValue::new_string("val1")),
+                                    ],
+                                    start_time_unix_nano: 6,
+                                    time_unix_nano: 7,
+                                    exemplars: vec![],
+                                    flags: 9,
+                                    value: Some(Value::AsDouble(11.0)), // Test double value
+                                },
+                                NumberDataPoint {
+                                    attributes: vec![KeyValue::new(
+                                        "attr2",
+                                        AnyValue::new_string("val1"),
+                                    )],
+                                    start_time_unix_nano: 6,
+                                    time_unix_nano: 8,
+                                    exemplars: vec![],
+                                    flags: 9,
+                                    value: Some(Value::AsInt(14)), // Test int value
+                                },
+                            ],
+                        })),
+                        metadata: vec![
+                            KeyValue::new("met_attr1", AnyValue::new_string("met_val2")),
+                            KeyValue::new("met_attr2", AnyValue::new_string("met_val2")),
+                        ],
+                    },
+                ],
             }],
         }]);
 

@@ -34,6 +34,7 @@ tonic-prost = { workspace = true }
 
 [dev-dependencies]
 tokio-stream = { workspace = true }
+prost = { workspace = true }
 
 [lints]
 workspace = true

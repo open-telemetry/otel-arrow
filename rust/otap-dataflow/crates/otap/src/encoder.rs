@@ -1,20 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata::views::{
-    common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
-    logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
-    metrics::{
-        BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
-        ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-        MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
-        SummaryDataPointView, SummaryView, ValueAtQuantileView,
-    },
-    resource::ResourceView,
-    trace::{
-        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
-    },
-};
 use otap_df_pdata::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
@@ -30,6 +16,21 @@ use otap_df_pdata::{
     otap::{Logs, Metrics, OtapArrowRecords, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    views::{
+        common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
+        logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
+        metrics::{
+            BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+            ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
+            MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+            SummaryDataPointView, SummaryView, ValueAtQuantileView,
+        },
+        resource::ResourceView,
+        trace::{
+            EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView,
+            TracesView,
+        },
+    },
 };
 
 use crate::encoder::error::{Error, Result};
@@ -691,10 +692,6 @@ where
                 .scopes()
                 .map(|scope| scope.metrics().count())
                 .sum();
-            let schema_url = resource_metric.schema_url();
-            metrics
-                .resource
-                .append_schema_url_n(schema_url, metric_count);
             metrics.resource.append_id_n(curr_resource_id, metric_count);
             metrics.resource.append_dropped_attributes_count_n(
                 resource.dropped_attributes_count(),
