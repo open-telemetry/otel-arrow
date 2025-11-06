@@ -513,6 +513,16 @@ impl From<proto::AggregationTemporality> for AggregationTemporality {
     }
 }
 
+impl From<u32> for AggregationTemporality {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => AggregationTemporality::Delta,
+            2 => AggregationTemporality::Cumulative,
+            _ => AggregationTemporality::Unspecified,
+        }
+    }
+}
+
 /// View for Histogram
 pub trait HistogramView {
     /// The `HistogramDataPointView` type associated with this implementation.

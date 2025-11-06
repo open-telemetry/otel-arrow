@@ -14,13 +14,14 @@ use crate::proto::consts::field_num::metrics::{
     NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
     SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
+    SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC,
 };
 use crate::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
-    DataPointFlags, DataType, DataView, GaugeView, MetricView, MetricsView, NumberDataPointView,
-    ResourceMetricsView, ScopeMetricsView, Value,
+    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, MetricView, MetricsView,
+    NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView, Value,
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
@@ -30,7 +31,7 @@ use crate::views::otlp::bytes::decode::{
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
     ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
-    ObjExponentialHistogram, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary,
+    ObjExponentialHistogram, ObjHistogram, ObjNumberDataPoint, ObjSummary,
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -274,6 +275,65 @@ impl FieldRanges for GaugeFieldRanges {
                 }
                 _ => { /* ignore */ }
             }
+        }
+    }
+}
+
+/// Implementation of [`SumView`] backed by buffer containing proto serialized `Sum` Message
+pub struct RawSum<'a> {
+    bytes_parser: ProtoBytesParser<'a, SumFieldRanges>,
+}
+
+/// Known field ranges for fields on `Sum` message
+pub struct SumFieldRanges {
+    is_monotonic: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for SumFieldRanges {
+    fn new() -> Self {
+        Self {
+            is_monotonic: Cell::new(None),
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            SUM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            SUM_IS_MONOTONIC => self.is_monotonic.get(),
+            SUM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            SUM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            SUM_IS_MONOTONIC => {
+                if wire_type == wire_types::VARINT {
+                    self.is_monotonic.set(Some(range))
+                }
+            }
+            SUM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
         }
     }
 }
@@ -634,7 +694,7 @@ impl DataView<'_> for RawData<'_> {
         Self: 'gauge;
 
     type Sum<'sum>
-        = ObjSum<'sum>
+        = RawSum<'sum>
     where
         Self: 'sum;
 
@@ -675,8 +735,9 @@ impl DataView<'_> for RawData<'_> {
     }
 
     fn as_sum(&self) -> Option<Self::Sum<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_SUM).then_some(RawSum {
+            bytes_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 
     fn as_histogram(&self) -> Option<Self::Histogram<'_>> {
@@ -710,6 +771,50 @@ impl GaugeView for RawGauge<'_> {
         NumberDataPointIter {
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
                 &self.byte_parser,
+                GAUGE_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
+    }
+}
+
+impl SumView for RawSum<'_> {
+    type NumberDataPoint<'dp>
+        = RawNumberDataPoint<'dp>
+    where
+        Self: 'dp;
+
+    type NumberDataPointIter<'dp>
+        = NumberDataPointIter<'dp, SumFieldRanges>
+    where
+        Self: 'dp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .bytes_parser
+            .advance_to_find_field(SUM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn is_monotonic(&self) -> bool {
+        let val = self
+            .bytes_parser
+            .advance_to_find_field(SUM_IS_MONOTONIC)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        val != 0
+    }
+
+    fn data_points(&self) -> Self::NumberDataPointIter<'_> {
+        NumberDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.bytes_parser,
                 GAUGE_DATA_POINTS,
                 wire_types::LEN,
             ),
