@@ -5,7 +5,7 @@ use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
-        BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+        self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
         ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
         MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
         SummaryDataPointView, SummaryView, ValueAtQuantileView,
@@ -623,8 +623,11 @@ where
     ndp.append_parent_id(*curr_metric_id);
     ndp.append_start_time_unix_nano(Some(ndp_view.start_time_unix_nano() as i64));
     ndp.append_time_unix_nano(ndp_view.time_unix_nano() as i64);
-    let double = ndp_view.value().and_then(|v| v.as_double());
-    let integer = ndp_view.value().and_then(|v| v.as_integer());
+    let (double, integer) = match ndp_view.value() {
+        Some(metrics::Value::Double(val)) => (Some(val), None),
+        Some(metrics::Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
     ndp.append_double_value(double);
     ndp.append_int_value(integer);
     ndp.append_flags(ndp_view.flags().into_inner());
@@ -762,7 +765,7 @@ where
                 metrics.append_is_monotonic(is_monotonic);
 
                 for kv in metric.metadata() {
-                    metric_attrs.append_parent_id(&curr_resource_id);
+                    metric_attrs.append_parent_id(&curr_metric_id);
                     append_attribute_value(&mut metric_attrs, &kv)?;
                 }
 
@@ -986,6 +989,7 @@ mod test {
     use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::otlp::attributes::AttributeValueType;
     use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use otel_arrow_rust::otlp::metrics::MetricType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
@@ -1206,7 +1210,7 @@ mod test {
         let metrics = otap_batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         let expected_metrics_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "resource",
                     DataType::Struct(
@@ -1346,7 +1350,17 @@ mod test {
                     Arc::new(StringArray::from_iter_values(vec!["another url"])),
                 )),
                 // metric_type
-                Arc::new(UInt8Array::from_iter(vec![5, 7, 11, 9, 10])),
+                Arc::new(UInt8Array::from_iter(
+                    [
+                        MetricType::Gauge,
+                        MetricType::Sum,
+                        MetricType::Summary,
+                        MetricType::Histogram,
+                        MetricType::ExponentialHistogram,
+                    ]
+                    .iter()
+                    .map(|i| *i as u8),
+                )),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 1, 2, 3, 4]),
@@ -1510,8 +1524,8 @@ mod test {
         let ndp = otap_batch.get(ArrowPayloadType::NumberDataPoints).unwrap();
         let expected_ndp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
