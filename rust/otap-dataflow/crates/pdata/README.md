@@ -97,15 +97,7 @@ After passing through an intermediate representation,
 `otap_df_pdata::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
 `OtapArrowRecords` of the correct signal.
 
-# Module summary
-
-## OTLP
-
-## OTAP
-
-## Encode
-
-## Decode
+# Sub-Modules
 
 ## Schema
 
