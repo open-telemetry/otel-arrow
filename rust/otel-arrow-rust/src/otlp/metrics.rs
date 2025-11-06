@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
+use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,
@@ -27,7 +27,7 @@ use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
     HISTOGRAM_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
-    METRIC_HISTOGRAM, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
+    METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
     METRICS_DATA_RESOURCE_METRICS, RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL,
     RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL,
     SCOPE_METRICS_SCOPE, SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC,
@@ -654,6 +654,23 @@ impl MetricsProtoBytesEncoder {
                             metrics_data_arrays,
                             result_buf
                         )?,
+                        result_buf
+                    )
+                }
+            }
+        }
+
+        if let Some(metrics_attrs) = metrics_data_arrays.metrics_attrs.as_ref() {
+            if let Some(id) = metrics_arrays.id.value_at(index) {
+                let attrs_index_iter = ChildIndexIter::new(
+                    id,
+                    &metrics_attrs.parent_id,
+                    &mut self.metrics_attrs_cursor,
+                );
+                for attr_index in attrs_index_iter {
+                    proto_encode_len_delimited_unknown_size!(
+                        METRIC_METADATA,
+                        encode_key_value(metrics_attrs, attr_index, result_buf)?,
                         result_buf
                     )
                 }

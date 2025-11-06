@@ -85,6 +85,7 @@ pub mod field_num {
         pub const METRIC_HISTOGRAM: u64 = 9;
         pub const METRIC_EXPONENTIAL_HISTOGRAM: u64 = 10;
         pub const METRIC_SUMMARY: u64 = 11;
+        pub const METRIC_METADATA: u64 = 12;
 
         pub const GAUGE_DATA_POINTS: u64 = 1;
 

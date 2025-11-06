@@ -91,6 +91,7 @@ use otap_df_engine::{
     control::{AckMsg, CallData, NackMsg},
 };
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
 use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
@@ -98,7 +99,7 @@ use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 
-use crate::encoder::{encode_logs_otap_batch, encode_spans_otap_batch};
+use crate::encoder::{encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch};
 
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default)]
@@ -601,13 +602,12 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 
                 Ok(otap_batch)
             }
-            _ => {
-                // TODO add conversions when we support
-                // https://github.com/open-telemetry/otel-arrow/issues/768
-                Err(error::Error::ConversionError {
-                    error: "converting from OTLP Bytes for this signal type not yet supported"
-                        .to_string(),
-                })
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                let metrics_data_view = RawMetricsData::new(&bytes);
+                let otap_batch =
+                    encode_metrics_otap_batch(&metrics_data_view).map_err(map_error)?;
+
+                Ok(otap_batch)
             }
         }
     }
@@ -716,9 +716,13 @@ mod test {
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
-            collector::{logs::v1::ExportLogsServiceRequest, trace::v1::ExportTraceServiceRequest},
+            collector::{
+                logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+                trace::v1::ExportTraceServiceRequest,
+            },
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+            metrics::v1::{Metric, ResourceMetrics, ScopeMetrics},
             resource::v1::Resource,
             trace::v1::{
                 ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
@@ -804,6 +808,27 @@ mod test {
 
         let result = ExportTraceServiceRequest::decode(bytes.as_ref()).unwrap();
         assert_eq!(otlp_service_req, result);
+    }
+
+    fn roundtrip_otlp_otap_metrics(otlp_service_request: ExportMetricsServiceRequest) {
+        let mut otlp_bytes = vec![];
+        otlp_service_request.encode(&mut otlp_bytes).unwrap();
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into())
+            .payload();
+
+        // test can go OtlpBytes -> OtapBatch & back
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapArrowRecords::Metrics(_)));
+        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let bytes = match otlp_bytes {
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
+            _ => panic!("unexpected otlp bytes pdata variant"),
+        };
+
+        let result = ExportMetricsServiceRequest::decode(bytes.as_ref()).unwrap();
+        assert_eq!(otlp_service_request, result);
     }
 
     #[test]
@@ -1168,6 +1193,39 @@ mod test {
         ]);
 
         roundtrip_otlp_otap_traces(otlp_service_req);
+    }
+
+    #[test]
+    fn test_otlp_otap_metrics_roundtrip() {
+        let otlp_service_req = ExportMetricsServiceRequest::new(vec![ResourceMetrics {
+            schema_url: "resource1 schema url".into(),
+            resource: Some(Resource {
+                dropped_attributes_count: 1,
+                attributes: vec![KeyValue::new("res_attr1", AnyValue::new_string("res_val1"))],
+                // TODO support entity refs
+                entity_refs: Default::default(),
+            }),
+
+            scope_metrics: vec![ScopeMetrics {
+                schema_url: "scope1 schema url".into(),
+                scope: Some(InstrumentationScope {
+                    name: "scope1 name".into(),
+                    version: "scope1 version".into(),
+                    attributes: vec![KeyValue::new("scp_attr1", AnyValue::new_string("scp_val1"))],
+                    dropped_attributes_count: 2,
+                }),
+                metrics: vec![Metric {
+                    name: "metric1".into(),
+                    description: "metric1 desc".into(),
+                    unit: "m1 unit".into(),
+                    // TODO handle data
+                    data: None,
+                    metadata: vec![KeyValue::new("met_attr1", AnyValue::new_string("met_val1"))],
+                }],
+            }],
+        }]);
+
+        roundtrip_otlp_otap_metrics(otlp_service_req);
     }
 
     #[test]
