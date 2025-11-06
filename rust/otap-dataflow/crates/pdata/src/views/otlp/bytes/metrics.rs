@@ -22,7 +22,6 @@ use crate::proto::consts::field_num::metrics::{
 };
 use crate::proto::consts::wire_types;
 
-use crate::schema::consts::{HISTOGRAM_BUCKET_COUNTS, HISTOGRAM_EXPLICIT_BOUNDS};
 use crate::views::common::Str;
 use crate::views::metrics::{
     AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, HistogramDataPointView,
@@ -31,14 +30,13 @@ use crate::views::metrics::{
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
-    FieldRanges, GenericFixed64Iter, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+    FieldRanges, PackedFixed64Iter, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    ExemplarIter, HistogramDataPointIter as ObjHistogramDataPointIter,
-    NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar, ObjExponentialHistogram,
-    ObjHistogramDataPoint, ObjNumberDataPoint, ObjSummary,
+    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
+    ObjExponentialHistogram, ObjNumberDataPoint, ObjSummary,
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -504,11 +502,11 @@ pub struct HistogramDataPointFieldRanges {
     count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    explicit_bounds: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     min: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     max: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_attributes: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    first_bucket_count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    first_explicit_bounds: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
@@ -527,8 +525,8 @@ impl FieldRanges for HistogramDataPointFieldRanges {
             HISTOGRAM_DP_MIN => self.min.get(),
             HISTOGRAM_DP_MAX => self.max.get(),
             HISTOGRAM_DP_ATTRIBUTES => self.first_attributes.get(),
-            HISTOGRAM_DP_BUCKET_COUNTS => self.first_bucket_count.get(),
-            HISTOGRAM_DP_EXPLICIT_BOUNDS => self.first_explicit_bounds.get(),
+            HISTOGRAM_DP_BUCKET_COUNTS => self.bucket_counts.get(),
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => self.explicit_bounds.get(),
             HISTOGRAM_DP_EXEMPLARS => self.first_exemplar.get(),
             _ => return None,
         };
@@ -568,6 +566,16 @@ impl FieldRanges for HistogramDataPointFieldRanges {
                     self.flags.set(Some(range))
                 }
             }
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
+                if wire_type == wire_types::LEN {
+                    self.explicit_bounds.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_BUCKET_COUNTS => {
+                if wire_type == wire_types::LEN {
+                    self.bucket_counts.set(Some(range));
+                }
+            }
             HISTOGRAM_DP_MIN => {
                 if wire_type == wire_types::FIXED64 {
                     self.min.set(Some(range))
@@ -588,16 +596,7 @@ impl FieldRanges for HistogramDataPointFieldRanges {
                     self.first_exemplar.set(Some(range))
                 }
             }
-            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
-                if wire_type == wire_types::FIXED64 && self.first_explicit_bounds.get().is_none() {
-                    self.first_explicit_bounds.set(Some(range));
-                }
-            }
-            HISTOGRAM_DP_BUCKET_COUNTS => {
-                if wire_type == wire_types::FIXED64 && self.first_bucket_count.get().is_none() {
-                    self.first_bucket_count.set(Some(range));
-                }
-            }
+
             _ => { /* ignore */ }
         }
     }
@@ -1140,12 +1139,12 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
         Self: 'att;
 
     type BucketCountIter<'bc>
-        = GenericFixed64Iter<'bc, HistogramDataPointFieldRanges, u64>
+        = PackedFixed64Iter<'bc, u64>
     where
         Self: 'bc;
 
     type ExplicitBoundsIter<'eb>
-        = GenericFixed64Iter<'eb, HistogramDataPointFieldRanges, f64>
+        = PackedFixed64Iter<'eb, f64>
     where
         Self: 'eb;
 
@@ -1168,7 +1167,11 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     }
 
     fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
-        GenericFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_BUCKET_COUNTS)
+        let buf = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_BUCKET_COUNTS)
+            .unwrap_or_default();
+        PackedFixed64Iter::new(buf)
     }
 
     fn count(&self) -> u64 {
@@ -1185,7 +1188,12 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     }
 
     fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
-        GenericFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_EXPLICIT_BOUNDS)
+        let buf = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_EXPLICIT_BOUNDS)
+            .unwrap_or_default();
+
+        PackedFixed64Iter::new(buf)
     }
 
     fn flags(&self) -> DataPointFlags {

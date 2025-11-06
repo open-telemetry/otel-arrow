@@ -326,50 +326,46 @@ where
     }
 }
 
-/// Iterator adapter for converting
-pub struct GenericFixed64Iter<'a, T: FieldRanges, V: FromFixed64> {
-    bytes_parser: RepeatedFieldProtoBytesParser<'a, T>,
+/// Iterator for producing elements whose type is a repeated primitive where that primitive
+/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64`. OTLP uses the
+/// packed encoding for these types of fields
+/// https://protobuf.dev/editions/features/#repeated_field_encoding
+pub struct PackedFixed64Iter<'a, V: FromFixed64> {
+    buffer: &'a [u8],
+    pos: usize,
     _pd: PhantomData<V>,
 }
 
-impl<'a, T, V> GenericFixed64Iter<'a, T, V>
+impl<'a, V> PackedFixed64Iter<'a, V>
 where
-    T: FieldRanges,
     V: FromFixed64,
 {
-    pub(crate) fn from_byte_parser(
-        bytes_parser: &'a ProtoBytesParser<'a, T>,
-        field_num: u64,
-    ) -> Self {
+    pub(crate) fn new(buffer: &'a [u8]) -> Self {
         Self {
-            bytes_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
-                bytes_parser,
-                field_num,
-                wire_types::FIXED64,
-            ),
-            _pd: PhantomData::default(),
+            buffer,
+            pos: 0,
+            _pd: PhantomData,
         }
     }
 }
 
-impl<'a, T, V> Iterator for GenericFixed64Iter<'a, T, V>
+impl<'a, V> Iterator for PackedFixed64Iter<'a, V>
 where
-    T: FieldRanges,
     V: FromFixed64,
 {
     type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let slice = self.bytes_parser.next()?;
-            let as_fixed_64_bytes: Option<[u8; 8]> = slice.try_into().ok();
-            if let Some(fixed_64_bytes) = as_fixed_64_bytes {
-                return Some(V::from_fixed64_slice(fixed_64_bytes));
-            }
-
-            // if here, the slice was for some reason the wrong length, we just ignore it
-            // and continue looping to the next value
+        if self.pos + 8 > self.buffer.len() {
+            // we've reached end of buffer
+            return None;
         }
+
+        let slice: [u8; 8] = self.buffer[self.pos..self.pos + 8]
+            .try_into()
+            .expect("can convert slice of fixed size");
+        self.pos += 8;
+        Some(V::from_fixed64_slice(slice))
     }
 }
 

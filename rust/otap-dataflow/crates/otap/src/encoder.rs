@@ -1837,8 +1837,8 @@ mod test {
             .unwrap();
         let expected_hdp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1850,12 +1850,12 @@ mod test {
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
-                Field::new_large_list(
+                Field::new_list(
                     "bucket_counts",
                     Field::new_list_field(DataType::UInt64, false),
                     false,
                 ),
-                Field::new_large_list(
+                Field::new_list(
                     "explicit_bounds",
                     Field::new_list_field(DataType::Float64, false),
                     false,
@@ -2081,11 +2081,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
@@ -2097,11 +2093,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
