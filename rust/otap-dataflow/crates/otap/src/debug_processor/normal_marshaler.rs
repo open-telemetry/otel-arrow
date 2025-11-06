@@ -4,7 +4,7 @@
 //! Implementation of the ViewMarshaler for converting View messages to structured string reports.
 
 use super::marshaler::ViewMarshaler;
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     common::v1::KeyValue,
     logs::v1::{LogRecord, LogsData},
     metrics::v1::{
@@ -417,7 +417,7 @@ mod tests {
 
     use crate::debug_processor::marshaler::ViewMarshaler;
     use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
-    use otel_arrow_rust::proto::opentelemetry::{
+    use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{

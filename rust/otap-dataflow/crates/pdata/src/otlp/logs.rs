@@ -148,6 +148,7 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     }
 }
 
+#[allow(missing_docs)]
 pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
@@ -185,6 +186,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
     }
 }
 
+#[allow(missing_docs)]
 pub struct LogsProtoBytesEncoder {
     batch_sorter: BatchSorter,
     root_cursor: SortedBatchCursor,
@@ -255,6 +257,7 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
 
 impl LogsProtoBytesEncoder {
     #[must_use]
+    #[allow(missing_docs)]
     pub fn new() -> Self {
         Self {
             batch_sorter: BatchSorter::new(),

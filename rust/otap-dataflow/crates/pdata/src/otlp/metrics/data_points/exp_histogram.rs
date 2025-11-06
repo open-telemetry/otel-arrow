@@ -28,6 +28,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, UInt64Type};
 
+#[allow(missing_docs)]
 pub struct ExpHistogramDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,
@@ -90,6 +91,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
     }
 }
 
+#[allow(missing_docs)]
 pub struct PositiveNegativeArrayAccess<'a> {
     offset_array: &'a Int32Array,
     bucket_count: ListValueAccessor<'a, UInt64Type>,

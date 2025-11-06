@@ -40,10 +40,14 @@ use crate::schema::consts;
 use arrow::array::{BooleanArray, RecordBatch, UInt8Array, UInt16Array};
 use num_enum::TryFromPrimitive;
 
+/// Common structs and methods for data points.
 pub mod data_points;
+
+/// Common structs and methods for exemplars.
 pub mod exemplar;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
+#[allow(missing_docs)]
 #[repr(u8)]
 pub enum MetricType {
     Empty = 0,
@@ -109,6 +113,7 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
     }
 }
 
+#[allow(missing_docs)]
 pub trait AppendAndGet<T> {
     fn append_and_get(&mut self) -> &mut T;
 }
@@ -123,6 +128,7 @@ where
     }
 }
 
+#[allow(missing_docs)]
 pub struct MetricsDataArrays<'a> {
     metrics_arrays: MetricsArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
@@ -235,6 +241,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for MetricsDataArrays<'a> {
     }
 }
 
+#[allow(missing_docs)]
 pub struct MetricsProtoBytesEncoder {
     batch_sorter: BatchSorter,
     root_cursor: SortedBatchCursor,
@@ -432,6 +439,7 @@ impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
 
 impl MetricsProtoBytesEncoder {
     #[must_use]
+    #[allow(missing_docs)]
     pub fn new() -> Self {
         Self {
             batch_sorter: BatchSorter::new(),
@@ -460,6 +468,7 @@ impl MetricsProtoBytesEncoder {
         }
     }
 
+    #[allow(missing_docs)]
     pub fn reset(&mut self) {
         self.root_cursor.reset();
         self.resource_attrs_cursor.reset();

@@ -17,12 +17,19 @@ use crate::proto::consts::wire_types;
 use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
+/// Common methods for Key-Value list and Array values.
 pub mod cbor;
+
+/// Common methods for decoding OTAP/OTLP data.
 pub mod decoder;
+
+/// Common methods for OTAP parent ID columns encoding/optimization.
 pub mod parent_id;
 
+/// OTAP conventional numbering for fields.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
+#[allow(missing_docs)]
 pub enum AttributeValueType {
     Empty = 0,
     Str = 1,

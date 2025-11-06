@@ -21,6 +21,7 @@ use arrow::array::{
     Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array,
 };
 
+#[allow(missing_docs)]
 pub struct NumberDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,

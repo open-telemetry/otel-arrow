@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::{
+use otap_df_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
 };
-use otel_arrow_rust::schema::consts;
+use otap_df_pdata::schema::consts;
 
 fn generate_native_keys_attr_batch(
     num_rows: usize,

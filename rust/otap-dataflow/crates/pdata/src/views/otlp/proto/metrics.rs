@@ -4,7 +4,7 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp metrics.proto.
 
-use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+use crate::proto::opentelemetry::metrics::v1::{
     Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
     HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
     Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets, metric::Data,

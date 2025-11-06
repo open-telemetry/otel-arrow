@@ -8,9 +8,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use otel_arrow_rust::proto::opentelemetry::common::v1::*;
-use otel_arrow_rust::proto::opentelemetry::logs::v1::*;
-use otel_arrow_rust::proto::opentelemetry::resource::v1::*;
+use otap_df_pdata::proto::opentelemetry::common::v1::*;
+use otap_df_pdata::proto::opentelemetry::logs::v1::*;
+use otap_df_pdata::proto::opentelemetry::resource::v1::*;
 
 fn create_logs_data() -> LogsData {
     let mut rl: Vec<ResourceLogs> = vec![];

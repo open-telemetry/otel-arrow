@@ -28,7 +28,9 @@ use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto_encode_len_delimited_unknown_size;
 
+/// Common methods for delta-encoding ID and PARENT_ID columns.
 pub mod delta_decoder;
+
 mod span_event;
 mod span_link;
 mod spans_arrays;
@@ -192,6 +194,7 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
     }
 }
 
+#[allow(missing_docs)]
 impl TracesProtoBytesEncoder {
     #[must_use]
     pub fn new() -> Self {

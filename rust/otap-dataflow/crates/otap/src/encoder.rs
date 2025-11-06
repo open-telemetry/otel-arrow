@@ -15,7 +15,7 @@ use otap_df_pdata::views::{
         EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
     },
 };
-use otel_arrow_rust::{
+use otap_df_pdata::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
         logs::LogsRecordBatchBuilder,
@@ -977,31 +977,31 @@ mod test {
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
 
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-    use otel_arrow_rust::otlp::ProtoBuffer;
-    use otel_arrow_rust::otlp::attributes::AttributeValueType;
-    use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{
+    use otap_df_pdata::otlp::ProtoBuffer;
+    use otap_df_pdata::otlp::attributes::AttributeValueType;
+    use otap_df_pdata::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::SpanFlags;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::SpanFlags;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
         status::StatusCode,
     };
-    use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use otap_df_pdata::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
     use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
     fn test_metrics_round_trip() {
-        use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+        use otap_df_pdata::proto::opentelemetry::metrics::v1::{
             Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
             ScopeMetrics, Sum, Summary, SummaryDataPoint,
@@ -3843,14 +3843,14 @@ mod test {
 
     #[test]
     fn test_encode_logs_batch_length_counts_rows() {
-        use otel_arrow_rust::otap::OtapArrowRecords;
-        use otel_arrow_rust::proto::opentelemetry::common::v1::{
+        use otap_df_pdata::otap::OtapArrowRecords;
+        use otap_df_pdata::proto::opentelemetry::common::v1::{
             AnyValue, InstrumentationScope, KeyValue,
         };
-        use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+        use otap_df_pdata::proto::opentelemetry::logs::v1::{
             LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
         };
-        use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+        use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 
         // Build logs with at least one attribute per record so log ids are set
         let logs: Vec<LogRecord> = (0..3)

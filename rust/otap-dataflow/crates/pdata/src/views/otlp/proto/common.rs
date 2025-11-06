@@ -4,7 +4,7 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp common.proto.
 
-use otel_arrow_rust::proto::opentelemetry::common::v1::{
+use crate::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
 

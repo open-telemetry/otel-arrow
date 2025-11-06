@@ -30,12 +30,12 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
-use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
+use otap_df_telemetry::metrics::MetricSet;
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -513,8 +513,7 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::{
+    use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
@@ -526,6 +525,7 @@ mod tests {
             span::SpanKind, status::StatusCode,
         },
     };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message as _;
     use serde_json::Value;
     use std::collections::HashSet;

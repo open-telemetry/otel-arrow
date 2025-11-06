@@ -432,11 +432,11 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep};

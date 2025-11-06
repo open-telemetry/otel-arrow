@@ -23,7 +23,7 @@
 //!            └── Summary
 //! ```
 
-use otel_arrow_rust::proto::opentelemetry::metrics::v1 as proto;
+use crate::proto::opentelemetry::metrics::v1 as proto;
 
 use crate::views::{
     common::{AttributeView, InstrumentationScopeView, SpanId, Str, TraceId},

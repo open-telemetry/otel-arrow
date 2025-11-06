@@ -9,8 +9,8 @@ use otap_df_engine::{
     ExporterFactory, Interests,
     control::{CallData, PipelineControlMsg},
 };
-use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otap_df_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
     resource::v1::Resource,

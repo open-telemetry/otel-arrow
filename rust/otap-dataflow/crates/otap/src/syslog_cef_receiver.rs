@@ -680,7 +680,7 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+                use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
                 // Check that messages have been received through the effect_handler
 
@@ -799,7 +799,7 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+                use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
                 // Check that messages have been received through the effect_handler
 
@@ -918,7 +918,7 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+                use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
                 // Check that messages have been received through the effect_handler
                 // Note: Messages might come in separate batches due to timing

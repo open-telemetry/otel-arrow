@@ -12,9 +12,13 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, Ke
 // TODO write documentation for this crate
 //#![allow(missing_docs)]
 
+/// Common methods for OTLP/OTAP attributes.
 pub mod attributes;
+/// Common methods for OTLP/OTAP logs.
 pub mod logs;
+/// Common methods for OTLP/OTAP metrics.
 pub mod metrics;
+/// Common methods for OTLP/OTAP traces.
 pub mod traces;
 
 mod common;

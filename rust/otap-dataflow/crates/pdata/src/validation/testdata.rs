@@ -7,12 +7,12 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 
 pub mod traces {
     use super::*;
-    use crate::pdata::{SpanID, TraceID};
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, status::StatusCode,
     };
+    use crate::{SpanID, TraceID};
 
     pub fn create_single_request() -> ExportTraceServiceRequest {
         let start_time = 1619712000000000000u64;

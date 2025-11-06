@@ -18,6 +18,7 @@ use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray, UInt32Array};
 
+#[allow(missing_docs)]
 pub struct ExemplarArrays<'a> {
     pub id: Option<&'a UInt32Array>,
     pub parent_id: MaybeDictArrayAccessor<'a, UInt32Array>,

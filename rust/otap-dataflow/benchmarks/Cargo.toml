@@ -9,6 +9,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 mimalloc-rust.workspace = true
@@ -25,7 +26,6 @@ otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
-otel-arrow-rust = { path = "../../otel-arrow-rust"}
 
 fluke-hpack.workspace = true
 futures-channel.workspace = true
@@ -63,6 +63,22 @@ harness = false
 
 [[bench]]
 name = "syslog_cef_receiver"
+harness = false
+
+[[bench]]
+name = "otlp_bytes"
+harness = false
+
+[[bench]]
+name = "materialize_parent_id"
+harness = false
+
+[[bench]]
+name = "attribute_transform"
+harness = false
+
+[[bench]]
+name = "item_count"
 harness = false
 
 [profile.bench]

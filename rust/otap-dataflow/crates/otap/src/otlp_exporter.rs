@@ -21,11 +21,11 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -313,7 +313,7 @@ async fn handle_export_result<T>(
 /// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
 /// and handling Ack/Nack delivery.
 async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
-    mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
+    mut otap_batch: otap_df_pdata::otap::OtapArrowRecords,
     context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,

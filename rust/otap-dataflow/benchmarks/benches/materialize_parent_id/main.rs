@@ -11,9 +11,9 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
-use otel_arrow_rust::otap::transform::materialize_parent_id_for_attributes;
-use otel_arrow_rust::otlp::attributes::AttributeValueType;
-use otel_arrow_rust::schema::consts;
+use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
+use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otap_df_pdata::schema::consts;
 
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {
     let mut types = UInt8Array::builder(num_attrs);

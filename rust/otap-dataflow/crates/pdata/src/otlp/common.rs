@@ -307,6 +307,7 @@ pub struct ProtoBuffer {
     buffer: Vec<u8>,
 }
 
+#[allow(missing_docs)]
 impl ProtoBuffer {
     #[must_use]
     pub const fn new() -> Self {

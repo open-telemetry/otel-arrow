@@ -28,8 +28,8 @@ use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_telemetry::metrics::MetricSet;
 // For optional conversion during flush/partitioning
-use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::otap::batching::make_output_batches;
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::otap::batching::make_output_batches;
 
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
@@ -779,17 +779,17 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 #[cfg(test)]
 mod test_helpers {
     use super::*;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
     };
-    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::status::StatusCode;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::status::StatusCode;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
     };
 
@@ -891,9 +891,9 @@ mod tests {
     use otap_df_engine::node::Node; // bring trait in scope for user_config()
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use serde_json::json;
     use std::collections::HashMap;
     use std::collections::HashSet;

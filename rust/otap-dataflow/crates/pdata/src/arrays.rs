@@ -114,6 +114,7 @@ impl NullableArrayAccessor for StringArray {
 macro_rules! impl_downcast {
     ($suffix:ident, $data_type:expr, $array_type:ident) => {
         paste!{
+            #[allow(dead_code)]
             pub fn [<get_ $suffix _array_opt> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<Option<&'a $array_type>> {
                 use arrow::datatypes::DataType::*;
                 rb.column_by_name(name)
@@ -128,6 +129,7 @@ macro_rules! impl_downcast {
                 }).transpose()
             }
 
+            #[allow(dead_code)]
               pub fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<&'a $array_type> {
                 use arrow::datatypes::DataType::*;
                 let arr = get_required_array(rb, name)?;
@@ -244,6 +246,7 @@ pub fn get_required_array_from_struct_array_from_record_batch<'a>(
         })
 }
 
+#[allow(dead_code)]
 trait NullableInt64ArrayAccessor {
     fn i64_at(&self, idx: usize) -> Result<Option<i64>>;
 }
@@ -272,6 +275,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 trait NullableF64ArrayAccessor {
     fn f64_at(&self, idx: usize) -> Result<Option<f64>>;
 }
@@ -310,6 +314,7 @@ pub enum ByteArrayAccessor<'a> {
 }
 
 impl<'a> ByteArrayAccessor<'a> {
+    #[allow(dead_code)]
     pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
@@ -559,6 +564,7 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     }
 }
 
+#[allow(dead_code)]
 pub type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
 pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;

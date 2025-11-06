@@ -26,7 +26,6 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - otel-arrow-rust
           - experimental/query_abstraction
           - experimental/query_engine
     runs-on: ubuntu-latest
@@ -62,7 +61,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -87,7 +85,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -113,7 +110,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -158,7 +154,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest

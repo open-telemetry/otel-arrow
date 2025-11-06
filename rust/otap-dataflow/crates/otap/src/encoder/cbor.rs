@@ -123,10 +123,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_pdata::otlp::ProtoBuffer;
     use otap_df_pdata::views::otlp::proto::common::{ObjAny, ObjKeyValue};
     use otap_df_pdata::views::otlp::proto::wrappers::Wraps;
-    use otel_arrow_rust::otlp::ProtoBuffer;
-    use otel_arrow_rust::{
+    use otap_df_pdata::{
         otlp::attributes::cbor::proto_encode_cbor_bytes,
         proto::opentelemetry::common::v1::{
             AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
