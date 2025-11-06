@@ -30,9 +30,9 @@ name = "df_engine"
 path = "src/main.rs"
 
 [dependencies]
-otap-df-config = { path = "crates/config" }
-otap-df-controller = { path = "crates/controller" }
-otap-df-otap = { path = "crates/otap" }
+otap-df-config.workspace = true
+otap-df-controller.workspace = true
+otap-df-otap.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
@@ -41,6 +41,9 @@ mimalloc-rust.workspace = true
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
+otap-df-config = { path = "crates/config" }
+otap-df-controller = { path = "crates/controller" }
+otap-df-otap = { path = "crates/otap" }
 
 ahash = "0.8.11"
 arrayvec = "0.7.6"

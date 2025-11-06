@@ -10,6 +10,16 @@ use std::{
     sync::Arc,
 };
 
+use crate::{
+    otap::{
+        DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecords, OtapBatchStore, POSITION_LOOKUP,
+        Traces, batch_length, child_payload_types,
+        error::{Error, Result},
+        transform::sort_to_indices,
+    },
+    proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    schema::consts,
+};
 use ahash::AHashSet;
 use arrow::{
     array::{
@@ -24,18 +34,8 @@ use arrow::{
     },
 };
 use itertools::Itertools;
+use otap_df_config::SignalType;
 use smallvec::SmallVec;
-
-use crate::{
-    otap::{
-        DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecordTag, OtapArrowRecords, OtapBatchStore,
-        POSITION_LOOKUP, Traces, batch_length, child_payload_types,
-        error::{Error, Result},
-        transform::sort_to_indices,
-    },
-    proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::consts,
-};
 
 /// I logically represent a sequence of OtapArrowRecords that all share exactly the same tag.  I
 /// maintain an invariant that the primary table for each telemetry type in each batch is not None
@@ -54,13 +54,13 @@ impl RecordsGroup {
     /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
     #[must_use]
     pub fn split_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
-        let log_count = tag_count(&records, OtapArrowRecordTag::Logs);
+        let log_count = tag_count(&records, SignalType::Logs);
         let mut log_records = Vec::with_capacity(log_count);
 
-        let metric_count = tag_count(&records, OtapArrowRecordTag::Metrics);
+        let metric_count = tag_count(&records, SignalType::Metrics);
         let mut metric_records = Vec::with_capacity(metric_count);
 
-        let trace_count = tag_count(&records, OtapArrowRecordTag::Traces);
+        let trace_count = tag_count(&records, SignalType::Traces);
         let mut trace_records = Vec::with_capacity(trace_count);
 
         for records in records {
@@ -196,7 +196,7 @@ impl RecordsGroup {
 // Some helpers for `RecordsGroup`...
 // *************************************************************************************************
 
-fn tag_count(records: &[OtapArrowRecords], tag: OtapArrowRecordTag) -> usize {
+fn tag_count(records: &[OtapArrowRecords], tag: SignalType) -> usize {
     records
         .iter()
         .map(|records| (records.tag() == tag) as usize)

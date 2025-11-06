@@ -15,7 +15,7 @@ use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};

@@ -6,7 +6,7 @@
 //! Note: We try as much as possible to follow the following
 //! [RFC Pipeline Component Telemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 

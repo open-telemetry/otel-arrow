@@ -84,7 +84,7 @@
 // this diagram may need to be updated (https://github.com/open-telemetry/otel-arrow/issues/1095)
 
 use async_trait::async_trait;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_engine::error::Error;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
