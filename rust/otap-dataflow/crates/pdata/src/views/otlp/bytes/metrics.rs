@@ -8,17 +8,20 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use otel_arrow_rust::proto::consts::field_num::metrics::{
-    GAUGE_DATA_POINTS, METRICS_DATA_RESOURCE_METRICS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES, NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO, RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE
+    GAUGE_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
+    METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
+    METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
+    NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
+    RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
+    SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
 };
-use otel_arrow_rust::proto::consts::wire_types;
+use otel_arrow_rust::proto::consts::{field_num, wire_types};
 
 use crate::views::common::Str;
 use crate::views::metrics::{
-    DataView, DataType, 
-    GaugeView,
-    MetricView, MetricsView, 
-    NumberDataPointView,
-    ResourceMetricsView, ScopeMetricsView};
+    DataPointFlags, DataType, DataView, GaugeView, MetricView, MetricsView, NumberDataPointView,
+    ResourceMetricsView, ScopeMetricsView, Value,
+};
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
@@ -26,7 +29,9 @@ use crate::views::otlp::bytes::decode::{
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    NumberDataPointIter as ObjNumberDataPointIter, ObjData, ObjExponentialHistogram, ObjGauge, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary};
+    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjData, ObjExemplar,
+    ObjExponentialHistogram, ObjGauge, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary,
+};
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {
@@ -219,27 +224,30 @@ impl FieldRanges for MetricFieldRanges {
 /// Implementation of [`DataView`] backed by one of the buffers in Metric's "data" oneof field.
 pub struct RawData<'a> {
     field_num: u64,
-    buf: &'a [u8]
+    buf: &'a [u8],
 }
 
-/// Implementation of ['G]
+/// Implementation of [`GaugeView`]
 pub struct RawGauge<'a> {
-    byte_parser: ProtoBytesParser<'a, GaugeFieldRanges>
+    byte_parser: ProtoBytesParser<'a, GaugeFieldRanges>,
 }
 
-struct GaugeFieldRanges {
+/// Known field ranges for fields on Gauge messages
+pub struct GaugeFieldRanges {
     first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl FieldRanges for GaugeFieldRanges {
     fn new() -> Self {
-        Self { first_data_point: Cell::new(None) }
+        Self {
+            first_data_point: Cell::new(None),
+        }
     }
 
     fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
         let range = match field_num {
             GAUGE_DATA_POINTS => self.first_data_point.get(),
-            _ => return None
+            _ => return None,
         };
         from_option_nonzero_range_to_primitive(range)
     }
@@ -248,7 +256,7 @@ impl FieldRanges for GaugeFieldRanges {
         if wire_type == wire_types::LEN {
             let range = match to_nonzero_range(start, end) {
                 Some(range) => range,
-                None => return
+                None => return,
             };
 
             match field_num {
@@ -257,7 +265,7 @@ impl FieldRanges for GaugeFieldRanges {
                         self.first_data_point.set(Some(range))
                     }
                 }
-                _ => { /* ignore */}
+                _ => { /* ignore */ }
             }
         }
     }
@@ -266,15 +274,16 @@ impl FieldRanges for GaugeFieldRanges {
 /// Implementation of [`NumberDataPointView`] backed by buffer containing proto serialized
 /// NumberDataPoint message
 pub struct RawNumberDataPoint<'a> {
-    byte_parser: ProtoBytesParser<'a, NumberDataPointFieldRanges>
+    byte_parser: ProtoBytesParser<'a, NumberDataPointFieldRanges>,
 }
 
-struct NumberDataPointFieldRanges {
+/// Known field ranges for fields in proto serialized NumberDataPoint message
+pub struct NumberDataPointFieldRanges {
     start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     value: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,    
+    first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
@@ -295,10 +304,13 @@ impl FieldRanges for NumberDataPointFieldRanges {
             NUMBER_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
             NUMBER_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
             NUMBER_DP_FLAGS => self.flags.get(),
+            // TODO -- there's a bug to fix here (and in RawMetric) with the handling of oneofs
+            // where if we find the field for one field_num in the oneof and call get with another
+            // we return the range for the wrong field_num.
             NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT => self.value.get(),
             NUMBER_DP_ATTRIBUTES => self.first_attribute.get(),
             NUMBER_DP_EXEMPLARS => self.first_exemplar.get(),
-            _ => return None
+            _ => return None,
         };
 
         from_option_nonzero_range_to_primitive(range)
@@ -307,7 +319,7 @@ impl FieldRanges for NumberDataPointFieldRanges {
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
         let range = match to_nonzero_range(start, end) {
             Some(range) => range,
-            None => return
+            None => return,
         };
 
         // TODO double check if less branching here would be faster ..
@@ -345,7 +357,7 @@ impl FieldRanges for NumberDataPointFieldRanges {
                     self.flags.set(Some(range))
                 }
             }
-            _ => { /* ignore */}
+            _ => { /* ignore */ }
         }
     }
 }
@@ -417,16 +429,23 @@ impl<'a> Iterator for MetricIter<'a> {
     }
 }
 
+/// Iterator of NumberDataPoint - produces implementation pof [`NumberDataPointView`] from byte
+/// array containing a serialized metric data message
 pub struct NumberDataPointIter<'a, T: FieldRanges> {
-    byte_parser: RepeatedFieldProtoBytesParser<'a, T>
+    byte_parser: RepeatedFieldProtoBytesParser<'a, T>,
 }
 
-impl<'a, T> Iterator for NumberDataPointIter<'a, T> where T: FieldRanges {
+impl<'a, T> Iterator for NumberDataPointIter<'a, T>
+where
+    T: FieldRanges,
+{
     type Item = RawNumberDataPoint<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.byte_parser.next()?;
-        Some(RawNumberDataPoint { byte_parser: ProtoBytesParser::new(slice) })
+        Some(RawNumberDataPoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
     }
 }
 
@@ -571,9 +590,9 @@ impl MetricView for RawMetric<'_> {
             METRIC_SUM,
             METRIC_HISTOGRAM,
             METRIC_EXPONENTIAL_HISTOGRAM,
-            METRIC_SUMMARY
+            METRIC_SUMMARY,
         ])?;
-        
+
         Some(RawData {
             field_num,
             buf: slice,
@@ -591,39 +610,46 @@ impl MetricView for RawMetric<'_> {
 
 impl DataView<'_> for RawData<'_> {
     // TODO all the use of the Obj implementations here are placeholders
-    type NumberDataPoint<'dp> = ObjNumberDataPoint<'dp>
-        where
-            Self: 'dp;
-    type NumberDataPointIter<'dp> = ObjNumberDataPointIter<'dp>
-        where
-            Self: 'dp;
+    type NumberDataPoint<'dp>
+        = ObjNumberDataPoint<'dp>
+    where
+        Self: 'dp;
+    type NumberDataPointIter<'dp>
+        = ObjNumberDataPointIter<'dp>
+    where
+        Self: 'dp;
 
-    type Gauge<'gauge> = RawGauge<'gauge>
-        where
-            Self: 'gauge;
+    type Gauge<'gauge>
+        = RawGauge<'gauge>
+    where
+        Self: 'gauge;
 
-    type Sum<'sum> = ObjSum<'sum>
-        where
-            Self: 'sum;
+    type Sum<'sum>
+        = ObjSum<'sum>
+    where
+        Self: 'sum;
 
-    type Histogram<'histogram> = ObjHistogram<'histogram>
-        where
-            Self: 'histogram;
+    type Histogram<'histogram>
+        = ObjHistogram<'histogram>
+    where
+        Self: 'histogram;
 
-    type ExponentialHistogram<'exp> = ObjExponentialHistogram<'exp>
-        where
-            Self: 'exp;
+    type ExponentialHistogram<'exp>
+        = ObjExponentialHistogram<'exp>
+    where
+        Self: 'exp;
 
-    type Summary<'summary> = ObjSummary<'summary>
-        where
-            Self: 'summary;
-    
+    type Summary<'summary>
+        = ObjSummary<'summary>
+    where
+        Self: 'summary;
+
     fn value_type(&self) -> DataType {
         match self.field_num {
             METRIC_GAUGE => DataType::Gauge,
             METRIC_SUM => DataType::Sum,
             METRIC_HISTOGRAM => DataType::Histogram,
-            METRIC_EXPONENTIAL_HISTOGRAM => DataType::Histogram,
+            METRIC_EXPONENTIAL_HISTOGRAM => DataType::ExponentialHistogram,
             METRIC_SUMMARY => DataType::Summary,
             _ => {
                 // safety: we only initialize this with the field number after having parsed one of
@@ -635,7 +661,7 @@ impl DataView<'_> for RawData<'_> {
 
     fn as_gauge(&self) -> Option<Self::Gauge<'_>> {
         (self.field_num == METRIC_GAUGE).then_some(RawGauge {
-            byte_parser: ProtoBytesParser::new(self.buf)
+            byte_parser: ProtoBytesParser::new(self.buf),
         })
     }
 
@@ -661,25 +687,107 @@ impl DataView<'_> for RawData<'_> {
 }
 
 impl GaugeView for RawGauge<'_> {
-    type NumberDataPoint<'dp> = RawNumberDataPoint<'dp>
-        where
-            Self: 'dp;
+    type NumberDataPoint<'dp>
+        = RawNumberDataPoint<'dp>
+    where
+        Self: 'dp;
 
-    type NumberDataPointIter<'dp> = NumberDataPointIter<'dp, GaugeFieldRanges>
-        where
-            Self: 'dp;
+    type NumberDataPointIter<'dp>
+        = NumberDataPointIter<'dp, GaugeFieldRanges>
+    where
+        Self: 'dp;
 
     fn data_points(&self) -> Self::NumberDataPointIter<'_> {
         NumberDataPointIter {
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.byte_parser, 
-                GAUGE_DATA_POINTS, 
-                wire_types::LEN
-            )
+                &self.byte_parser,
+                GAUGE_DATA_POINTS,
+                wire_types::LEN,
+            ),
         }
     }
 }
 
 impl NumberDataPointView for RawNumberDataPoint<'_> {
-    // TODO
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, NumberDataPointFieldRanges>
+    where
+        Self: 'att;
+
+    // TODO using Obj Exemplars temporarily here until we've implemented an exemplar view
+    // backed by proto bytes
+    type Exemplar<'ex>
+        = ObjExemplar<'ex>
+    where
+        Self: 'ex;
+    type ExemplarIter<'ex>
+        = ExemplarIter<'ex>
+    where
+        Self: 'ex;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            NUMBER_DP_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn start_time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(NUMBER_DP_START_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(NUMBER_DP_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn value(&self) -> Option<Value> {
+        let (slice, field_num) = self
+            .byte_parser
+            .advance_to_find_oneof(&[NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT])?;
+
+        match field_num {
+            NUMBER_DP_AS_DOUBLE => {
+                let doub_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Double(f64::from_le_bytes(doub_bytes)))
+            }
+            NUMBER_DP_AS_INT => {
+                let int_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Integer(i64::from_le_bytes(int_bytes)))
+            }
+            _ => {
+                // this shouldn't happen, as advance_to_find_oneof should return one of the passed
+                // field_num, so just ignore it
+                None
+            }
+        }
+    }
+
+    fn exemplars(&self) -> Self::ExemplarIter<'_> {
+        // TODO exemplars
+        ExemplarIter::new([].iter())
+    }
+
+    fn flags(&self) -> DataPointFlags {
+        let flags = self
+            .byte_parser
+            .advance_to_find_field(NUMBER_DP_FLAGS)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val as u32);
+
+        DataPointFlags::new(flags.unwrap_or_default())
+    }
 }

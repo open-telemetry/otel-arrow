@@ -5,7 +5,7 @@ use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
-        BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+        self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
         ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
         MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
         SummaryDataPointView, SummaryView, ValueAtQuantileView,
@@ -623,8 +623,11 @@ where
     ndp.append_parent_id(*curr_metric_id);
     ndp.append_start_time_unix_nano(Some(ndp_view.start_time_unix_nano() as i64));
     ndp.append_time_unix_nano(ndp_view.time_unix_nano() as i64);
-    let double = ndp_view.value().and_then(|v| v.as_double());
-    let integer = ndp_view.value().and_then(|v| v.as_integer());
+    let (double, integer) = match ndp_view.value() {
+        Some(metrics::Value::Double(val)) => (Some(val), None),
+        Some(metrics::Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
     ndp.append_double_value(double);
     ndp.append_int_value(integer);
     ndp.append_flags(ndp_view.flags().into_inner());
@@ -762,7 +765,7 @@ where
                 metrics.append_is_monotonic(is_monotonic);
 
                 for kv in metric.metadata() {
-                    metric_attrs.append_parent_id(&curr_resource_id);
+                    metric_attrs.append_parent_id(&curr_metric_id);
                     append_attribute_value(&mut metric_attrs, &kv)?;
                 }
 
