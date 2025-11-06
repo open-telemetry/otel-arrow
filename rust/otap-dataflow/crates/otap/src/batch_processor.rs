@@ -307,43 +307,15 @@ impl OtapBatchProcessor {
             SignalType::Traces => &mut self.signals.traces,
         };
 
-        eprintln!(
-            "[process_signal_impl] {:?}: BEFORE adding - items={}, pending_batches={}",
-            signal,
-            buffer.items,
-            buffer.pending.len()
-        );
-
         buffer.items += items;
         buffer.pending.push(rec);
 
-        eprintln!(
-            "[process_signal_impl] {:?}: AFTER adding {} items - total={}, pending_batches={}, lower_limit={}",
-            signal,
-            items,
-            buffer.items,
-            buffer.pending.len(),
-            self.lower_limit
-        );
-
         let should_flush = buffer.items >= self.lower_limit.get();
-        eprintln!(
-            "[process_signal_impl] {:?}: threshold check: {} >= {} = {}",
-            signal, buffer.items, self.lower_limit, should_flush
-        );
 
         if should_flush {
-            eprintln!(
-                "[process_signal_impl] {:?}: triggering SIZE flush (items={} >= lower_limit={})",
-                signal, buffer.items, self.lower_limit
-            );
             self.flush_signal_impl(signal, effect, FlushReason::Size)
                 .await
         } else {
-            eprintln!(
-                "[process_signal_impl] {:?}: buffering (items={} < lower_limit={})",
-                signal, buffer.items, self.lower_limit
-            );
             Ok(())
         }
     }
@@ -361,35 +333,11 @@ impl OtapBatchProcessor {
             SignalType::Traces => &mut self.signals.traces,
         };
 
-        eprintln!(
-            "\n=== [flush_signal_impl] {:?}: reason={:?}, items={}, pending_batches={} ===",
-            signal,
-            reason,
-            buffer.items,
-            buffer.pending.len()
-        );
-        eprintln!(
-            "    Config: send_batch_size={:?}, send_batch_max_size={:?}, lower_limit={}",
-            self.config.send_batch_size, self.config.send_batch_max_size, self.lower_limit
-        );
-
-        let initial_items = buffer.items;
         buffer.items = 0;
 
         let input = std::mem::take(&mut buffer.pending);
         if input.is_empty() {
-            eprintln!("    → Empty buffer, nothing to flush");
             return Ok(());
-        }
-
-        let total_input_items: usize = input.iter().map(|r| r.batch_length()).sum();
-        eprintln!(
-            "    Input: {} record batches totaling {} items",
-            input.len(),
-            total_input_items
-        );
-        for (idx, rec) in input.iter().enumerate() {
-            eprintln!("      Record[{}]: batch_length={}", idx, rec.batch_length());
         }
 
         match reason {
@@ -400,18 +348,12 @@ impl OtapBatchProcessor {
 
         if let Some(upper_limit) = self.config.send_batch_max_size {
             self.metrics.split_requests.inc();
-            eprintln!(
-                "    → Path: WITH upper_limit (send_batch_max_size={})",
-                upper_limit
-            );
-            eprintln!("    Calling make_output_batches...");
 
             let mut output_batches =
                 match make_output_batches(signal, input, Some(nzu_to_nz64(upper_limit))) {
                     Ok(v) => v,
                     Err(e) => {
                         self.metrics.batching_errors.inc();
-                        eprintln!("    ✗ make_output_batches FAILED: {}", e);
                         log_batching_failed(effect, signal, &e).await;
                         return Err(EngineError::InternalError {
                             message: e.to_string(),
@@ -419,108 +361,48 @@ impl OtapBatchProcessor {
                     }
                 };
 
-            let total_output_items: usize = output_batches.iter().map(|b| b.batch_length()).sum();
-            eprintln!(
-                "    ✓ make_output_batches returned {} batches totaling {} items",
-                output_batches.len(),
-                total_output_items
-            );
-            for (idx, batch) in output_batches.iter().enumerate() {
-                eprintln!(
-                    "      Output[{}]: batch_length={}",
-                    idx,
-                    batch.batch_length()
-                );
-            }
-
             // If size-triggered and we requested splitting (max is Some), re-buffer the last partial
             // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
             if reason == FlushReason::Size && !output_batches.is_empty() {
                 if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
                     let threshold = self.lower_limit.get();
-                    eprintln!(
-                        "    Rebuffer check (reason=Size): last_batch_items={} vs lower_limit={}",
-                        last_items, threshold
-                    );
                     if last_items < threshold {
-                        eprintln!(
-                            "      → REBUFFERING last batch ({} items < {} lower_limit)",
-                            last_items, threshold
-                        );
                         let remainder = output_batches.pop().expect("last exists");
                         buffer.items = last_items;
                         buffer.pending.push(remainder);
-                        eprintln!(
-                            "      → Buffer state after rebuffer: items={}, pending_batches={}",
-                            buffer.items,
-                            buffer.pending.len()
-                        );
-                    } else {
-                        eprintln!(
-                            "      → NOT rebuffering ({} items >= {} lower_limit)",
-                            last_items, threshold
-                        );
                     }
-                } else {
-                    eprintln!("    No last batch to check for rebuffering");
                 }
-            } else if reason != FlushReason::Size {
-                eprintln!(
-                    "    Skipping rebuffer check (reason={:?}, flushing everything)",
-                    reason
-                );
             }
 
-            eprintln!("    → Emitting {} batches", output_batches.len());
-            for (idx, records) in output_batches.into_iter().enumerate() {
-                let items = records.batch_length();
-                eprintln!("      Emitting batch[{}] with {} items", idx, items);
+            for records in output_batches.into_iter() {
                 let pdata = OtapPdata::new_todo_context(records.into());
                 effect.send_message(pdata).await?;
             }
         } else {
-            eprintln!("    → Path: WITHOUT upper_limit (send_batch_max_size=None)");
             // No split requested (safe path)
             if input.len() > 1 {
-                eprintln!("    → Coalescing {} input batches", input.len());
                 // Coalesce upstream only when there are multiple records to merge
                 let output_batches = match make_output_batches(signal, input, None) {
-                    Ok(v) => {
-                        eprintln!("      ✓ Coalesced into {} output batches", v.len());
-                        v
-                    }
+                    Ok(v) => v,
                     Err(e) => {
                         self.metrics.batching_errors.inc();
-                        eprintln!("      ✗ Coalescing FAILED: {}", e);
                         log_batching_failed(effect, signal, &e).await;
                         Vec::new()
                     }
                 };
-                eprintln!("    → Emitting {} coalesced batches", output_batches.len());
-                for (idx, records) in output_batches.into_iter().enumerate() {
-                    let items = records.batch_length();
-                    eprintln!("      Emitting batch[{}] with {} items", idx, items);
+                for records in output_batches.into_iter() {
                     let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
             } else {
                 // Single record: forward as-is (avoids upstream edge-cases)
-                eprintln!("    → Forwarding single input batch as-is (no coalescing)");
-                for (idx, records) in input.into_iter().enumerate() {
-                    let items = records.batch_length();
-                    eprintln!("      Emitting batch[{}] with {} items", idx, items);
+                for records in input.into_iter() {
                     let pdata = OtapPdata::new_todo_context(records.into());
                     effect.send_message(pdata).await?;
                 }
             }
         }
 
-        eprintln!(
-            "=== [flush_signal_impl] {:?}: COMPLETE - buffer state: items={}, pending_batches={} ===\n",
-            signal,
-            buffer.items,
-            buffer.pending.len()
-        );
         Ok(())
     }
 }
@@ -954,9 +836,6 @@ mod tests {
 
             // Positive path: traces row counter observed
             let traces_rows = get_metric(&map, "consumed_items_traces");
-            if traces_rows < 1 {
-                eprintln!("[diag] no consumed_items_traces yet. sets observed: {sets:?}");
-            }
             assert!(traces_rows >= 1);
 
             // Logs path (current): likely dropped as empty; timer flush should be skipped
