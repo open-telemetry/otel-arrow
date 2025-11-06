@@ -11,8 +11,8 @@ use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 use object_store::ObjectStore;
-use otel_arrow_rust::otap::{OtapArrowRecords, child_payload_types};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::otap::{OtapArrowRecords, child_payload_types};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
 use parquet::errors::ParquetError;
@@ -478,8 +478,8 @@ mod test {
     use arrow::compute::concat_batches;
     use futures::StreamExt;
     use object_store::local::LocalFileSystem;
-    use otel_arrow_rust::otap::from_record_messages;
-    use otel_arrow_rust::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
+    use otap_df_pdata::otap::from_record_messages;
+    use otap_df_pdata::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 

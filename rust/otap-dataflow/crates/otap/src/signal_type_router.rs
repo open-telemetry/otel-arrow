@@ -295,7 +295,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
 mod tests {
     use super::*;
     use otap_df_engine::testing::{processor::TestRuntime, test_node};
-    use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
+    use otap_df_pdata::otap::{Logs, OtapArrowRecords};
     use serde_json::json;
 
     #[test]
@@ -385,11 +385,11 @@ mod tests {
         };
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
+        use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::MetricsSystem;
         use otap_df_telemetry::config::Config as TelemetryConfig;
         use otap_df_telemetry::registry::MetricsRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
-        use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
         use std::collections::HashMap;
         use std::time::Duration;
         use tokio::task::JoinHandle;

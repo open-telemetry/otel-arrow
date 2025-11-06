@@ -23,7 +23,6 @@ http.workspace = true
 humantime-serde.workspace = true
 log.workspace = true
 object_store.workspace = true
-otel-arrow-rust.workspace = true
 parquet.workspace = true
 thiserror = { workspace = true }
 serde_with = { workspace = true }

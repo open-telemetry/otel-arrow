@@ -23,7 +23,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otel_arrow_rust::otap::OtapArrowRecords;
+use otap_df_pdata::otap::OtapArrowRecords;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -151,16 +151,16 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::otap::filter::{
+    use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
     };
-    use otel_arrow_rust::proto::opentelemetry::{
+    use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message as _;
     use std::future::Future;
     use std::pin::Pin;

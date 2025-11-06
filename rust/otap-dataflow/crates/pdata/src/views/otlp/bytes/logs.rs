@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
-use otel_arrow_rust::proto::consts::field_num::logs::{
+use crate::proto::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
     LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
     LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT, LOG_RECORD_SPAN_ID,
@@ -15,8 +15,8 @@ use otel_arrow_rust::proto::consts::field_num::logs::{
     RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS,
     SCOPE_LOGS_SCHEMA_URL,
 };
-use otel_arrow_rust::proto::consts::wire_types;
-use otel_arrow_rust::schema::{SpanId, TraceId};
+use crate::proto::consts::wire_types;
+use crate::schema::{SpanId, TraceId};
 
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use crate::views::otlp::bytes::common::{

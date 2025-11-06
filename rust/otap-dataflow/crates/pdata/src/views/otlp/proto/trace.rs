@@ -4,7 +4,7 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp trace.proto.
 
-use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+use crate::proto::opentelemetry::trace::v1::{
     ResourceSpans, ScopeSpans, Span, Status, TracesData,
     span::{Event, Link},
 };

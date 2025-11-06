@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # This Dockerfile builds the otap-dataflow engine from the source in this
-# directory. It relies on protobuf files in the root /proto directory, as well
-# as the otel-arrow-rust crate in /rust/otel-arrow-rust.
+# directory. It relies on protobuf files in the root /proto directory.
 # In order to include these in the build context, and to avoid conflicting
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
@@ -18,7 +17,6 @@ RUN apt-get update && apt-get install -y protobuf-compiler
 # The build process relies on these libraries outside of the current context.
 # Build command from the otap-dataflow directory:
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-COPY --from=otel-arrow /rust/otel-arrow-rust /build/rust/otel-arrow-rust
 COPY --from=otel-arrow /proto/opentelemetry/proto /build/proto/opentelemetry/proto
 COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-proto
 

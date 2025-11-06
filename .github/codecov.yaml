@@ -14,10 +14,6 @@ component_management:
       name: "otap-dataflow"
       paths:
         - "rust/otap-dataflow/"
-    - component_id: "otel_arrow_rust"
-      name: "otel-arrow-rust"
-      paths:
-        - "rust/otel-arrow-rust/(?!src/pdata/otlp/(derive|model)/)"
     - component_id: "query_abstraction"
       name: "query_abstraction"
       paths:

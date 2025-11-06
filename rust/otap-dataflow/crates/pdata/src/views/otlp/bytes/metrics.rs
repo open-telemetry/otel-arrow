@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
-use otel_arrow_rust::proto::consts::field_num::metrics::{
+use crate::proto::consts::field_num::metrics::{
     GAUGE_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
     METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
     METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
@@ -15,7 +15,7 @@ use otel_arrow_rust::proto::consts::field_num::metrics::{
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
     SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
 };
-use otel_arrow_rust::proto::consts::wire_types;
+use crate::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
@@ -804,7 +804,7 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+    use crate::proto::opentelemetry::metrics::v1::{
         Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
     };
     use prost::Message;

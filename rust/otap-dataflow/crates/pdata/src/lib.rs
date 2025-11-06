@@ -13,6 +13,22 @@ pub mod proto;
 /// Module contains the views for OTAP <-> OTLP objects.
 pub mod views;
 
+pub(crate) mod arrays;
+mod decode;
+
+pub mod encode;
+pub mod error;
+pub mod otap;
+pub mod schema;
+
+#[cfg(test)]
+mod test_util;
+#[cfg(test)]
+mod validation;
+
+pub use decode::decoder::Consumer;
+pub use encode::producer::Producer;
+
 /// TraceID identifier of a Trace
 #[derive(Eq, PartialEq, Clone, Copy, Debug, Default)]
 pub struct TraceID([u8; 16]);

@@ -3,7 +3,7 @@
 
 //! Implementation of the ViewMarshaler for converting OTLP views to structured string reports.
 
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     logs::v1::{LogRecord, LogsData},
     metrics::v1::{Metric, MetricsData},
     trace::v1::{Span, TracesData},

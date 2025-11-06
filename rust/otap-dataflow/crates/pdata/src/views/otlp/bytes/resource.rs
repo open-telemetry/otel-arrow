@@ -6,6 +6,10 @@
 
 use std::{cell::Cell, num::NonZeroUsize};
 
+use crate::proto::consts::{
+    field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
+    wire_types,
+};
 use crate::views::{
     otlp::bytes::{
         common::{KeyValueIter, RawKeyValue},
@@ -15,10 +19,6 @@ use crate::views::{
         },
     },
     resource::ResourceView,
-};
-use otel_arrow_rust::proto::consts::{
-    field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
-    wire_types,
 };
 
 /// Implementation of `ResourceView` backed by protobuf serialized `Resource` message

@@ -16,7 +16,7 @@ use arrow::{
     array::{RecordBatch, UInt16Array},
     datatypes::{DataType, Field, Schema},
 };
-use otel_arrow_rust::{
+use otap_df_pdata::{
     Consumer,
     otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages},
     proto::opentelemetry::arrow::v1::{

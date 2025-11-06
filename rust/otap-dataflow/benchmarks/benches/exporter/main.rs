@@ -20,7 +20,7 @@ use otap_df_otap::{
     pdata::{Context, OtapPdata},
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
-use otel_arrow_rust::{
+use otap_df_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
     proto::opentelemetry::arrow::v1::{

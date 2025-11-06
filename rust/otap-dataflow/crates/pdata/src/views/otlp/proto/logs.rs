@@ -4,10 +4,8 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp logs.proto.
 
-use otel_arrow_rust::proto::opentelemetry::logs::v1::{
-    LogRecord, LogsData, ResourceLogs, ScopeLogs,
-};
-use otel_arrow_rust::schema::{SpanId, TraceId};
+use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+use crate::schema::{SpanId, TraceId};
 
 use crate::views::{
     common::Str,

@@ -17,8 +17,8 @@
 //! # use std::sync::Arc;
 //! # use arrow::array::{RecordBatch, UInt16Array};
 //! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use otel_arrow_rust::otap::{OtapArrowRecords, Logs};
-//! # use otel_arrow_rust::proto::opentelemetry::{
+//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
+//! # use otap_df_pdata::proto::opentelemetry::{
 //!     arrow::v1::ArrowPayloadType,
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -68,7 +68,7 @@
 //!                                          │                 │
 //!                                          │                 │
 //!                                          ▼                 │
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from()
+//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
 //!                                          │                 ▲
 //!                                          │                 │
 //!                                          │                 │
@@ -90,14 +90,14 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
+use otap_df_pdata::otap::{OtapArrowRecords, OtapBatchStore};
+use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_rust::otap::{OtapArrowRecords, OtapBatchStore};
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 
 use crate::encoder::{encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch};
 
@@ -426,15 +426,15 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     fn is_empty(&self) -> bool {
         match self {
             Self::Logs(_) => {
-                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
+                self.get(otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
                     .is_none_or(|batch| batch.num_rows() == 0)
             }
             Self::Traces(_) => {
-                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
+                self.get(otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
                     .is_none_or(|batch| batch.num_rows() == 0)
             }
             Self::Metrics(_) => {
-                self.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
+                self.get(otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
                     .is_none_or(|batch| batch.num_rows() == 0)
             }
         }
@@ -545,7 +545,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
 
     fn try_from(mut value: OtapArrowRecords) -> Result<Self, Self::Error> {
         let map_otlp_conversion_error =
-            |error: otel_arrow_rust::error::Error| error::Error::ConversionError {
+            |error: otap_df_pdata::error::Error| error::Error::ConversionError {
                 error: format!("error generating OTLP request: {error}"),
             };
 
@@ -713,7 +713,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 mod test {
     use super::*;
     use crate::testing::{TestCallData, create_test_logs, create_test_pdata};
-    use otel_arrow_rust::{
+    use otap_df_pdata::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
             collector::{

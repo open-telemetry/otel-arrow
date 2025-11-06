@@ -46,8 +46,8 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
 mod error;
@@ -438,11 +438,11 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otel_arrow_rust::Consumer;
-    use otel_arrow_rust::otap::from_record_messages;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
-    use otel_arrow_rust::schema::consts;
+    use otap_df_pdata::Consumer;
+    use otap_df_pdata::otap::from_record_messages;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use otap_df_pdata::schema::consts;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
