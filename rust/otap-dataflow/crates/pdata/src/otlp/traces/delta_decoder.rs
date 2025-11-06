@@ -17,7 +17,7 @@ use std::ops::Add;
 /// # Examples
 ///
 /// ```
-/// use otel_arrow_rust::otlp::traces::delta_decoder::DeltaDecoder;
+/// use otap_df_pdata::otlp::traces::delta_decoder::DeltaDecoder;
 ///
 /// let mut decoder = DeltaDecoder::new();
 ///
@@ -71,7 +71,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use otel_arrow_rust::otlp::traces::delta_decoder::DeltaDecoder;
+    /// use otap_df_pdata::otlp::traces::delta_decoder::DeltaDecoder;
     ///
     /// let mut decoder = DeltaDecoder::new();
     ///
