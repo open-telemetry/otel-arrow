@@ -716,7 +716,6 @@ mod test {
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
-            arrow::v1::ArrowPayloadType,
             collector::{
                 logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
                 trace::v1::ExportTraceServiceRequest,

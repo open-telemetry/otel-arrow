@@ -989,6 +989,7 @@ mod test {
     use otel_arrow_rust::otlp::ProtoBuffer;
     use otel_arrow_rust::otlp::attributes::AttributeValueType;
     use otel_arrow_rust::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use otel_arrow_rust::otlp::metrics::MetricType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
@@ -1209,7 +1210,7 @@ mod test {
         let metrics = otap_batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         let expected_metrics_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "resource",
                     DataType::Struct(
@@ -1349,7 +1350,17 @@ mod test {
                     Arc::new(StringArray::from_iter_values(vec!["another url"])),
                 )),
                 // metric_type
-                Arc::new(UInt8Array::from_iter(vec![5, 7, 11, 9, 10])),
+                Arc::new(UInt8Array::from_iter(
+                    [
+                        MetricType::Gauge,
+                        MetricType::Sum,
+                        MetricType::Summary,
+                        MetricType::Histogram,
+                        MetricType::ExponentialHistogram,
+                    ]
+                    .iter()
+                    .map(|i| *i as u8),
+                )),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 1, 2, 3, 4]),
@@ -1513,8 +1524,8 @@ mod test {
         let ndp = otap_batch.get(ArrowPayloadType::NumberDataPoints).unwrap();
         let expected_ndp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),

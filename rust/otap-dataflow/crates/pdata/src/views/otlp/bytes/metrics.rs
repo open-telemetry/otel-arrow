@@ -333,7 +333,6 @@ impl FieldRanges for NumberDataPointFieldRanges {
             None => return,
         };
 
-        // TODO double check if less branching here would be faster ..
         match field_num {
             NUMBER_DP_START_TIME_UNIX_NANO => {
                 if wire_type == wire_types::FIXED64 {
