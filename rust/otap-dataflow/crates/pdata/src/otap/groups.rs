@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
+use arrow::array::as_primitive_array;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
@@ -135,7 +136,7 @@ impl RecordsGroup {
     /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
     pub fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
-        let result = match self {
+        Ok(match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
                 items,
                 max_output_batch,
@@ -154,13 +155,12 @@ impl RecordsGroup {
                 Traces::allowed_payload_types(),
                 ArrowPayloadType::Spans,
             )?),
-        };
-        Ok(result)
+        })
     }
 
     /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
     pub fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
-        let result = match self {
+        Ok(match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(
                 items,
                 Logs::allowed_payload_types(),
@@ -176,8 +176,7 @@ impl RecordsGroup {
                 Traces::allowed_payload_types(),
                 max_output_batch,
             )?),
-        };
-        Ok(result)
+        })
     }
 
     // FIXME: replace this with an Extend impl to avoid unnecessary allocations
@@ -334,7 +333,7 @@ fn generic_split<const N: usize>(
             // use ids to split the child tables: call split_child_record_batch
             let new_batch_count = split_primary.len();
             result.extend(repeat_n([const { None }; N], new_batch_count));
-            let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
+            let result_len = result.len();
             // this is where we're going to be writing the rest of this split batch into!
             let new_batch = &mut result[result_len - new_batch_count..];
 
@@ -807,7 +806,6 @@ fn split_metric_batches<const N: usize>(
 
     // Emit any remaining accumulated batches
     if let Some(start_idx) = accumulating_from {
-        use arrow::array::as_primitive_array;
         for idx in start_idx..batches.len() {
             let batches_at_idx = &batches[idx];
             let metrics = batches_at_idx[METRICS_INDEX].as_ref().unwrap();
