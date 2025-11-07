@@ -727,12 +727,36 @@ fn split_metric_batches<const N: usize>(
 
         let thisdata_len = batch_length(thisdata);
         if thisdata_len <= batch_size_remaining {
+            // BRANCH 1: This batch is small enough to include whole
+            // `thisdata_len` is the total count of data points across all DataPoints tables
+            // We can include all metrics from this batch (0..metric_length) in the output
             batch_size_remaining -= thisdata_len;
             result.push((batch_index, 0..metric_length));
             if batch_size_remaining == 0 {
                 batch_size_remaining = max_output_batch;
             }
         } else {
+            // BRANCH 2: This batch is too large and must be split into multiple ranges
+            // We need to partition the metrics in this batch so each partition has
+            // ≤ max_output_batch data points.
+            //
+            // BACKGROUND: In OTAP UnivariateMetrics, the parent batch contains metric metadata
+            // (one row per metric: name, type, unit, etc.), while the "children" are the actual
+            // data point batches:
+            //   - NumberDataPoints (for Sum and Gauge metrics)
+            //   - HistogramDataPoints (for Histogram metrics)
+            //   - SummaryDataPoints (for Summary metrics)
+            //   - ExpHistogramDataPoints (for Exponential Histogram metrics)
+            //
+            // Each metric (identified by its metric_id) can have multiple data points in these
+            // child batches. The child batches have a PARENT_ID column linking back to the metric.
+            // We partition by metric_id to keep each metric's data points together, but we need
+            // to know how many data points each metric has to respect max_output_batch limits.
+            
+            // Step 1: Build child_counts[metric_id] = number of data points for this metric
+            // This tells us how "expensive" each metric is in terms of batch_length.
+            // We iterate through all data point type batches (NumberDataPoints, HistogramDataPoints,
+            // etc.) and count how many points reference each metric_id via PARENT_ID.
             child_counts.clear();
             child_counts.resize(max_metric_id as usize + 1, 0);
             for dpt in DATA_POINTS_TYPES {
@@ -743,6 +767,9 @@ fn split_metric_batches<const N: usize>(
                             .column_by_name(consts::PARENT_ID)
                             .expect("PARENT_ID column should be present"),
                     );
+                    // Count how many data points belong to each metric (parent_id)
+                    // The PARENT_ID array is sorted by metric_id, so dedup_with_count efficiently
+                    // counts consecutive runs of the same parent_id
                     for (count, parent_id) in parent_id.values().iter().dedup_with_count() {
                         let parent_id = *parent_id as usize;
                         child_counts[parent_id] += count as u64;
@@ -750,25 +777,41 @@ fn split_metric_batches<const N: usize>(
                 }
             }
 
+            // Step 2: Build cumulative_child_counts[i] = total data points from metric 0 through i
+            // This is like a prefix sum - cumulative_child_counts[i] - cumulative_child_counts[j]
+            // tells us how many data points are in metrics j+1 through i.
+            // We'll use binary search (partition_point) on this to efficiently find split boundaries
+            // where the cumulative count reaches max_output_batch.
             cumulative_child_counts.clear();
             cumulative_child_counts.extend(child_counts.iter().scan(0, |accumulator, &element| {
                 *accumulator += element;
                 Some(*accumulator)
             }));
-            // A betch of metrics with no data points types should have a batch_length of 0, which
+            // A batch of metrics with no data points types should have a batch_length of 0, which
             // means we should have added the whole thing to the output and never reached this point
             // in the code.
             assert!(!cumulative_child_counts.is_empty());
 
-            // We want to partition `cumulative_child_counts` into chunks where the difference
-            // between the first and last value of each chunk is as close to but less than
-            // `batch_size_remaining`.
-            let mut last_cumulative_child_count = 0;
-            let mut starting_index = 0;
+            // Step 3: Partition metrics into chunks where each chunk has ≤ max_output_batch data points
+            // Each iteration of this loop emits one chunk (range of metrics).
+            //
+            // ORDERING: The metrics are processed in their original order (metric_id 0, 1, 2, ...),
+            // and we partition them into consecutive ranges. For example, if we have 10 metrics
+            // and need to split, we might emit ranges like [0..4), [4..7), [7..10) where each
+            // range respects the max_output_batch limit based on the cumulative data point counts.
+            let mut last_cumulative_child_count = 0; // Total data points before current chunk
+            let mut starting_index = 0; // First metric index in current chunk
             loop {
+                // Find the metric index where adding it would exceed our budget
+                // partition_point finds the first index where the predicate is false
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
-                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
+                    // cum_child_count = total data points from metric 0 through this index
+                    // last_cumulative_child_count = total data points before current chunk started
+                    // So (cum_child_count - last_cumulative_child_count) = data points in current chunk
+                    cum_child_count < last_cumulative_child_count + max_output_batch as u64
                 });
+                
+                // Update for next iteration: track total data points consumed so far
                 last_cumulative_child_count = cumulative_child_counts
                     .get(candidate_index)
                     .copied()
@@ -778,16 +821,31 @@ fn split_metric_batches<const N: usize>(
                             .copied()
                             .expect("non-empty list"),
                     );
+                
+                // The ending_index for this chunk is candidate_index + 1 (exclusive end)
+                // because partition_point returns the first index that's TOO BIG
                 let ending_index = (candidate_index + 1).min(metric_length);
+                
                 // We should always make forward progress
                 assert!(ending_index > starting_index || ending_index >= metric_length - 1);
 
+                // Emit this range of metrics from the current batch
+                // NOTE: We're splitting ONE input batch into multiple output ranges
+                // Each range becomes a separate output batch in generic_split, containing:
+                //   - A subset of metric rows (the metadata)
+                //   - All data points (from child batches) that reference those metrics
                 result.push((batch_index, starting_index..ending_index));
+                
                 if ending_index >= metric_length {
+                    // We've consumed all metrics in this input batch
                     break;
                 }
                 starting_index = ending_index;
             }
+            
+            // After splitting this large batch, reset batch_size_remaining for next input batch
+            // (Each split chunk was sized to ≤ max_output_batch, so we start fresh)
+            batch_size_remaining = max_output_batch;
         }
     }
 
@@ -3236,5 +3294,176 @@ mod test {
                 .collect_vec(),
             vec![2, 2, 4]
         );
+    }
+
+    #[test]
+    fn test_split_metrics_with_varying_datapoint_counts_otlp() {
+        use crate::proto::opentelemetry::{
+            collector::metrics::v1::ExportMetricsServiceRequest,
+            common::v1::{AnyValue, InstrumentationScope, KeyValue},
+            metrics::v1::{
+                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+                Sum, metric::Data, number_data_point::Value,
+            },
+            resource::v1::Resource,
+        };
+        use crate::views::otlp::bytes::metrics::RawMetricsData;
+        use crate::otap::batching::make_output_batches;
+        use prost::Message as ProstMessage;
+
+        // Create OTLP metrics message with:
+        // - metric1 (Gauge): 3 data points
+        // - metric2 (Sum): 4 data points  
+        // - metric3 (Gauge): 2 data points
+        // Total: 9 data points across 3 metrics
+
+        let otlp_request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue::new("service.name", AnyValue::new_string("test"))],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope {
+                        name: "test-scope".into(),
+                        ..Default::default()
+                    }),
+                    schema_url: String::new(),
+                    metrics: vec![
+                        // Metric 1: Gauge with 3 data points
+                        Metric {
+                            name: "metric1".into(),
+                            description: "First metric".into(),
+                            unit: "1".into(),
+                            data: Some(Data::Gauge(Gauge {
+                                data_points: vec![
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("a"))],
+                                        time_unix_nano: 1000,
+                                        value: Some(Value::AsDouble(1.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("b"))],
+                                        time_unix_nano: 2000,
+                                        value: Some(Value::AsDouble(2.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("c"))],
+                                        time_unix_nano: 3000,
+                                        value: Some(Value::AsDouble(3.0)),
+                                        ..Default::default()
+                                    },
+                                ],
+                            })),
+                            ..Default::default()
+                        },
+                        // Metric 2: Sum with 4 data points
+                        Metric {
+                            name: "metric2".into(),
+                            description: "Second metric".into(),
+                            unit: "ms".into(),
+                            data: Some(Data::Sum(Sum {
+                                data_points: vec![
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("d"))],
+                                        time_unix_nano: 4000,
+                                        value: Some(Value::AsDouble(4.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("e"))],
+                                        time_unix_nano: 5000,
+                                        value: Some(Value::AsDouble(5.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("f"))],
+                                        time_unix_nano: 6000,
+                                        value: Some(Value::AsDouble(6.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("g"))],
+                                        time_unix_nano: 7000,
+                                        value: Some(Value::AsDouble(7.0)),
+                                        ..Default::default()
+                                    },
+                                ],
+                                aggregation_temporality: 1,
+                                is_monotonic: true,
+                            })),
+                            ..Default::default()
+                        },
+                        // Metric 3: Gauge with 2 data points
+                        Metric {
+                            name: "metric3".into(),
+                            description: "Third metric".into(),
+                            unit: "bytes".into(),
+                            data: Some(Data::Gauge(Gauge {
+                                data_points: vec![
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("h"))],
+                                        time_unix_nano: 8000,
+                                        value: Some(Value::AsDouble(8.0)),
+                                        ..Default::default()
+                                    },
+                                    NumberDataPoint {
+                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("i"))],
+                                        time_unix_nano: 9000,
+                                        value: Some(Value::AsDouble(9.0)),
+                                        ..Default::default()
+                                    },
+                                ],
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                }],
+                ..Default::default()
+            }],
+        };
+
+        // Encode OTLP to protobuf bytes
+        let mut otlp_bytes = Vec::new();
+        otlp_request.encode(&mut otlp_bytes).expect("Failed to encode OTLP request");
+
+        // Convert OTLP bytes to OTAP using views mechanism
+        let metrics_data_view = RawMetricsData::new(&otlp_bytes);
+        let otap_batch = crate::encoder::encode_metrics_otap_batch(&metrics_data_view)
+            .expect("Failed to convert OTLP to OTAP");
+
+        println!("\nOriginal OTAP batch length: {}", otap_batch.batch_length());
+
+        // Split with max_output_batch = 5
+        // With datapoint counts [3, 4, 2], we expect splitting to occur
+        let result = make_output_batches(NonZeroU64::new(5), vec![otap_batch])
+            .expect("make_output_batches failed");
+
+        println!("Number of output batches: {}", result.len());
+        for (i, batch) in result.iter().enumerate() {
+            let rows = batch.batch_length();
+            println!("Batch {}: {} datapoints", i, rows);
+        }
+
+        // Verify we got multiple batches (split occurred)
+        assert!(result.len() > 1, "Expected split to occur with max=5 and datapoint counts [3, 4, 2]");
+
+        // Verify total count is preserved (3 + 4 + 2 = 9 datapoints)
+        let total_rows: usize = result.iter().map(|b| b.batch_length()).sum();
+        assert_eq!(total_rows, 9, "Total datapoints should be preserved");
+
+        // Verify no batch exceeds max size
+        for (i, batch) in result.iter().enumerate() {
+            assert!(
+                batch.batch_length() <= 5,
+                "Batch {} has {} datapoints, exceeds max of 5",
+                i,
+                batch.batch_length()
+            );
+        }
+
+        println!("✓ Split occurred, total preserved, all batches within limit");
     }
 }
