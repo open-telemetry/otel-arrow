@@ -202,7 +202,7 @@ fn get_main_payload_type(records: &BatchArrowRecords) -> Result<ArrowPayloadType
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::{create_record_batch, create_test_schema};
+    use crate::testing::{create_record_batch, create_test_schema};
     use std::io::Cursor;
     use std::sync::Arc;
 

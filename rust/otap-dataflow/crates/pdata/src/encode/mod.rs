@@ -3,11 +3,13 @@
 
 //! This crate contains code that is used to encode OTAP data.
 
-pub mod error;
 pub mod producer;
 pub mod record;
 
 mod cbor;
+mod error;
+
+pub use error::{Error, Result};
 
 use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
@@ -39,8 +41,6 @@ use crate::{
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
-
-use crate::encode::error::{Error, Result};
 
 /// Traverse the trace structure within the TracesView and produces an `OtapArrowRecords' for the span
 /// data.

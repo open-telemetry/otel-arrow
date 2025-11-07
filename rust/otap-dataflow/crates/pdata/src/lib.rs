@@ -23,7 +23,8 @@ pub(crate) mod arrays;
 mod decode;
 
 #[cfg(test)]
-mod test_util;
+mod testing;
+
 #[cfg(test)]
 mod validation;
 

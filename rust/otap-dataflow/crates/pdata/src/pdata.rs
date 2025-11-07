@@ -17,15 +17,15 @@
 //! # use std::sync::Arc;
 //! # use arrow::array::{RecordBatch, UInt16Array};
 //! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use crate::otap::{OtapArrowRecords, Logs};
-//! # use crate::proto::opentelemetry::{
+//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
+//! # use otap_df_pdata::proto::opentelemetry::{
 //!     arrow::v1::ArrowPayloadType,
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource
 //! };
-//! # use otap_df_otap::pdata::{Context, OtapPdata, OtapPayload, OtlpProtoBytes};
+//! # use otap_df_pdata::pdata::{OtapPayload, OtlpProtoBytes};
 //! # use prost::Message;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
 //!    ResourceLogs::new(
@@ -48,12 +48,10 @@
 //! let mut buf = Vec::new();
 //! otlp_service_req.encode(&mut buf).unwrap();
 //!
-//! // Create a new OtapPdata with default context
-//! let context = Context::default();
-//! let mut pdata = OtapPdata::new(context, OtlpProtoBytes::ExportLogsRequest(buf).into());
+//! // Create a new OtapPayload from OTLP bytes
+//! let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(buf).into();
 //!
-//! // Split the request, convert to Otap Arrow Records
-//! let (context, payload) = pdata.into_parts();
+//! // Convert to OTAP records
 //! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
 //! ```
 //!
@@ -68,7 +66,7 @@
 //!                                          │                 │
 //!                                          │                 │
 //!                                          ▼                 │
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    crate::otlp::<signal>::<signal_>_from()
+//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
 //!                                          │                 ▲
 //!                                          │                 │
 //!                                          │                 │
@@ -378,7 +376,7 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::testing::{create_test_logs, create_test_pdata};
+    use crate::testing::create_test_logs;
     use crate::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -404,31 +402,26 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
-    fn create_test() -> (TestCallData, OtapPdata) {
-        (TestCallData::default(), create_test_pdata())
-    }
-
     #[test]
     fn test_conversion_logs() {
         let mut otlp_bytes = vec![];
         let otlp_service_req = create_test_logs();
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-        let pdata =
-            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
+        let pdata: OtapPayload = otap_batch.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into()).payload();
+        let pdata: OtapPayload = otlp_bytes.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into()).payload();
+        let pdata: OtapPayload = otlp_bytes.into();
 
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
@@ -441,13 +434,12 @@ mod test {
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata =
-            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into()).payload();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
+        let pdata: OtapPayload = otap_batch.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
@@ -462,13 +454,12 @@ mod test {
     fn roundtrip_otlp_otap_traces(otlp_service_req: ExportTraceServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into())
-            .payload();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
 
         // test can go OtlpBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
+        let pdata: OtapPayload = otap_batch.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
@@ -483,13 +474,12 @@ mod test {
     fn roundtrip_otlp_otap_metrics(otlp_service_request: ExportMetricsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_request.encode(&mut otlp_bytes).unwrap();
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into())
-            .payload();
+        let pdata: OtapPayload = OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into();
 
         // test can go OtlpBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Metrics(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into()).payload();
+        let pdata: OtapPayload = otap_batch.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
@@ -1055,190 +1045,9 @@ mod test {
         assert_eq!(traces_records.signal_type(), SignalType::Traces);
 
         // Test signal_type for OtapPdata variants
-        let pdata_logs = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(vec![]).into());
-        let pdata_metrics =
-            OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
+        let pdata_logs: OtapPayload = OtlpProtoBytes::ExportLogsRequest(vec![]).into();
+        let pdata_metrics: OtapPayload = OtapArrowRecords::Metrics(Default::default()).into();
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
-    }
-
-    #[test]
-    fn test_context_next_ack_drops_payload_without_return_data() {
-        let (test_data, pdata) = create_test();
-
-        // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
-
-        assert_eq!(pdata.num_items(), 1);
-        assert!(!pdata.is_empty());
-        assert!(!pdata.context.may_return_payload());
-
-        let ack = AckMsg::new(pdata);
-
-        let result = Context::next_ack(ack);
-        assert!(result.is_some());
-
-        let (node_id, ack_msg) = result.unwrap();
-        assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
-        assert_eq!(recv_data, test_data);
-
-        // Payload should be dropped
-        assert_eq!(ack_msg.accepted.num_items(), 0);
-        assert!(ack_msg.accepted.is_empty());
-        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
-    }
-
-    #[test]
-    fn test_context_next_ack_preserves_payload_with_return_data() {
-        let (test_data, pdata) = create_test();
-
-        // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
-            Interests::ACKS | Interests::RETURN_DATA,
-            test_data.clone().into(),
-            1234,
-        );
-
-        assert_eq!(pdata.num_items(), 1);
-        assert!(!pdata.is_empty());
-        assert!(pdata.context.may_return_payload());
-
-        let ack = AckMsg::new(pdata);
-
-        let result = Context::next_ack(ack);
-        assert!(result.is_some());
-
-        let (node_id, ack_msg) = result.expect("has");
-        assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
-        assert_eq!(recv_data, test_data);
-
-        // Payload should be preserved
-        assert_eq!(ack_msg.accepted.num_items(), 1);
-        assert!(!ack_msg.accepted.is_empty());
-        assert_eq!(ack_msg.accepted.signal_type(), SignalType::Logs);
-    }
-
-    #[test]
-    fn test_context_next_nack_drops_payload_without_return_data() {
-        let (test_data, pdata) = create_test();
-
-        // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
-
-        assert_eq!(pdata.num_items(), 1);
-        assert!(!pdata.is_empty());
-        assert!(!pdata.context.may_return_payload());
-
-        let nack = NackMsg::new("test error".to_string(), pdata);
-        let result = Context::next_nack(nack);
-        assert!(result.is_some());
-
-        let (node_id, nack_msg) = result.unwrap();
-        assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
-        assert_eq!(recv_data, test_data);
-
-        // Payload should be dropped
-        assert_eq!(nack_msg.refused.num_items(), 0);
-        assert!(nack_msg.refused.is_empty());
-        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
-    }
-
-    #[test]
-    fn test_context_next_nack_preserves_payload_with_return_data() {
-        let (test_data, pdata) = create_test();
-
-        // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
-            Interests::NACKS | Interests::RETURN_DATA,
-            test_data.clone().into(),
-            1234,
-        );
-
-        assert_eq!(pdata.num_items(), 1);
-        assert!(!pdata.is_empty());
-        assert!(pdata.context.may_return_payload());
-
-        let nack = NackMsg::new("test error", pdata);
-
-        let result = Context::next_nack(nack);
-        assert!(result.is_some());
-
-        let (node_id, nack_msg) = result.unwrap();
-        assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
-        assert_eq!(recv_data, test_data);
-
-        // Payload should be preserved
-        assert_eq!(nack_msg.refused.num_items(), 1);
-        assert!(!nack_msg.refused.is_empty());
-        assert_eq!(nack_msg.refused.signal_type(), SignalType::Logs);
-    }
-
-    #[test]
-    fn test_context_next_ack_nack() {
-        let (test_data, pdata) = create_test();
-
-        // Subscribe multiple frames. RETURN_DATA propagates automatically.
-        let pdata = pdata
-            .test_subscribe_to(
-                Interests::NACKS | Interests::RETURN_DATA,
-                test_data.clone().into(),
-                1,
-            )
-            .test_subscribe_to(Interests::ACKS, CallData::default(), 2)
-            .test_subscribe_to(Interests::NACKS, CallData::default(), 3)
-            .test_subscribe_to(Interests::ACKS, CallData::default(), 4);
-        assert!(pdata.context.may_return_payload());
-
-        let ack = AckMsg::new(pdata);
-
-        let result = Context::next_ack(ack);
-        assert!(result.is_some());
-        let (node_id, ack_msg) = result.unwrap();
-        assert_eq!(node_id, 4);
-
-        // Skipped node 3 (Nack) because call to next_ack()
-
-        let result = Context::next_ack(ack_msg);
-        assert!(result.is_some());
-        let (node_id, ack_msg) = result.unwrap();
-        assert_eq!(node_id, 2);
-
-        // Payload should be preserved because node 1 has RETURN_DATA
-        assert_eq!(ack_msg.accepted.num_items(), 1);
-        assert!(!ack_msg.accepted.is_empty());
-
-        let nack = NackMsg::new("nope nope", *ack_msg.accepted);
-
-        // Node 1 last, is a Nack.
-        let result = Context::next_nack(nack);
-        assert!(result.is_some());
-        let (node_id, nack_msg) = result.unwrap();
-        assert_eq!(node_id, 1);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
-        assert_eq!(recv_data, test_data);
-    }
-
-    #[test]
-    fn test_context_no_ack() {
-        let (_, pdata) = create_test();
-
-        let ack = AckMsg::new(pdata);
-
-        let result = Context::next_ack(ack);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_context_no_nack() {
-        let (_, pdata) = create_test();
-
-        let nack = NackMsg::new("hey now", pdata);
-
-        let result = Context::next_nack(nack);
-        assert!(result.is_none());
     }
 }
