@@ -411,6 +411,13 @@ pub fn read_varint(buf: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     None
 }
 
+/// Decode 32 bit zigzag encoding
+#[inline]
+#[must_use]
+pub fn decode_sint32(val: i32) -> i32 {
+    (val >> 1) ^ -(val & 1)
+}
+
 /// Decode length from byte slice and return a new slice of the buffer and the decoded length.
 #[inline]
 #[must_use]
