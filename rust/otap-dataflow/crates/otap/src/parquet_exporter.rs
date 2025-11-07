@@ -278,14 +278,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         metrics.inc_consumed(signal_type);
                     }
 
-                    let mut otap_batch: OtapArrowRecords = payload
-                        .try_into()
-                        .inspect_err(|_| {
+                    let mut otap_batch: OtapArrowRecords =
+                        payload.try_into().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
-                        })
-                        .map_err(crate::pdata_to_engine_error)?;
+                        })?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);

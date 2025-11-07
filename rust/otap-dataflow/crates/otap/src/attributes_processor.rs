@@ -316,8 +316,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 let signal = pdata.signal_type();
                 let (context, payload) = pdata.into_parts();
 
-                let mut records: OtapArrowRecords =
-                    payload.try_into().map_err(crate::pdata_to_engine_error)?;
+                let mut records: OtapArrowRecords = payload.try_into()?;
 
                 // Update domain counters (count once per message when domains are enabled)
                 if let Some(m) = self.metrics.as_mut() {

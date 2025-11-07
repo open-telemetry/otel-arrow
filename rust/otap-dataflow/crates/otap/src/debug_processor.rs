@@ -285,8 +285,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
 
                 let (_context, payload) = pdata.into_parts();
-                let otlp_bytes: OtlpProtoBytes =
-                    payload.try_into().map_err(crate::pdata_to_engine_error)?;
+                let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Logs) {

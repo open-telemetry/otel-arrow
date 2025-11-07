@@ -82,11 +82,3 @@ pub mod otlp_grpc;
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
-
-pub(crate) fn pdata_to_engine_error(
-    e: otap_df_pdata::error::Error,
-) -> otap_df_engine::error::Error {
-    otap_df_engine::error::Error::PDataError {
-        message: e.to_string(),
-    }
-}

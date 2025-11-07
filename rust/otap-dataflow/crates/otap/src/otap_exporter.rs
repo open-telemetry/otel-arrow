@@ -229,7 +229,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let message: OtapArrowRecords = payload
                             .try_into()
                             .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))
-                            .map_err(crate::pdata_to_engine_error)?;
+                            ?;
 
                         _ = match signal_type {
                             SignalType::Logs => logs_sender.send(message).await,

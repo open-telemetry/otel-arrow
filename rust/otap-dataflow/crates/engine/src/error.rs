@@ -379,10 +379,22 @@ pub enum Error {
     TooManyNodes {},
 
     /// Error in pipeline data (e.g., translation)
-    #[error("Pipeline data error")]
+    /// Note: this is not a specific type such as otap_df_pdata::error::Error
+    /// because this crate does not specifically depend on that crate.  We
+    /// could use a dyn Error, maybe.
+    #[error("Pipeline data error: {}", error)]
     PDataError {
-        /// PData error message
-        message: String,
+        /// otap_df_pdata error
+        #[from]
+        error: otap_df_pdata::error::Error,
+    },
+
+    /// Error from the prost encoder.
+    #[error("Prost encode error: {}", error)]
+    ProstEncodeError {
+        /// Prost error
+        #[from]
+        error: prost::EncodeError,
     },
 }
 
@@ -391,32 +403,33 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
-            Error::ConfigError(_) => "ConfigError",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
-            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
-            Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
-            Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
-            Error::IoError { .. } => "IoError",
-            Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
-            Error::ReceiverError { .. } => "ReceiverError",
-            Error::UnknownReceiver { .. } => "UnknownReceiver",
-            Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
-            Error::ProcessorError { .. } => "ProcessorError",
-            Error::UnknownProcessor { .. } => "UnknownProcessor",
+            Error::ConfigError(_) => "ConfigError",
             Error::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
             Error::ExporterError { .. } => "ExporterError",
+            Error::InternalError { .. } => "InternalError",
+            Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
+            Error::IoError { .. } => "IoError",
+            Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
+            Error::PDataError { .. } => "PDataError",
             Error::PdataConversionError { .. } => "PdataConversionError",
-            Error::UnknownExporter { .. } => "UnknownExporter",
-            Error::UnknownNode { .. } => "UnknownNode",
             Error::PdataReceiverNotSupported => "PdataReceiverNotSupported",
             Error::PdataSenderNotSupported => "PdataSenderNotSupported",
+            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+            Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
+            Error::ProcessorError { .. } => "ProcessorError",
+            Error::ProstEncodeError { .. } => "ProstEncodeError",
+            Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
+            Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
-            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
-            Error::JoinTaskError { .. } => "JoinTaskError",
-            Error::InternalError { .. } => "InternalError",
             Error::TooManyNodes {} => "TooManyNodes",
-            Error::PDataError { .. } => "PDataError",
+            Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::UnknownNode { .. } => "UnknownNode",
+            Error::UnknownProcessor { .. } => "UnknownProcessor",
+            Error::UnknownReceiver { .. } => "UnknownReceiver",
+            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
         }
         .to_owned()
     }

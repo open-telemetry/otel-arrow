@@ -395,12 +395,6 @@ async fn generate_signal(
     Ok(())
 }
 
-fn encode_to_engine_error(e: prost::EncodeError) -> Error {
-    Error::PDataError {
-        message: e.to_string(),
-    }
-}
-
 impl TryFrom<OTLPSignal> for OtapPdata {
     type Error = Error;
 
@@ -408,21 +402,15 @@ impl TryFrom<OTLPSignal> for OtapPdata {
         let mut bytes = vec![];
         Ok(match value {
             OTLPSignal::Logs(logs_data) => {
-                logs_data
-                    .encode(&mut bytes)
-                    .map_err(encode_to_engine_error)?;
+                logs_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
             OTLPSignal::Metrics(metrics_data) => {
-                metrics_data
-                    .encode(&mut bytes)
-                    .map_err(encode_to_engine_error)?;
+                metrics_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
             OTLPSignal::Traces(trace_data) => {
-                trace_data
-                    .encode(&mut bytes)
-                    .map_err(encode_to_engine_error)?;
+                trace_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
