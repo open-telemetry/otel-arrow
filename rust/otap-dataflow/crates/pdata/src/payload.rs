@@ -25,7 +25,7 @@
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource
 //! };
-//! # use otap_df_pdata::pdata::{OtapPayload, OtlpProtoBytes};
+//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 //! # use prost::Message;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
 //!    ResourceLogs::new(
