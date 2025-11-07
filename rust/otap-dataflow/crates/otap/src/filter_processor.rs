@@ -105,7 +105,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
-                let arrow_records: OtapArrowRecords = payload.try_into()?;
+                let arrow_records: OtapArrowRecords =
+                    payload.try_into().map_err(crate::pdata_to_engine_error)?;
 
                 let filtered_arrow_records: OtapArrowRecords = match signal {
                     SignalType::Metrics => {
@@ -143,7 +144,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 #[cfg(test)]
 mod tests {
     use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -151,6 +152,7 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},

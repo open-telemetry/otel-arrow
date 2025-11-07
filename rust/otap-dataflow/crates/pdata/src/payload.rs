@@ -87,34 +87,11 @@ use crate::otap::{OtapArrowRecords, OtapBatchStore};
 use crate::otlp::logs::LogsProtoBytesEncoder;
 use crate::otlp::metrics::MetricsProtoBytesEncoder;
 use crate::otlp::traces::TracesProtoBytesEncoder;
-use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
 use otap_df_config::SignalType;
-
-/// Pipeline data represented as protobuf serialized OTLP request messages
-#[derive(Clone, Debug)]
-pub enum OtlpProtoBytes {
-    /// protobuf serialized ExportLogsServiceRequest
-    ExportLogsRequest(Vec<u8>),
-    /// protobuf serialized ExportMetricsServiceRequest
-    ExportMetricsRequest(Vec<u8>),
-    /// protobuf serialized ExportTracesServiceRequest
-    ExportTracesRequest(Vec<u8>),
-}
-
-impl OtlpProtoBytes {
-    /// Get a borrowed reference to the serialized proto bytes slice
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            OtlpProtoBytes::ExportLogsRequest(bytes)
-            | OtlpProtoBytes::ExportMetricsRequest(bytes)
-            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_slice(),
-        }
-    }
-}
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]

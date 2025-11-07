@@ -377,6 +377,13 @@ pub enum Error {
     /// Too many nodes are configured.
     #[error("Too many nodes defined")]
     TooManyNodes {},
+
+    /// Error in pipeline data (e.g., translation)
+    #[error("Pipeline data error")]
+    PDataError {
+        /// PData error message
+        message: String,
+    },
 }
 
 impl Error {
@@ -409,6 +416,7 @@ impl Error {
             Error::JoinTaskError { .. } => "JoinTaskError",
             Error::InternalError { .. } => "InternalError",
             Error::TooManyNodes {} => "TooManyNodes",
+            Error::PDataError { .. } => "PDataError",
         }
         .to_owned()
     }

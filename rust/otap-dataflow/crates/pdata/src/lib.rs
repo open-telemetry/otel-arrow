@@ -19,13 +19,16 @@ pub mod schema;
 
 pub(crate) mod arrays;
 pub(crate) mod decode;
-pub(crate) mod encode;
+pub mod encode;
 pub(crate) mod payload;
 
-pub use payload::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+pub use otap::OtapArrowRecords;
+pub use otlp::OtlpProtoBytes;
+pub use payload::{OtapPayload, OtapPayloadHelpers};
 
-#[cfg(test)]
-mod testing;
+/// Testing support
+// #[cfg(test)] ?
+pub mod testing;
 
 #[cfg(test)]
 mod validation;

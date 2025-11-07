@@ -1,10 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-mod create_array;
-
-pub(crate) use create_array::{create_record_batch, create_test_schema};
-
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -12,7 +8,7 @@ use crate::proto::opentelemetry::{
     resource::v1::Resource,
 };
 
-/// Create minimal test data
+/// Create minimal logs test data
 #[must_use]
 pub fn create_test_logs() -> ExportLogsServiceRequest {
     ExportLogsServiceRequest::new(vec![ResourceLogs::new(

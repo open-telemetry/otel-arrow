@@ -7,8 +7,6 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Code for encoding OTAP batch from pdata view
-pub mod encoder;
 /// Implementation of OTAP Exporter that implements the exporter trait
 pub mod otap_exporter;
 /// gRPC service implementation
@@ -84,3 +82,11 @@ pub mod otlp_grpc;
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
+
+pub(crate) fn pdata_to_engine_error(
+    e: otap_df_pdata::error::Error,
+) -> otap_df_engine::error::Error {
+    otap_df_engine::error::Error::PDataError {
+        message: e.to_string(),
+    }
+}
