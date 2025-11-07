@@ -604,7 +604,7 @@ fn append_ehdp_bucket<View>(view: Option<&View>, builder: &mut BucketsRecordBatc
 where
     View: BucketsView,
 {
-    let buckets = view.map(|v| (v.offset(), v.bucket_counts().copied()));
+    let buckets = view.map(|v| (v.offset(), v.bucket_counts()));
     builder.append(buckets)
 }
 

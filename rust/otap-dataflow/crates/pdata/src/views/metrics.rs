@@ -703,7 +703,7 @@ pub trait ExponentialHistogramDataPointView {
 /// View for Bucket
 pub trait BucketsView {
     /// Iterator type for bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 

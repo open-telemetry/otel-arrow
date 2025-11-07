@@ -8,14 +8,14 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
-    EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_DP_ATTRIBUTES, EXP_HISTOGRAM_DP_COUNT,
-    EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS, EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN,
-    EXP_HISTOGRAM_DP_NEGATIVE, EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE,
-    EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO,
-    EXP_HISTOGRAM_DP_ZERO_COUNT, EXP_HISTOGRAM_DP_ZERO_THRESHOLD,
-    EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, EXPONENTIAL_HISTOGRAM_DATA_POINTS,
-    GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
-    HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
+    EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
+    EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS,
+    EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN, EXP_HISTOGRAM_DP_NEGATIVE,
+    EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE, EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO,
+    EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_ZERO_COUNT,
+    EXP_HISTOGRAM_DP_ZERO_THRESHOLD, EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY,
+    EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
+    HISTOGRAM_DATA_POINTS, HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
     HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
     HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM,
     HISTOGRAM_DP_TIME_UNIX_NANO, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
@@ -30,19 +30,21 @@ use crate::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
-    AggregationTemporality, DataPointFlags, DataType, DataView, ExponentialHistogramDataPointView,
-    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView, Value,
+    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView,
+    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, Value,
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
-    FieldRanges, PackedFixed64Iter, ProtoBytesParser, RepeatedFieldProtoBytesParser, decode_sint32,
-    from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
+    FieldRanges, PackedFixed64Iter, PackedVarintIter, ProtoBytesParser,
+    RepeatedFieldProtoBytesParser, decode_sint32, from_option_nonzero_range_to_primitive,
+    read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjBuckets, ObjExemplar,
-    ObjExponentialHistogramDataPoint, ObjNumberDataPoint, ObjSummary,
+    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar, ObjNumberDataPoint,
+    ObjSummary,
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -795,6 +797,55 @@ impl FieldRanges for ExpHistogramDataPointFieldRanges {
     }
 }
 
+/// Implementation of [`BucketsView`] backed by buffer containing proto serialized Buckets message
+pub struct RawBuckets<'a> {
+    byte_parser: ProtoBytesParser<'a, BucketsFieldRanges>,
+}
+
+/// Known field ranges for fields on `Buckets` message
+#[derive(Default)]
+pub struct BucketsFieldRanges {
+    offset: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for BucketsFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXP_HISTOGRAM_BUCKET_OFFSET => self.offset.get(),
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => self.bucket_counts.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXP_HISTOGRAM_BUCKET_OFFSET => {
+                if wire_type == wire_types::VARINT {
+                    self.offset.set(Some(range));
+                }
+            }
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
+                if wire_type == wire_types::LEN {
+                    self.bucket_counts.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
 /// Iterator of ResourceMetrics - produces implementation of [`ResourceMetricsView`] from byte
@@ -1499,9 +1550,8 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
     where
         Self: 'att;
 
-    // TODO
     type Buckets<'b>
-        = ObjBuckets<'b>
+        = RawBuckets<'b>
     where
         Self: 'b;
 
@@ -1561,13 +1611,21 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
     }
 
     fn negative(&self) -> Option<Self::Buckets<'_>> {
-        // TODO
-        None
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_NEGATIVE)?;
+        Some(RawBuckets {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
     }
 
     fn positive(&self) -> Option<Self::Buckets<'_>> {
-        // TODO
-        None
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_POSITIVE)?;
+        Some(RawBuckets {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
     }
 
     fn scale(&self) -> i32 {
@@ -1614,6 +1672,29 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
             .advance_to_find_field(EXP_HISTOGRAM_DP_ZERO_THRESHOLD)
             .and_then(|slice| slice.try_into().ok())
             .map(f64::from_le_bytes)
+            .unwrap_or_default()
+    }
+}
+
+impl BucketsView for RawBuckets<'_> {
+    type BucketCountIter<'bc>
+        = PackedVarintIter<'bc>
+    where
+        Self: 'bc;
+
+    fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS)
+            .unwrap_or_default();
+        PackedVarintIter::new(slice)
+    }
+
+    fn offset(&self) -> i32 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_BUCKET_OFFSET)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| decode_sint32(val as i32))
             .unwrap_or_default()
     }
 }

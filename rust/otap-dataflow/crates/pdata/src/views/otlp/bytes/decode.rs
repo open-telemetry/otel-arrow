@@ -388,6 +388,35 @@ impl FromFixed64 for u64 {
     }
 }
 
+/// Iterator for producing elements whose type is a repeated primitive where that primitive
+/// can be encoded as a varint. e.g. `repeated uint64`. OTLP uses the packed encoding for these
+/// types of fields:
+/// https://protobuf.dev/editions/features/#repeated_field_encoding
+pub struct PackedVarintIter<'a> {
+    buffer: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> PackedVarintIter<'a> {
+    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer, pos: 0 }
+    }
+}
+
+// Note this only produces u64 currently as that just happens to be the only type of value in the
+// OTLP data model that ends up getting encoded like that. if we ever need this to be generic over
+// the return type, we could easily do that (like we do for [`PackedFixed64Iter`])
+impl<'a> Iterator for PackedVarintIter<'a> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (val, next_pos) = read_varint(self.buffer, self.pos)?;
+        self.pos = next_pos;
+
+        Some(val)
+    }
+}
+
 /// Decode variant at position in buffer
 #[inline]
 #[must_use]

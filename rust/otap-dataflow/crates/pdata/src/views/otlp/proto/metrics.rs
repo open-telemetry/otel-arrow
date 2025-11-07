@@ -630,7 +630,7 @@ impl ExponentialHistogramDataPointView for ObjExponentialHistogramDataPoint<'_> 
 
 impl BucketsView for ObjBuckets<'_> {
     type BucketCountIter<'bc>
-        = std::slice::Iter<'bc, u64>
+        = Copied<std::slice::Iter<'bc, u64>>
     where
         Self: 'bc;
 
@@ -639,7 +639,7 @@ impl BucketsView for ObjBuckets<'_> {
     }
 
     fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
-        self.inner.bucket_counts.iter()
+        self.inner.bucket_counts.iter().copied()
     }
 }
 
