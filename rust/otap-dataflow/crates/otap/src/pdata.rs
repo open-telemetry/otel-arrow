@@ -723,15 +723,11 @@ mod test {
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             metrics::v1::{
-                AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric,
-                NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric::Data,
-                number_data_point::Value,
+                metric::Data, number_data_point::Value, AggregationTemporality, ExponentialHistogram, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum
             },
             resource::v1::Resource,
             trace::v1::{
-                ResourceSpans, ScopeSpans, Span, SpanFlags, Status,
-                span::{Event, Link},
-                status::StatusCode,
+                span::{Event, Link}, status::StatusCode, ResourceSpans, ScopeSpans, Span, SpanFlags, Status
             },
         },
     };
@@ -1361,6 +1357,16 @@ mod test {
                             ],
                         })),
                     },
+                    Metric {
+                        name: "metric5".into(),
+                        description: "metric5 desc".into(),
+                        unit: "m5 unit".into(),
+                        metadata: vec![
+                            // TODO
+                        ],
+                        // TODO
+                        data: Some(Data::ExponentialHistogram(ExponentialHistogram::default()))
+                    }
                 ],
             }],
         }]);

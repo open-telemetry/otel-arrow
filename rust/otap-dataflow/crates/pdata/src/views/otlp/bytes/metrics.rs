@@ -8,23 +8,15 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
-    GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
-    HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
-    HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
-    HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM,
-    HISTOGRAM_DP_TIME_UNIX_NANO, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
-    METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
-    METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
-    NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
-    RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
-    SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
-    SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC,
+    EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS, HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT, HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX, HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM, HISTOGRAM_DP_TIME_UNIX_NANO, METRICS_DATA_RESOURCE_METRICS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES, NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO, RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE, SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC
 };
 use crate::proto::consts::wire_types;
 
 use crate::views::common::Str;
 use crate::views::metrics::{
-    AggregationTemporality, DataPointFlags, DataType, DataView, GaugeView, HistogramDataPointView,
+    AggregationTemporality, DataPointFlags, DataType, DataView, 
+    ExponentialHistogramView, ExponentialHistogramDataPointView,
+    GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
     ScopeMetricsView, SumView, Value,
 };
@@ -35,8 +27,7 @@ use crate::views::otlp::bytes::decode::{
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
-    ObjExponentialHistogram, ObjNumberDataPoint, ObjSummary,
+    ExemplarIter, ExponentialHistogramDataPointIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar, ObjExponentialHistogram, ObjExponentialHistogramDataPoint, ObjNumberDataPoint, ObjSummary
 };
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
@@ -349,7 +340,7 @@ pub struct RawHistogram<'a> {
     byte_parser: ProtoBytesParser<'a, HistogramFieldRanges>,
 }
 
-/// Known field ranges for fields on `Sum` message
+/// Known field ranges for fields on `Histogram` message
 pub struct HistogramFieldRanges {
     aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -386,6 +377,58 @@ impl FieldRanges for HistogramFieldRanges {
                 }
             }
             HISTOGRAM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`ExponentialHistogramView`] backed by byte buffer containing proto
+/// serialized `ExponentialHistogram` message
+pub struct RawExpHistogram<'a> {
+    byte_parser: ProtoBytesParser<'a, ExpHistogramFieldRanges>
+}
+
+/// Known field ranges for fields on `ExponentialHistogram` message
+struct ExpHistogramFieldRanges {
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for ExpHistogramFieldRanges {
+    fn new() -> Self {
+        Self {
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            EXPONENTIAL_HISTOGRAM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            EXPONENTIAL_HISTOGRAM_DATA_POINTS => {
                 if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
                     self.first_data_point.set(Some(range))
                 }
@@ -892,7 +935,7 @@ impl DataView<'_> for RawData<'_> {
         Self: 'histogram;
 
     type ExponentialHistogram<'exp>
-        = ObjExponentialHistogram<'exp>
+        = RawExpHistogram<'exp>
     where
         Self: 'exp;
 
@@ -935,8 +978,9 @@ impl DataView<'_> for RawData<'_> {
     }
 
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_EXPONENTIAL_HISTOGRAM).then_some(RawExpHistogram {
+            byte_parser: ProtoBytesParser::new(self.buf)
+        })
     }
 
     fn as_summary(&self) -> Option<Self::Summary<'_>> {
@@ -1040,6 +1084,40 @@ impl HistogramView for RawHistogram<'_> {
                 wire_types::LEN,
             ),
         }
+    }
+}
+
+impl ExponentialHistogramView for RawExpHistogram<'_> {
+    // TODO here temporarily
+    type ExponentialHistogramDataPoint<'edp> = ObjExponentialHistogramDataPoint<'edp>
+        where
+            Self: 'edp;
+    // TODO here temporarily
+    type ExponentialHistogramDataPointIter<'edp> = ExponentialHistogramDataPointIter<'edp>
+        where
+            Self: 'edp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn data_points(&self) -> Self::ExponentialHistogramDataPointIter<'_> {
+        // TODO
+        ExponentialHistogramDataPointIter::new([].iter())
+        // HistogramDataPointIter {
+        //     byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+        //         &self.byte_parser,
+        //         HISTOGRAM_DATA_POINTS,
+        //         wire_types::LEN,
+        //     ),
+        // }
     }
 }
 
