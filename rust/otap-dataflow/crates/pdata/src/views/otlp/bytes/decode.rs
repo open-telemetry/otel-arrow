@@ -443,7 +443,7 @@ pub fn read_varint(buf: &[u8], mut pos: usize) -> Option<(u64, usize)> {
 /// Decode 32 bit zigzag encoding
 #[inline]
 #[must_use]
-pub fn decode_sint32(val: i32) -> i32 {
+pub const fn decode_sint32(val: i32) -> i32 {
     (val >> 1) ^ -(val & 1)
 }
 
