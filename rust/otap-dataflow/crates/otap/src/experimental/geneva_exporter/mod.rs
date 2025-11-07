@@ -37,6 +37,7 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -52,7 +53,7 @@ use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::pdata::OtapPdata;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:otel:geneva:exporter";
