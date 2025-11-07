@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
-use arrow::array::as_primitive_array;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
@@ -704,12 +703,11 @@ fn split_metric_batches<const N: usize>(
     let mut result = Vec::new();
     let max_output_batch = max_output_batch.get() as usize;
     let mut batch_size_remaining = max_output_batch;
-    let mut accumulating_from: Option<usize> = None;
 
-    for (batch_index, batches) in batches.iter().enumerate() {
+    for (batch_index, thisdata) in batches.iter().enumerate() {
         use arrow::array::as_primitive_array;
 
-        let metrics = batches[METRICS_INDEX]
+        let metrics = thisdata[METRICS_INDEX]
             .as_ref()
             .expect("we've alredy ensured that every batch has a non-null primary table");
         let metric_ids: &PrimitiveArray<UInt16Type> = as_primitive_array(
@@ -727,26 +725,18 @@ fn split_metric_batches<const N: usize>(
         // Note that `max_metric_id` can differ from `metric_length` because the values in the ID
         // column can have gaps.
 
-        let batch_len = batch_length(batches);
-        if batch_len <= batch_size_remaining {
-            // This batch fits in current accumulation
-            if accumulating_from.is_none() {
-                accumulating_from = Some(batch_index);
-            }
-            batch_size_remaining -= batch_len;
+        let thisdata_len = batch_length(thisdata);
+        if thisdata_len <= batch_size_remaining {
+            batch_size_remaining -= thisdata_len;
+            result.push((batch_index, 0..metric_length));
             if batch_size_remaining == 0 {
-                // Emit all accumulated batches
-                for idx in accumulating_from.unwrap()..=batch_index {
-                    result.push((idx, 0..metric_length));
-                }
-                accumulating_from = None;
                 batch_size_remaining = max_output_batch;
             }
         } else {
             child_counts.clear();
             child_counts.resize(max_metric_id as usize + 1, 0);
             for dpt in DATA_POINTS_TYPES {
-                let child = batches[POSITION_LOOKUP[dpt as usize]].as_ref();
+                let child = thisdata[POSITION_LOOKUP[dpt as usize]].as_ref();
                 if let Some(child) = child {
                     let parent_id: &PrimitiveArray<UInt16Type> = as_primitive_array(
                         child
@@ -798,20 +788,6 @@ fn split_metric_batches<const N: usize>(
                 }
                 starting_index = ending_index;
             }
-        }
-    }
-
-    // Emit any remaining accumulated batches
-    if let Some(start_idx) = accumulating_from {
-        for idx in start_idx..batches.len() {
-            let batches_at_idx = &batches[idx];
-            let metrics = batches_at_idx[METRICS_INDEX].as_ref().unwrap();
-            let metric_ids: &PrimitiveArray<UInt16Type> = as_primitive_array(
-                metrics
-                    .column_by_name(consts::ID)
-                    .expect("ID column should be present"),
-            );
-            result.push((idx, 0..metric_ids.len()));
         }
     }
 
