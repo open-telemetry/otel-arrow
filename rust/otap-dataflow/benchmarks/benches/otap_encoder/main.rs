@@ -10,7 +10,7 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
-use otap_df_otap::encoder::encode_logs_otap_batch;
+use otap_df_pdata::encode::encode_logs_otap_batch;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
