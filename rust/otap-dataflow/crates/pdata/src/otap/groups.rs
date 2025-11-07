@@ -320,15 +320,12 @@ fn generic_split<const N: usize>(
                 split_primary.iter().map(|rb| rb.num_rows()).sum::<usize>()
             );
 
-            // Extract IDs only if the column exists (needed for splitting child tables)
-            let ids_opt = if rb.column_by_name(consts::ID).is_some() {
-                Some(IDSeqs::from_col(
-                    IDColumn::extract(&rb, consts::ID)?,
-                    &lengths,
-                ))
-            } else {
-                None
-            };
+            // Extract IDs only if the column exists, for splitting child tables.
+            let ids_opt = rb
+                .column_by_name(consts::ID)
+                .map(|col| IDColumn::from_array(consts::ID, col))
+                .transpose()?
+                .map(|ids| IDSeqs::from_col(ids, &lengths));
 
             // use ids to split the child tables: call split_child_record_batch
             let new_batch_count = split_primary.len();
