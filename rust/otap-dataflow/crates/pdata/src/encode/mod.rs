@@ -1,7 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata::views::{
+//! This crate contains code that is used to encode OTAP data.
+
+pub mod error;
+pub mod producer;
+pub mod record;
+
+mod cbor;
+
+use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
@@ -15,7 +23,7 @@ use otap_df_pdata::views::{
         EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
     },
 };
-use otap_df_pdata::{
+use crate::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
         logs::LogsRecordBatchBuilder,
@@ -32,10 +40,7 @@ use otap_df_pdata::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use crate::encoder::error::{Error, Result};
-
-mod cbor;
-pub mod error;
+use crate::encode::error::{Error, Result};
 
 /// Traverse the trace structure within the TracesView and produces an `OtapArrowRecords' for the span
 /// data.
@@ -985,32 +990,32 @@ mod test {
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
 
-    use otap_df_pdata::otlp::ProtoBuffer;
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
-    use otap_df_pdata::otlp::attributes::cbor::proto_encode_cbor_bytes;
-    use otap_df_pdata::otlp::metrics::MetricType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use crate::otlp::ProtoBuffer;
+    use crate::otlp::attributes::AttributeValueType;
+    use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use crate::otlp::metrics::MetricType;
+    use crate::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::SpanFlags;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::SpanFlags;
+    use crate::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
         status::StatusCode,
     };
-    use otap_df_pdata::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
+    use crate::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use crate::views::otlp::bytes::logs::RawLogsData;
+    use crate::views::otlp::bytes::traces::RawTraceData;
     use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
     fn test_metrics_round_trip() {
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        use crate::proto::opentelemetry::metrics::v1::{
             Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
             ScopeMetrics, Sum, Summary, SummaryDataPoint,
@@ -3854,14 +3859,12 @@ mod test {
 
     #[test]
     fn test_encode_logs_batch_length_counts_rows() {
-        use otap_df_pdata::otap::OtapArrowRecords;
-        use otap_df_pdata::proto::opentelemetry::common::v1::{
-            AnyValue, InstrumentationScope, KeyValue,
-        };
-        use otap_df_pdata::proto::opentelemetry::logs::v1::{
+        use crate::otap::OtapArrowRecords;
+        use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+        use crate::proto::opentelemetry::logs::v1::{
             LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
         };
-        use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+        use crate::proto::opentelemetry::resource::v1::Resource;
 
         // Build logs with at least one attribute per record so log ids are set
         let logs: Vec<LogRecord> = (0..3)
