@@ -723,8 +723,9 @@ mod test {
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             metrics::v1::{
-                AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric,
-                NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric::Data,
+                AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
+                Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
+                ScopeMetrics, Sum, exponential_histogram_data_point::Buckets, metric::Data,
                 number_data_point::Value,
             },
             resource::v1::Resource,
@@ -1357,6 +1358,61 @@ mod test {
                                     flags: 16,
                                     min: Some(17.0),
                                     max: Some(18.0),
+                                },
+                            ],
+                        })),
+                    },
+                    Metric {
+                        name: "metric5".into(),
+                        description: "metric5 desc".into(),
+                        unit: "m5 unit".into(),
+                        metadata: vec![
+                            KeyValue::new("attr1", AnyValue::new_string("val6")),
+                            KeyValue::new("attr2", AnyValue::new_string("val7")),
+                        ],
+                        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                            data_points: vec![
+                                ExponentialHistogramDataPoint {
+                                    start_time_unix_nano: 8,
+                                    time_unix_nano: 3,
+                                    count: 99,
+                                    sum: Some(94.4),
+                                    scale: 76,
+                                    zero_count: 324,
+                                    positive: Some(Buckets {
+                                        offset: -3,
+                                        bucket_counts: vec![1, 2, 2345435235, 2, 443434],
+                                    }),
+                                    negative: Some(Buckets {
+                                        offset: 5,
+                                        bucket_counts: vec![1, 2, 4, 0, 1, 3, 9999, 3],
+                                    }),
+                                    flags: 48,
+                                    min: Some(9.4),
+                                    max: Some(99.5),
+                                    zero_threshold: 4.9,
+                                    attributes: vec![
+                                        KeyValue::new("attr1", AnyValue::new_string("val6")),
+                                        KeyValue::new("attr2", AnyValue::new_string("val7")),
+                                    ],
+                                    exemplars: vec![], // TODO
+                                },
+                                ExponentialHistogramDataPoint {
+                                    positive: Some(Buckets {
+                                        offset: -3,
+                                        bucket_counts: vec![4, 4, 5, 3],
+                                    }),
+                                    negative: Some(Buckets {
+                                        offset: 5,
+                                        bucket_counts: vec![1, 2, 3],
+                                    }),
+                                    attributes: vec![KeyValue::new(
+                                        "attr1",
+                                        AnyValue::new_string("val6"),
+                                    )],
+                                    exemplars: vec![], // TODO
+                                    ..Default::default()
                                 },
                             ],
                         })),
