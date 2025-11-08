@@ -609,7 +609,7 @@ fn append_ehdp_bucket<View>(view: Option<&View>, builder: &mut BucketsRecordBatc
 where
     View: BucketsView,
 {
-    let buckets = view.map(|v| (v.offset(), v.bucket_counts().copied()));
+    let buckets = view.map(|v| (v.offset(), v.bucket_counts()));
     builder.append(buckets)
 }
 
@@ -2064,8 +2064,8 @@ mod test {
             .unwrap();
         let expected_edp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),

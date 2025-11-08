@@ -1250,7 +1250,9 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(13);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -1260,11 +1262,9 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {
