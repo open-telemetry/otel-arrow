@@ -140,9 +140,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                     _ = metrics_reporter.report(&mut self.metrics);
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }

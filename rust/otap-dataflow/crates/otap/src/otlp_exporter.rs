@@ -161,9 +161,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {

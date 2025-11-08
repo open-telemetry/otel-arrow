@@ -226,9 +226,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         }
                     }
                 }
-                Message::Control(NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                     if let Some(metrics) = self.pdata_metrics.as_mut() {
                         _ = metrics_reporter.report(metrics);
                     }

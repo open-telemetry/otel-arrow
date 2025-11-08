@@ -613,13 +613,11 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         effect.info(LOG_MSG_SHUTTING_DOWN).await;
                         Ok(())
                     }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                        EngineError::InternalError {
+                    NodeControlMsg::CollectTelemetry { metrics_reporter } => metrics_reporter
+                        .report(&mut self.metrics)
+                        .map_err(|e| EngineError::InternalError {
                             message: e.to_string(),
-                        }
-                    }),
+                        }),
                     NodeControlMsg::DelayedData { .. } => {
                         unreachable!("unused");
                     }

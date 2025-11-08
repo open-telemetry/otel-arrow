@@ -135,7 +135,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(NodeControlMsg::CollectTelemetry {
-                            mut metrics_reporter,
+                            metrics_reporter,
                         }) => {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }

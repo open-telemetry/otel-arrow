@@ -204,7 +204,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     Message::Control(NodeControlMsg::TimerTick { .. })
                     | Message::Control(NodeControlMsg::Config { .. }) => {}
                     Message::Control(NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
+                        metrics_reporter,
                     }) => {
                         _ = metrics_reporter.report(&mut self.pdata_metrics);
                     }

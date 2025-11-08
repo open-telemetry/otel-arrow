@@ -218,7 +218,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                        Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
                         },

@@ -67,7 +67,7 @@ pub struct Config {
 /// The implementation mirrors the OTAP Arrow receiver layout: a shared [`GrpcServerConfig`] drives
 /// listener creation, per-signal tonic services are registered on a single server, and the receiver
 /// is wrapped in a [`ReceiverFactory`] so the dataflow engine can build it from configuration.
-/// 
+///
 /// Several optimisations keep the hot path inexpensive:
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
 ///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server::OtlpBytesCodec), allowing downstream stages
@@ -202,7 +202,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                        Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
                         },

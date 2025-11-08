@@ -258,9 +258,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .output_message(&format!("NACK received after {:?}\n", dd.elapsed()))
                             .await?;
                     }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
+                    NodeControlMsg::CollectTelemetry { metrics_reporter } => {
                         _ = metrics_reporter.report(&mut self.metrics);
                     }
                     _ => {}

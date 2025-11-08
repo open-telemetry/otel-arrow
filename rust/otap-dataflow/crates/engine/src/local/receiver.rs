@@ -125,11 +125,11 @@ impl<PData> ControlChannel<PData> {
 /// Note: This handler MUST be cloneable with low overhead.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore<PData>,
-    senders: Rc<EffectHandlerSenders<PData>>,
+    inner: Rc<EffectHandlerInner<PData>>,
 }
 
-struct EffectHandlerSenders<PData> {
+struct EffectHandlerInner<PData> {
+    core: EffectHandlerCore<PData>,
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
     msg_senders: HashMap<PortName, LocalSender<PData>>,
@@ -160,23 +160,24 @@ impl<PData> EffectHandler<PData> {
             None
         };
 
-        let senders = Rc::new(EffectHandlerSenders {
+        let inner = Rc::new(EffectHandlerInner {
+            core,
             msg_senders,
             default_sender,
         });
-        EffectHandler { core, senders }
+        EffectHandler { inner }
     }
 
     /// Returns the id of the receiver associated with this handler.
     #[must_use]
     pub fn receiver_id(&self) -> NodeId {
-        self.core.node_id()
+        self.inner.core.node_id()
     }
 
     /// Returns the list of connected out ports for this receiver.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.senders.msg_senders.keys().cloned().collect()
+        self.inner.msg_senders.keys().cloned().collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -190,7 +191,7 @@ impl<PData> EffectHandler<PData> {
     /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.senders.default_sender {
+        match &self.inner.default_sender {
             Some(sender) => sender
                 .send(data)
                 .await
@@ -218,7 +219,7 @@ impl<PData> EffectHandler<PData> {
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
-        match self.senders.msg_senders.get(&port_name) {
+        match self.inner.msg_senders.get(&port_name) {
             Some(sender) => sender
                 .send(data)
                 .await
@@ -243,7 +244,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error> {
-        self.core.tcp_listener(addr, self.receiver_id())
+        self.inner.core.tcp_listener(addr, self.receiver_id())
     }
 
     /// Creates a non-blocking UDP socket on the given address with socket options defined by the
@@ -254,7 +255,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn udp_socket(&self, addr: SocketAddr) -> Result<UdpSocket, Error> {
-        self.core.udp_socket(addr, self.receiver_id())
+        self.inner.core.udp_socket(addr, self.receiver_id())
     }
 
     /// Print an info message to stdout.
@@ -262,7 +263,7 @@ impl<PData> EffectHandler<PData> {
     /// This method provides a standardized way for receivers to output
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
-        self.core.info(message).await;
+        self.inner.core.info(message).await;
     }
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
@@ -273,7 +274,7 @@ impl<PData> EffectHandler<PData> {
         &self,
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
-        self.core.start_periodic_timer(duration).await
+        self.inner.core.start_periodic_timer(duration).await
     }
 
     /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
@@ -281,16 +282,16 @@ impl<PData> EffectHandler<PData> {
         &self,
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
-        self.core.start_periodic_telemetry(duration).await
+        self.inner.core.start_periodic_telemetry(duration).await
     }
 
     /// Reports metrics collected by the receiver.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
-        &mut self,
+        &self,
         metrics: &mut MetricSet<M>,
     ) -> Result<(), TelemetryError> {
-        self.core.report_metrics(metrics)
+        self.inner.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.
