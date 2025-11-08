@@ -10,7 +10,11 @@
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
-use futures::stream;
+use futures::{
+    StreamExt,
+    future::BoxFuture,
+    stream::{self, FuturesUnordered},
+};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
 use otel_arrow_rust::{
     Consumer,
@@ -48,10 +52,19 @@ pub struct Settings {
     pub wait_for_result: bool,
 }
 
+fn per_connection_limit(settings: &Settings) -> usize {
+    if settings.wait_for_result {
+        settings.max_concurrent_requests.max(1)
+    } else {
+        1
+    }
+}
+
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<AckSubscriptionState>,
+    max_in_flight_per_connection: usize,
 }
 
 impl ArrowLogsServiceImpl {
@@ -63,6 +76,7 @@ impl ArrowLogsServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
+            max_in_flight_per_connection: per_connection_limit(settings),
         }
     }
 
@@ -76,6 +90,7 @@ impl ArrowLogsServiceImpl {
 pub struct ArrowMetricsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<AckSubscriptionState>,
+    max_in_flight_per_connection: usize,
 }
 
 impl ArrowMetricsServiceImpl {
@@ -87,6 +102,7 @@ impl ArrowMetricsServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
+            max_in_flight_per_connection: per_connection_limit(settings),
         }
     }
 
@@ -101,6 +117,7 @@ impl ArrowMetricsServiceImpl {
 pub struct ArrowTracesServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<AckSubscriptionState>,
+    max_in_flight_per_connection: usize,
 }
 
 impl ArrowTracesServiceImpl {
@@ -112,6 +129,7 @@ impl ArrowTracesServiceImpl {
             state: settings
                 .wait_for_result
                 .then(|| AckSubscriptionState::new(settings.max_concurrent_requests)),
+            max_in_flight_per_connection: per_connection_limit(settings),
         }
     }
 
@@ -136,6 +154,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             self.effect_handler.clone(),
             self.state.clone(),
             OtapArrowRecords::Logs,
+            self.max_in_flight_per_connection,
         );
         Ok(Response::new(output))
     }
@@ -155,6 +174,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             self.effect_handler.clone(),
             self.state.clone(),
             OtapArrowRecords::Metrics,
+            self.max_in_flight_per_connection,
         );
         Ok(Response::new(output))
     }
@@ -174,6 +194,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             self.effect_handler.clone(),
             self.state.clone(),
             OtapArrowRecords::Traces,
+            self.max_in_flight_per_connection,
         );
         Ok(Response::new(output))
     }
@@ -191,17 +212,21 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 /// Internally an `ArrowBatchStreamState` pulls the next `BatchArrowRecords` from the tonic stream,
 /// decodes it into `OtapPdata`, and optionally registers an `AckSubscriptionState` slot when
 /// `wait_for_result` is enabled. Once the pipeline acknowledges (or rejects) the batch, the stream
-/// emits a success or error status before continuing with the next request.
+/// emits a success or error status before continuing with the next request. To avoid per-connection
+/// serialization, the state now keeps up to `max_in_flight_per_connection` batches in flight: it
+/// eagerly reads, decodes, and dispatches new Arrow batches while prior ones wait for ACK/NACK
+/// responses, only falling back to serialized processing once the limit is reached.
 ///
 /// This design replaces the previous channel-plus-background-task approach. Expressing the control
 /// flow as a single `Stream` keeps backpressure aligned with gRPC demand, removes the bookkeeping
 /// around extra channels/tasks, and makes it easier to follow how every request progresses through
-/// decoding, dispatch, and acknowledgement.
+/// decoding, dispatch, acknowledgement, and now limited parallelism.
 fn stream_arrow_batch_statuses<T, F>(
     input_stream: tonic::Streaming<BatchArrowRecords>,
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<AckSubscriptionState>,
     otap_batch: F,
+    max_in_flight_per_connection: usize,
 ) -> Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>
 where
     T: OtapBatchStore + 'static,
@@ -217,6 +242,8 @@ where
         effect_handler: shared::EffectHandler<OtapPdata>,
         state: Option<AckSubscriptionState>,
         otap_batch: F,
+        in_flight: FuturesUnordered<BoxFuture<'static, StreamStep>>,
+        max_in_flight: usize,
         finished: bool,
         _marker: PhantomData<fn() -> T>,
     }
@@ -226,9 +253,9 @@ where
         Done,
     }
 
-    enum BatchProcessingResult {
-        Emit(BatchStatus),
-        Terminate,
+    enum PreparedBatch {
+        Enqueued,
+        Immediate(StreamStep),
     }
 
     impl<T, F> ArrowBatchStreamState<T, F>
@@ -237,34 +264,50 @@ where
         F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
     {
         async fn next_item(&mut self) -> StreamStep {
-            if self.finished {
-                return StreamStep::Done;
+            if let Some(step) = self.fill_inflight().await {
+                return step;
             }
 
-            match self.input_stream.message().await {
-                Ok(Some(batch)) => match self.process_batch(batch).await {
-                    BatchProcessingResult::Emit(status) => StreamStep::Yield(Ok(status)),
-                    BatchProcessingResult::Terminate => StreamStep::Done,
-                },
-                Ok(None) => {
-                    self.finished = true;
-                    StreamStep::Done
+            match self.in_flight.next().await {
+                Some(step) => {
+                    if matches!(step, StreamStep::Done) {
+                        self.finished = true;
+                    }
+                    step
                 }
-                Err(status) => {
-                    self.finished = true;
-                    StreamStep::Yield(Err(status))
-                }
+                None => StreamStep::Done,
             }
         }
 
-        async fn process_batch(&mut self, mut batch: BatchArrowRecords) -> BatchProcessingResult {
+        async fn fill_inflight(&mut self) -> Option<StreamStep> {
+            while !self.finished && self.in_flight.len() < self.max_in_flight {
+                match self.input_stream.message().await {
+                    Ok(Some(batch)) => match self.enqueue_batch(batch).await {
+                        PreparedBatch::Enqueued => continue,
+                        PreparedBatch::Immediate(step) => return Some(step),
+                    },
+                    Ok(None) => {
+                        self.finished = true;
+                        break;
+                    }
+                    Err(status) => {
+                        self.finished = true;
+                        return Some(StreamStep::Yield(Err(status)));
+                    }
+                }
+            }
+            None
+        }
+
+        async fn enqueue_batch(&mut self, mut batch: BatchArrowRecords) -> PreparedBatch {
             let batch_id = batch.batch_id;
 
             let batch = match self.consumer.consume_bar(&mut batch) {
                 Ok(batch) => batch,
                 Err(e) => {
                     log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
-                    return BatchProcessingResult::Terminate;
+                    self.finished = true;
+                    return PreparedBatch::Immediate(StreamStep::Done);
                 }
             };
 
@@ -278,14 +321,13 @@ where
                 let (key, rx) = match allocation_result {
                     None => {
                         log::error!("Too many concurrent requests");
-                        return BatchProcessingResult::Emit(BatchStatus {
+                        return PreparedBatch::Immediate(StreamStep::Yield(Ok(BatchStatus {
                             batch_id,
                             status_code: StatusCode::Unavailable as i32,
-                            status_message: format!(
-                                "Pipeline processing failed: {}",
-                                "Too many concurrent requests"
-                            ),
-                        });
+                            status_message:
+                                "Pipeline processing failed: Too many concurrent requests"
+                                    .to_string(),
+                        })));
                     }
                     Some(pair) => pair,
                 };
@@ -302,31 +344,45 @@ where
 
             if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
                 log::error!("Failed to send to pipeline: {e}");
-                return BatchProcessingResult::Terminate;
+                self.finished = true;
+                return PreparedBatch::Immediate(StreamStep::Done);
             };
 
-            if let Some((_cancel_guard, rx)) = cancel_rx {
-                match rx.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(nack)) => {
-                        return BatchProcessingResult::Emit(BatchStatus {
-                            batch_id,
-                            status_code: StatusCode::Unavailable as i32,
-                            status_message: format!("Pipeline processing failed: {}", nack.reason),
-                        });
+            if let Some((cancel_guard, rx)) = cancel_rx {
+                let future: BoxFuture<'static, StreamStep> = Box::pin(async move {
+                    let _cancel_guard = cancel_guard;
+                    match rx.await {
+                        Ok(Ok(())) => StreamStep::Yield(Ok(Self::success_status(batch_id))),
+                        Ok(Err(nack)) => {
+                            StreamStep::Yield(Ok(Self::nack_status(batch_id, nack.reason)))
+                        }
+                        Err(_) => {
+                            log::error!("Response channel closed unexpectedly");
+                            StreamStep::Done
+                        }
                     }
-                    Err(_) => {
-                        log::error!("Response channel closed unexpectedly");
-                        return BatchProcessingResult::Terminate;
-                    }
-                }
+                });
+                self.in_flight.push(future);
+                PreparedBatch::Enqueued
+            } else {
+                PreparedBatch::Immediate(StreamStep::Yield(Ok(Self::success_status(batch_id))))
             }
+        }
 
-            BatchProcessingResult::Emit(BatchStatus {
+        fn success_status(batch_id: i64) -> BatchStatus {
+            BatchStatus {
                 batch_id,
                 status_code: StatusCode::Ok as i32,
                 status_message: "Successfully received".to_string(),
-            })
+            }
+        }
+
+        fn nack_status(batch_id: i64, reason: String) -> BatchStatus {
+            BatchStatus {
+                batch_id,
+                status_code: StatusCode::Unavailable as i32,
+                status_message: format!("Pipeline processing failed: {reason}"),
+            }
         }
     }
 
@@ -336,6 +392,8 @@ where
         effect_handler,
         state,
         otap_batch,
+        in_flight: FuturesUnordered::new(),
+        max_in_flight: max_in_flight_per_connection.max(1),
         finished: false,
         _marker: PhantomData,
     };
