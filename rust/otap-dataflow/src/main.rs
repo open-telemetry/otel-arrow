@@ -64,6 +64,7 @@ fn parse_core_id_range(s: &str) -> Result<CoreAllocation, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logging();
     let args = Args::parse();
 
     // For now, we predefine pipeline group and pipeline IDs.
@@ -123,6 +124,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     }
+}
+
+fn init_logging() {
+    let env = env_logger::Env::default().default_filter_or("info");
+    let _ = env_logger::Builder::from_env(env)
+        .format_timestamp_millis()
+        .try_init();
 }
 
 fn system_info() -> String {

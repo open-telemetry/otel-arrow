@@ -110,7 +110,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
+                "Exporting OTAP traffic to endpoint: {}",
                 self.config.grpc_endpoint
             ))
             .await;
@@ -356,10 +356,13 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             shutdown_rx.clone()
                         ).await;
                     }
-                    Err(_e) => {
+                    Err(err) => {
                         // there was an error initiating the streaming request
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
-                        log::error!("failed request, waiting {failed_request_backoff:?}");
+                        log::error!(
+                            "failed request to {:?}: {err}; waiting {failed_request_backoff:?}",
+                            signal_type
+                        );
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }

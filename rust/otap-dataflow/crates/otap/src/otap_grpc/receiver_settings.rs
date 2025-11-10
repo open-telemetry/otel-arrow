@@ -14,7 +14,7 @@ use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::server::TcpIncoming;
 
 /// Common configuration shared across gRPC receivers.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcServerSettings {
     /// The endpoint details: protocol, name, port.

@@ -37,6 +37,7 @@ thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 mimalloc-rust.workspace = true
+env_logger.workspace = true
 
 [workspace.dependencies]
 
@@ -123,6 +124,9 @@ weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "
 zip = "=4.2.0"
 byte-unit = "5.1.6"
 bytes = "1.10.1"
+env_logger = "0.11"
+h2 = "0.4.7"
+zstd = "0.13"
 
 [features]
 default = []

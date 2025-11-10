@@ -13,6 +13,8 @@ pub mod encoder;
 pub mod otap_exporter;
 /// gRPC service implementation
 pub mod otap_grpc;
+/// Experimental OTAP receiver backed by the h2 crate.
+pub mod otap_h2_receiver;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
 
