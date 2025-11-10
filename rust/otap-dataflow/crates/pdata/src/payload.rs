@@ -364,11 +364,11 @@ mod test {
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             metrics::v1::{
-                AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
-                Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
-                ScopeMetrics, Sum, Summary, SummaryDataPoint,
-                exponential_histogram_data_point::Buckets, metric::Data, number_data_point::Value,
-                summary_data_point::ValueAtQuantile,
+                AggregationTemporality, Exemplar, ExponentialHistogram,
+                ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint, Metric,
+                NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
+                exemplar, exponential_histogram_data_point::Buckets, metric::Data,
+                number_data_point::Value, summary_data_point::ValueAtQuantile,
             },
             resource::v1::Resource,
             trace::v1::{
@@ -878,8 +878,34 @@ mod test {
                                     )],
                                     start_time_unix_nano: 5,
                                     time_unix_nano: 6,
-                                    // TODO add some exemplars to the test
-                                    exemplars: vec![],
+                                    exemplars: vec![
+                                        Exemplar {
+                                            time_unix_nano: 56,
+                                            span_id: 4u64.to_le_bytes().to_vec(),
+                                            trace_id: 999u128.to_le_bytes().to_vec(),
+                                            value: Some(exemplar::Value::AsDouble(-3.0)),
+                                            filtered_attributes: vec![
+                                                KeyValue::new(
+                                                    "attr1",
+                                                    AnyValue::new_string("val1"),
+                                                ),
+                                                KeyValue::new(
+                                                    "attr2",
+                                                    AnyValue::new_string("val1"),
+                                                ),
+                                            ],
+                                        },
+                                        Exemplar {
+                                            time_unix_nano: 56,
+                                            span_id: 2u64.to_le_bytes().to_vec(),
+                                            trace_id: 9393939u128.to_le_bytes().to_vec(),
+                                            value: Some(exemplar::Value::AsInt(-10)),
+                                            filtered_attributes: vec![KeyValue::new(
+                                                "attr3",
+                                                AnyValue::new_string("val3"),
+                                            )],
+                                        },
+                                    ],
                                     flags: 8,
                                     value: None, // Test None Value
                                 },
@@ -890,7 +916,16 @@ mod test {
                                     ],
                                     start_time_unix_nano: 6,
                                     time_unix_nano: 7,
-                                    exemplars: vec![],
+                                    exemplars: vec![Exemplar {
+                                        time_unix_nano: 156,
+                                        span_id: 12u64.to_le_bytes().to_vec(),
+                                        trace_id: 932339u128.to_le_bytes().to_vec(),
+                                        value: Some(exemplar::Value::AsInt(10)),
+                                        filtered_attributes: vec![KeyValue::new(
+                                            "attr4",
+                                            AnyValue::new_string("val40"),
+                                        )],
+                                    }],
                                     flags: 9,
                                     value: Some(Value::AsDouble(11.0)), // Test double value
                                 },
@@ -942,7 +977,16 @@ mod test {
                                     )],
                                     start_time_unix_nano: 17,
                                     time_unix_nano: 18,
-                                    exemplars: vec![],
+                                    exemplars: vec![Exemplar {
+                                        time_unix_nano: 1,
+                                        span_id: 2u64.to_le_bytes().to_vec(),
+                                        trace_id: 3u128.to_le_bytes().to_vec(),
+                                        value: Some(exemplar::Value::AsDouble(-4.0)),
+                                        filtered_attributes: vec![KeyValue::new(
+                                            "attr5",
+                                            AnyValue::new_string("val6"),
+                                        )],
+                                    }],
                                     flags: 0,
                                     value: Some(Value::AsInt(14)),
                                 },
@@ -971,7 +1015,16 @@ mod test {
                                     count: 3,
                                     sum: Some(4.0),
                                     bucket_counts: vec![1, 2],
-                                    exemplars: vec![],
+                                    exemplars: vec![Exemplar {
+                                        time_unix_nano: 56,
+                                        span_id: 78u64.to_le_bytes().to_vec(),
+                                        trace_id: 1011u128.to_le_bytes().to_vec(),
+                                        value: Some(exemplar::Value::AsInt(-10)),
+                                        filtered_attributes: vec![KeyValue::new(
+                                            "attr4",
+                                            AnyValue::new_string("terry"),
+                                        )],
+                                    }],
                                     explicit_bounds: vec![3.0, 4.0, 5.0],
                                     flags: 6,
                                     min: Some(7.0),
@@ -987,7 +1040,7 @@ mod test {
                                     count: 2,
                                     sum: Some(5.0),
                                     bucket_counts: vec![6, 7, 8],
-                                    exemplars: vec![], // TODO
+                                    exemplars: vec![],
                                     explicit_bounds: vec![9.0, 10.0],
                                     flags: 16,
                                     min: Some(17.0),
@@ -1030,7 +1083,16 @@ mod test {
                                         KeyValue::new("attr1", AnyValue::new_string("val6")),
                                         KeyValue::new("attr2", AnyValue::new_string("val7")),
                                     ],
-                                    exemplars: vec![], // TODO
+                                    exemplars: vec![Exemplar {
+                                        time_unix_nano: 9,
+                                        span_id: 78u64.to_le_bytes().to_vec(),
+                                        trace_id: 1011u128.to_le_bytes().to_vec(),
+                                        value: Some(exemplar::Value::AsInt(-999)),
+                                        filtered_attributes: vec![KeyValue::new(
+                                            "attr4",
+                                            AnyValue::new_string("lance"),
+                                        )],
+                                    }],
                                 },
                                 ExponentialHistogramDataPoint {
                                     positive: Some(Buckets {
