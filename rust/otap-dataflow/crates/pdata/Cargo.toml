@@ -25,7 +25,9 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 roaring = { workspace = true }
+simdutf8 = { workspace = true }
 serde = { workspace = true }
+serde_cbor = { workspace = true }
 replace_with = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }

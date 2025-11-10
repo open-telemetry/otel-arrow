@@ -9,9 +9,6 @@ pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
 
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
 
-// TODO write documentation for this crate
-//#![allow(missing_docs)]
-
 /// Common methods for OTLP/OTAP attributes.
 pub mod attributes;
 /// Common methods for OTLP/OTAP logs.
@@ -28,6 +25,29 @@ use crate::{error::Result, otap::OtapArrowRecords};
 
 #[cfg(test)]
 mod tests;
+
+/// Pipeline data represented as protobuf serialized OTLP request messages
+#[derive(Clone, Debug)]
+pub enum OtlpProtoBytes {
+    /// protobuf serialized ExportLogsServiceRequest
+    ExportLogsRequest(Vec<u8>),
+    /// protobuf serialized ExportMetricsServiceRequest
+    ExportMetricsRequest(Vec<u8>),
+    /// protobuf serialized ExportTracesServiceRequest
+    ExportTracesRequest(Vec<u8>),
+}
+
+impl OtlpProtoBytes {
+    /// Get a borrowed reference to the serialized proto bytes slice
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes)
+            | OtlpProtoBytes::ExportMetricsRequest(bytes)
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_slice(),
+        }
+    }
+}
 
 /// Trait for types that can convert OTAP arrow records into the OTLP proto bytes representation
 pub trait ProtoBytesEncoder {

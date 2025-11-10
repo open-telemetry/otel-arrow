@@ -17,6 +17,7 @@ use weaver_semconv::registry::SemConvRegistry;
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Temp pdata
+/// TODO: Move somewhere in otap_df_pdata
 #[derive(Clone, Debug)]
 pub enum OTLPSignal {
     /// metrics pdata

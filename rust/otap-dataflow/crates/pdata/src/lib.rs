@@ -13,16 +13,23 @@ pub mod proto;
 /// Module contains the views for OTAP <-> OTLP objects.
 pub mod views;
 
-pub(crate) mod arrays;
-mod decode;
-
-pub mod encode;
 pub mod error;
 pub mod otap;
 pub mod schema;
 
-#[cfg(test)]
-mod test_util;
+pub(crate) mod arrays;
+pub(crate) mod decode;
+pub mod encode;
+pub(crate) mod payload;
+
+pub use otap::OtapArrowRecords;
+pub use otlp::OtlpProtoBytes;
+pub use payload::{OtapPayload, OtapPayloadHelpers};
+
+/// Testing support
+// #[cfg(test)] ?
+pub mod testing;
+
 #[cfg(test)]
 mod validation;
 

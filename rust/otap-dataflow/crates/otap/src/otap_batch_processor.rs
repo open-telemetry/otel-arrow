@@ -810,7 +810,7 @@ mod test_helpers {
                 ],
             )],
         )]);
-        crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
+        otap_df_pdata::encode::encode_spans_otap_batch(&traces).expect("encode traces")
     }
 
     pub(super) fn one_metric_record() -> OtapArrowRecords {
@@ -832,7 +832,7 @@ mod test_helpers {
                 ],
             )],
         )]);
-        crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
+        otap_df_pdata::encode::encode_metrics_otap_batch(&md).expect("encode metrics")
     }
 
     pub(super) fn logs_record_with_n_entries(n: usize) -> OtapArrowRecords {
@@ -852,7 +852,7 @@ mod test_helpers {
                 logs,
             )],
         )]);
-        crate::encoder::encode_logs_otap_batch(&logs_data).expect("encode logs")
+        otap_df_pdata::encode::encode_logs_otap_batch(&logs_data).expect("encode logs")
     }
 
     /// Construct a processor wrapper from a JSON configuration object and processor runtime config.
@@ -879,7 +879,7 @@ mod tests {
     use super::*;
     use super::{Config, OTAP_BATCH_PROCESSOR_URN, OtapBatchProcessor};
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_config::PipelineGroupId;
     use otap_df_config::PipelineId;
     use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
@@ -891,6 +891,7 @@ mod tests {
     use otap_df_engine::node::Node; // bring trait in scope for user_config()
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_telemetry::registry::MetricsRegistryHandle;

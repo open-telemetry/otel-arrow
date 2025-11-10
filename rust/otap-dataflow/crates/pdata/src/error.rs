@@ -167,4 +167,10 @@ pub enum Error {
         given
     )]
     InvalidId { expected: usize, given: usize },
+
+    #[error("Encoding error: {}", error)]
+    Encoding {
+        #[from]
+        error: crate::encode::Error,
+    },
 }

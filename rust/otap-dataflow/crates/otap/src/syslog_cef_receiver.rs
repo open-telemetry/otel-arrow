@@ -510,7 +510,7 @@ pub struct SyslogCefReceiverMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::OtapPayload;
+    use otap_df_pdata::OtapPayload;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {

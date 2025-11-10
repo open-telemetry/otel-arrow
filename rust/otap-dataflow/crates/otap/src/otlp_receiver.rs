@@ -323,7 +323,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 mod tests {
     use super::*;
 
-    use crate::pdata::OtlpProtoBytes;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;
@@ -333,6 +332,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,

@@ -3,18 +3,13 @@
 
 //! Ultra-minimal test utilities for OTAP components
 
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::pdata::OtapPdata;
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
     control::{CallData, PipelineControlMsg},
 };
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::{
-    common::v1::{AnyValue, InstrumentationScope, KeyValue},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-    resource::v1::Resource,
-};
+use otap_df_pdata::OtlpProtoBytes;
 use prost::Message;
 use serde_json::Value;
 use std::ops::Add;
@@ -63,29 +58,10 @@ impl TryFrom<CallData> for TestCallData {
     }
 }
 
-/// Create minimal test data
-#[must_use]
-pub fn create_test_logs() -> ExportLogsServiceRequest {
-    ExportLogsServiceRequest::new(vec![ResourceLogs::new(
-        Resource::default(),
-        vec![ScopeLogs::new(
-            InstrumentationScope::default(),
-            vec![
-                LogRecord::build()
-                    .time_unix_nano(2u64)
-                    .severity_number(SeverityNumber::Info)
-                    .event_name("event")
-                    .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                    .finish(),
-            ],
-        )],
-    )])
-}
-
 /// Create minimal test pdata
 #[must_use]
 pub fn create_test_pdata() -> OtapPdata {
-    let otlp_service_req = create_test_logs();
+    let otlp_service_req = otap_df_pdata::testing::create_test_logs();
     let mut otlp_bytes = vec![];
     otlp_service_req.encode(&mut otlp_bytes).unwrap();
 

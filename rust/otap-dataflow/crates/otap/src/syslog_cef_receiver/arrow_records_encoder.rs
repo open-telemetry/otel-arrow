@@ -10,7 +10,7 @@ use otap_df_pdata::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use crate::encoder::error::Result;
+use otap_df_pdata::encode::Result;
 
 use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 
