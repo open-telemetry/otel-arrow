@@ -976,9 +976,8 @@ mod test {
     use arrow::array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
         DurationNanosecondArray, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array,
-        LargeListArray, LargeListBuilder, ListBuilder, PrimitiveBuilder, RecordBatch, StringArray,
-        StructArray, StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
-        UInt64Array,
+        ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
+        StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{
@@ -1734,8 +1733,8 @@ mod test {
         let sdp = otap_batch.get(ArrowPayloadType::SummaryDataPoints).unwrap();
         let expected_sdp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1750,7 +1749,7 @@ mod test {
                 Field::new("sum", DataType::Float64, false),
                 Field::new(
                     "quantile",
-                    DataType::LargeList(Arc::new(Field::new(
+                    DataType::List(Arc::new(Field::new(
                         "item",
                         DataType::Struct(Fields::from(vec![
                             Field::new("quantile", DataType::Float64, false),
@@ -2340,8 +2339,8 @@ mod test {
 
     /// A tiny helper function to deal with the messiness of ListOf(StructOf()) construction; it
     /// generates a single list.
-    fn make_quantile_value_list(quantiles: &[f64], values: &[f64]) -> LargeListArray {
-        let mut lists = LargeListBuilder::new(StructBuilder::from_fields(
+    fn make_quantile_value_list(quantiles: &[f64], values: &[f64]) -> ListArray {
+        let mut lists = ListBuilder::new(StructBuilder::from_fields(
             vec![
                 Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
                 Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
