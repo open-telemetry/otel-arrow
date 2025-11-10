@@ -382,19 +382,17 @@ pub enum Error {
     /// Note: this is not a specific type such as otap_df_pdata::error::Error
     /// because this crate does not specifically depend on that crate.  We
     /// could use a dyn Error, maybe.
-    #[error("Pipeline data error: {}", error)]
+    #[error("Pipeline data error: {}", reason)]
     PDataError {
-        /// otap_df_pdata error
-        #[from]
-        error: otap_df_pdata::error::Error,
+        /// otap_df_pdata error string
+        reason: String,
     },
 
     /// Error from the prost encoder.
-    #[error("Prost encode error: {}", error)]
-    ProstEncodeError {
-        /// Prost error
-        #[from]
-        error: prost::EncodeError,
+    #[error("Prost encode error: {}", reason)]
+    ProtoEncodeError {
+        /// Prost error string
+        reason: String,
     },
 }
 
@@ -420,7 +418,7 @@ impl Error {
             Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
             Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
             Error::ProcessorError { .. } => "ProcessorError",
-            Error::ProstEncodeError { .. } => "ProstEncodeError",
+            Error::ProtoEncodeError { .. } => "ProtoEncodeError",
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
@@ -480,5 +478,21 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
             message: err.to_string(),
             source: None,
         },
+    }
+}
+
+impl From<prost::EncodeError> for Error {
+    fn from(e: prost::EncodeError) -> Self {
+        Self::ProtoEncodeError {
+            reason: e.to_string(),
+        }
+    }
+}
+
+impl From<otap_df_pdata::error::Error> for Error {
+    fn from(e: otap_df_pdata::error::Error) -> Self {
+        Self::PDataError {
+            reason: e.to_string(),
+        }
     }
 }

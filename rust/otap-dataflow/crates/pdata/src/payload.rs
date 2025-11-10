@@ -366,8 +366,9 @@ mod test {
             metrics::v1::{
                 AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
                 Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
-                ScopeMetrics, Sum, exponential_histogram_data_point::Buckets, metric::Data,
-                number_data_point::Value,
+                ScopeMetrics, Sum, Summary, SummaryDataPoint,
+                exponential_histogram_data_point::Buckets, metric::Data, number_data_point::Value,
+                summary_data_point::ValueAtQuantile,
             },
             resource::v1::Resource,
             trace::v1::{
@@ -380,6 +381,7 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
+    #[test]
     fn test_conversion_logs() {
         let mut otlp_bytes = vec![];
         let otlp_service_req = create_test_logs();
@@ -390,15 +392,15 @@ mod test {
         // test can go OtlpProtoBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata = OtapPdata::new_default(otap_batch.into());
+        let pdata: OtapPayload = otap_batch.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into());
+        let pdata: OtapPayload = otlp_bytes.into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
-        let pdata = OtapPdata::new_default(otlp_bytes.into());
+        let pdata: OtapPayload = otlp_bytes.into();
 
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
@@ -451,7 +453,7 @@ mod test {
     fn roundtrip_otlp_otap_metrics(otlp_service_request: ExportMetricsServiceRequest) {
         let mut otlp_bytes = vec![];
         otlp_service_request.encode(&mut otlp_bytes).unwrap();
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into());
+        let pdata: OtapPayload = OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into();
 
         // test can go OtlpBytes -> OtapBatch & back
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
