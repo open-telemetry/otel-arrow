@@ -171,16 +171,6 @@ impl From<&proto::metric::Data> for DataType {
 
 /// View for Data
 pub trait DataView<'val> {
-    /// The `NumberDataPointView` type associated with this implementation.
-    type NumberDataPoint<'dp>: NumberDataPointView
-    where
-        Self: 'dp;
-
-    /// An iterator type that yields instances of Self::NumberDataPoint.
-    type NumberDataPointIter<'dp>: Iterator<Item = Self::NumberDataPoint<'dp>>
-    where
-        Self: 'dp;
-
     /// A type that wraps references to `Gauge`
     type Gauge<'gauge>: GaugeView
     where
