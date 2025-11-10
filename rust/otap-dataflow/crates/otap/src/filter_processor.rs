@@ -454,8 +454,8 @@ mod tests {
             ],
         );
         let log_filter = LogFilter::new(
-            include_props,
-            exclude_props,
+            Some(include_props),
+            Some(exclude_props),
             Vec::new(), // log_record ignored
         );
 
@@ -672,8 +672,8 @@ mod tests {
             ],
         );
         let log_filter = LogFilter::new(
-            include_props,
-            exclude_props,
+            Some(include_props),
+            Some(exclude_props),
             Vec::new(), // log_record ignored
         );
 

@@ -9,6 +9,7 @@ use crate::arrays::{
     get_required_array, get_required_array_from_struct_array,
     get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
+use crate::encode::record::logs;
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
@@ -21,6 +22,7 @@ use arrow::array::{
     Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
+use nix::libc::option;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -30,11 +32,11 @@ pub struct LogFilter {
     // Include match properties describe logs that should be included in the Collector Service pipeline,
     // all other logs should be dropped from further processing.
     // If both Include and Exclude are specified, Include filtering occurs first.
-    include: LogMatchProperties,
+    include: Option<LogMatchProperties>,
     // Exclude match properties describe logs that should be excluded from the Collector Service pipeline,
     // all other logs should be included.
     // If both Include and Exclude are specified, Include filtering occurs first.
-    exclude: LogMatchProperties,
+    exclude: Option<LogMatchProperties>,
 
     // LogConditions is a list of OTTL conditions for an ottllog context.
     // If any condition resolves to true, the log event will be dropped.
@@ -92,8 +94,8 @@ impl LogFilter {
     /// create a new log filter
     #[must_use]
     pub fn new(
-        include: LogMatchProperties,
-        exclude: LogMatchProperties,
+        include: Option<LogMatchProperties>,
+        exclude: Option<LogMatchProperties>,
         log_record: Vec<String>,
     ) -> Self {
         Self {
@@ -105,24 +107,40 @@ impl LogFilter {
 
     /// take a logs payload and return the filtered result
     pub fn filter(&self, mut logs_payload: OtapArrowRecords) -> Result<OtapArrowRecords> {
-        // we get the filters
-        let (include_resource_attr_filter, include_log_record_filter, include_log_attr_filter) =
-            self.include.create_filters(&logs_payload, false)?;
-        let (exclude_resource_attr_filter, exclude_log_record_filter, exclude_log_attr_filter) =
-            self.exclude.create_filters(&logs_payload, true)?;
+        let (resource_attr_filter, log_record_filter, log_attr_filter) = if let Some(include_config) =
+            &self.include
+            && let Some(exclude_config) = &self.exclude
+        {
+            let (include_resource_attr_filter, include_log_record_filter, include_log_attr_filter) =
+                include_config.create_filters(&logs_payload, false)?;
+            let (exclude_resource_attr_filter, exclude_log_record_filter, exclude_log_attr_filter) =
+                exclude_config.create_filters(&logs_payload, true)?;
 
-        // combine the include and exclude filters
-        let resource_attr_filter = arrow::compute::and_kleene(
-            &include_resource_attr_filter,
-            &exclude_resource_attr_filter,
-        )
-        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-        let log_record_filter =
-            arrow::compute::and_kleene(&include_log_record_filter, &exclude_log_record_filter)
-                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-        let log_attr_filter =
-            arrow::compute::and_kleene(&include_log_attr_filter, &exclude_log_attr_filter)
-                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+            // combine the include and exclude filters
+            let resource_attr_filter = arrow::compute::and_kleene(
+                &include_resource_attr_filter,
+                &exclude_resource_attr_filter,
+            )
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+            let log_record_filter =
+                arrow::compute::and_kleene(&include_log_record_filter, &exclude_log_record_filter)
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+            let log_attr_filter =
+                arrow::compute::and_kleene(&include_log_attr_filter, &exclude_log_attr_filter)
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+            (resource_attr_filter, log_record_filter, log_attr_filter)
+        } else if self.include.is_none()
+            && let Some(exclude_config) = &self.exclude
+        {
+            exclude_config.create_filters(&logs_payload, true)?
+        } else if let Some(include_config) = &self.include
+            && self.exclude.is_none()
+        {
+            include_config.create_filters(&logs_payload, false)?
+        } else {
+            // both include and exclude is none
+            return Ok(logs_payload);
+        };
 
         let (resource_attr_filter, scope_attr_filter, log_record_filter, log_attr_filter) = self
             .sync_up_filters(
