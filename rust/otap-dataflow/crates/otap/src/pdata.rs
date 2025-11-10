@@ -384,7 +384,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 #[cfg(test)]
 mod test {
     use super::*;
+
     use crate::testing::{TestCallData, create_test_pdata};
+    use pretty_assertions::assert_eq;
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())

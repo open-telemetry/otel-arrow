@@ -1049,6 +1049,69 @@ mod test {
                             ],
                         })),
                     },
+                    Metric {
+                        name: "metric6".into(),
+                        description: "metric 6 desc".into(),
+                        unit: "metric6 unit".into(),
+                        metadata: vec![
+                            KeyValue::new("attr1", AnyValue::new_string("val99")),
+                            KeyValue::new("attr2", AnyValue::new_string("val007")),
+                        ],
+                        data: Some(Data::Summary(Summary {
+                            data_points: vec![
+                                SummaryDataPoint {
+                                    count: 1,
+                                    sum: 2.0,
+                                    attributes: vec![
+                                        KeyValue::new("dp_attr1", AnyValue::new_string("val99")),
+                                        KeyValue::new("dp_attr2", AnyValue::new_string("val007")),
+                                    ],
+                                    start_time_unix_nano: 8383,
+                                    time_unix_nano: 9873,
+                                    quantile_values: vec![
+                                        ValueAtQuantile {
+                                            quantile: 1.0,
+                                            value: 2.0,
+                                        },
+                                        ValueAtQuantile {
+                                            quantile: 8.0,
+                                            value: 4.0,
+                                        },
+                                        ValueAtQuantile {
+                                            quantile: 9.0,
+                                            value: 5.0,
+                                        },
+                                    ],
+                                    flags: 256,
+                                },
+                                SummaryDataPoint {
+                                    count: 11,
+                                    sum: 21.0,
+                                    attributes: vec![KeyValue::new(
+                                        "dp_attr11",
+                                        AnyValue::new_string("val99"),
+                                    )],
+                                    start_time_unix_nano: 333,
+                                    time_unix_nano: 444,
+                                    quantile_values: vec![
+                                        ValueAtQuantile {
+                                            quantile: 11.0,
+                                            value: 20.0,
+                                        },
+                                        ValueAtQuantile {
+                                            quantile: 81.0,
+                                            value: 40.0,
+                                        },
+                                        ValueAtQuantile {
+                                            quantile: 91.0,
+                                            value: 59.0,
+                                        },
+                                    ],
+                                    flags: 200,
+                                },
+                            ],
+                        })),
+                    },
                 ],
             }],
         }]);
