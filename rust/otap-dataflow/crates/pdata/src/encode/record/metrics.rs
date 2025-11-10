@@ -7,8 +7,7 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        Array, LargeListArray, LargeListBuilder, ListBuilder, PrimitiveBuilder, RecordBatch,
-        StructArray, StructBuilder,
+        Array, ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StructArray, StructBuilder,
     },
     datatypes::{DataType, Field, Fields, Float64Type, Schema, UInt64Type},
     error::ArrowError,
@@ -609,7 +608,7 @@ impl ExemplarsRecordBatchBuilder {
 ///
 /// Ultimately, what we want is a ListOf(StructOf(quantile, value)).
 pub struct QuantileRecordBatchBuilder {
-    lists: LargeListBuilder<StructBuilder>,
+    lists: ListBuilder<StructBuilder>,
 }
 
 impl QuantileRecordBatchBuilder {
@@ -617,7 +616,7 @@ impl QuantileRecordBatchBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            lists: LargeListBuilder::new(StructBuilder::from_fields(
+            lists: ListBuilder::new(StructBuilder::from_fields(
                 vec![
                     Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
                     Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
@@ -669,7 +668,7 @@ impl QuantileRecordBatchBuilder {
     }
 
     /// Construct an OTAP Quantile `StructArray` from the builders.
-    pub fn finish(&mut self) -> Option<LargeListArray> {
+    pub fn finish(&mut self) -> Option<ListArray> {
         let array = self.lists.finish();
         (!array.is_empty()).then_some(array)
     }
@@ -774,7 +773,9 @@ impl SummaryDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(8);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -784,11 +785,9 @@ impl SummaryDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {

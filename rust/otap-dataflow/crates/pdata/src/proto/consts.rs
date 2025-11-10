@@ -145,7 +145,7 @@ pub mod field_num {
         pub const SUMMARY_DP_COUNT: u64 = 4;
         pub const SUMMARY_DP_SUM: u64 = 5;
         pub const SUMMARY_DP_QUANTILE_VALUES: u64 = 6;
-        pub const SUMMARY_DP_FLAGS: u64 = 6;
+        pub const SUMMARY_DP_FLAGS: u64 = 8;
 
         pub const VALUE_AT_QUANTILE_QUANTILE: u64 = 1;
         pub const VALUE_AT_QUANTILE_VALUE: u64 = 2;
