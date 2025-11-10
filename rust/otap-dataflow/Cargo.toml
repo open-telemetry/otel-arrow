@@ -129,7 +129,7 @@ urn = "0.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.19.0"}
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
