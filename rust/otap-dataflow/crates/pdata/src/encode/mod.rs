@@ -585,12 +585,13 @@ where
     exemplar.append_parent_id(*parent_id);
     exemplar.append_time_unix_nano(exemplar_view.time_unix_nano() as i64);
 
-    let double = exemplar_view.value().and_then(|v| v.as_double());
-    let integer = exemplar_view.value().and_then(|v| v.as_integer());
-    // FIXME: OTAP defines these fields as non-nullable, but the data is
-    // inherently nullable coming from OTLP....
-    exemplar.append_double_value(double.unwrap_or(0.));
-    exemplar.append_int_value(integer.unwrap_or(0));
+    let (double, integer) = match exemplar_view.value() {
+        Some(metrics::Value::Double(val)) => (Some(val), None),
+        Some(metrics::Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
+    exemplar.append_double_value(double);
+    exemplar.append_int_value(integer);
 
     exemplar.append_span_id(exemplar_view.span_id().unwrap_or(&[0; 8]))?;
     exemplar.append_trace_id(exemplar_view.trace_id().unwrap_or(&[0; 16]))?;
@@ -1619,15 +1620,15 @@ mod test {
         let ndpe = otap_batch.get(ArrowPayloadType::NumberDpExemplars).unwrap();
         let expected_ndpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -1653,9 +1654,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 11])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![234, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(234), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 22.5])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(22.5)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),
@@ -1950,15 +1951,15 @@ mod test {
             .unwrap();
         let expected_hdpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -1984,9 +1985,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 678])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![235, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(235), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 235.])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(235.)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),
@@ -2197,15 +2198,15 @@ mod test {
             .unwrap();
         let expected_edpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -2231,9 +2232,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 678])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![235, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(235), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 235.])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(235.)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),

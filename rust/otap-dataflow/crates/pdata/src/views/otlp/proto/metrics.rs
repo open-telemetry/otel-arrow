@@ -226,16 +226,6 @@ impl MetricView for ObjMetric<'_> {
 }
 
 impl DataView<'_> for ObjData<'_> {
-    type NumberDataPoint<'dp>
-        = ObjNumberDataPoint<'dp>
-    where
-        Self: 'dp;
-
-    type NumberDataPointIter<'dp>
-        = NumberDataPointIter<'dp>
-    where
-        Self: 'dp;
-
     type Gauge<'gauge>
         = ObjGauge<'gauge>
     where

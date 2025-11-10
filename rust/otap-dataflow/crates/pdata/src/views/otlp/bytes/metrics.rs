@@ -8,14 +8,16 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
-    EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
-    EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS,
-    EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN, EXP_HISTOGRAM_DP_NEGATIVE,
-    EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE, EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO,
-    EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_ZERO_COUNT,
-    EXP_HISTOGRAM_DP_ZERO_THRESHOLD, EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY,
-    EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
-    HISTOGRAM_DATA_POINTS, HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
+    EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
+    EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID, EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS,
+    EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES, EXP_HISTOGRAM_DP_COUNT,
+    EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS, EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN,
+    EXP_HISTOGRAM_DP_NEGATIVE, EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE,
+    EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO,
+    EXP_HISTOGRAM_DP_ZERO_COUNT, EXP_HISTOGRAM_DP_ZERO_THRESHOLD,
+    EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, EXPONENTIAL_HISTOGRAM_DATA_POINTS,
+    GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
+    HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
     HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
     HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM,
     HISTOGRAM_DP_TIME_UNIX_NANO, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
@@ -30,10 +32,10 @@ use crate::proto::consts::field_num::metrics::{
     VALUE_AT_QUANTILE_QUANTILE, VALUE_AT_QUANTILE_VALUE,
 };
 use crate::proto::consts::wire_types;
-
+use crate::schema::{SpanId, TraceId};
 use crate::views::common::Str;
 use crate::views::metrics::{
-    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView,
+    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
@@ -45,9 +47,6 @@ use crate::views::otlp::bytes::decode::{
     read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar, ObjNumberDataPoint,
-};
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {
@@ -1019,6 +1018,83 @@ impl FieldRanges for ValueAtQuantileFieldRanges {
     }
 }
 
+/// Implementation of [`ExemplarView`] backed by buf containing proto serialized Exemplar message
+pub struct RawExemplar<'a> {
+    byte_parser: ProtoBytesParser<'a, ExemplarFieldRanges>,
+}
+
+/// Known field ranges in buffer containing proto serialized Exemplar message
+#[derive(Default)]
+pub struct ExemplarFieldRanges {
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_filtered_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    span_id: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    trace_id: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // since this is a oneof, we also keep the field_num alongside the range.
+    // That way when `get_field_range` is called, we can avoid returning the
+    // data range for the wrong variant of the oneof field
+    value: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
+}
+
+impl FieldRanges for ExemplarFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXEMPLAR_FILTERED_ATTRIBUTES => self.first_filtered_attribute.get(),
+            EXEMPLAR_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            EXEMPLAR_SPAN_ID => self.span_id.get(),
+            EXEMPLAR_TRACE_ID => self.trace_id.get(),
+            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT => {
+                let (range, actual_field_num) = self.value.get()?;
+                (actual_field_num == field_num).then_some(range)
+            }
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXEMPLAR_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            EXEMPLAR_SPAN_ID => {
+                if wire_type == wire_types::LEN {
+                    self.span_id.set(Some(range))
+                }
+            }
+            EXEMPLAR_TRACE_ID => {
+                if wire_type == wire_types::LEN {
+                    self.trace_id.set(Some(range))
+                }
+            }
+            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.value.set(Some((range, field_num)));
+                }
+            }
+            EXEMPLAR_FILTERED_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_filtered_attribute.get().is_none() {
+                    self.first_filtered_attribute.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
 /// Iterator of ResourceMetrics - produces implementation of [`ResourceMetricsView`] from byte
@@ -1170,6 +1246,26 @@ impl<'a> Iterator for ValueAtQuantileIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.byte_parser.next()?;
         Some(RawValueAtQuantile {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of Exemplars - produces implementation of [`ExemplarView`] from byte buffer containing
+/// proto serialized data point
+pub struct ExemplarIter<'a, T: FieldRanges> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, T>,
+}
+
+impl<'a, T> Iterator for ExemplarIter<'a, T>
+where
+    T: FieldRanges,
+{
+    type Item = RawExemplar<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawExemplar {
             byte_parser: ProtoBytesParser::new(slice),
         })
     }
@@ -1335,16 +1431,6 @@ impl MetricView for RawMetric<'_> {
 }
 
 impl DataView<'_> for RawData<'_> {
-    // TODO all the use of the Obj implementations here are placeholders
-    type NumberDataPoint<'dp>
-        = ObjNumberDataPoint<'dp>
-    where
-        Self: 'dp;
-    type NumberDataPointIter<'dp>
-        = ObjNumberDataPointIter<'dp>
-    where
-        Self: 'dp;
-
     type Gauge<'gauge>
         = RawGauge<'gauge>
     where
@@ -1578,14 +1664,12 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
     where
         Self: 'att;
 
-    // TODO using Obj Exemplars temporarily here until we've implemented an exemplar view
-    // backed by proto bytes
     type Exemplar<'ex>
-        = ObjExemplar<'ex>
+        = RawExemplar<'ex>
     where
         Self: 'ex;
     type ExemplarIter<'ex>
-        = ExemplarIter<'ex>
+        = ExemplarIter<'ex, NumberDataPointFieldRanges>
     where
         Self: 'ex;
 
@@ -1636,8 +1720,13 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
     }
 
     fn exemplars(&self) -> Self::ExemplarIter<'_> {
-        // TODO exemplars
-        ExemplarIter::new([].iter())
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                NUMBER_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
     }
 
     fn flags(&self) -> DataPointFlags {
@@ -1672,13 +1761,12 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     where
         Self: 'eb;
 
-    // TODO this is temporary
     type Exemplar<'ex>
-        = ObjExemplar<'ex>
+        = RawExemplar<'ex>
     where
         Self: 'ex;
     type ExemplarIter<'ex>
-        = ExemplarIter<'ex>
+        = ExemplarIter<'ex, HistogramDataPointFieldRanges>
     where
         Self: 'ex;
 
@@ -1707,8 +1795,13 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     }
 
     fn exemplars(&self) -> Self::ExemplarIter<'_> {
-        // TODO
-        ExemplarIter::new([].iter())
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                HISTOGRAM_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
     }
 
     fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
@@ -1784,13 +1877,12 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
     where
         Self: 'b;
 
-    // TODO
     type Exemplar<'ex>
-        = ObjExemplar<'ex>
+        = RawExemplar<'ex>
     where
         Self: 'ex;
     type ExemplarIter<'ex>
-        = ExemplarIter<'ex>
+        = ExemplarIter<'ex, ExpHistogramDataPointFieldRanges>
     where
         Self: 'ex;
 
@@ -1811,8 +1903,13 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
     }
 
     fn exemplars(&self) -> Self::ExemplarIter<'_> {
-        // TODO
-        ExemplarIter::new([].iter())
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                EXP_HISTOGRAM_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
     }
 
     fn flags(&self) -> DataPointFlags {
@@ -2025,6 +2122,67 @@ impl ValueAtQuantileView for RawValueAtQuantile<'_> {
             .and_then(|slice| slice.try_into().ok())
             .map(f64::from_le_bytes)
             .unwrap_or_default()
+    }
+}
+
+impl ExemplarView for RawExemplar<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, ExemplarFieldRanges>
+    where
+        Self: 'att;
+
+    fn filtered_attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            EXEMPLAR_FILTERED_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn span_id(&self) -> Option<&SpanId> {
+        let slice = self.byte_parser.advance_to_find_field(EXEMPLAR_SPAN_ID);
+        slice.and_then(|slice| slice.try_into().ok())
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXEMPLAR_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn trace_id(&self) -> Option<&TraceId> {
+        self.byte_parser
+            .advance_to_find_field(EXEMPLAR_TRACE_ID)
+            .and_then(|slice| slice.try_into().ok())
+    }
+
+    fn value(&self) -> Option<Value> {
+        let (slice, field_num) = self
+            .byte_parser
+            .advance_to_find_oneof(&[EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT])?;
+
+        match field_num {
+            EXEMPLAR_AS_DOUBLE => {
+                let double_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Double(f64::from_le_bytes(double_bytes)))
+            }
+            EXEMPLAR_AS_INT => {
+                let int_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Integer(i64::from_le_bytes(int_bytes)))
+            }
+            _ => {
+                // this shouldn't happen, as advance_to_find_oneof should return one of the passed
+                // field_num, so just ignore it
+                None
+            }
+        }
     }
 }
 

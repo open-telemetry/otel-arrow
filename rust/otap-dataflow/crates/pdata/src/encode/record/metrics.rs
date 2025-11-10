@@ -513,13 +513,21 @@ impl ExemplarsRecordBatchBuilder {
     }
 
     /// Append a value to the `int_value` array.
-    pub fn append_int_value(&mut self, val: i64) {
-        self.int_value.append_value(&val);
+    pub fn append_int_value(&mut self, val: Option<i64>) {
+        if let Some(val) = val {
+            self.int_value.append_value(&val);
+        } else {
+            self.int_value.append_null();
+        }
     }
 
     /// Append a value to the `double_value` array.
-    pub fn append_double_value(&mut self, val: f64) {
-        self.double_value.append_value(&val);
+    pub fn append_double_value(&mut self, val: Option<f64>) {
+        if let Some(val) = val {
+            self.double_value.append_value(&val);
+        } else {
+            self.double_value.append_null();
+        }
     }
 
     /// Append a value to the `span_id` array.
@@ -538,7 +546,9 @@ impl ExemplarsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(7);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -548,11 +558,9 @@ impl ExemplarsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.time_unix_nano.finish() {
@@ -568,7 +576,7 @@ impl ExemplarsRecordBatchBuilder {
             fields.push(Field::new(
                 consts::INT_VALUE,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -577,7 +585,7 @@ impl ExemplarsRecordBatchBuilder {
             fields.push(Field::new(
                 consts::DOUBLE_VALUE,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
