@@ -9,7 +9,6 @@ use crate::arrays::{
     get_required_array, get_required_array_from_struct_array,
     get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
-use crate::encode::record::logs;
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
@@ -22,7 +21,6 @@ use arrow::array::{
     Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
-use nix::libc::option;
 use serde::Deserialize;
 use std::collections::HashMap;
 
