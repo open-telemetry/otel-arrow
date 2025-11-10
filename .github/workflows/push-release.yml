@@ -109,7 +109,7 @@ jobs:
 
           ## Git Tags to Create
           - `v${{ inputs.version }}` - Main release tag
-          - `go/v${{ inputs.version }}` - Go module tag  
+          - `go/v${{ inputs.version }}` - Go module tag
           - `collector/cmd/otelarrowcol/v${{ inputs.version }}` - Collector module tag
 
           ## GitHub Release
