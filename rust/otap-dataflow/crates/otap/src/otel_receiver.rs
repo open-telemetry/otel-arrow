@@ -4,6 +4,12 @@
 //! Experimental OTAP receiver that serves the Arrow gRPC endpoints directly on top of the `h2`
 //! crate.  This variant keeps all request handling on the current thread so it can integrate with
 //! the thread-per-core runtime without requiring `Send + Sync` futures.
+//!
+//! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
+//  ToDo Preferred response encoding: store negotiated codec in per-stream state (fall back to identity), set the response header accordingly, and ensure encode_message flips the compression bit and runs the right compressor.
+//  ToDo Codec support matrix: extend GrpcEncoding to include gzip & snappy. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
+//  ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
+//  ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::common;
@@ -59,7 +65,10 @@ use tonic::Status;
 use tonic::transport::server::TcpIncoming;
 use zstd::stream::decode_all;
 
-const OTAP_H2_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
+const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
+const ARROW_LOGS_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs";
+const ARROW_METRICS_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
+const ARROW_TRACES_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
 
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
@@ -70,8 +79,9 @@ pub struct Config {
     pub grpc: GrpcServerSettings,
 }
 
-/// Experimental OTAP receiver powered directly by the `h2` crate.
-pub struct OtapH2Receiver {
+/// Experimental OTLP+OTAP receiver powered directly by the `h2` crate.
+/// Note: Only OTAP Arrow payloads are supported in this version.
+pub struct OtelReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
 }
@@ -79,13 +89,13 @@ pub struct OtapH2Receiver {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Registers the experimental H2 OTAP receiver factory.
-pub static OTAP_H2_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    name: OTAP_H2_RECEIVER_URN,
+pub static OTEL_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: OTEL_RECEIVER_URN,
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
-        let mut receiver = OtapH2Receiver::from_config(pipeline, &node_config.config)?;
+        let mut receiver = OtelReceiver::from_config(pipeline, &node_config.config)?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
         Ok(ReceiverWrapper::local(
             receiver,
@@ -96,7 +106,7 @@ pub static OTAP_H2_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     },
 };
 
-impl OtapH2Receiver {
+impl OtelReceiver {
     /// Builds a receiver instance from a user configuration blob.
     pub fn from_config(
         pipeline_ctx: PipelineContext,
@@ -118,7 +128,7 @@ impl OtapH2Receiver {
 }
 
 #[async_trait(?Send)]
-impl local::Receiver<OtapPdata> for OtapH2Receiver {
+impl local::Receiver<OtapPdata> for OtelReceiver {
     async fn start(
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
@@ -133,26 +143,26 @@ impl local::Receiver<OtapPdata> for OtapH2Receiver {
         };
         let max_in_flight = per_connection_limit(&settings);
 
-        let logs_state = settings
+        let logs_ack_registry = settings
             .wait_for_result
-            .then(|| LocalAckSubscriptionState::new(settings.max_concurrent_requests));
-        let metrics_state = settings
+            .then(|| AckRegistry::new(settings.max_concurrent_requests));
+        let metrics_ack_registry = settings
             .wait_for_result
-            .then(|| LocalAckSubscriptionState::new(settings.max_concurrent_requests));
-        let traces_state = settings
+            .then(|| AckRegistry::new(settings.max_concurrent_requests));
+        let traces_ack_registry = settings
             .wait_for_result
-            .then(|| LocalAckSubscriptionState::new(settings.max_concurrent_requests));
-        let ack_routing = LocalSignalAckRoutingState::new(
-            logs_state.clone(),
-            metrics_state.clone(),
-            traces_state.clone(),
+            .then(|| AckRegistry::new(settings.max_concurrent_requests));
+        let ack_registries = AckRegistries::new(
+            logs_ack_registry.clone(),
+            metrics_ack_registry.clone(),
+            traces_ack_registry.clone(),
         );
 
         let router = Rc::new(ArrowRouter {
             effect_handler: effect_handler.clone(),
-            logs_state,
-            metrics_state,
-            traces_state,
+            logs_ack_registry: logs_ack_registry,
+            metrics_ack_registry: metrics_ack_registry,
+            traces_ack_registry: traces_ack_registry,
             max_in_flight_per_connection: max_in_flight,
         });
 
@@ -162,7 +172,7 @@ impl local::Receiver<OtapPdata> for OtapH2Receiver {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        log::info!("OTAP H2 receiver starting on {}", config.listening_addr);
+        // log::info!("OTAP H2 receiver starting on {}", config.listening_addr);
 
         tokio::select! {
             biased;
@@ -170,7 +180,7 @@ impl local::Receiver<OtapPdata> for OtapH2Receiver {
                 loop {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            log::info!("OTAP H2 receiver received shutdown signal");
+                            // log::info!("OTAP H2 receiver received shutdown signal");
                             cancel_token.cancel();
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
@@ -180,7 +190,7 @@ impl local::Receiver<OtapPdata> for OtapH2Receiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = route_local_ack_response(&ack_routing, ack);
+                            let resp = route_local_ack_response(&ack_registries, ack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -189,7 +199,7 @@ impl local::Receiver<OtapPdata> for OtapH2Receiver {
                             );
                         }
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = route_local_nack_response(&ack_routing, nack);
+                            let resp = route_local_nack_response(&ack_registries, nack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -248,7 +258,7 @@ async fn run_h2_server(
                     .peer_addr()
                     .map(|addr| addr.to_string())
                     .unwrap_or_else(|_| "<unknown>".to_string());
-                log::info!("Accepted OTAP H2 connection from {}", peer);
+                // log::info!("Accepted OTAP H2 connection from {}", peer);
                 if let Err(e) = socket.set_nodelay(config.tcp_nodelay) {
                     log::warn!("Failed to set TCP_NODELAY: {e}");
                 }
@@ -315,9 +325,9 @@ async fn handle_connection(
 
 struct ArrowRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
-    logs_state: Option<LocalAckSubscriptionState>,
-    metrics_state: Option<LocalAckSubscriptionState>,
-    traces_state: Option<LocalAckSubscriptionState>,
+    logs_ack_registry: Option<AckRegistry>,
+    metrics_ack_registry: Option<AckRegistry>,
+    traces_ack_registry: Option<AckRegistry>,
     max_in_flight_per_connection: usize,
 }
 
@@ -329,33 +339,33 @@ impl ArrowRouter {
     ) -> Result<(), Status> {
         let path = request.uri().path();
         match path {
-            "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs" => {
-                log::info!("Handling ArrowLogs stream");
+            ARROW_LOGS_SERVICE => {
+                // log::info!("Handling ArrowLogs stream");
                 self.serve_stream::<Logs>(
                     request,
                     respond,
                     OtapArrowRecords::Logs,
-                    self.logs_state.clone(),
+                    self.logs_ack_registry.clone(),
                 )
                 .await
             }
-            "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics" => {
-                log::info!("Handling ArrowMetrics stream");
+            ARROW_METRICS_SERVICE => {
+                // log::info!("Handling ArrowMetrics stream");
                 self.serve_stream::<Metrics>(
                     request,
                     respond,
                     OtapArrowRecords::Metrics,
-                    self.metrics_state.clone(),
+                    self.metrics_ack_registry.clone(),
                 )
                 .await
             }
-            "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces" => {
-                log::info!("Handling ArrowTraces stream");
+            ARROW_TRACES_SERVICE => {
+                // log::info!("Handling ArrowTraces stream");
                 self.serve_stream::<Traces>(
                     request,
                     respond,
                     OtapArrowRecords::Traces,
-                    self.traces_state.clone(),
+                    self.traces_ack_registry.clone(),
                 )
                 .await
             }
@@ -367,13 +377,12 @@ impl ArrowRouter {
         }
     }
 
-    #[allow(unused_mut)]
     async fn serve_stream<T>(
         self: &Rc<Self>,
         request: Request<h2::RecvStream>,
         mut respond: SendResponse<Bytes>,
         otap_batch: fn(T) -> OtapArrowRecords,
-        ack_state: Option<LocalAckSubscriptionState>,
+        ack_registry: Option<AckRegistry>,
     ) -> Result<(), Status>
     where
         T: OtapBatchStore + 'static,
@@ -382,10 +391,10 @@ impl ArrowRouter {
         let recv_stream = request.into_body();
         let body = GrpcStreamingBody::new(recv_stream, encoding);
 
-        let mut status_stream = stream_local_batch_statuses::<GrpcStreamingBody, T, _>(
+        let mut status_stream = stream_batch_statuses::<GrpcStreamingBody, T, _>(
             body,
             self.effect_handler.clone(),
-            ack_state,
+            ack_registry,
             otap_batch,
             self.max_in_flight_per_connection,
         );
@@ -393,7 +402,7 @@ impl ArrowRouter {
         let response = Response::builder()
             .status(HttpStatusCode::OK)
             .header("content-type", "application/grpc")
-            .header("grpc-encoding", "identity")
+            .header("grpc-encoding", "identity")        // support compressed responses later
             .body(())
             .unwrap();
         let mut send_stream = respond
@@ -403,11 +412,11 @@ impl ArrowRouter {
         while let Some(next) = status_stream.next().await {
             match next {
                 Ok(status) => {
-                    log::info!(
-                        "Sending batch status id={} code={}",
-                        status.batch_id,
-                        status.status_code
-                    );
+                    // log::info!(
+                    //     "Sending batch status id={} code={}",
+                    //     status.batch_id,
+                    //     status.status_code
+                    // );
                     let bytes = encode_message(&status)?;
                     if let Err(e) = send_stream.send_data(bytes, false) {
                         log::debug!("send_data failed: {e}");
@@ -448,14 +457,26 @@ fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
                 })?
                 .trim()
                 .to_ascii_lowercase();
-            match enc.as_str() {
-                "" | "identity" => Ok(GrpcEncoding::Identity),
-                "zstd" => Ok(GrpcEncoding::Zstd),
-                other => {
-                    log::error!("Unsupported grpc-encoding {}", other);
+            let enc_str = enc.as_str();
+            const PREFIX: &str = "zstdarrow";
+
+            if enc_str.is_empty() || enc_str == "identity" {
+                Ok(GrpcEncoding::Identity)
+            } else if enc_str == "zstd" {
+                Ok(GrpcEncoding::Zstd)
+            } else if enc_str.starts_with(PREFIX) {
+                let tail = &enc_str[PREFIX.len()..];
+                if tail.len() == 1 && tail.as_bytes()[0].is_ascii_digit() {
+                    Ok(GrpcEncoding::Zstd)
+                } else {
+                    log::error!("Unsupported grpc-encoding {}", enc_str);
                     Err(Status::unimplemented("grpc compression not supported"))
                 }
+            } else {
+                log::error!("Unsupported grpc-encoding {}", enc_str);
+                Err(Status::unimplemented("grpc compression not supported"))
             }
+
         }
     }
 }
@@ -464,6 +485,7 @@ fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
 enum GrpcEncoding {
     Identity,
     Zstd,
+    // ToDo: Gzip, Snappy (to follow Go implementation)
 }
 
 struct GrpcStreamingBody {
@@ -580,10 +602,10 @@ impl ArrowRequestStream for GrpcStreamingBody {
     }
 }
 
-fn stream_local_batch_statuses<S, T, F>(
+fn stream_batch_statuses<S, T, F>(
     input_stream: S,
     effect_handler: local::EffectHandler<OtapPdata>,
-    state: Option<LocalAckSubscriptionState>,
+    ack_registry: Option<AckRegistry>,
     otap_batch: F,
     max_in_flight_per_connection: usize,
 ) -> Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + 'static>>
@@ -592,22 +614,22 @@ where
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {
-    let state = LocalArrowBatchStreamState::new(
+    let state = ArrowBatchStreamState::new(
         input_stream,
         effect_handler,
-        state,
+        ack_registry,
         otap_batch,
         max_in_flight_per_connection,
     );
     Box::pin(stream::unfold(state, |mut state| async move {
         match state.next_item().await {
-            LocalStreamStep::Yield(item) => Some((item, state)),
-            LocalStreamStep::Done => None,
+            StreamStep::Yield(item) => Some((item, state)),
+            StreamStep::Done => None,
         }
     }))
 }
 
-struct LocalArrowBatchStreamState<S, T, F>
+struct ArrowBatchStreamState<S, T, F>
 where
     S: ArrowRequestStream,
     T: OtapBatchStore + 'static,
@@ -616,7 +638,7 @@ where
     input_stream: S,
     consumer: Consumer,
     effect_handler: local::EffectHandler<OtapPdata>,
-    state: Option<LocalAckSubscriptionState>,
+    state: Option<AckRegistry>,
     otap_batch: F,
     in_flight: LocalFutureSet<LocalAckWaitFuture>,
     max_in_flight: usize,
@@ -624,17 +646,17 @@ where
     _marker: PhantomData<fn() -> T>,
 }
 
-enum LocalStreamStep {
+enum StreamStep {
     Yield(Result<BatchStatus, Status>),
     Done,
 }
 
-enum LocalPreparedBatch {
+enum PreparedBatch {
     Enqueued,
-    Immediate(LocalStreamStep),
+    Immediate(StreamStep),
 }
 
-impl<S, T, F> LocalArrowBatchStreamState<S, T, F>
+impl<S, T, F> ArrowBatchStreamState<S, T, F>
 where
     S: ArrowRequestStream,
     T: OtapBatchStore + 'static,
@@ -643,7 +665,7 @@ where
     fn new(
         input_stream: S,
         effect_handler: local::EffectHandler<OtapPdata>,
-        state: Option<LocalAckSubscriptionState>,
+        state: Option<AckRegistry>,
         otap_batch: F,
         max_in_flight_per_connection: usize,
     ) -> Self {
@@ -660,28 +682,28 @@ where
         }
     }
 
-    async fn next_item(&mut self) -> LocalStreamStep {
+    async fn next_item(&mut self) -> StreamStep {
         if let Some(step) = self.fill_inflight().await {
             return step;
         }
 
         match poll_fn(|cx| self.in_flight.poll_next(cx)).await {
             Some(step) => {
-                if matches!(step, LocalStreamStep::Done) {
+                if matches!(step, StreamStep::Done) {
                     self.finished = true;
                 }
                 step
             }
-            None => LocalStreamStep::Done,
+            None => StreamStep::Done,
         }
     }
 
-    async fn fill_inflight(&mut self) -> Option<LocalStreamStep> {
+    async fn fill_inflight(&mut self) -> Option<StreamStep> {
         while !self.finished && self.in_flight.len() < self.max_in_flight {
             match self.input_stream.next_message().await {
                 Ok(Some(batch)) => match self.enqueue_batch(batch).await {
-                    LocalPreparedBatch::Enqueued => continue,
-                    LocalPreparedBatch::Immediate(step) => return Some(step),
+                    PreparedBatch::Enqueued => continue,
+                    PreparedBatch::Immediate(step) => return Some(step),
                 },
                 Ok(None) => {
                     self.finished = true;
@@ -689,14 +711,14 @@ where
                 }
                 Err(status) => {
                     self.finished = true;
-                    return Some(LocalStreamStep::Yield(Err(status)));
+                    return Some(StreamStep::Yield(Err(status)));
                 }
             }
         }
         None
     }
 
-    async fn enqueue_batch(&mut self, mut batch: BatchArrowRecords) -> LocalPreparedBatch {
+    async fn enqueue_batch(&mut self, mut batch: BatchArrowRecords) -> PreparedBatch {
         let batch_id = batch.batch_id;
 
         let batch = match self.consumer.consume_bar(&mut batch) {
@@ -704,7 +726,7 @@ where
             Err(e) => {
                 log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
                 self.finished = true;
-                return LocalPreparedBatch::Immediate(LocalStreamStep::Done);
+                return PreparedBatch::Immediate(StreamStep::Done);
             }
         };
 
@@ -717,7 +739,7 @@ where
             match state.allocate() {
                 None => {
                     log::error!("Too many concurrent requests");
-                    return LocalPreparedBatch::Immediate(LocalStreamStep::Yield(Ok(
+                    return PreparedBatch::Immediate(StreamStep::Yield(Ok(
                         local_overloaded_status(batch_id),
                     )));
                 }
@@ -737,7 +759,7 @@ where
         if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
             log::error!("Failed to send to pipeline: {e}");
             self.finished = true;
-            return LocalPreparedBatch::Immediate(LocalStreamStep::Done);
+            return PreparedBatch::Immediate(StreamStep::Done);
         };
 
         if let Some((state, token)) = wait_token {
@@ -746,13 +768,13 @@ where
                 .push(LocalAckWaitFuture::new(batch_id, token, state))
             {
                 log::error!("In-flight future set unexpectedly full");
-                return LocalPreparedBatch::Immediate(LocalStreamStep::Yield(Ok(
+                return PreparedBatch::Immediate(StreamStep::Yield(Ok(
                     local_overloaded_status(batch_id),
                 )));
             }
-            LocalPreparedBatch::Enqueued
+            PreparedBatch::Enqueued
         } else {
-            LocalPreparedBatch::Immediate(LocalStreamStep::Yield(Ok(local_success_status(
+            PreparedBatch::Immediate(StreamStep::Yield(Ok(local_success_status(
                 batch_id,
             ))))
         }
@@ -818,13 +840,13 @@ impl<F> LocalFutureSet<F> {
 
 struct LocalAckWaitFuture {
     batch_id: i64,
-    token: LocalAckToken,
-    state: LocalAckSubscriptionState,
+    token: AckToken,
+    state: AckRegistry,
     completed: bool,
 }
 
 impl LocalAckWaitFuture {
-    fn new(batch_id: i64, token: LocalAckToken, state: LocalAckSubscriptionState) -> Self {
+    fn new(batch_id: i64, token: AckToken, state: AckRegistry) -> Self {
         Self {
             batch_id,
             token,
@@ -835,7 +857,7 @@ impl LocalAckWaitFuture {
 }
 
 impl Future for LocalAckWaitFuture {
-    type Output = LocalStreamStep;
+    type Output = StreamStep;
 
     fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -843,18 +865,18 @@ impl Future for LocalAckWaitFuture {
             Poll::Pending => Poll::Pending,
             Poll::Ready(LocalPollResult::Ack) => {
                 this.completed = true;
-                Poll::Ready(LocalStreamStep::Yield(Ok(local_success_status(this.batch_id))))
+                Poll::Ready(StreamStep::Yield(Ok(local_success_status(this.batch_id))))
             }
             Poll::Ready(LocalPollResult::Nack(reason)) => {
                 this.completed = true;
-                Poll::Ready(LocalStreamStep::Yield(Ok(local_nack_status(
+                Poll::Ready(StreamStep::Yield(Ok(local_nack_status(
                     this.batch_id,
                     reason,
                 ))))
             }
             Poll::Ready(LocalPollResult::Cancelled) => {
                 this.completed = true;
-                Poll::Ready(LocalStreamStep::Done)
+                Poll::Ready(StreamStep::Done)
             }
         }
     }
@@ -875,47 +897,47 @@ enum LocalPollResult {
 }
 
 #[derive(Clone)]
-struct LocalAckSubscriptionState {
-    inner: Rc<RefCell<LocalAckSubscriptionInner>>,
+struct AckRegistry {
+    inner: Rc<RefCell<AckRegistryInner>>,
 }
 
-struct LocalAckSubscriptionInner {
-    slots: Box<[LocalAckSlot]>,
+struct AckRegistryInner {
+    slots: Box<[AckSlot]>,
     free_stack: Vec<usize>,
 }
 
-impl LocalAckSubscriptionState {
+impl AckRegistry {
     fn new(max_size: usize) -> Self {
         let mut slots = Vec::with_capacity(max_size);
         for _ in 0..max_size {
-            slots.push(LocalAckSlot::new());
+            slots.push(AckSlot::new());
         }
         let mut free_stack = Vec::with_capacity(max_size);
         for idx in (0..max_size).rev() {
             free_stack.push(idx);
         }
         Self {
-            inner: Rc::new(RefCell::new(LocalAckSubscriptionInner {
+            inner: Rc::new(RefCell::new(AckRegistryInner {
                 slots: slots.into_boxed_slice(),
                 free_stack,
             })),
         }
     }
 
-    fn allocate(&self) -> Option<LocalAckToken> {
+    fn allocate(&self) -> Option<AckToken> {
         let mut inner = self.inner.borrow_mut();
         let slot_index = inner.free_stack.pop()?;
         let slot = &mut inner.slots[slot_index];
-        debug_assert!(matches!(slot.state, LocalSlotState::Free));
+        debug_assert!(matches!(slot.state, SlotState::Free));
         slot.generation = slot.generation.wrapping_add(1);
-        slot.state = LocalSlotState::Waiting(LocalWaitingSlot::new());
-        Some(LocalAckToken {
+        slot.state = SlotState::Waiting(WaitingSlot::new());
+        Some(AckToken {
             slot_index,
             generation: slot.generation,
         })
     }
 
-    fn complete(&self, token: LocalAckToken, result: Result<(), String>) -> RouteResponse {
+    fn complete(&self, token: AckToken, result: Result<(), String>) -> RouteResponse {
         let mut inner = self.inner.borrow_mut();
         let Some(slot) = inner.slots.get_mut(token.slot_index) else {
             return RouteResponse::Invalid;
@@ -924,21 +946,21 @@ impl LocalAckSubscriptionState {
             return RouteResponse::Expired;
         }
         match &mut slot.state {
-            LocalSlotState::Waiting(waiting) => {
+            SlotState::Waiting(waiting) => {
                 waiting.outcome = match result {
-                    Ok(()) => LocalAckOutcome::Ack,
-                    Err(reason) => LocalAckOutcome::Nack(reason),
+                    Ok(()) => AckOutcome::Ack,
+                    Err(reason) => AckOutcome::Nack(reason),
                 };
                 if let Some(waker) = waiting.waker.take() {
                     waker.wake();
                 }
                 RouteResponse::Sent
             }
-            LocalSlotState::Free => RouteResponse::Expired,
+            SlotState::Free => RouteResponse::Expired,
         }
     }
 
-    fn poll_slot(&self, token: LocalAckToken, cx: &mut TaskContext<'_>) -> Poll<LocalPollResult> {
+    fn poll_slot(&self, token: AckToken, cx: &mut TaskContext<'_>) -> Poll<LocalPollResult> {
         let mut inner = self.inner.borrow_mut();
         let Some(slot) = inner.slots.get_mut(token.slot_index) else {
             return Poll::Ready(LocalPollResult::Cancelled);
@@ -947,8 +969,8 @@ impl LocalAckSubscriptionState {
             return Poll::Ready(LocalPollResult::Cancelled);
         }
         match &mut slot.state {
-            LocalSlotState::Waiting(waiting) => match &mut waiting.outcome {
-                LocalAckOutcome::Pending => {
+            SlotState::Waiting(waiting) => match &mut waiting.outcome {
+                AckOutcome::Pending => {
                     let replace = match &waiting.waker {
                         Some(existing) => !existing.will_wake(cx.waker()),
                         None => true,
@@ -958,82 +980,82 @@ impl LocalAckSubscriptionState {
                     }
                     Poll::Pending
                 }
-                LocalAckOutcome::Ack => {
-                    slot.state = LocalSlotState::Free;
+                AckOutcome::Ack => {
+                    slot.state = SlotState::Free;
                     inner.free_stack.push(token.slot_index);
                     Poll::Ready(LocalPollResult::Ack)
                 }
-                LocalAckOutcome::Nack(reason) => {
+                AckOutcome::Nack(reason) => {
                     let reason = mem::take(reason);
-                    slot.state = LocalSlotState::Free;
+                    slot.state = SlotState::Free;
                     inner.free_stack.push(token.slot_index);
                     Poll::Ready(LocalPollResult::Nack(reason))
                 }
             },
-            LocalSlotState::Free => Poll::Ready(LocalPollResult::Cancelled),
+            SlotState::Free => Poll::Ready(LocalPollResult::Cancelled),
         }
     }
 
-    fn cancel(&self, token: LocalAckToken) {
+    fn cancel(&self, token: AckToken) {
         let mut inner = self.inner.borrow_mut();
         if let Some(slot) = inner.slots.get_mut(token.slot_index) {
             if slot.generation != token.generation {
                 return;
             }
-            if matches!(slot.state, LocalSlotState::Waiting(_)) {
-                slot.state = LocalSlotState::Free;
+            if matches!(slot.state, SlotState::Waiting(_)) {
+                slot.state = SlotState::Free;
                 inner.free_stack.push(token.slot_index);
             }
         }
     }
 }
 
-struct LocalAckSlot {
+struct AckSlot {
     generation: u32,
-    state: LocalSlotState,
+    state: SlotState,
 }
 
-impl LocalAckSlot {
+impl AckSlot {
     fn new() -> Self {
         Self {
             generation: 0,
-            state: LocalSlotState::Free,
+            state: SlotState::Free,
         }
     }
 }
 
-enum LocalSlotState {
+enum SlotState {
     Free,
-    Waiting(LocalWaitingSlot),
+    Waiting(WaitingSlot),
 }
 
-struct LocalWaitingSlot {
+struct WaitingSlot {
     waker: Option<Waker>,
-    outcome: LocalAckOutcome,
+    outcome: AckOutcome,
 }
 
-impl LocalWaitingSlot {
+impl WaitingSlot {
     fn new() -> Self {
         Self {
             waker: None,
-            outcome: LocalAckOutcome::Pending,
+            outcome: AckOutcome::Pending,
         }
     }
 }
 
-enum LocalAckOutcome {
+enum AckOutcome {
     Pending,
     Ack,
     Nack(String),
 }
 
 #[derive(Clone, Copy)]
-struct LocalAckToken {
+struct AckToken {
     slot_index: usize,
     generation: u32,
 }
 
-impl LocalAckToken {
+impl AckToken {
     fn to_calldata(self) -> CallData {
         smallvec![
             Context8u8::from(self.slot_index as u64),
@@ -1055,17 +1077,17 @@ impl LocalAckToken {
 }
 
 #[derive(Clone, Default)]
-struct LocalSignalAckRoutingState {
-    logs: Option<LocalAckSubscriptionState>,
-    metrics: Option<LocalAckSubscriptionState>,
-    traces: Option<LocalAckSubscriptionState>,
+struct AckRegistries {
+    logs: Option<AckRegistry>,
+    metrics: Option<AckRegistry>,
+    traces: Option<AckRegistry>,
 }
 
-impl LocalSignalAckRoutingState {
+impl AckRegistries {
     fn new(
-        logs: Option<LocalAckSubscriptionState>,
-        metrics: Option<LocalAckSubscriptionState>,
-        traces: Option<LocalAckSubscriptionState>,
+        logs: Option<AckRegistry>,
+        metrics: Option<AckRegistry>,
+        traces: Option<AckRegistry>,
     ) -> Self {
         Self {
             logs,
@@ -1074,10 +1096,10 @@ impl LocalSignalAckRoutingState {
         }
     }
 
-    fn state_for_signal(
+    fn ack_registry_for_signal(
         &self,
         signal: SignalType,
-    ) -> Option<&LocalAckSubscriptionState> {
+    ) -> Option<&AckRegistry> {
         match signal {
             SignalType::Logs => self.logs.as_ref(),
             SignalType::Metrics => self.metrics.as_ref(),
@@ -1087,28 +1109,28 @@ impl LocalSignalAckRoutingState {
 }
 
 fn route_local_ack_response(
-    states: &LocalSignalAckRoutingState,
+    states: &AckRegistries,
     ack: AckMsg<OtapPdata>,
 ) -> RouteResponse {
-    let Some(token) = LocalAckToken::from_calldata(&ack.calldata) else {
+    let Some(token) = AckToken::from_calldata(&ack.calldata) else {
         return RouteResponse::Invalid;
     };
     states
-        .state_for_signal(ack.accepted.signal_type())
+        .ack_registry_for_signal(ack.accepted.signal_type())
         .map(|state| state.complete(token, Ok(())))
         .unwrap_or(RouteResponse::None)
 }
 
 fn route_local_nack_response(
-    states: &LocalSignalAckRoutingState,
+    states: &AckRegistries,
     mut nack: NackMsg<OtapPdata>,
 ) -> RouteResponse {
-    let Some(token) = LocalAckToken::from_calldata(&nack.calldata) else {
+    let Some(token) = AckToken::from_calldata(&nack.calldata) else {
         return RouteResponse::Invalid;
     };
     let reason = mem::take(&mut nack.reason);
     states
-        .state_for_signal(nack.refused.signal_type())
+        .ack_registry_for_signal(nack.refused.signal_type())
         .map(|state| state.complete(token, Err(reason)))
         .unwrap_or(RouteResponse::None)
 }
