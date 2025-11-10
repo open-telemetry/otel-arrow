@@ -304,7 +304,6 @@ impl PipelineStatus {
 /// Decide if (numerator/denominator) satisfies a quorum.
 fn quorum_satisfied(numer: usize, denom: usize, q: Quorum) -> bool {
     match q {
-        Quorum::All => numer == denom && denom > 0,
         Quorum::AtLeast(n) => numer >= n,
         Quorum::Percent(p) => {
             if denom == 0 {
@@ -335,7 +334,6 @@ fn is_time_newer(candidate: Option<SystemTime>, current: Option<SystemTime>) -> 
 
 fn required_ready_count(quorum: Quorum, denom: usize) -> usize {
     match quorum {
-        Quorum::All => denom,
         Quorum::AtLeast(n) => n.min(denom),
         Quorum::Percent(p) => {
             if denom == 0 {
@@ -349,7 +347,6 @@ fn required_ready_count(quorum: Quorum, denom: usize) -> usize {
 
 fn describe_quorum(quorum: Quorum, required: usize) -> String {
     match quorum {
-        Quorum::All => "all cores ready".to_string(),
         Quorum::AtLeast(n) => format!("at least {n} cores ready"),
         Quorum::Percent(p) => format!("{p}% of cores ready (>= {required})"),
     }
@@ -429,7 +426,7 @@ mod tests {
             live_if: vec![PhaseKind::Running],
             ready_if: vec![PhaseKind::Running],
             live_quorum: Quorum::Percent(60),
-            ready_quorum: Quorum::All,
+            ready_quorum: Quorum::Percent(100),
         };
         let mut status = new_status(policy);
         _ = status.cores.insert(0, runtime(PipelinePhase::Running));
@@ -454,7 +451,7 @@ mod tests {
             live_if: vec![PhaseKind::Running],
             ready_if: vec![PhaseKind::Running],
             live_quorum: Quorum::AtLeast(1),
-            ready_quorum: Quorum::All,
+            ready_quorum: Quorum::Percent(100),
         };
         let mut status = new_status(policy);
         _ = status.cores.insert(0, runtime(PipelinePhase::Running));
@@ -513,7 +510,7 @@ mod tests {
             live_if: vec![PhaseKind::Running],
             ready_if: vec![PhaseKind::Running],
             live_quorum: Quorum::AtLeast(1),
-            ready_quorum: Quorum::All,
+            ready_quorum: Quorum::Percent(100),
         };
         let mut status = new_status(policy);
         _ = status.cores.insert(
