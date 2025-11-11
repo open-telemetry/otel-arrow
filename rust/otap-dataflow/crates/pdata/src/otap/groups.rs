@@ -3167,8 +3167,26 @@ mod test {
 
     #[test]
     fn test_simple_split_logs() {
+        use crate::otlp::OtlpProtoBytes;
+        use crate::payload::OtapPayload;
+        use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use crate::testing::equiv::assert_logs_equivalent;
+        use prost::Message as ProstMessage;
+
         let logs = RecordsGroup::separate_logs(vec![make_logs()]).unwrap();
         let original_logs = logs.clone();
+        
+        // Convert original to OTLP for equivalence checking
+        let original_otap = original_logs.clone().into_otap_arrow_records()[0].clone();
+        let pdata: OtapPayload = original_otap.into();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let original_otlp = match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap()
+            }
+            _ => panic!("expected logs"),
+        };
+
         let split = logs.split(NonZeroU64::new(2).unwrap()).unwrap();
         assert_eq!(split.len(), 2);
         let [a, b] = split.into_otap_arrow_records().try_into().unwrap();
@@ -3181,7 +3199,22 @@ mod test {
         let merged2 = logs2.concatenate(None).unwrap();
         assert_eq!(merged, merged2);
         assert_eq!(merged, original_logs);
+
+        // NEW: Use equivalence checker to verify semantic correctness
+        let merged_otap = merged.into_otap_arrow_records()[0].clone();
+        let pdata: OtapPayload = merged_otap.into();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let merged_otlp = match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap()
+            }
+            _ => panic!("expected logs"),
+        };
+
+        assert_logs_equivalent(&original_otlp, &merged_otlp);
     }
+
+
 
     fn make_traces() -> OtapArrowRecords {
         let spans_rb = RecordBatch::try_new(
@@ -3239,8 +3272,27 @@ mod test {
 
     #[test]
     fn test_simple_split_traces() {
+        use crate::otlp::OtlpProtoBytes;
+        use crate::payload::OtapPayload;
+        use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+        use crate::testing::equiv::assert_traces_equivalent;
+        use prost::Message as ProstMessage;
+
         let input = make_traces();
         let traces = RecordsGroup::separate_traces(vec![make_traces().clone()]).unwrap();
+        let original_traces = traces.clone();
+
+        // Convert original to OTLP for equivalence checking
+        let original_otap = original_traces.clone().into_otap_arrow_records()[0].clone();
+        let pdata: OtapPayload = original_otap.into();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let original_otlp = match otlp_bytes {
+            OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                ExportTraceServiceRequest::decode(bytes.as_ref()).unwrap()
+            }
+            _ => panic!("expected traces"),
+        };
+
         let split = traces.split(NonZeroU64::new(2).unwrap()).unwrap();
 
         let otap_batches = match split {
@@ -3276,6 +3328,29 @@ mod test {
         let batch1_span_events = batch1.get(ArrowPayloadType::SpanEvents).unwrap();
         // batch 1 events only contained parent IDs from the second spans batch:
         assert_eq!(batch1_span_events, input_span_events);
+
+        // Merge batches and verify semantic equivalence
+        let merged = RecordsGroup::separate_traces(vec![
+            OtapArrowRecords::Traces(Traces {
+                batches: otap_batches[0].clone(),
+            }),
+            OtapArrowRecords::Traces(Traces {
+                batches: otap_batches[1].clone(),
+            }),
+        ])
+        .unwrap();
+
+        let merged_otap = merged.into_otap_arrow_records()[0].clone();
+        let pdata: OtapPayload = merged_otap.into();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let merged_otlp = match otlp_bytes {
+            OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                ExportTraceServiceRequest::decode(bytes.as_ref()).unwrap()
+            }
+            _ => panic!("expected traces"),
+        };
+
+        assert_traces_equivalent(&original_otlp, &merged_otlp);
     }
 
     fn make_metrics() -> OtapArrowRecords {

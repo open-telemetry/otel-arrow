@@ -4,7 +4,7 @@
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt,
-    get_required_array, get_u8_array,
+    get_u8_array,
 };
 use crate::error::{Error, Result};
 use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
@@ -31,7 +31,7 @@ use std::fmt::Write;
 use std::sync::LazyLock;
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
-    pub id: &'a UInt16Array,
+    pub id: Option<&'a UInt16Array>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
     pub schema_url: Option<StringArrayAccessor<'a>>,
 }
@@ -90,7 +90,17 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let struct_array = get_required_array(rb, consts::RESOURCE)?;
+        // Resource column is nullable - if it's missing, return all None values
+        let resource_column = rb.column_by_name(consts::RESOURCE);
+        if resource_column.is_none() {
+            return Ok(Self {
+                id: None,
+                dropped_attributes_count: None,
+                schema_url: None,
+            });
+        }
+
+        let struct_array = resource_column.unwrap();
         let struct_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -103,7 +113,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
         let struct_col_accessor = StructColumnAccessor::new(struct_array);
 
         Ok(Self {
-            id: struct_col_accessor.primitive_column(consts::ID)?,
+            id: struct_col_accessor.primitive_column_op(consts::ID)?,
             dropped_attributes_count: struct_col_accessor
                 .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
             schema_url: struct_col_accessor.string_column_op(consts::SCHEMA_URL)?,
@@ -141,12 +151,23 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let struct_array = get_required_array(rb, consts::SCOPE)?;
+        // Scope column is nullable - if it's missing, return all None values
+        let scope_column = rb.column_by_name(consts::SCOPE);
+        if scope_column.is_none() {
+            return Ok(Self {
+                name: None,
+                version: None,
+                dropped_attributes_count: None,
+                id: None,
+            });
+        }
+
+        let struct_array = scope_column.unwrap();
         let scope_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
             .ok_or_else(|| Error::ColumnDataTypeMismatch {
-                name: consts::RESOURCE.into(),
+                name: consts::SCOPE.into(),
                 actual: struct_array.data_type().clone(),
                 expect: Self::data_type().clone(),
             })?;
