@@ -170,4 +170,10 @@ pub enum Error {
 
     #[error("Mixed signals")]
     MixedSignals,
+
+    #[error("Encoding error: {}", error)]
+    Encoding {
+        #[from]
+        error: crate::encode::Error,
+    },
 }

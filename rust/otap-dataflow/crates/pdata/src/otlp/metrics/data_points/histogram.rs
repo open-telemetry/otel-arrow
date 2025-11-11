@@ -94,17 +94,17 @@ where
 {
     #[allow(missing_docs)]
     pub fn try_new(list: &'a ArrayRef) -> Result<Self> {
-        let list = list.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-            Error::InvalidListArray {
-                //todo: maybe set the field name here.
-                expect_oneof: vec![DataType::List(FieldRef::new(Field::new(
-                    "",
-                    T::DATA_TYPE,
-                    true,
-                )))],
-                actual: list.data_type().clone(),
-            }
-        })?;
+        let list =
+            list.as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| Error::InvalidListArray {
+                    expect_oneof: vec![DataType::List(FieldRef::new(Field::new(
+                        "item",
+                        T::DATA_TYPE,
+                        true,
+                    )))],
+                    actual: list.data_type().clone(),
+                })?;
         Self::try_new_from_list(list)
     }
 

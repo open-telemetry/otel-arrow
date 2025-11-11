@@ -12,13 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
-use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPdata};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;

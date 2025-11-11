@@ -4,6 +4,7 @@
 //! various types & helper functions for decoding serialized protobuf data
 
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
@@ -325,6 +326,97 @@ where
     }
 }
 
+/// Iterator for producing elements whose type is a repeated primitive where that primitive
+/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64`. OTLP uses the
+/// packed encoding for these types of fields
+/// https://protobuf.dev/editions/features/#repeated_field_encoding
+pub struct PackedFixed64Iter<'a, V: FromFixed64> {
+    buffer: &'a [u8],
+    pos: usize,
+    _pd: PhantomData<V>,
+}
+
+impl<'a, V> PackedFixed64Iter<'a, V>
+where
+    V: FromFixed64,
+{
+    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+        Self {
+            buffer,
+            pos: 0,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<'a, V> Iterator for PackedFixed64Iter<'a, V>
+where
+    V: FromFixed64,
+{
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos + 8 > self.buffer.len() {
+            // we've reached end of buffer
+            return None;
+        }
+
+        let slice: [u8; 8] = self.buffer[self.pos..self.pos + 8]
+            .try_into()
+            .expect("can convert slice of fixed size");
+        self.pos += 8;
+        Some(V::from_fixed64_slice(slice))
+    }
+}
+
+/// Helper trait for converting an iterator of slices of ranges from a proto buffer into a value
+/// that can be produced from a byte slice with a wire type of FIXED64 (e.g. double)
+pub trait FromFixed64 {
+    /// create new value from a slice that was proto serialized with wire type FIXED64
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self;
+}
+
+impl FromFixed64 for f64 {
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self {
+        f64::from_le_bytes(slice)
+    }
+}
+
+impl FromFixed64 for u64 {
+    fn from_fixed64_slice(slice: [u8; 8]) -> Self {
+        u64::from_le_bytes(slice)
+    }
+}
+
+/// Iterator for producing elements whose type is a repeated primitive where that primitive
+/// can be encoded as a varint. e.g. `repeated uint64`. OTLP uses the packed encoding for these
+/// types of fields:
+/// https://protobuf.dev/editions/features/#repeated_field_encoding
+pub struct PackedVarintIter<'a> {
+    buffer: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> PackedVarintIter<'a> {
+    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer, pos: 0 }
+    }
+}
+
+// Note this only produces u64 currently as that just happens to be the only type of value in the
+// OTLP data model that ends up getting encoded like that. if we ever need this to be generic over
+// the return type, we could easily do that (like we do for [`PackedFixed64Iter`])
+impl<'a> Iterator for PackedVarintIter<'a> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (val, next_pos) = read_varint(self.buffer, self.pos)?;
+        self.pos = next_pos;
+
+        Some(val)
+    }
+}
+
 /// Decode variant at position in buffer
 #[inline]
 #[must_use]
@@ -346,6 +438,13 @@ pub fn read_varint(buf: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     }
 
     None
+}
+
+/// Decode 32 bit zigzag encoding
+#[inline]
+#[must_use]
+pub const fn decode_sint32(val: i32) -> i32 {
+    (val >> 1) ^ -(val & 1)
 }
 
 /// Decode length from byte slice and return a new slice of the buffer and the decoded length.

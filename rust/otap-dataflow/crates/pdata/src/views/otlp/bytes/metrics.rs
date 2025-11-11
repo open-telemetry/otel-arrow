@@ -8,30 +8,45 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 
 use crate::proto::consts::field_num::metrics::{
-    GAUGE_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
+    EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
+    EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID, EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS,
+    EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES, EXP_HISTOGRAM_DP_COUNT,
+    EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS, EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN,
+    EXP_HISTOGRAM_DP_NEGATIVE, EXP_HISTOGRAM_DP_POSITIVE, EXP_HISTOGRAM_DP_SCALE,
+    EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_SUM, EXP_HISTOGRAM_DP_TIME_UNIX_NANO,
+    EXP_HISTOGRAM_DP_ZERO_COUNT, EXP_HISTOGRAM_DP_ZERO_THRESHOLD,
+    EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, EXPONENTIAL_HISTOGRAM_DATA_POINTS,
+    GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_DATA_POINTS,
+    HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
+    HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
+    HISTOGRAM_DP_MIN, HISTOGRAM_DP_START_TIME_UNIX_NANO, HISTOGRAM_DP_SUM,
+    HISTOGRAM_DP_TIME_UNIX_NANO, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
     METRIC_HISTOGRAM, METRIC_METADATA, METRIC_NAME, METRIC_SUM, METRIC_SUMMARY, METRIC_UNIT,
     METRICS_DATA_RESOURCE_METRICS, NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES,
     NUMBER_DP_EXEMPLARS, NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
     RESOURCE_METRICS_RESOURCE, RESOURCE_METRICS_SCHEMA_URL, RESOURCE_METRICS_SCOPE_METRICS,
     SCOPE_METRICS_METRICS, SCOPE_METRICS_SCHEMA_URL, SCOPE_METRICS_SCOPE,
+    SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC, SUMMARY_DATA_POINTS,
+    SUMMARY_DP_ATTRIBUTES, SUMMARY_DP_COUNT, SUMMARY_DP_FLAGS, SUMMARY_DP_QUANTILE_VALUES,
+    SUMMARY_DP_START_TIME_UNIX_NANO, SUMMARY_DP_SUM, SUMMARY_DP_TIME_UNIX_NANO,
+    VALUE_AT_QUANTILE_QUANTILE, VALUE_AT_QUANTILE_VALUE,
 };
 use crate::proto::consts::wire_types;
-
+use crate::schema::{SpanId, TraceId};
 use crate::views::common::Str;
 use crate::views::metrics::{
-    DataPointFlags, DataType, DataView, GaugeView, MetricView, MetricsView, NumberDataPointView,
-    ResourceMetricsView, ScopeMetricsView, Value,
+    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
+    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
-    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-    from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
+    FieldRanges, PackedFixed64Iter, PackedVarintIter, ProtoBytesParser,
+    RepeatedFieldProtoBytesParser, decode_sint32, from_option_nonzero_range_to_primitive,
+    read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use crate::views::otlp::proto::metrics::{
-    ExemplarIter, NumberDataPointIter as ObjNumberDataPointIter, ObjExemplar,
-    ObjExponentialHistogram, ObjHistogram, ObjNumberDataPoint, ObjSum, ObjSummary,
-};
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {
@@ -278,6 +293,211 @@ impl FieldRanges for GaugeFieldRanges {
     }
 }
 
+/// Implementation of [`SumView`] backed by buffer containing proto serialized `Sum` Message
+pub struct RawSum<'a> {
+    byte_parser: ProtoBytesParser<'a, SumFieldRanges>,
+}
+
+/// Known field ranges for fields on `Sum` message
+pub struct SumFieldRanges {
+    is_monotonic: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for SumFieldRanges {
+    fn new() -> Self {
+        Self {
+            is_monotonic: Cell::new(None),
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            SUM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            SUM_IS_MONOTONIC => self.is_monotonic.get(),
+            SUM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            SUM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            SUM_IS_MONOTONIC => {
+                if wire_type == wire_types::VARINT {
+                    self.is_monotonic.set(Some(range))
+                }
+            }
+            SUM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`HistogramView`] backed by byte buffer containing proto serialized
+/// `Histogram` message
+pub struct RawHistogram<'a> {
+    byte_parser: ProtoBytesParser<'a, HistogramFieldRanges>,
+}
+
+/// Known field ranges for fields on `Histogram` message
+pub struct HistogramFieldRanges {
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for HistogramFieldRanges {
+    fn new() -> Self {
+        Self {
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            HISTOGRAM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            HISTOGRAM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            HISTOGRAM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            HISTOGRAM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`ExponentialHistogramView`] backed by byte buffer containing proto
+/// serialized `ExponentialHistogram` message
+pub struct RawExpHistogram<'a> {
+    byte_parser: ProtoBytesParser<'a, ExpHistogramFieldRanges>,
+}
+
+/// Known field ranges for fields on `ExponentialHistogram` message
+struct ExpHistogramFieldRanges {
+    aggregation_temporality: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for ExpHistogramFieldRanges {
+    fn new() -> Self {
+        Self {
+            aggregation_temporality: Cell::new(None),
+            first_data_point: Cell::new(None),
+        }
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY => self.aggregation_temporality.get(),
+            EXPONENTIAL_HISTOGRAM_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY => {
+                if wire_type == wire_types::VARINT {
+                    self.aggregation_temporality.set(Some(range))
+                }
+            }
+            EXPONENTIAL_HISTOGRAM_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`SummaryView`] backed by byte buffer containing Summary message
+pub struct RawSummary<'a> {
+    byte_parser: ProtoBytesParser<'a, SummaryFieldRanges>,
+}
+
+/// Known field ranges on Summary message
+#[derive(Default)]
+pub struct SummaryFieldRanges {
+    first_data_point: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for SummaryFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            SUMMARY_DATA_POINTS => self.first_data_point.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            SUMMARY_DATA_POINTS => {
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() {
+                    self.first_data_point.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
 /// Implementation of [`NumberDataPointView`] backed by buffer containing proto serialized
 /// NumberDataPoint message
 pub struct RawNumberDataPoint<'a> {
@@ -371,6 +591,510 @@ impl FieldRanges for NumberDataPointFieldRanges {
     }
 }
 
+/// Implementation of [`HistogramDataPointView`] backed by buffer containing proto serialized
+/// HistogramDataPoint message
+pub struct RawHistogramDataPoint<'a> {
+    byte_parser: ProtoBytesParser<'a, HistogramDataPointFieldRanges>,
+}
+
+/// Known field ranges for fields in proto serialized HistogramDataPoint message
+#[derive(Default)]
+pub struct HistogramDataPointFieldRanges {
+    start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    explicit_bounds: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    min: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    max: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_attributes: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for HistogramDataPointFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            HISTOGRAM_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
+            HISTOGRAM_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            HISTOGRAM_DP_COUNT => self.count.get(),
+            HISTOGRAM_DP_SUM => self.sum.get(),
+            HISTOGRAM_DP_FLAGS => self.flags.get(),
+            HISTOGRAM_DP_MIN => self.min.get(),
+            HISTOGRAM_DP_MAX => self.max.get(),
+            HISTOGRAM_DP_ATTRIBUTES => self.first_attributes.get(),
+            HISTOGRAM_DP_BUCKET_COUNTS => self.bucket_counts.get(),
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => self.explicit_bounds.get(),
+            HISTOGRAM_DP_EXEMPLARS => self.first_exemplar.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            HISTOGRAM_DP_START_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.start_time_unix_nano.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_COUNT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.count.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_SUM => {
+                if wire_type == wire_types::FIXED64 {
+                    self.sum.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_FLAGS => {
+                if wire_type == wire_types::VARINT {
+                    self.flags.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
+                if wire_type == wire_types::LEN {
+                    self.explicit_bounds.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_BUCKET_COUNTS => {
+                if wire_type == wire_types::LEN {
+                    self.bucket_counts.set(Some(range));
+                }
+            }
+            HISTOGRAM_DP_MIN => {
+                if wire_type == wire_types::FIXED64 {
+                    self.min.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_MAX => {
+                if wire_type == wire_types::FIXED64 {
+                    self.max.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() {
+                    self.first_attributes.set(Some(range))
+                }
+            }
+            HISTOGRAM_DP_EXEMPLARS => {
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() {
+                    self.first_exemplar.set(Some(range))
+                }
+            }
+
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`ExponentialHistogramDataPointView`] backed by buffer containing proto
+/// serialized ExponentialHistogramDataPoint message
+pub struct RawExpHistogramDatapoint<'a> {
+    byte_parser: ProtoBytesParser<'a, ExpHistogramDataPointFieldRanges>,
+}
+
+/// Known field ranges for fields in proto serialized ExponentialHistogramDataPoint message
+#[derive(Default)]
+
+pub struct ExpHistogramDataPointFieldRanges {
+    start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    scale: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    zero_count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    positive: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    negative: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    min: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    max: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    zero_threshold: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_attributes: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for ExpHistogramDataPointFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
+            EXP_HISTOGRAM_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            EXP_HISTOGRAM_DP_COUNT => self.count.get(),
+            EXP_HISTOGRAM_DP_SUM => self.sum.get(),
+            EXP_HISTOGRAM_DP_SCALE => self.scale.get(),
+            EXP_HISTOGRAM_DP_ZERO_COUNT => self.zero_count.get(),
+            EXP_HISTOGRAM_DP_POSITIVE => self.positive.get(),
+            EXP_HISTOGRAM_DP_NEGATIVE => self.negative.get(),
+            EXP_HISTOGRAM_DP_FLAGS => self.flags.get(),
+            EXP_HISTOGRAM_DP_MIN => self.min.get(),
+            EXP_HISTOGRAM_DP_MAX => self.max.get(),
+            EXP_HISTOGRAM_DP_ZERO_THRESHOLD => self.zero_threshold.get(),
+            EXP_HISTOGRAM_DP_ATTRIBUTES => self.first_attributes.get(),
+            EXP_HISTOGRAM_DP_EXEMPLARS => self.first_exemplar.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.start_time_unix_nano.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_COUNT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.count.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_SUM => {
+                if wire_type == wire_types::FIXED64 {
+                    self.sum.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_SCALE => {
+                if wire_type == wire_types::VARINT {
+                    self.scale.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_ZERO_COUNT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.zero_count.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_NEGATIVE => {
+                if wire_type == wire_types::LEN {
+                    self.negative.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_POSITIVE => {
+                if wire_type == wire_types::LEN {
+                    self.positive.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_FLAGS => {
+                if wire_type == wire_types::VARINT {
+                    self.flags.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_MIN => {
+                if wire_type == wire_types::FIXED64 {
+                    self.min.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_MAX => {
+                if wire_type == wire_types::FIXED64 {
+                    self.max.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_ZERO_THRESHOLD => {
+                if wire_type == wire_types::FIXED64 {
+                    self.zero_threshold.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() {
+                    self.first_attributes.set(Some(range))
+                }
+            }
+            EXP_HISTOGRAM_DP_EXEMPLARS => {
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() {
+                    self.first_exemplar.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`BucketsView`] backed by buffer containing proto serialized Buckets message
+pub struct RawBuckets<'a> {
+    byte_parser: ProtoBytesParser<'a, BucketsFieldRanges>,
+}
+
+/// Known field ranges for fields on `Buckets` message
+#[derive(Default)]
+pub struct BucketsFieldRanges {
+    offset: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for BucketsFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXP_HISTOGRAM_BUCKET_OFFSET => self.offset.get(),
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => self.bucket_counts.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXP_HISTOGRAM_BUCKET_OFFSET => {
+                if wire_type == wire_types::VARINT {
+                    self.offset.set(Some(range));
+                }
+            }
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
+                if wire_type == wire_types::LEN {
+                    self.bucket_counts.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`SummaryDataPointView`] backed by buffer containing proto serialized
+/// SummaryDataPoint message
+pub struct RawSummaryDataPoint<'a> {
+    byte_parser: ProtoBytesParser<'a, SummaryDataPointFieldRanges>,
+}
+
+/// Known field ranges for for fields in `SummaryDataPoint` message
+#[derive(Default)]
+pub struct SummaryDataPointFieldRanges {
+    start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_quantile_value: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for SummaryDataPointFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            SUMMARY_DP_START_TIME_UNIX_NANO => self.start_time_unix_nano.get(),
+            SUMMARY_DP_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            SUMMARY_DP_COUNT => self.count.get(),
+            SUMMARY_DP_SUM => self.sum.get(),
+            SUMMARY_DP_FLAGS => self.flags.get(),
+            SUMMARY_DP_ATTRIBUTES => self.first_attribute.get(),
+            SUMMARY_DP_QUANTILE_VALUES => self.first_quantile_value.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            SUMMARY_DP_START_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.start_time_unix_nano.set(Some(range))
+                }
+            }
+            SUMMARY_DP_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            SUMMARY_DP_COUNT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.count.set(Some(range))
+                }
+            }
+            SUMMARY_DP_SUM => {
+                if wire_type == wire_types::FIXED64 {
+                    self.sum.set(Some(range))
+                }
+            }
+            SUMMARY_DP_FLAGS => {
+                if wire_type == wire_types::VARINT {
+                    self.flags.set(Some(range))
+                }
+            }
+            SUMMARY_DP_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_attribute.get().is_none() {
+                    self.first_attribute.set(Some(range))
+                }
+            }
+            SUMMARY_DP_QUANTILE_VALUES => {
+                if wire_type == wire_types::LEN && self.first_quantile_value.get().is_none() {
+                    self.first_quantile_value.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
+/// Implementation of [`ValueAtQuantileView`] backed by byte buffer containing proto serialized
+/// `ValueAtQuantile` message
+pub struct RawValueAtQuantile<'a> {
+    byte_parser: ProtoBytesParser<'a, ValueAtQuantileFieldRanges>,
+}
+
+/// Known field ranges in buffer containing proto serialized ValueAtQuantile message
+#[derive(Default)]
+pub struct ValueAtQuantileFieldRanges {
+    quantile: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    value: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+}
+
+impl FieldRanges for ValueAtQuantileFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            VALUE_AT_QUANTILE_QUANTILE => self.quantile.get(),
+            VALUE_AT_QUANTILE_VALUE => self.value.get(),
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        if wire_type == wire_types::FIXED64 {
+            let range = match to_nonzero_range(start, end) {
+                Some(range) => range,
+                None => return,
+            };
+
+            match field_num {
+                VALUE_AT_QUANTILE_QUANTILE => self.quantile.set(Some(range)),
+                VALUE_AT_QUANTILE_VALUE => self.value.set(Some(range)),
+                _ => { /* ignore */ }
+            }
+        }
+    }
+}
+
+/// Implementation of [`ExemplarView`] backed by buf containing proto serialized Exemplar message
+pub struct RawExemplar<'a> {
+    byte_parser: ProtoBytesParser<'a, ExemplarFieldRanges>,
+}
+
+/// Known field ranges in buffer containing proto serialized Exemplar message
+#[derive(Default)]
+pub struct ExemplarFieldRanges {
+    time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_filtered_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    span_id: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    trace_id: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // since this is a oneof, we also keep the field_num alongside the range.
+    // That way when `get_field_range` is called, we can avoid returning the
+    // data range for the wrong variant of the oneof field
+    value: Cell<Option<((NonZeroUsize, NonZeroUsize), u64)>>,
+}
+
+impl FieldRanges for ExemplarFieldRanges {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            EXEMPLAR_FILTERED_ATTRIBUTES => self.first_filtered_attribute.get(),
+            EXEMPLAR_TIME_UNIX_NANO => self.time_unix_nano.get(),
+            EXEMPLAR_SPAN_ID => self.span_id.get(),
+            EXEMPLAR_TRACE_ID => self.trace_id.get(),
+            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT => {
+                let (range, actual_field_num) = self.value.get()?;
+                (actual_field_num == field_num).then_some(range)
+            }
+            _ => return None,
+        };
+
+        from_option_nonzero_range_to_primitive(range)
+    }
+
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => range,
+            None => return,
+        };
+
+        match field_num {
+            EXEMPLAR_TIME_UNIX_NANO => {
+                if wire_type == wire_types::FIXED64 {
+                    self.time_unix_nano.set(Some(range))
+                }
+            }
+            EXEMPLAR_SPAN_ID => {
+                if wire_type == wire_types::LEN {
+                    self.span_id.set(Some(range))
+                }
+            }
+            EXEMPLAR_TRACE_ID => {
+                if wire_type == wire_types::LEN {
+                    self.trace_id.set(Some(range))
+                }
+            }
+            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT => {
+                if wire_type == wire_types::FIXED64 {
+                    self.value.set(Some((range, field_num)));
+                }
+            }
+            EXEMPLAR_FILTERED_ATTRIBUTES => {
+                if wire_type == wire_types::LEN && self.first_filtered_attribute.get().is_none() {
+                    self.first_filtered_attribute.set(Some(range))
+                }
+            }
+            _ => { /* ignore */ }
+        }
+    }
+}
+
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
 /// Iterator of ResourceMetrics - produces implementation of [`ResourceMetricsView`] from byte
@@ -438,7 +1162,7 @@ impl<'a> Iterator for MetricIter<'a> {
     }
 }
 
-/// Iterator of NumberDataPoint - produces implementation pof [`NumberDataPointView`] from byte
+/// Iterator of NumberDataPoint - produces implementation of [`NumberDataPointView`] from byte
 /// array containing a serialized metric data message
 pub struct NumberDataPointIter<'a, T: FieldRanges> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, T>,
@@ -453,6 +1177,95 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.byte_parser.next()?;
         Some(RawNumberDataPoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of HistogramDatapoint - produces implementation of [`HistogramDataPointView`]
+/// from byte array containing a serialized Histogram message
+pub struct HistogramDataPointIter<'a> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, HistogramFieldRanges>,
+}
+
+impl<'a> Iterator for HistogramDataPointIter<'a> {
+    type Item = RawHistogramDataPoint<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of HistogramDatapoint - produces implementation of
+/// [`ExponentialHistogramDataPointView`] from byte array containing a serialized
+/// ExponentialHistogram message
+pub struct ExpHistogramDataPointIter<'a> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, ExpHistogramFieldRanges>,
+}
+
+impl<'a> Iterator for ExpHistogramDataPointIter<'a> {
+    type Item = RawExpHistogramDatapoint<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawExpHistogramDatapoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of SummaryDataPoint - produces implementation of [`SummaryDataPointView`] from byte
+/// array containing a serialized Summary message
+pub struct SummaryDataPointIter<'a> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, SummaryFieldRanges>,
+}
+
+impl<'a> Iterator for SummaryDataPointIter<'a> {
+    type Item = RawSummaryDataPoint<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawSummaryDataPoint {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of ValueAtQuantile - produces implementation of [`ValueAtQuantileView`] from byte
+/// array containing a serialized SummaryDataPoint message
+pub struct ValueAtQuantileIter<'a> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, SummaryDataPointFieldRanges>,
+}
+
+impl<'a> Iterator for ValueAtQuantileIter<'a> {
+    type Item = RawValueAtQuantile<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawValueAtQuantile {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of Exemplars - produces implementation of [`ExemplarView`] from byte buffer containing
+/// proto serialized data point
+pub struct ExemplarIter<'a, T: FieldRanges> {
+    byte_parser: RepeatedFieldProtoBytesParser<'a, T>,
+}
+
+impl<'a, T> Iterator for ExemplarIter<'a, T>
+where
+    T: FieldRanges,
+{
+    type Item = RawExemplar<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.next()?;
+        Some(RawExemplar {
             byte_parser: ProtoBytesParser::new(slice),
         })
     }
@@ -618,38 +1431,28 @@ impl MetricView for RawMetric<'_> {
 }
 
 impl DataView<'_> for RawData<'_> {
-    // TODO all the use of the Obj implementations here are placeholders
-    type NumberDataPoint<'dp>
-        = ObjNumberDataPoint<'dp>
-    where
-        Self: 'dp;
-    type NumberDataPointIter<'dp>
-        = ObjNumberDataPointIter<'dp>
-    where
-        Self: 'dp;
-
     type Gauge<'gauge>
         = RawGauge<'gauge>
     where
         Self: 'gauge;
 
     type Sum<'sum>
-        = ObjSum<'sum>
+        = RawSum<'sum>
     where
         Self: 'sum;
 
     type Histogram<'histogram>
-        = ObjHistogram<'histogram>
+        = RawHistogram<'histogram>
     where
         Self: 'histogram;
 
     type ExponentialHistogram<'exp>
-        = ObjExponentialHistogram<'exp>
+        = RawExpHistogram<'exp>
     where
         Self: 'exp;
 
     type Summary<'summary>
-        = ObjSummary<'summary>
+        = RawSummary<'summary>
     where
         Self: 'summary;
 
@@ -675,23 +1478,27 @@ impl DataView<'_> for RawData<'_> {
     }
 
     fn as_sum(&self) -> Option<Self::Sum<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_SUM).then_some(RawSum {
+            byte_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 
     fn as_histogram(&self) -> Option<Self::Histogram<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_HISTOGRAM).then_some(RawHistogram {
+            byte_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_EXPONENTIAL_HISTOGRAM).then_some(RawExpHistogram {
+            byte_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 
     fn as_summary(&self) -> Option<Self::Summary<'_>> {
-        // TODO
-        None
+        (self.field_num == METRIC_SUMMARY).then_some(RawSummary {
+            byte_parser: ProtoBytesParser::new(self.buf),
+        })
     }
 }
 
@@ -717,6 +1524,135 @@ impl GaugeView for RawGauge<'_> {
     }
 }
 
+impl SumView for RawSum<'_> {
+    type NumberDataPoint<'dp>
+        = RawNumberDataPoint<'dp>
+    where
+        Self: 'dp;
+
+    type NumberDataPointIter<'dp>
+        = NumberDataPointIter<'dp, SumFieldRanges>
+    where
+        Self: 'dp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(SUM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn is_monotonic(&self) -> bool {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(SUM_IS_MONOTONIC)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        val != 0
+    }
+
+    fn data_points(&self) -> Self::NumberDataPointIter<'_> {
+        NumberDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                GAUGE_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
+    }
+}
+
+impl HistogramView for RawHistogram<'_> {
+    type HistogramDataPoint<'dp>
+        = RawHistogramDataPoint<'dp>
+    where
+        Self: 'dp;
+    type HistogramDataPointIter<'dp>
+        = HistogramDataPointIter<'dp>
+    where
+        Self: 'dp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn data_points(&self) -> Self::HistogramDataPointIter<'_> {
+        HistogramDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                HISTOGRAM_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
+    }
+}
+
+impl SummaryView for RawSummary<'_> {
+    type SummaryDataPoint<'dp>
+        = RawSummaryDataPoint<'dp>
+    where
+        Self: 'dp;
+    type SummaryDataPointIter<'dp>
+        = SummaryDataPointIter<'dp>
+    where
+        Self: 'dp;
+
+    fn data_points(&self) -> Self::SummaryDataPointIter<'_> {
+        SummaryDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                SUMMARY_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
+    }
+}
+
+impl ExponentialHistogramView for RawExpHistogram<'_> {
+    type ExponentialHistogramDataPoint<'edp>
+        = RawExpHistogramDatapoint<'edp>
+    where
+        Self: 'edp;
+    type ExponentialHistogramDataPointIter<'edp>
+        = ExpHistogramDataPointIter<'edp>
+    where
+        Self: 'edp;
+
+    fn aggregation_temporality(&self) -> AggregationTemporality {
+        let val = self
+            .byte_parser
+            .advance_to_find_field(EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val)
+            .unwrap_or_default();
+
+        AggregationTemporality::from(val as u32)
+    }
+
+    fn data_points(&self) -> Self::ExponentialHistogramDataPointIter<'_> {
+        ExpHistogramDataPointIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                EXPONENTIAL_HISTOGRAM_DATA_POINTS,
+                wire_types::LEN,
+            ),
+        }
+    }
+}
+
 impl NumberDataPointView for RawNumberDataPoint<'_> {
     type Attribute<'att>
         = RawKeyValue<'att>
@@ -728,14 +1664,12 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
     where
         Self: 'att;
 
-    // TODO using Obj Exemplars temporarily here until we've implemented an exemplar view
-    // backed by proto bytes
     type Exemplar<'ex>
-        = ObjExemplar<'ex>
+        = RawExemplar<'ex>
     where
         Self: 'ex;
     type ExemplarIter<'ex>
-        = ExemplarIter<'ex>
+        = ExemplarIter<'ex, NumberDataPointFieldRanges>
     where
         Self: 'ex;
 
@@ -786,8 +1720,13 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
     }
 
     fn exemplars(&self) -> Self::ExemplarIter<'_> {
-        // TODO exemplars
-        ExemplarIter::new([].iter())
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                NUMBER_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
     }
 
     fn flags(&self) -> DataPointFlags {
@@ -798,6 +1737,452 @@ impl NumberDataPointView for RawNumberDataPoint<'_> {
             .map(|(val, _)| val as u32);
 
         DataPointFlags::new(flags.unwrap_or_default())
+    }
+}
+
+impl HistogramDataPointView for RawHistogramDataPoint<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, HistogramDataPointFieldRanges>
+    where
+        Self: 'att;
+
+    type BucketCountIter<'bc>
+        = PackedFixed64Iter<'bc, u64>
+    where
+        Self: 'bc;
+
+    type ExplicitBoundsIter<'eb>
+        = PackedFixed64Iter<'eb, f64>
+    where
+        Self: 'eb;
+
+    type Exemplar<'ex>
+        = RawExemplar<'ex>
+    where
+        Self: 'ex;
+    type ExemplarIter<'ex>
+        = ExemplarIter<'ex, HistogramDataPointFieldRanges>
+    where
+        Self: 'ex;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            HISTOGRAM_DP_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
+        let buf = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_BUCKET_COUNTS)
+            .unwrap_or_default();
+        PackedFixed64Iter::new(buf)
+    }
+
+    fn count(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_COUNT)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn exemplars(&self) -> Self::ExemplarIter<'_> {
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                HISTOGRAM_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
+    }
+
+    fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
+        let buf = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_EXPLICIT_BOUNDS)
+            .unwrap_or_default();
+
+        PackedFixed64Iter::new(buf)
+    }
+
+    fn flags(&self) -> DataPointFlags {
+        let flags = self
+            .byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_FLAGS)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val as u32);
+
+        DataPointFlags::new(flags.unwrap_or_default())
+    }
+
+    fn max(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_MAX)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn min(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_MIN)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn start_time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_START_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn sum(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_SUM)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(HISTOGRAM_DP_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+}
+
+impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, ExpHistogramDataPointFieldRanges>
+    where
+        Self: 'att;
+
+    type Buckets<'b>
+        = RawBuckets<'b>
+    where
+        Self: 'b;
+
+    type Exemplar<'ex>
+        = RawExemplar<'ex>
+    where
+        Self: 'ex;
+    type ExemplarIter<'ex>
+        = ExemplarIter<'ex, ExpHistogramDataPointFieldRanges>
+    where
+        Self: 'ex;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            EXP_HISTOGRAM_DP_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn count(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_COUNT)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn exemplars(&self) -> Self::ExemplarIter<'_> {
+        ExemplarIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                EXP_HISTOGRAM_DP_EXEMPLARS,
+                wire_types::LEN,
+            ),
+        }
+    }
+
+    fn flags(&self) -> DataPointFlags {
+        let flags = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_FLAGS)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val as u32);
+
+        DataPointFlags::new(flags.unwrap_or_default())
+    }
+
+    fn max(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_MAX)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn min(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_MIN)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn negative(&self) -> Option<Self::Buckets<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_NEGATIVE)?;
+        Some(RawBuckets {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+
+    fn positive(&self) -> Option<Self::Buckets<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_POSITIVE)?;
+        Some(RawBuckets {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+
+    fn scale(&self) -> i32 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_SCALE)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| decode_sint32(val as i32))
+            .unwrap_or_default()
+    }
+
+    fn start_time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn sum(&self) -> Option<f64> {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_SUM)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn zero_count(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_ZERO_COUNT)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn zero_threshold(&self) -> f64 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_DP_ZERO_THRESHOLD)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+            .unwrap_or_default()
+    }
+}
+
+impl BucketsView for RawBuckets<'_> {
+    type BucketCountIter<'bc>
+        = PackedVarintIter<'bc>
+    where
+        Self: 'bc;
+
+    fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS)
+            .unwrap_or_default();
+        PackedVarintIter::new(slice)
+    }
+
+    fn offset(&self) -> i32 {
+        self.byte_parser
+            .advance_to_find_field(EXP_HISTOGRAM_BUCKET_OFFSET)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| decode_sint32(val as i32))
+            .unwrap_or_default()
+    }
+}
+
+impl SummaryDataPointView for RawSummaryDataPoint<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, SummaryDataPointFieldRanges>
+    where
+        Self: 'att;
+
+    type ValueAtQuantile<'vaq>
+        = RawValueAtQuantile<'vaq>
+    where
+        Self: 'vaq;
+
+    type ValueAtQuantileIter<'vaq>
+        = ValueAtQuantileIter<'vaq>
+    where
+        Self: 'vaq;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            SUMMARY_DP_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn count(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(SUMMARY_DP_COUNT)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn sum(&self) -> f64 {
+        self.byte_parser
+            .advance_to_find_field(SUMMARY_DP_SUM)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn quantile_values(&self) -> Self::ValueAtQuantileIter<'_> {
+        ValueAtQuantileIter {
+            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                &self.byte_parser,
+                SUMMARY_DP_QUANTILE_VALUES,
+                wire_types::LEN,
+            ),
+        }
+    }
+
+    fn start_time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(SUMMARY_DP_START_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(SUMMARY_DP_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn flags(&self) -> DataPointFlags {
+        let flags = self
+            .byte_parser
+            .advance_to_find_field(SUMMARY_DP_FLAGS)
+            .and_then(|slice| read_varint(slice, 0))
+            .map(|(val, _)| val as u32);
+
+        DataPointFlags::new(flags.unwrap_or_default())
+    }
+}
+
+impl ValueAtQuantileView for RawValueAtQuantile<'_> {
+    fn quantile(&self) -> f64 {
+        self.byte_parser
+            .advance_to_find_field(VALUE_AT_QUANTILE_QUANTILE)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn value(&self) -> f64 {
+        self.byte_parser
+            .advance_to_find_field(VALUE_AT_QUANTILE_VALUE)
+            .and_then(|slice| slice.try_into().ok())
+            .map(f64::from_le_bytes)
+            .unwrap_or_default()
+    }
+}
+
+impl ExemplarView for RawExemplar<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, ExemplarFieldRanges>
+    where
+        Self: 'att;
+
+    fn filtered_attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.byte_parser,
+            EXEMPLAR_FILTERED_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+    }
+
+    fn span_id(&self) -> Option<&SpanId> {
+        let slice = self.byte_parser.advance_to_find_field(EXEMPLAR_SPAN_ID);
+        slice.and_then(|slice| slice.try_into().ok())
+    }
+
+    fn time_unix_nano(&self) -> u64 {
+        self.byte_parser
+            .advance_to_find_field(EXEMPLAR_TIME_UNIX_NANO)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or_default()
+    }
+
+    fn trace_id(&self) -> Option<&TraceId> {
+        self.byte_parser
+            .advance_to_find_field(EXEMPLAR_TRACE_ID)
+            .and_then(|slice| slice.try_into().ok())
+    }
+
+    fn value(&self) -> Option<Value> {
+        let (slice, field_num) = self
+            .byte_parser
+            .advance_to_find_oneof(&[EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT])?;
+
+        match field_num {
+            EXEMPLAR_AS_DOUBLE => {
+                let double_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Double(f64::from_le_bytes(double_bytes)))
+            }
+            EXEMPLAR_AS_INT => {
+                let int_bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(Value::Integer(i64::from_le_bytes(int_bytes)))
+            }
+            _ => {
+                // this shouldn't happen, as advance_to_find_oneof should return one of the passed
+                // field_num, so just ignore it
+                None
+            }
+        }
     }
 }
 

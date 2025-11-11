@@ -6,7 +6,7 @@
 // TODO write documentation for this crate
 #![allow(missing_docs)]
 
-use arrow::array::{LargeListArray, RecordBatch};
+use arrow::array::{ListArray, RecordBatch};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
@@ -104,18 +104,18 @@ pub fn get_field_metadata<'a>(
     field_metadata.get(key).map(|s| s.as_str())
 }
 
-/// Make a `LargeListArray` into an array whose item field is not nullable.
+/// Make a `ListArray` into an array whose item field is not nullable.
 ///
 /// When you use `GenericListBuilder`, you'll get a list array where list elements are
-/// nullable. This is often not what we want, so this little function converts `LargeListArray`s
+/// nullable. This is often not what we want, so this little function converts `ListArray`s
 /// that don't have any nulls into an equivalent form whose item field type is not nullable. This
 /// function panics if the input contains any nulls at all.
 #[must_use]
-pub fn no_nulls(values: LargeListArray) -> LargeListArray {
+pub fn no_nulls(values: ListArray) -> ListArray {
     let (mut field, offsets, values, nulls) = values.into_parts();
     assert_eq!(0, nulls.map(|n| n.null_count()).unwrap_or(0));
     Arc::make_mut(&mut field).set_nullable(false);
-    LargeListArray::new(field, offsets, values, None)
+    ListArray::new(field, offsets, values, None)
 }
 
 /// Checks the Arrow schema field metadata to determine if the "id" field in this record batch is

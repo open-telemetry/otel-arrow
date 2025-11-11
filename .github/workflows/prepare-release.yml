@@ -71,24 +71,43 @@ jobs:
       - name: Dry run - Show planned changes
         if: inputs.dry_run
         run: |
-          echo "=== DRY RUN MODE - No changes will be made ==="
-          echo ""
-          echo "Planned changes:"
-          echo "- New version: ${{ inputs.version }}"
-          echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
-          echo "--------------------------------"
-          echo "Git diff:"
-          git diff
-          echo "--------------------------------"
-          echo "Unreleased content:"
-          cat /tmp/changelog_content_normalized.txt
-          echo "--------------------------------"
-          echo "Git operations that would occur:"
-          echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
-          echo "  - Commit version updates"
-          echo "  - Create pull request"
-          echo ""
-          echo "Note: After merging the PR, run the 'Push Release' workflow to create git tags and GitHub release"
+          # Write to GitHub Step Summary
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # :clipboard: Release Preparation Dry Run
+
+          ## Summary
+          **DRY RUN MODE** - No changes will be made to the repository
+
+          ## Planned Changes
+          - **New version**: `${{ inputs.version }}`
+          - **Last version**: `${{ steps.last_version.outputs.last_version }}`
+
+          ## Git Operations
+          - Create branch: `otelbot/release-v${{ inputs.version }}`
+          - Commit version updates
+          - Create pull request
+
+          ## File Changes
+          The following files would be modified:
+          - `CHANGELOG.md` - Add release notes for v${{ inputs.version }}
+          - `collector/otelarrowcol-build.yaml` - Update version to ${{ inputs.version }}
+          - `collector/cmd/otelarrowcol/main.go` - Update version to ${{ inputs.version }}
+
+          ## Release Notes Preview
+          ```
+          EOF
+          cat /tmp/changelog_content_normalized.txt >> $GITHUB_STEP_SUMMARY
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ```
+
+          ## Next Steps
+          1. Review the planned changes above
+          2. Run again without dry-run when ready
+          3. After merging the PR, run the **Push Release** workflow to create git tags and GitHub release
+
+          ---
+          **Note**: This is a dry run. To execute the actual release preparation, set `dry_run` to `false`.
+          EOF
 
       - name: Create GitHub App token
         if: '!inputs.dry_run'

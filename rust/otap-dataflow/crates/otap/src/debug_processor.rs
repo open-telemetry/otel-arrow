@@ -12,10 +12,7 @@ use self::config::{Config, DisplayMode, SignalActive, Verbosity};
 use self::metrics::DebugPdataMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use self::sampling::Sampler;
-use crate::{
-    OTAP_PROCESSOR_FACTORIES,
-    pdata::{OtapPdata, OtlpProtoBytes},
-};
+use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -30,6 +27,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
@@ -505,7 +503,7 @@ mod tests {
     };
     use crate::debug_processor::sampling::SamplingConfig;
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -513,6 +511,7 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},

@@ -530,13 +530,11 @@ mod payload_sets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use prost::Message as _;
-    use serde_json::json;
-
-    use otap_df_engine::context::ControllerContext;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -544,6 +542,8 @@ mod tests {
         resource::v1::Resource,
     };
     use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use prost::Message as _;
+    use serde_json::json;
 
     fn build_logs_with_attrs(
         res_attrs: Vec<KeyValue>,
@@ -991,12 +991,13 @@ mod tests {
 #[cfg(test)]
 mod telemetry_tests {
     use super::*;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_pdata::OtlpProtoBytes;
     use prost::Message as _;
     use serde_json::json;
 

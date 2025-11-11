@@ -1,7 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata::views::{
+//! This crate contains code that is used to encode OTAP data.
+
+pub mod producer;
+pub mod record;
+
+mod cbor;
+mod error;
+
+pub use error::{Error, Result};
+
+use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     metrics::{
@@ -15,7 +25,7 @@ use otap_df_pdata::views::{
         EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
     },
 };
-use otap_df_pdata::{
+use crate::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
         logs::LogsRecordBatchBuilder,
@@ -31,11 +41,6 @@ use otap_df_pdata::{
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
-
-use crate::encoder::error::{Error, Result};
-
-mod cbor;
-pub mod error;
 
 /// Traverse the trace structure within the TracesView and produces an `OtapArrowRecords' for the span
 /// data.
@@ -580,12 +585,13 @@ where
     exemplar.append_parent_id(*parent_id);
     exemplar.append_time_unix_nano(exemplar_view.time_unix_nano() as i64);
 
-    let double = exemplar_view.value().and_then(|v| v.as_double());
-    let integer = exemplar_view.value().and_then(|v| v.as_integer());
-    // FIXME: OTAP defines these fields as non-nullable, but the data is
-    // inherently nullable coming from OTLP....
-    exemplar.append_double_value(double.unwrap_or(0.));
-    exemplar.append_int_value(integer.unwrap_or(0));
+    let (double, integer) = match exemplar_view.value() {
+        Some(metrics::Value::Double(val)) => (Some(val), None),
+        Some(metrics::Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
+    exemplar.append_double_value(double);
+    exemplar.append_int_value(integer);
 
     exemplar.append_span_id(exemplar_view.span_id().unwrap_or(&[0; 8]))?;
     exemplar.append_trace_id(exemplar_view.trace_id().unwrap_or(&[0; 16]))?;
@@ -604,7 +610,7 @@ fn append_ehdp_bucket<View>(view: Option<&View>, builder: &mut BucketsRecordBatc
 where
     View: BucketsView,
 {
-    let buckets = view.map(|v| (v.offset(), v.bucket_counts().copied()));
+    let buckets = view.map(|v| (v.offset(), v.bucket_counts()));
     builder.append(buckets)
 }
 
@@ -839,8 +845,8 @@ where
                             hdp.append_start_time_unix_nano(hdp_view.start_time_unix_nano() as i64);
                             hdp.append_time_unix_nano(hdp_view.time_unix_nano() as i64);
                             hdp.append_count(hdp_view.count());
-                            hdp.append_bucket_counts(hdp_view.bucket_counts().copied());
-                            hdp.append_explicit_bounds(hdp_view.explicit_bounds().copied());
+                            hdp.append_bucket_counts(hdp_view.bucket_counts());
+                            hdp.append_explicit_bounds(hdp_view.explicit_bounds());
                             hdp.append_sum(hdp_view.sum());
                             hdp.append_flags(hdp_view.flags().into_inner());
                             hdp.append_min(hdp_view.min());
@@ -976,7 +982,7 @@ mod test {
     use arrow::array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
         DurationNanosecondArray, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array,
-        LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
+        ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
         StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::buffer::NullBuffer;
@@ -984,32 +990,32 @@ mod test {
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
 
-    use otap_df_pdata::otlp::ProtoBuffer;
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
-    use otap_df_pdata::otlp::attributes::cbor::proto_encode_cbor_bytes;
-    use otap_df_pdata::otlp::metrics::MetricType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use crate::otlp::ProtoBuffer;
+    use crate::otlp::attributes::AttributeValueType;
+    use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use crate::otlp::metrics::MetricType;
+    use crate::proto::opentelemetry::common::v1::{
         AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::SpanFlags;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::SpanFlags;
+    use crate::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
         span::{Event, Link, SpanKind},
         status::StatusCode,
     };
-    use otap_df_pdata::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-    use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
+    use crate::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
+    use crate::views::otlp::bytes::logs::RawLogsData;
+    use crate::views::otlp::bytes::traces::RawTraceData;
     use pretty_assertions::assert_eq;
     use prost::Message;
 
     #[test]
     fn test_metrics_round_trip() {
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        use crate::proto::opentelemetry::metrics::v1::{
             Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
             ScopeMetrics, Sum, Summary, SummaryDataPoint,
@@ -1614,15 +1620,15 @@ mod test {
         let ndpe = otap_batch.get(ArrowPayloadType::NumberDpExemplars).unwrap();
         let expected_ndpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -1648,9 +1654,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 11])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![234, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(234), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 22.5])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(22.5)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),
@@ -1733,8 +1739,8 @@ mod test {
         let sdp = otap_batch.get(ArrowPayloadType::SummaryDataPoints).unwrap();
         let expected_sdp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1749,7 +1755,7 @@ mod test {
                 Field::new("sum", DataType::Float64, false),
                 Field::new(
                     "quantile",
-                    DataType::LargeList(Arc::new(Field::new(
+                    DataType::List(Arc::new(Field::new(
                         "item",
                         DataType::Struct(Fields::from(vec![
                             Field::new("quantile", DataType::Float64, false),
@@ -1836,8 +1842,8 @@ mod test {
             .unwrap();
         let expected_hdp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1849,12 +1855,12 @@ mod test {
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
-                Field::new_large_list(
+                Field::new_list(
                     "bucket_counts",
                     Field::new_list_field(DataType::UInt64, false),
                     false,
                 ),
-                Field::new_large_list(
+                Field::new_list(
                     "explicit_bounds",
                     Field::new_list_field(DataType::Float64, false),
                     false,
@@ -1945,15 +1951,15 @@ mod test {
             .unwrap();
         let expected_hdpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -1979,9 +1985,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 678])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![235, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(235), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 235.])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(235.)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),
@@ -2058,8 +2064,8 @@ mod test {
             .unwrap();
         let expected_edp_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -2080,11 +2086,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
@@ -2096,11 +2098,7 @@ mod test {
                         Field::new("offset", DataType::Int32, false),
                         Field::new(
                             "bucket_counts",
-                            DataType::LargeList(Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
+                            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                             false,
                         ),
                     ])),
@@ -2200,15 +2198,15 @@ mod test {
             .unwrap();
         let expected_edpe_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, false),
-                Field::new("parent_id", DataType::UInt32, false),
+                Field::new("id", DataType::UInt32, false).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
-                Field::new("int_value", DataType::Int64, false),
-                Field::new("double_value", DataType::Float64, false),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
                 Field::new(
                     "span_id",
                     DataType::Dictionary(
@@ -2234,9 +2232,9 @@ mod test {
                 // time_unix_nano
                 Arc::new(TimestampNanosecondArray::from(vec![678, 678])),
                 // int_value
-                Arc::new(Int64Array::from_iter(vec![235, 0])),
+                Arc::new(Int64Array::from_iter(vec![Some(235), None])),
                 // double_value
-                Arc::new(Float64Array::from_iter(vec![0.0, 235.])),
+                Arc::new(Float64Array::from_iter(vec![None, Some(235.)])),
                 // span_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0, 0]),
@@ -2314,8 +2312,8 @@ mod test {
     fn make_bucket(offset_counts: Option<(i32, &[u64])>) -> Arc<dyn Array> {
         let (offset, counts) = offset_counts.unwrap_or((0, &[]));
         let offset = Int32Array::from_value(offset, 1);
-        let mut counts_builder: LargeListBuilder<PrimitiveBuilder<UInt64Type>> =
-            LargeListBuilder::new(PrimitiveBuilder::new());
+        let mut counts_builder: ListBuilder<PrimitiveBuilder<UInt64Type>> =
+            ListBuilder::new(PrimitiveBuilder::new());
         counts_builder.append_value(counts.iter().copied().map(Some));
 
         Arc::new(StructArray::new(
@@ -2323,7 +2321,7 @@ mod test {
                 Field::new("offset", DataType::Int32, false),
                 Field::new(
                     "bucket_counts",
-                    DataType::LargeList(Arc::new(Field::new("item", DataType::UInt64, false))),
+                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
                     false,
                 ),
             ]),
@@ -2339,16 +2337,16 @@ mod test {
     where
         ArrowType: ArrowPrimitiveType,
     {
-        let mut builder: LargeListBuilder<PrimitiveBuilder<ArrowType>> =
-            LargeListBuilder::new(PrimitiveBuilder::new());
+        let mut builder: ListBuilder<PrimitiveBuilder<ArrowType>> =
+            ListBuilder::new(PrimitiveBuilder::new());
         builder.append_value(data.iter().copied().map(Some));
         Arc::new(no_nulls(builder.finish()))
     }
 
     /// A tiny helper function to deal with the messiness of ListOf(StructOf()) construction; it
     /// generates a single list.
-    fn make_quantile_value_list(quantiles: &[f64], values: &[f64]) -> LargeListArray {
-        let mut lists = LargeListBuilder::new(StructBuilder::from_fields(
+    fn make_quantile_value_list(quantiles: &[f64], values: &[f64]) -> ListArray {
+        let mut lists = ListBuilder::new(StructBuilder::from_fields(
             vec![
                 Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
                 Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
@@ -3861,14 +3859,12 @@ mod test {
 
     #[test]
     fn test_encode_logs_batch_length_counts_rows() {
-        use otap_df_pdata::otap::OtapArrowRecords;
-        use otap_df_pdata::proto::opentelemetry::common::v1::{
-            AnyValue, InstrumentationScope, KeyValue,
-        };
-        use otap_df_pdata::proto::opentelemetry::logs::v1::{
+        use crate::otap::OtapArrowRecords;
+        use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+        use crate::proto::opentelemetry::logs::v1::{
             LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
         };
-        use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+        use crate::proto::opentelemetry::resource::v1::Resource;
 
         // Build logs with at least one attribute per record so log ids are set
         let logs: Vec<LogRecord> = (0..3)

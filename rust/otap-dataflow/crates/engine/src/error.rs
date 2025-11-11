@@ -377,6 +377,23 @@ pub enum Error {
     /// Too many nodes are configured.
     #[error("Too many nodes defined")]
     TooManyNodes {},
+
+    /// Error in pipeline data (e.g., translation)
+    /// Note: this is not a specific type such as otap_df_pdata::error::Error
+    /// because this crate does not specifically depend on that crate.  We
+    /// could use a dyn Error, maybe.
+    #[error("Pipeline data error: {}", reason)]
+    PDataError {
+        /// otap_df_pdata error string
+        reason: String,
+    },
+
+    /// Error from the prost encoder.
+    #[error("Prost encode error: {}", reason)]
+    ProtoEncodeError {
+        /// Prost error string
+        reason: String,
+    },
 }
 
 impl Error {
@@ -384,31 +401,33 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
-            Error::ConfigError(_) => "ConfigError",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
-            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
-            Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
-            Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
-            Error::IoError { .. } => "IoError",
-            Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
-            Error::ReceiverError { .. } => "ReceiverError",
-            Error::UnknownReceiver { .. } => "UnknownReceiver",
-            Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
-            Error::ProcessorError { .. } => "ProcessorError",
-            Error::UnknownProcessor { .. } => "UnknownProcessor",
+            Error::ConfigError(_) => "ConfigError",
             Error::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
             Error::ExporterError { .. } => "ExporterError",
+            Error::InternalError { .. } => "InternalError",
+            Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
+            Error::IoError { .. } => "IoError",
+            Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
+            Error::PDataError { .. } => "PDataError",
             Error::PdataConversionError { .. } => "PdataConversionError",
-            Error::UnknownExporter { .. } => "UnknownExporter",
-            Error::UnknownNode { .. } => "UnknownNode",
             Error::PdataReceiverNotSupported => "PdataReceiverNotSupported",
             Error::PdataSenderNotSupported => "PdataSenderNotSupported",
+            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+            Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
+            Error::ProcessorError { .. } => "ProcessorError",
+            Error::ProtoEncodeError { .. } => "ProtoEncodeError",
+            Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
+            Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
-            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
-            Error::JoinTaskError { .. } => "JoinTaskError",
-            Error::InternalError { .. } => "InternalError",
             Error::TooManyNodes {} => "TooManyNodes",
+            Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::UnknownNode { .. } => "UnknownNode",
+            Error::UnknownProcessor { .. } => "UnknownProcessor",
+            Error::UnknownReceiver { .. } => "UnknownReceiver",
+            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
         }
         .to_owned()
     }
@@ -459,5 +478,21 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
             message: err.to_string(),
             source: None,
         },
+    }
+}
+
+impl From<prost::EncodeError> for Error {
+    fn from(e: prost::EncodeError) -> Self {
+        Self::ProtoEncodeError {
+            reason: e.to_string(),
+        }
+    }
+}
+
+impl From<otap_df_pdata::error::Error> for Error {
+    fn from(e: otap_df_pdata::error::Error) -> Self {
+        Self::PDataError {
+            reason: e.to_string(),
+        }
     }
 }

@@ -228,7 +228,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         // TODO(#1098): Note context is dropped.
                         let message: OtapArrowRecords = payload
                             .try_into()
-                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))
+                            ?;
 
                         _ = match signal_type {
                             SignalType::Logs => logs_sender.send(message).await,

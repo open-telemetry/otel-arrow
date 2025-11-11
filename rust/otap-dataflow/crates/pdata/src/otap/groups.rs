@@ -752,7 +752,7 @@ fn split_metric_batches<const N: usize>(
             // child batches. The child batches have a PARENT_ID column linking back to the metric.
             // We partition by metric_id to keep each metric's data points together, but we need
             // to know how many data points each metric has to respect max_output_batch limits.
-            
+
             // Step 1: Build child_counts[metric_id] = number of data points for this metric
             // This tells us how "expensive" each metric is in terms of batch_length.
             // We iterate through all data point type batches (NumberDataPoints, HistogramDataPoints,
@@ -810,7 +810,7 @@ fn split_metric_batches<const N: usize>(
                     // So (cum_child_count - last_cumulative_child_count) = data points in current chunk
                     cum_child_count < last_cumulative_child_count + max_output_batch as u64
                 });
-                
+
                 // Update for next iteration: track total data points consumed so far
                 last_cumulative_child_count = cumulative_child_counts
                     .get(candidate_index)
@@ -821,11 +821,11 @@ fn split_metric_batches<const N: usize>(
                             .copied()
                             .expect("non-empty list"),
                     );
-                
+
                 // The ending_index for this chunk is candidate_index + 1 (exclusive end)
                 // because partition_point returns the first index that's TOO BIG
                 let ending_index = (candidate_index + 1).min(metric_length);
-                
+
                 // We should always make forward progress
                 assert!(ending_index > starting_index || ending_index >= metric_length - 1);
 
@@ -835,14 +835,14 @@ fn split_metric_batches<const N: usize>(
                 //   - A subset of metric rows (the metadata)
                 //   - All data points (from child batches) that reference those metrics
                 result.push((batch_index, starting_index..ending_index));
-                
+
                 if ending_index >= metric_length {
                     // We've consumed all metrics in this input batch
                     break;
                 }
                 starting_index = ending_index;
             }
-            
+
             // After splitting this large batch, reset batch_size_remaining for next input batch
             // (Each split chunk was sized to ≤ max_output_batch, so we start fresh)
             batch_size_remaining = max_output_batch;
@@ -3298,22 +3298,22 @@ mod test {
 
     #[test]
     fn test_split_metrics_with_varying_datapoint_counts_otlp() {
+        use crate::otap::batching::make_output_batches;
         use crate::proto::opentelemetry::{
             collector::metrics::v1::ExportMetricsServiceRequest,
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             metrics::v1::{
-                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-                Sum, metric::Data, number_data_point::Value,
+                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric::Data,
+                number_data_point::Value,
             },
             resource::v1::Resource,
         };
         use crate::views::otlp::bytes::metrics::RawMetricsData;
-        use crate::otap::batching::make_output_batches;
         use prost::Message as ProstMessage;
 
         // Create OTLP metrics message with:
         // - metric1 (Gauge): 3 data points
-        // - metric2 (Sum): 4 data points  
+        // - metric2 (Sum): 4 data points
         // - metric3 (Gauge): 2 data points
         // Total: 9 data points across 3 metrics
 
@@ -3338,19 +3338,28 @@ mod test {
                             data: Some(Data::Gauge(Gauge {
                                 data_points: vec![
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("a"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("a"),
+                                        )],
                                         time_unix_nano: 1000,
                                         value: Some(Value::AsDouble(1.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("b"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("b"),
+                                        )],
                                         time_unix_nano: 2000,
                                         value: Some(Value::AsDouble(2.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("c"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("c"),
+                                        )],
                                         time_unix_nano: 3000,
                                         value: Some(Value::AsDouble(3.0)),
                                         ..Default::default()
@@ -3367,25 +3376,37 @@ mod test {
                             data: Some(Data::Sum(Sum {
                                 data_points: vec![
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("d"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("d"),
+                                        )],
                                         time_unix_nano: 4000,
                                         value: Some(Value::AsDouble(4.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("e"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("e"),
+                                        )],
                                         time_unix_nano: 5000,
                                         value: Some(Value::AsDouble(5.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("f"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("f"),
+                                        )],
                                         time_unix_nano: 6000,
                                         value: Some(Value::AsDouble(6.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("g"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("g"),
+                                        )],
                                         time_unix_nano: 7000,
                                         value: Some(Value::AsDouble(7.0)),
                                         ..Default::default()
@@ -3404,13 +3425,19 @@ mod test {
                             data: Some(Data::Gauge(Gauge {
                                 data_points: vec![
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("h"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("h"),
+                                        )],
                                         time_unix_nano: 8000,
                                         value: Some(Value::AsDouble(8.0)),
                                         ..Default::default()
                                     },
                                     NumberDataPoint {
-                                        attributes: vec![KeyValue::new("label", AnyValue::new_string("i"))],
+                                        attributes: vec![KeyValue::new(
+                                            "label",
+                                            AnyValue::new_string("i"),
+                                        )],
                                         time_unix_nano: 9000,
                                         value: Some(Value::AsDouble(9.0)),
                                         ..Default::default()
@@ -3427,18 +3454,23 @@ mod test {
 
         // Encode OTLP to protobuf bytes
         let mut otlp_bytes = Vec::new();
-        otlp_request.encode(&mut otlp_bytes).expect("Failed to encode OTLP request");
+        otlp_request
+            .encode(&mut otlp_bytes)
+            .expect("Failed to encode OTLP request");
 
         // Convert OTLP bytes to OTAP using views mechanism
         let metrics_data_view = RawMetricsData::new(&otlp_bytes);
-        let otap_batch = crate::encoder::encode_metrics_otap_batch(&metrics_data_view)
+        let otap_batch = crate::encode::encode_metrics_otap_batch(&metrics_data_view)
             .expect("Failed to convert OTLP to OTAP");
 
-        println!("\nOriginal OTAP batch length: {}", otap_batch.batch_length());
+        println!(
+            "\nOriginal OTAP batch length: {}",
+            otap_batch.batch_length()
+        );
 
         // Split with max_output_batch = 5
         // With datapoint counts [3, 4, 2], we expect splitting to occur
-        let result = make_output_batches(NonZeroU64::new(5), vec![otap_batch])
+        let result = make_output_batches(SignalType::Metrics, vec![otap_batch], NonZeroU64::new(5))
             .expect("make_output_batches failed");
 
         println!("Number of output batches: {}", result.len());
@@ -3448,7 +3480,10 @@ mod test {
         }
 
         // Verify we got multiple batches (split occurred)
-        assert!(result.len() > 1, "Expected split to occur with max=5 and datapoint counts [3, 4, 2]");
+        assert!(
+            result.len() > 1,
+            "Expected split to occur with max=5 and datapoint counts [3, 4, 2]"
+        );
 
         // Verify total count is preserved (3 + 4 + 2 = 9 datapoints)
         let total_rows: usize = result.iter().map(|b| b.batch_length()).sum();

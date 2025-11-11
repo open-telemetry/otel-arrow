@@ -7,8 +7,7 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        Array, LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StructArray,
-        StructBuilder,
+        Array, ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StructArray, StructBuilder,
     },
     datatypes::{DataType, Field, Fields, Float64Type, Schema, UInt64Type},
     error::ArrowError,
@@ -514,13 +513,21 @@ impl ExemplarsRecordBatchBuilder {
     }
 
     /// Append a value to the `int_value` array.
-    pub fn append_int_value(&mut self, val: i64) {
-        self.int_value.append_value(&val);
+    pub fn append_int_value(&mut self, val: Option<i64>) {
+        if let Some(val) = val {
+            self.int_value.append_value(&val);
+        } else {
+            self.int_value.append_null();
+        }
     }
 
     /// Append a value to the `double_value` array.
-    pub fn append_double_value(&mut self, val: f64) {
-        self.double_value.append_value(&val);
+    pub fn append_double_value(&mut self, val: Option<f64>) {
+        if let Some(val) = val {
+            self.double_value.append_value(&val);
+        } else {
+            self.double_value.append_null();
+        }
     }
 
     /// Append a value to the `span_id` array.
@@ -539,7 +546,9 @@ impl ExemplarsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(7);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -549,11 +558,9 @@ impl ExemplarsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.time_unix_nano.finish() {
@@ -569,7 +576,7 @@ impl ExemplarsRecordBatchBuilder {
             fields.push(Field::new(
                 consts::INT_VALUE,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -578,7 +585,7 @@ impl ExemplarsRecordBatchBuilder {
             fields.push(Field::new(
                 consts::DOUBLE_VALUE,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -609,7 +616,7 @@ impl ExemplarsRecordBatchBuilder {
 ///
 /// Ultimately, what we want is a ListOf(StructOf(quantile, value)).
 pub struct QuantileRecordBatchBuilder {
-    lists: LargeListBuilder<StructBuilder>,
+    lists: ListBuilder<StructBuilder>,
 }
 
 impl QuantileRecordBatchBuilder {
@@ -617,7 +624,7 @@ impl QuantileRecordBatchBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            lists: LargeListBuilder::new(StructBuilder::from_fields(
+            lists: ListBuilder::new(StructBuilder::from_fields(
                 vec![
                     Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
                     Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
@@ -669,7 +676,7 @@ impl QuantileRecordBatchBuilder {
     }
 
     /// Construct an OTAP Quantile `StructArray` from the builders.
-    pub fn finish(&mut self) -> Option<LargeListArray> {
+    pub fn finish(&mut self) -> Option<ListArray> {
         let array = self.lists.finish();
         (!array.is_empty()).then_some(array)
     }
@@ -774,7 +781,9 @@ impl SummaryDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(8);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -784,11 +793,9 @@ impl SummaryDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {
@@ -852,8 +859,8 @@ pub struct HistogramDataPointsRecordBatchBuilder {
     start_time_unix_nano: TimestampNanosecondArrayBuilder,
     time_unix_nano: TimestampNanosecondArrayBuilder,
     count: UInt64ArrayBuilder,
-    bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
-    explicit_bounds: LargeListBuilder<PrimitiveBuilder<Float64Type>>,
+    bucket_counts: ListBuilder<PrimitiveBuilder<UInt64Type>>,
+    explicit_bounds: ListBuilder<PrimitiveBuilder<Float64Type>>,
     sum: Float64ArrayBuilder,
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
@@ -890,8 +897,8 @@ impl HistogramDataPointsRecordBatchBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            bucket_counts: LargeListBuilder::new(PrimitiveBuilder::new()),
-            explicit_bounds: LargeListBuilder::new(PrimitiveBuilder::new()),
+            bucket_counts: ListBuilder::new(PrimitiveBuilder::new()),
+            explicit_bounds: ListBuilder::new(PrimitiveBuilder::new()),
             sum: Float64ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
@@ -985,7 +992,9 @@ impl HistogramDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(11);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -995,11 +1004,9 @@ impl HistogramDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {
@@ -1031,7 +1038,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         let array = no_nulls(self.bucket_counts.finish());
         if !array.is_empty() {
-            fields.push(Field::new_large_list(
+            fields.push(Field::new_list(
                 consts::HISTOGRAM_BUCKET_COUNTS,
                 Field::new_list_field(DataType::UInt64, false),
                 false,
@@ -1041,7 +1048,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         let array = no_nulls(self.explicit_bounds.finish());
         if !array.is_empty() {
-            fields.push(Field::new_large_list(
+            fields.push(Field::new_list(
                 consts::HISTOGRAM_EXPLICIT_BOUNDS,
                 Field::new("item", DataType::Float64, false),
                 false,
@@ -1250,7 +1257,9 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         let mut columns = Vec::with_capacity(13);
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), false));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -1260,11 +1269,9 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         if let Some(array) = self.start_time_unix_nano.finish() {
@@ -1382,7 +1389,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 /// offset of zero and an empty counts slice.
 pub struct BucketsRecordBatchBuilder {
     offset: Int32ArrayBuilder,
-    bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
+    bucket_counts: ListBuilder<PrimitiveBuilder<UInt64Type>>,
 }
 
 impl BucketsRecordBatchBuilder {
@@ -1395,7 +1402,7 @@ impl BucketsRecordBatchBuilder {
                 dictionary_options: None,
                 default_values_optional: false,
             }),
-            bucket_counts: LargeListBuilder::new(PrimitiveBuilder::new()),
+            bucket_counts: ListBuilder::new(PrimitiveBuilder::new()),
         }
     }
 

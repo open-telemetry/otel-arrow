@@ -171,16 +171,6 @@ impl From<&proto::metric::Data> for DataType {
 
 /// View for Data
 pub trait DataView<'val> {
-    /// The `NumberDataPointView` type associated with this implementation.
-    type NumberDataPoint<'dp>: NumberDataPointView
-    where
-        Self: 'dp;
-
-    /// An iterator type that yields instances of Self::NumberDataPoint.
-    type NumberDataPointIter<'dp>: Iterator<Item = Self::NumberDataPoint<'dp>>
-    where
-        Self: 'dp;
-
     /// A type that wraps references to `Gauge`
     type Gauge<'gauge>: GaugeView
     where
@@ -513,6 +503,16 @@ impl From<proto::AggregationTemporality> for AggregationTemporality {
     }
 }
 
+impl From<u32> for AggregationTemporality {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => AggregationTemporality::Delta,
+            2 => AggregationTemporality::Cumulative,
+            _ => AggregationTemporality::Unspecified,
+        }
+    }
+}
+
 /// View for Histogram
 pub trait HistogramView {
     /// The `HistogramDataPointView` type associated with this implementation.
@@ -545,12 +545,12 @@ pub trait HistogramDataPointView {
         Self: 'att;
 
     /// Iterator type for yielding bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 
     /// Iterator type for yielding explicit bounds.
-    type ExplicitBoundsIter<'eb>: Iterator<Item = &'eb f64>
+    type ExplicitBoundsIter<'eb>: Iterator<Item = f64>
     where
         Self: 'eb;
 
@@ -693,7 +693,7 @@ pub trait ExponentialHistogramDataPointView {
 /// View for Bucket
 pub trait BucketsView {
     /// Iterator type for bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 
