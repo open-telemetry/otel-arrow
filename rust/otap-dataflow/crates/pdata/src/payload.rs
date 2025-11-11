@@ -462,12 +462,16 @@ mod test {
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
-            OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
         };
 
         let result = ExportMetricsServiceRequest::decode(bytes.as_ref()).unwrap();
         assert_eq!(otlp_service_request, result);
+
+        // check that we can also re-decode the proto bytes that we encode, directly into
+        // OTAP and if we read it back we get the same result
+
     }
 
     #[test]
