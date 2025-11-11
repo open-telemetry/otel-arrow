@@ -84,7 +84,7 @@ pub struct Quota {
 }
 
 /// Defines how CPU cores should be allocated for pipeline execution.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreAllocation {
     /// Use all available CPU cores.

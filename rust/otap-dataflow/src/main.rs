@@ -197,3 +197,25 @@ Configuration files can be found in the configs/ directory.{}",
         debug_warning
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_core_range_ok() {
+        assert_eq!(parse_core_id_range("0..=4"), Ok(CoreAllocation::CoreRange { start: 0, end: 4 }));
+        assert_eq!(parse_core_id_range("0..4"), Ok(CoreAllocation::CoreRange { start: 0, end: 4 }));
+        assert_eq!(parse_core_id_range("0-4"), Ok(CoreAllocation::CoreRange { start: 0, end: 4 }));
+    }
+
+    #[test]
+    fn parse_core_range_missing_start() {
+        assert_eq!(parse_core_id_range(""), Err("invalid start (expected unsigned integer)".to_string()));
+        assert_eq!(parse_core_id_range("a..4"), Err("invalid start (expected unsigned integer)".to_string()));
+        assert_eq!(parse_core_id_range("-1..4"), Err("invalid start (expected unsigned integer)".to_string()));
+        assert_eq!(parse_core_id_range("1.."), Err("invalid end (expected unsigned integer)".to_string()));
+        assert_eq!(parse_core_id_range("1..a"), Err("invalid end (expected unsigned integer)".to_string()));
+        assert_eq!(parse_core_id_range("1..2a"), Err("invalid end (expected unsigned integer)".to_string()));
+    }
+}
