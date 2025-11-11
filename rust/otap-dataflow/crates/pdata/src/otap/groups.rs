@@ -832,9 +832,16 @@ fn split_metric_batches<const N: usize>(
                     cum_child_count < last_cumulative_child_count + max_output_batch as u64
                 });
 
+                // The ending_index for this chunk is candidate_index (exclusive end).
+                // partition_point returns the first index where the predicate is FALSE,
+                // meaning candidate_index is the first metric that would exceed our budget.
+                // So we take metrics [starting_index..candidate_index), which includes all
+                // metrics up to but NOT including candidate_index.
+                let ending_index = candidate_index.max(starting_index + 1).min(metric_length);
+
                 // Update for next iteration: track total data points consumed so far
                 last_cumulative_child_count = cumulative_child_counts
-                    .get(candidate_index)
+                    .get(ending_index - 1)
                     .copied()
                     .unwrap_or(
                         cumulative_child_counts
@@ -843,12 +850,8 @@ fn split_metric_batches<const N: usize>(
                             .expect("non-empty list"),
                     );
 
-                // The ending_index for this chunk is candidate_index + 1 (exclusive end)
-                // because partition_point returns the first index that's TOO BIG
-                let ending_index = (candidate_index + 1).min(metric_length);
-
                 // We should always make forward progress
-                assert!(ending_index > starting_index || ending_index >= metric_length - 1);
+                assert!(ending_index > starting_index);
 
                 // Emit this range of metrics from the current batch
                 // NOTE: We're splitting ONE input batch into multiple output ranges
