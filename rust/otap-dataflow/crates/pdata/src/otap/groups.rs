@@ -408,9 +408,12 @@ fn generic_split_helper<const N: usize>(
 }
 
 /// I'm a convenient wrapper for dealing with ID and PARENT_ID columns in generic code.
+/// Handles both plain arrays (borrowed) and dictionary-encoded arrays (decoded and owned).
 enum IDColumn<'rb> {
     U16(&'rb UInt16Array),
     U32(&'rb UInt32Array),
+    U16Owned(Arc<UInt16Array>),
+    U32Owned(Arc<UInt32Array>),
 }
 
 impl<'rb> IDColumn<'rb> {
@@ -421,7 +424,29 @@ impl<'rb> IDColumn<'rb> {
                 name: column_name.into(),
             })?;
 
-        Self::from_array(column_name, id)
+        // Handle dictionary-encoded columns by decoding them
+        match id.data_type() {
+            DataType::Dictionary(_key_type, value_type) => {
+                let decoded =
+                    cast(id.as_ref(), value_type).map_err(|e| Error::Batching { source: e })?;
+                Self::from_decoded_array(column_name, decoded)
+            }
+            _ => Self::from_array(column_name, id),
+        }
+    }
+
+    fn from_decoded_array(column_name: &'static str, array: ArrayRef) -> Result<IDColumn<'rb>> {
+        if let Some(array) = array.as_any().downcast_ref::<UInt16Array>() {
+            return Ok(Self::U16Owned(Arc::new(array.clone())));
+        }
+        if let Some(array) = array.as_any().downcast_ref::<UInt32Array>() {
+            return Ok(Self::U32Owned(Arc::new(array.clone())));
+        }
+        Err(Error::ColumnDataTypeMismatch {
+            name: column_name.into(),
+            expect: DataType::UInt16,
+            actual: array.data_type().clone(),
+        })
     }
 
     fn from_array(column_name: &'static str, id: &'rb dyn Array) -> Result<IDColumn<'rb>> {
@@ -466,6 +491,8 @@ impl IDSeqs {
         match ids {
             IDColumn::U16(array) => Self::from_generic_array(array, lengths),
             IDColumn::U32(array) => Self::from_generic_array(array, lengths),
+            IDColumn::U16Owned(array) => Self::from_generic_array(array.as_ref(), lengths),
+            IDColumn::U32Owned(array) => Self::from_generic_array(array.as_ref(), lengths),
         }
     }
 
@@ -545,33 +572,21 @@ impl IDSeqs {
             .map(|rb| IDColumn::extract(rb, column_name))
             .collect();
         let ids = ids?;
-        let concatenated_array = match ids.first().expect("there should be at least one input") {
-            IDColumn::U16(_) => {
-                let mut refs = Vec::with_capacity(lengths.len());
-                for id in ids {
-                    if let IDColumn::U16(next_array) = id {
-                        let next_array: &dyn Array = next_array;
-                        refs.push(next_array);
-                    } else {
-                        panic!();
-                    }
-                }
-                arrow::compute::concat(&refs)
-            }
-            IDColumn::U32(_) => {
-                let mut refs = Vec::with_capacity(lengths.len());
-                for id in ids {
-                    if let IDColumn::U32(next_array) = id {
-                        let next_array: &dyn Array = next_array;
-                        refs.push(next_array);
-                    } else {
-                        panic!();
-                    }
-                }
-                arrow::compute::concat(&refs)
-            }
-        }
-        .map_err(|e| Error::Batching { source: e })?;
+
+        // Build array references for concatenation
+        // We need to keep owned Arcs alive, so collect refs in a way that works for both
+        let refs: Vec<&dyn Array> = ids
+            .iter()
+            .map(|id| match id {
+                IDColumn::U16(arr) => *arr as &dyn Array,
+                IDColumn::U32(arr) => *arr as &dyn Array,
+                IDColumn::U16Owned(arr) => arr.as_ref() as &dyn Array,
+                IDColumn::U32Owned(arr) => arr.as_ref() as &dyn Array,
+            })
+            .collect();
+
+        let concatenated_array =
+            arrow::compute::concat(&refs).map_err(|e| Error::Batching { source: e })?;
 
         let ids = IDColumn::from_array(column_name, &concatenated_array)?;
         Ok(Self::from_col(ids, &lengths))
@@ -583,11 +598,17 @@ impl IDSeqs {
             (IDSeqs::RangeU16(id_ranges), IDColumn::U16(parent_ids)) => {
                 Self::generic_split_child_record_batch(id_ranges, parent_ids, input)
             }
+            (IDSeqs::RangeU16(id_ranges), IDColumn::U16Owned(parent_ids)) => {
+                Self::generic_split_child_record_batch(id_ranges, parent_ids.as_ref(), input)
+            }
             (IDSeqs::RangeU32(id_ranges), IDColumn::U32(parent_ids)) => {
                 Self::generic_split_child_record_batch(id_ranges, parent_ids, input)
             }
+            (IDSeqs::RangeU32(id_ranges), IDColumn::U32Owned(parent_ids)) => {
+                Self::generic_split_child_record_batch(id_ranges, parent_ids.as_ref(), input)
+            }
             _ => {
-                panic!();
+                panic!("Mismatched ID column types in split_child_record_batch");
             }
         })
     }
@@ -1083,24 +1104,52 @@ fn reindex_record_batch(
         return Ok((rb, 0));
     }
 
-    let id = IDColumn::extract(&rb, column_name)?;
+    // Decompose the RecordBatch first
+    let (schema, mut columns, _len) = rb.into_parts();
+
+    let column_index = schema
+        .fields
+        .find(column_name)
+        .expect("column should exist")
+        .0;
+    let original_data_type = schema.fields()[column_index].data_type().clone();
+    let was_dictionary = matches!(original_data_type, DataType::Dictionary(_, _));
+
+    // Extract ID column from the column array (decodes dictionaries if present)
+    let id_array = &columns[column_index];
+    let id_array_decoded = if was_dictionary {
+        if let DataType::Dictionary(_key_type, value_type) = id_array.data_type() {
+            cast(id_array.as_ref(), value_type).map_err(|e| Error::Batching { source: e })?
+        } else {
+            id_array.clone()
+        }
+    } else {
+        id_array.clone()
+    };
+
+    let id = IDColumn::from_array(column_name, id_array_decoded.as_ref())?;
 
     let maybe_new_ids = match id {
         IDColumn::U16(array) => IDRange::<u16>::reindex_column(array, next_starting_id)?,
         IDColumn::U32(array) => IDRange::<u32>::reindex_column(array, next_starting_id)?,
+        IDColumn::U16Owned(array) => {
+            IDRange::<u16>::reindex_column(array.as_ref(), next_starting_id)?
+        }
+        IDColumn::U32Owned(array) => {
+            IDRange::<u32>::reindex_column(array.as_ref(), next_starting_id)?
+        }
     };
 
-    // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
-    // `RecordBatch` without taking it apart entirely and then putting it back together.
-    let (schema, mut columns, _len) = rb.into_parts();
-
     if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
-        let column_index = schema
-            .fields
-            .find(column_name)
-            .expect("we already extracted this column")
-            .0;
-        columns[column_index] = new_id_array;
+        // If original was dictionary-encoded, re-encode the new array as dictionary
+        let final_array = if was_dictionary {
+            cast(new_id_array.as_ref(), &original_data_type)
+                .map_err(|e| Error::Batching { source: e })?
+        } else {
+            new_id_array
+        };
+
+        columns[column_index] = final_array;
         next_starting_id = new_next_starting_id;
     }
 
