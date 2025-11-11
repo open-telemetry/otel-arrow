@@ -20,8 +20,7 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
-use futures::future::poll_fn;
-use futures::stream;
+use futures::future::{LocalBoxFuture, poll_fn};
 use h2::server::{self, SendResponse};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
 use linkme::distributed_slice;
@@ -608,11 +607,11 @@ fn stream_batch_statuses<S, T, F>(
     ack_registry: Option<AckRegistry>,
     otap_batch: F,
     max_in_flight_per_connection: usize,
-) -> Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + 'static>>
+) -> ArrowBatchStatusStream<S, T, F>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
     let state = ArrowBatchStreamState::new(
         input_stream,
@@ -621,19 +620,104 @@ where
         otap_batch,
         max_in_flight_per_connection,
     );
-    Box::pin(stream::unfold(state, |mut state| async move {
-        match state.next_item().await {
-            StreamStep::Yield(item) => Some((item, state)),
-            StreamStep::Done => None,
+    ArrowBatchStatusStream::new(state)
+}
+
+struct ArrowBatchStatusStream<S, T, F>
+where
+    S: ArrowRequestStream + Unpin,
+    T: OtapBatchStore + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
+{
+    state: Option<ArrowBatchStreamState<S, T, F>>,
+    pending: Option<LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)>>,
+    finished: bool,
+}
+
+impl<S, T, F> ArrowBatchStatusStream<S, T, F>
+where
+    S: ArrowRequestStream + Unpin,
+    T: OtapBatchStore + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
+{
+    fn new(state: ArrowBatchStreamState<S, T, F>) -> Self {
+        Self {
+            state: Some(state),
+            pending: None,
+            finished: false,
         }
-    }))
+    }
+
+    fn drive_next(
+        state: ArrowBatchStreamState<S, T, F>,
+    ) -> LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)> {
+        Box::pin(async move {
+            let mut state = state;
+            let step = state.next_item().await;
+            (state, step)
+        })
+    }
+}
+
+impl<S, T, F> Stream for ArrowBatchStatusStream<S, T, F>
+where
+    S: ArrowRequestStream + Unpin,
+    T: OtapBatchStore + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
+{
+    type Item = Result<BatchStatus, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        if this.finished {
+            return Poll::Ready(None);
+        }
+
+        loop {
+            if this.pending.is_none() {
+                let state = match this.state.take() {
+                    Some(state) => state,
+                    None => {
+                        this.finished = true;
+                        return Poll::Ready(None);
+                    }
+                };
+                this.pending = Some(Self::drive_next(state));
+            }
+
+            match this
+                .pending
+                .as_mut()
+                .expect("pending future must exist")
+                .as_mut()
+                .poll(cx)
+            {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready((state, step)) => {
+                    this.pending = None;
+                    match step {
+                        StreamStep::Yield(item) => {
+                            this.state = Some(state);
+                            return Poll::Ready(Some(item));
+                        }
+                        StreamStep::Done => {
+                            this.finished = true;
+                            this.state = None;
+                            return Poll::Ready(None);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct ArrowBatchStreamState<S, T, F>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
     input_stream: S,
     consumer: Consumer,
@@ -658,9 +742,9 @@ enum PreparedBatch {
 
 impl<S, T, F> ArrowBatchStreamState<S, T, F>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
+    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
     fn new(
         input_stream: S,
