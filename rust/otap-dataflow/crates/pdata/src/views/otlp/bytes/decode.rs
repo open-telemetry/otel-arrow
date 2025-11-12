@@ -417,6 +417,35 @@ impl<'a> Iterator for PackedVarintIter<'a> {
     }
 }
 
+enum RepeatedPrimitiveIterInner<P, E> {
+    Packed(P),
+    Expanded(E),
+}
+
+///
+pub struct RepeatedPrimitiveIter<'a, T, V, P, E> {
+    buf: &'a [u8],
+    field_num: u64,
+    field_ranges: T,
+    inner: Option<RepeatedPrimitiveIterInner<P, E>>,
+    _pd: PhantomData<V>
+}
+
+impl<'a, T, V, P, E> Iterator for RepeatedPrimitiveIter<'a, T, V, P, E> 
+where
+    T: FieldRanges
+{
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.inner.is_none() {
+            let range = self.field_ranges.get()
+        }
+
+        todo!()
+    }
+}
+
 /// Decode variant at position in buffer
 #[inline]
 #[must_use]

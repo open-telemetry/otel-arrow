@@ -2189,10 +2189,10 @@ impl ExemplarView for RawExemplar<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::proto::opentelemetry::metrics::v1::{
-        Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
-    };
-    use prost::Message;
+    use crate::{otlp::ProtoBuffer, proto::opentelemetry::metrics::v1::{
+        metric::Data, number_data_point, Metric, NumberDataPoint, Sum
+    }};
+    use prost::{bytes::buf, Message};
 
     #[test]
     fn test_oneof_double_reads() {
@@ -2223,5 +2223,56 @@ mod test {
         };
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
+    }
+
+    #[test]
+    fn test_packed_and_expanded_decoding_hist_dp() {
+        // In histogram data-points there are two fields that are repeated primitives which should
+        // be "packed" encoded: bucket_counts and explicit_bounds. However, proto docs say we need
+        // to support maybe reading these as packed & expanded, so we test for this
+
+        let mut buffer = ProtoBuffer::new();
+
+        // first write packed encoded
+        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(3 * 8); // 8 bytes per val (fixed64)
+        buffer.extend_from_slice(&1u64.to_le_bytes());
+        buffer.extend_from_slice(&2u64.to_le_bytes());
+        buffer.extend_from_slice(&3u64.to_le_bytes());
+
+        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        buffer.encode_varint(2 * 8); // 8 bytes per val (double)
+        buffer.extend_from_slice(&4.0f64.to_le_bytes());
+        buffer.extend_from_slice(&5.0f64.to_le_bytes());
+
+        // check results
+        let hist_dp_view = RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref())
+        };
+        let result_bucket_counts = hist_dp_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(result_bucket_counts, vec![1, 2, 3]);
+        let result_explicit_bounds = hist_dp_view.explicit_bounds().collect::<Vec<_>>();
+        assert_eq!(result_explicit_bounds, vec![4.0, 5.0]);
+
+        // now write with expanded encoding
+        buffer.clear();
+        for i in [6u64, 7, 8] {
+            buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::FIXED64);
+            buffer.extend_from_slice(&i.to_le_bytes());
+        }
+        for i in [9f64, 0.0] {
+            buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::FIXED64);
+            buffer.extend_from_slice(&i.to_le_bytes());
+        }
+        
+        // check results
+        let hist_dp_view = RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref())
+        };
+        let result_bucket_counts = hist_dp_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(result_bucket_counts, vec![6, 7, 8]);
+        let result_explicit_bounds = hist_dp_view.explicit_bounds().collect::<Vec<_>>();
+        assert_eq!(result_explicit_bounds, vec![9.0, 0.0]);
+
     }
 }
