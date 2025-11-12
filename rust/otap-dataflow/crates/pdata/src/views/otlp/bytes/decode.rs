@@ -477,7 +477,7 @@ pub struct RepeatedPrimitiveIter<'a, T: RepeatedFieldEncodings, V, P> {
 
     // this will be used to iterate over either:
     // - the repeated values (in case that the encoding is expanded)
-    // - the segments containing the packed fields (in case that the encoding si packed)
+    // - the segments containing the packed fields (in case that the encoding is packed)
     field_iter: Option<RepeatedFieldProtoBytesParser<'a, T>>,
 
     // this will be initialized lazily if the encoding is packed. one instance of the packed
