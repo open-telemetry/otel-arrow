@@ -7,6 +7,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
+use crate::control::pipeline_ctrl_msg_channel;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
@@ -86,6 +87,26 @@ impl<PData> TestContext<PData> {
     /// Sleeps for the specified duration.
     pub async fn sleep(&self, duration: Duration) {
         sleep(duration).await;
+    }
+
+    /// Sets the pipeline control message sender on the effect handler.
+    /// This is needed for processor ACK/NACK handling.
+    pub fn set_pipeline_ctrl_sender(
+        &mut self,
+        pipeline_ctrl_sender: crate::control::PipelineCtrlMsgSender<PData>,
+    ) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+            }
+        }
     }
 }
 
@@ -206,6 +227,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             "out".into(),
             pdata_sender,
         );
+
         // Set a dummy input receiver (not used in these tests since we call process directly)
         // We need this because prepare_runtime expects both to be set
         let dummy_receiver = match &processor {
@@ -244,11 +266,31 @@ impl<PData: Debug + 'static> TestPhase<PData> {
 
         // The entire scenario is run to completion before the validation phase
         self.rt.block_on(async move {
-            let runtime = self
+            let mut runtime = self
                 .processor
                 .prepare_runtime(metrics_reporter)
                 .await
                 .expect("Failed to prepare runtime");
+
+            let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+            match runtime {
+                ProcessorWrapperRuntime::Local {
+                    ref mut effect_handler,
+                    ..
+                } => {
+                    effect_handler
+                        .core
+                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                }
+                ProcessorWrapperRuntime::Shared {
+                    ref mut effect_handler,
+                    ..
+                } => {
+                    effect_handler
+                        .core
+                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                }
+            }
             let mut context = TestContext::new(runtime);
             context.output_receiver = self.output_receiver;
             f(context).await;

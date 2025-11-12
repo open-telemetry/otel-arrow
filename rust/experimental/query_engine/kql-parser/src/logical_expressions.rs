@@ -53,6 +53,7 @@ mod tests {
             &[
                 "1 == 1",
                 "1 =~ 1",
+                "1 = 1", // Note: Only valid for pest parsing, should fail when translated to expressions
                 "(1) != true",
                 "1 !~ true",
                 "(1==1) > false",
@@ -78,10 +79,10 @@ mod tests {
 
     #[test]
     fn test_parse_comparison_expression() {
-        let run_test = |input: &str, expected: LogicalExpression| {
+        let run_test_success = |input: &str, expected: LogicalExpression| {
             println!("Testing: {input}");
 
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -107,7 +108,21 @@ mod tests {
             assert_eq!(expected, expression);
         };
 
-        run_test(
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+
+            let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
             "variable == 'hello world'",
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -123,7 +138,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "variable =~ 'hello world'",
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -139,7 +154,12 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_failure(
+            "variable = 'hello world'",
+            "Unexpected assignment operator. Did you mean to use '==' instead?",
+        );
+
+        run_test_success(
             "variable !~ 'hello world'",
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -158,7 +178,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "variable != true",
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -177,7 +197,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "1 > source_path",
             LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -196,7 +216,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "(1) >= resource.key",
             LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -216,7 +236,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "0 < (variable)",
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -236,7 +256,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "(0) <= variable",
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -255,7 +275,7 @@ mod tests {
         );
 
         // Note: This whole expression folds to a constant value.
-        run_test(
+        run_test_success(
             "'hello world' matches regex '^hello world$'",
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
@@ -264,7 +284,7 @@ mod tests {
 
         // Note: The string regex pattern gets folded into a compiled regex
         // expression.
-        run_test(
+        run_test_success(
             "Name matches regex '^hello world$'",
             LogicalExpression::Matches(MatchesLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -286,7 +306,7 @@ mod tests {
             )),
         );
 
-        run_test(
+        run_test_success(
             "Name matches regex const_regex",
             LogicalExpression::Matches(MatchesLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -332,7 +352,7 @@ mod tests {
         let run_test_success = |input: &str, expected: LogicalExpression| {
             println!("Testing: {input}");
 
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -527,7 +547,7 @@ mod tests {
     #[test]
     fn test_parse_contains_expressions() {
         let run_test = |input: &str, expected: LogicalExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );

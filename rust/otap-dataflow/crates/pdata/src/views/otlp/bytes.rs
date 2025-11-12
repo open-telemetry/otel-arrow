@@ -6,5 +6,6 @@
 pub mod common;
 pub mod decode;
 pub mod logs;
+pub mod metrics;
 pub mod resource;
 pub mod traces;

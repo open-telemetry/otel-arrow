@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, KeyValue as KV},
     logs::v1::LogRecord,
     metrics::v1::{Metric, metric::Data},

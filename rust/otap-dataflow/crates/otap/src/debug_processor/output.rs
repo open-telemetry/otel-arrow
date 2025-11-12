@@ -16,7 +16,7 @@ use otap_df_config::PortName;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     logs::v1::{LogsData, ResourceLogs, ScopeLogs},
     metrics::v1::{MetricsData, ResourceMetrics, ScopeMetrics},
     trace::v1::{ResourceSpans, ScopeSpans, TracesData},

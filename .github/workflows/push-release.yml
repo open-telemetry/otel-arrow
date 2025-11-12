@@ -96,24 +96,50 @@ jobs:
       - name: Dry run - Show planned changes
         if: inputs.dry_run
         run: |
-          echo "=== DRY RUN MODE - No changes will be made ==="
-          echo ""
-          echo "Planned operations:"
-          echo "- Version to tag: v${{ inputs.version }}"
-          echo "- Last version: v${{ steps.last_version.outputs.last_version }}"
-          echo "--------------------------------"
-          echo "Git tags that would be created:"
-          echo "  - v${{ inputs.version }} (main release tag)"
-          echo "  - go/v${{ inputs.version }} (Go module tag)"
-          echo "  - collector/cmd/otelarrowcol/v${{ inputs.version }} (collector module tag)"
-          echo "--------------------------------"
-          echo "GitHub release that would be created:"
-          echo "  - Title: Release v${{ inputs.version }}"
-          echo "  - Tag: v${{ inputs.version }}"
-          echo "  - Release notes from CHANGELOG.md"
-          echo "--------------------------------"
-          echo "Release content preview:"
-          cat /tmp/release_content.txt
+          # Write to GitHub Step Summary
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # :rocket: Release Push Dry Run
+
+          ## Summary
+          **DRY RUN MODE** - No changes will be made to the repository
+
+          ## Planned Operations
+          - **Version to tag**: `v${{ inputs.version }}`
+          - **Last version**: `v${{ steps.last_version.outputs.last_version }}`
+
+          ## Git Tags to Create
+          - `v${{ inputs.version }}` - Main release tag
+          - `go/v${{ inputs.version }}` - Go module tag
+          - `collector/cmd/otelarrowcol/v${{ inputs.version }}` - Collector module tag
+
+          ## GitHub Release
+          - **Title**: Release v${{ inputs.version }}
+          - **Tag**: v${{ inputs.version }}
+          - **Type**: Draft release (latest)
+          - **Release notes**: Extracted from CHANGELOG.md
+
+          ## Go Modules
+          After release, the following modules will be available:
+          ```bash
+          go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
+          go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
+          ```
+
+          ## Release Notes Preview
+          ```
+          EOF
+          cat /tmp/release_content.txt >> $GITHUB_STEP_SUMMARY
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ```
+
+          ## Next Steps
+          1. Review the planned operations above
+          2. Run again without dry-run when ready to publish
+          3. The GitHub release will be created as a draft for final review
+
+          ---
+          **Note**: This is a dry run. To execute the actual release push, set `dry_run` to `false`.
+          EOF
 
       - name: Create GitHub App token
         if: '!inputs.dry_run'

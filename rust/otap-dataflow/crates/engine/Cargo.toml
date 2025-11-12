@@ -17,6 +17,7 @@ testing = []
 
 [dependencies]
 otap-df-channel = { path = "../channel" }
+otap-df-pdata = { path = "../pdata" }
 otap-df-config = { path = "../config" }
 otap-df-state = { path = "../state" }
 otap-df-telemetry = { path = "../telemetry" }
@@ -38,3 +39,4 @@ socket2 = { workspace = true }
 uuid = { workspace = true }
 once_cell = { workspace = true }
 data-encoding = { workspace = true }
+prost = { workspace = true }

@@ -512,7 +512,7 @@ pub(crate) fn parse_accessor_expression(
             Some(ValueType::Map)
         } else if let Some(schema) = scope.get_source_schema() {
             schema
-                .try_resolve_value_type(selectors, &scope.get_pipeline().get_resolution_scope())
+                .try_resolve_value_type(selectors, scope)
                 .map_err(map_kql_errors)?
         } else {
             None
@@ -572,7 +572,7 @@ pub(crate) fn parse_accessor_expression(
                                     resolved_value_type = schema
                                         .try_resolve_value_type(
                                             value_accessor.get_selectors_mut(),
-                                            &scope.get_pipeline().get_resolution_scope(),
+                                            scope,
                                         )
                                         .map_err(map_kql_errors)?;
                                 }
@@ -650,10 +650,7 @@ pub(crate) fn parse_accessor_expression(
 
                         if let Some(schema) = default_map_schema {
                             resolved_value_type = schema
-                                .try_resolve_value_type(
-                                    value_accessor.get_selectors_mut(),
-                                    &scope.get_pipeline().get_resolution_scope(),
-                                )
+                                .try_resolve_value_type(value_accessor.get_selectors_mut(), scope)
                                 .map_err(map_kql_errors)?;
                         }
 
@@ -1532,7 +1529,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut state = ParserState::new("['sub.key thing'][var][-neg_attr]");
+        let state = ParserState::new("['sub.key thing'][var][-neg_attr]");
 
         state.push_variable_name("var");
 
@@ -1598,7 +1595,7 @@ mod tests {
 
         run_test(
             "subkey",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),
@@ -1610,7 +1607,7 @@ mod tests {
 
         run_test(
             "sub.key",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),
@@ -1622,7 +1619,7 @@ mod tests {
 
         run_test(
             "sub.a.b['key1']",
-            &vec![
+            &[
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                 )),
@@ -1760,7 +1757,7 @@ mod tests {
     fn test_parse_accessor_expression_from_variable() {
         let mut result = KqlPestParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
-        let mut state = ParserState::new("a[-1]");
+        let state = ParserState::new("a[-1]");
 
         state.push_variable_name("a");
 
@@ -1785,7 +1782,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_int",
@@ -1825,7 +1822,7 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_int",
@@ -1981,7 +1978,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
 
-            let mut state = ParserState::new(input);
+            let state = ParserState::new(input);
 
             state.push_constant(
                 "const_str",

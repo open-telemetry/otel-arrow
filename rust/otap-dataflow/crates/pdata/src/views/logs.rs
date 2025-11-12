@@ -13,11 +13,11 @@
 //!             └─ common::AnyValueView
 //! ```
 
+use crate::schema::{SpanId, TraceId};
 use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, Str},
     resource::ResourceView,
 };
-use otel_arrow_rust::schema::{SpanId, TraceId};
 
 /// View for top level LogsData
 pub trait LogsDataView {

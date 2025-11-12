@@ -1,4 +1,15 @@
 steps:
+  - name: Configure syslog generator with test params
+    action:
+      update_component_strategy:
+        target: load-generator
+        execution:
+          pipeline_perf_loadgen:
+            threads: {{syslog_threads | default(1)}}
+            target_rate: {{syslog_rate | default(5000)}}
+            batch_size:  {{syslog_batch_size | default(100)}}
+            load_type: syslog
+            message_body:  '{{syslog_message | default(None)}}'
   - name: Deploy Backend Engine
     action:
       component_action:
@@ -140,4 +151,4 @@ steps:
                       path:  ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
                   destination:
                     file:
-                      directory: results/integration/gh-actions-benchmark
+                      directory: results/{{result_dir | default('integration')}}/gh-actions-benchmark

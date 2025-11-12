@@ -5,7 +5,7 @@ This module is responsible for launching the orchestrator when run as a script.
 It imports the main CLI logic from `lib.cli.main` and delegates execution to it.
 
 Typical usage:
-    python -m orchestrator/run_orchestrator.py \
+    python orchestrator/run_orchestrator.py \
         --config path/to/config.yaml [other options]
 
 - Examples:

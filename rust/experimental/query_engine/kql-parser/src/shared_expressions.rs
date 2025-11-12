@@ -10,6 +10,28 @@ use crate::{
     scalar_primitive_expressions::parse_accessor_expression,
 };
 
+pub(crate) fn parse_typeof_expression(
+    typeof_expression_rule: Pair<Rule>,
+) -> Result<Option<ValueType>, ParserError> {
+    let typeof_rules = typeof_expression_rule.into_inner();
+
+    Ok(match typeof_rules.as_str() {
+        "bool" => Some(ValueType::Boolean),
+        "datetime" => Some(ValueType::DateTime),
+        "decimal" => Some(ValueType::Double),
+        "double" => Some(ValueType::Double),
+        "dynamic" => None,
+        "guid" => Some(ValueType::String), // todo: Possibly support GUIDs natively
+        "int" => Some(ValueType::Integer),
+        "long" => Some(ValueType::Integer),
+        "real" => Some(ValueType::Double),
+        "regex" => Some(ValueType::Regex),
+        "string" => Some(ValueType::String),
+        "timespan" => Some(ValueType::TimeSpan),
+        _ => panic!("Unexpected rule in typeof_expression_rule: {typeof_rules}"),
+    })
+}
+
 pub(crate) fn parse_source_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
@@ -113,7 +135,7 @@ mod tests {
     #[test]
     fn test_parse_source_assignment_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -136,7 +158,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -202,7 +224,7 @@ mod tests {
     #[test]
     pub fn test_parse_let_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
@@ -217,7 +239,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
-            let mut state = ParserState::new_with_options(
+            let state = ParserState::new_with_options(
                 input,
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );

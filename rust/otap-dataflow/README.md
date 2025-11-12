@@ -21,10 +21,6 @@ data.
 > program built through `cargo` in [`src/main.rs`](./src/main.rs) is
 > provided as a means to test and validate OTAP pipelines built using
 > the dataflow engine.
->
-> The OTel-Arrow Rust library in `../otel-arrow-rust`, which implements
-> low-level details of the conversion between OTAP and OTLP, will be
-> incorporated into this set of crates.
 
 ## Features
 
@@ -299,11 +295,6 @@ telemetry SDK here.
 ### PData
 
 [See crate README.](./crates/pdata/README.md)
-
-TODO(#1218) The OTel-Arrow-Rust crates are moving here. The
-`otap_df_otap::pdata` types including `OtapPdata` are moving here.
-
-This is the future location for [OTel-Arrow Rust](../otel-arrow-rust/README.md).
 
 The `views` sub-module contains zero-copy machinery for:
 

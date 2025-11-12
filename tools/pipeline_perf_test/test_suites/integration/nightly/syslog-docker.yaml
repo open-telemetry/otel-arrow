@@ -1,4 +1,4 @@
-name: CI 100kLRPS
+name: Nightly - Syslog
 components:
   load-generator:
     deployment:
@@ -67,15 +67,38 @@ components:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: SYSLOG-ATTR-OTAP
+  - name: SYSLOG-3164-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otap.yaml
+        result_dir: "nightly_syslog"
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
         backend_receiver_type: otap
-  - name: SYSLOG-ATTR-OTLP
+        # Non CEF message of approximately the same size as CEF message
+        syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+  - name: SYSLOG-3164-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog-attr-otlp.yaml
+        result_dir: "nightly_syslog"
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
         backend_receiver_type: otlp
+        # Non CEF message of approximately the same size as CEF message
+        syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+  - name: SYSLOG-3164-CEF-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        result_dir: "nightly_syslog"
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
+        backend_receiver_type: otlp
+        syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+  - name: SYSLOG-3164-CEF-ATTR-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
+      variables:
+        result_dir: "nightly_syslog"
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
+        backend_receiver_type: otap
+        syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+

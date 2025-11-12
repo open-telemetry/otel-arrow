@@ -166,4 +166,4 @@ steps:
                       path:  ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
                   destination:
                     file:
-                      directory: results/integration/gh-actions-benchmark
+                      directory: results/{{result_dir | default('integration')}}/gh-actions-benchmark

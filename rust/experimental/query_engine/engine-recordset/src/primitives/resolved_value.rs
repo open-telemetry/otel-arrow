@@ -194,6 +194,48 @@ impl<'a> ResolvedValue<'a> {
             ResolvedValue::Sequence(s) => Ok(ResolvedArrayValue::Sequence(s)),
         }
     }
+
+    pub fn try_resolve_map(self) -> Result<ResolvedMapValue<'a>, Self> {
+        if self.get_value_type() != ValueType::Map {
+            return Err(self);
+        }
+
+        match self {
+            ResolvedValue::Value(v) => {
+                if let Value::Map(s) = v {
+                    Ok(ResolvedMapValue::Value(s))
+                } else {
+                    panic!()
+                }
+            }
+            ResolvedValue::Borrowed(s, b) => {
+                match Ref::filter_map(Ref::clone(&b), |v| {
+                    if let StaticValue::Map(s) = v.to_static_value() {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }) {
+                    Ok(v) => Ok(ResolvedMapValue::Borrowed(BorrowedMapValue {
+                        source: s,
+                        _orig: b,
+                        value: v,
+                    })),
+                    Err(_) => panic!(),
+                }
+            }
+            ResolvedValue::Computed(o) => {
+                if let OwnedValue::Map(s) = o {
+                    Ok(ResolvedMapValue::Computed(s))
+                } else {
+                    panic!()
+                }
+            }
+            ResolvedValue::Slice(_) => panic!(),
+            ResolvedValue::List(_) => panic!(),
+            ResolvedValue::Sequence(_) => panic!(),
+        }
+    }
 }
 
 impl From<ResolvedValue<'_>> for OwnedValue {
@@ -244,7 +286,38 @@ impl AsValue for ResolvedValue<'_> {
 
 impl Display for ResolvedValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.to_value().fmt(f)
+        f.write_str("[")?;
+        match self.to_value() {
+            Value::Null => f.write_str("Null"),
+            Value::Array(a) => {
+                write!(f, "Array(Count={})", a.len())
+            }
+            Value::Map(m) => {
+                write!(f, "Map(Count={})", m.len())
+            }
+            Value::String(s) => {
+                f.write_str("String(")?;
+                let v = s.get_value();
+                if v.len() <= 32 {
+                    f.write_str(serde_json::to_string(&v).unwrap().as_str())?;
+                } else {
+                    write!(
+                        f,
+                        "{}",
+                        serde_json::to_string(&format!("{}...", &v[..32]))
+                            .unwrap()
+                            .as_str()
+                    )?;
+                }
+                f.write_str(")")
+            }
+            v => {
+                write!(f, "{}(", v.get_value_type())?;
+                v.fmt(f)?;
+                f.write_str(")")
+            }
+        }?;
+        f.write_str("]")
     }
 }
 
@@ -891,6 +964,159 @@ impl AsValue for ResolvedArrayValue<'_> {
 }
 
 impl Display for ResolvedArrayValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.to_value().fmt(f)
+    }
+}
+
+#[derive(Debug)]
+pub enum ResolvedMapValue<'a> {
+    /// A value resolved from the expression tree or an attached record
+    Value(&'a dyn MapValue),
+
+    /// A value borrowed from the record being modified by the engine
+    Borrowed(BorrowedMapValue<'a>),
+
+    /// A value computed by the engine as the result of a dynamic expression
+    Computed(MapValueStorage<OwnedValue>),
+}
+
+#[derive(Debug)]
+pub struct BorrowedMapValue<'a> {
+    source: BorrowSource,
+    // Note: orig is not currently used but left in the code to support future
+    // needing to return a resolved map as a static value. See usage on
+    // BorrowedArrayValue for example
+    _orig: Ref<'a, dyn AsStaticValue + 'static>,
+    value: Ref<'a, dyn MapValue + 'static>,
+}
+
+impl<'a> ResolvedMapValue<'a> {
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        let v = match self {
+            ResolvedMapValue::Borrowed(b) => Some((&b.source, &b.value)),
+            _ => None,
+        };
+
+        if let Some((s, v)) = v {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(s, BorrowSource::Source)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(s, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                *self = ResolvedMapValue::Computed((&**v).into());
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn take<FConvert, FTake, R>(
+        self,
+        keys: &[&str],
+        convert: FConvert,
+        mut take: FTake,
+    ) -> Result<(), ExpressionError>
+    where
+        FConvert: Fn(&str, ResolvedValue<'a>) -> Result<R, ExpressionError>,
+        FTake: FnMut(R),
+    {
+        match self {
+            ResolvedMapValue::Value(m) => {
+                for key in keys {
+                    let v = (convert)(
+                        key,
+                        ResolvedValue::Value(m.get(key).expect("Map key was not found").to_value()),
+                    )?;
+                    (take)(v);
+                }
+                Ok(())
+            }
+            ResolvedMapValue::Borrowed(b) => {
+                let m = &b.value;
+                for key in keys {
+                    match Ref::filter_map(Ref::clone(m), |m| {
+                        m.get_static(key)
+                            .expect("Borrowed map does not implement get_static")
+                    }) {
+                        Ok(v) => {
+                            let v = (convert)(key, ResolvedValue::Borrowed(b.source.clone(), v))?;
+                            (take)(v);
+                        }
+                        Err(_) => panic!("Map key was not found"),
+                    }
+                }
+                Ok(())
+            }
+            ResolvedMapValue::Computed(mut m) => {
+                let values = m.get_values_mut();
+
+                for key in keys {
+                    match values.remove(*key) {
+                        Some(v) => {
+                            let v = (convert)(key, ResolvedValue::Computed(v))?;
+                            (take)(v);
+                        }
+                        None => panic!("Map key was not found"),
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn get_map(&self) -> &dyn MapValue {
+        match self {
+            ResolvedMapValue::Value(v) => *v,
+            ResolvedMapValue::Borrowed(b) => &*b.value,
+            ResolvedMapValue::Computed(c) => c,
+        }
+    }
+}
+
+impl MapValue for ResolvedMapValue<'_> {
+    fn is_empty(&self) -> bool {
+        self.get_map().is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.get_map().len()
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.get_map().contains_key(key)
+    }
+
+    fn get(&self, key: &str) -> Option<&dyn AsValue> {
+        self.get_map().get(key)
+    }
+
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        self.get_map().get_static(key)
+    }
+
+    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+        self.get_map().get_items(item_callback)
+    }
+}
+
+impl AsValue for ResolvedMapValue<'_> {
+    fn get_value_type(&self) -> ValueType {
+        ValueType::Map
+    }
+
+    fn to_value(&self) -> Value<'_> {
+        Value::Map(self.get_map())
+    }
+}
+
+impl Display for ResolvedMapValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_value().fmt(f)
     }

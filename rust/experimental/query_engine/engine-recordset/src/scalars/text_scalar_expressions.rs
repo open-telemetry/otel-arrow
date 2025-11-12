@@ -13,9 +13,9 @@ where
     'a: 'c,
     'b: 'c,
 {
-    match text_scalar_expression {
+    let value = match text_scalar_expression {
         TextScalarExpression::Capture(c) => {
-            let v = match execute_scalar_expression(execution_context, c.get_haystack())?
+            match execute_scalar_expression(execution_context, c.get_haystack())?
                 .try_resolve_string()
             {
                 Ok(s) => {
@@ -33,15 +33,7 @@ where
                     }
                 }
                 Err(_) => ResolvedValue::Computed(OwnedValue::Null),
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                text_scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
+            }
         }
         TextScalarExpression::Concat(c) => {
             match execute_scalar_expression(execution_context, c.get_values_expression())?
@@ -66,23 +58,17 @@ where
                         }
                     })?;
 
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        text_scalar_expression,
-                        || format!("Evaluated as: '{s}'"),
-                    );
-
-                    Ok(ResolvedValue::Computed(OwnedValue::String(
-                        StringValueStorage::new(s),
-                    )))
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }
-                Err(v) => Err(ExpressionError::TypeMismatch(
-                    c.get_values_expression().get_query_location().clone(),
-                    format!(
-                        "Value of '{:?}' type returned by scalar expression was not an array",
-                        v.get_value_type()
-                    ),
-                )),
+                Err(v) => {
+                    return Err(ExpressionError::TypeMismatch(
+                        c.get_values_expression().get_query_location().clone(),
+                        format!(
+                            "Value of '{:?}' type returned by scalar expression was not an array",
+                            v.get_value_type()
+                        ),
+                    ));
+                }
             }
         }
         TextScalarExpression::Join(j) => {
@@ -137,23 +123,17 @@ where
                         }
                     })?;
 
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        text_scalar_expression,
-                        || format!("Evaluated as: '{s}'"),
-                    );
-
-                    Ok(ResolvedValue::Computed(OwnedValue::String(
-                        StringValueStorage::new(s),
-                    )))
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }
-                Err(v) => Err(ExpressionError::TypeMismatch(
-                    j.get_values_expression().get_query_location().clone(),
-                    format!(
-                        "Value of '{:?}' type returned by scalar expression was not an array",
-                        v.get_value_type()
-                    ),
-                )),
+                Err(v) => {
+                    return Err(ExpressionError::TypeMismatch(
+                        j.get_values_expression().get_query_location().clone(),
+                        format!(
+                            "Value of '{:?}' type returned by scalar expression was not an array",
+                            v.get_value_type()
+                        ),
+                    ));
+                }
             }
         }
         TextScalarExpression::Replace(r) => {
@@ -164,7 +144,7 @@ where
             let replacement_value =
                 execute_scalar_expression(execution_context, r.get_replacement_expression())?;
 
-            let v = if let Some(result) = Value::replace_matches(
+            if let Some(result) = Value::replace_matches(
                 &haystack_value.to_value(),
                 &needle_value.to_value(),
                 &replacement_value.to_value(),
@@ -185,17 +165,17 @@ where
                     },
                 );
                 ResolvedValue::Computed(OwnedValue::Null)
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                text_scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
+            }
         }
-    }
+    };
+
+    execution_context.add_diagnostic_if_enabled(
+        RecordSetEngineDiagnosticLevel::Verbose,
+        text_scalar_expression,
+        || format!("Evaluated as: {value}"),
+    );
+
+    Ok(value)
 }
 
 #[cfg(test)]

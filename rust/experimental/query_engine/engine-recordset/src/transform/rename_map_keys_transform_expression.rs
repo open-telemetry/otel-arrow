@@ -198,7 +198,7 @@ fn remove<'a, TRecord: Record>(
                         || {
                             format!(
                                 "Removed map key '{key}' on target with value: {}",
-                                v.to_value()
+                                ResolvedValue::Value(v.to_value())
                             )
                         },
                     );
@@ -285,7 +285,7 @@ fn remove<'a, TRecord: Record>(
             expression,
             || {
                 format!(
-                    "Cannot remove data from a '{:?}' value",
+                    "Cannot remove data from a '{}' value",
                     root.get_value_type()
                 )
             },
@@ -325,7 +325,7 @@ fn set<'a, TRecord: Record>(
                             execution_context.add_diagnostic_if_enabled(
                                 RecordSetEngineDiagnosticLevel::Verbose,
                                 expression,
-                                || format!("Map key '{key}' updated on target map replacing old value: {}", old.to_value()),
+                                || format!("Map key '{key}' updated on target map replacing old value: {}", ResolvedValue::Computed(old)),
                             );
                         }
                         ValueMutWriteResult::NotSupported(e) => {
@@ -411,7 +411,7 @@ fn set<'a, TRecord: Record>(
                             execution_context.add_diagnostic_if_enabled(
                                 RecordSetEngineDiagnosticLevel::Verbose,
                                 expression,
-                                || format!("Array index '{index}' updated on target array replacing old value: {}", old.to_value()),
+                                || format!("Array index '{index}' updated on target array replacing old value: {}", ResolvedValue::Computed(old)),
                             );
                         }
                         ValueMutWriteResult::NotSupported(e) => {
@@ -446,7 +446,7 @@ fn set<'a, TRecord: Record>(
         execution_context.add_diagnostic_if_enabled(
             RecordSetEngineDiagnosticLevel::Warn,
             expression,
-            || format!("Cannot set data on a '{:?}' value", root.get_value_type()),
+            || format!("Cannot set data on a '{}' value", root.get_value_type()),
         );
     }
 }

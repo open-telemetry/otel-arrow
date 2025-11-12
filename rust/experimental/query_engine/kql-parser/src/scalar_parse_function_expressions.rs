@@ -42,19 +42,9 @@ fn parse_parse_json_expression(
         });
     }
 
-    let mut parse_json_scalar = ScalarExpression::Parse(ParseScalarExpression::Json(
+    Ok(ScalarExpression::Parse(ParseScalarExpression::Json(
         ParseJsonScalarExpression::new(query_location, inner_scalar),
-    ));
-
-    // Note: Call into try_resolve_static here is to try to validate the json
-    // string and bubble up any errors. It can be removed if/when expression
-    // tree gets constant folding which should automatically call into
-    // try_resolve_static.
-    parse_json_scalar
-        .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
-        .map_err(|e| ParserError::from(&e))?;
-
-    Ok(parse_json_scalar)
+    )))
 }
 
 fn parse_parse_regex_expression(
@@ -121,7 +111,11 @@ mod tests {
 
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
 
-            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            expression
+                .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                .unwrap();
 
             assert_eq!(expected, expression);
         };
@@ -133,24 +127,39 @@ mod tests {
 
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
 
-            let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
+            let mut expression = match parse_scalar_expression(result.next().unwrap(), &state) {
+                Ok(e) => e,
+                Err(e) => {
+                    validate_error(e, expected_id, expected_msg);
+                    return;
+                }
+            };
 
-            if let Some(eid) = expected_id {
-                if let ParserError::QueryLanguageDiagnostic {
-                    location: _,
-                    diagnostic_id: id,
-                    message: msg,
-                } = error
-                {
-                    assert_eq!(eid, id);
+            let error = expression
+                .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                .map_err(|e| ParserError::from(&e))
+                .unwrap_err();
+
+            validate_error(error, expected_id, expected_msg);
+
+            fn validate_error(error: ParserError, expected_id: Option<&str>, expected_msg: &str) {
+                if let Some(eid) = expected_id {
+                    if let ParserError::QueryLanguageDiagnostic {
+                        location: _,
+                        diagnostic_id: id,
+                        message: msg,
+                    } = error
+                    {
+                        assert_eq!(eid, id);
+                        assert_eq!(expected_msg, msg);
+                    } else {
+                        panic!("Expected QueryLanguageDiagnostic");
+                    }
+                } else if let ParserError::SyntaxError(_, msg) = error {
                     assert_eq!(expected_msg, msg);
                 } else {
-                    panic!("Expected QueryLanguageDiagnostic");
+                    panic!("Unexpected error");
                 }
-            } else if let ParserError::SyntaxError(_, msg) = error {
-                assert_eq!(expected_msg, msg);
-            } else {
-                panic!("Unexpected error");
             }
         };
 

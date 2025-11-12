@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::Utc;
-use otel_arrow_rust::{
+use otap_df_pdata::{
     encode::record::{
         attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
     },
@@ -10,7 +10,7 @@ use otel_arrow_rust::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use crate::encoder::error::Result;
+use otap_df_pdata::encode::Result;
 
 use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 
@@ -118,7 +118,7 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::syslog_cef_receiver::parser::parse;
-    use otel_arrow_rust::{
+    use otap_df_pdata::{
         otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,

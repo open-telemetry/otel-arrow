@@ -19,9 +19,6 @@ pub enum ScalarExpression {
     /// unrelated records.
     Attached(AttachedScalarExpression),
 
-    /// A constant static value defined in a collection on [`PipelineExpression`].
-    Constant(ReferenceConstantScalarExpression),
-
     /// Returns one of many inner scalar expressions based on multiple logical conditions.
     Case(CaseScalarExpression),
 
@@ -34,11 +31,14 @@ pub enum ScalarExpression {
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
 
+    /// A constant static value defined in a collection on [`PipelineExpression`].
+    Constant(ReferenceConstantScalarExpression),
+
     /// Convert scalar values into different types.
     Convert(ConvertScalarExpression),
 
-    /// Contains scalar functions for working with date and time values.
-    Temporal(TemporalScalarExpression),
+    /// Returns the type string for the inner expression.
+    GetType(GetTypeScalarExpression),
 
     /// Returns the number of characters in an inner string value, the number of
     /// items in an inner array/map values, or null for invalid input.
@@ -53,6 +53,10 @@ pub enum ScalarExpression {
     /// Contains scalar functions for performing parsing operations.
     Parse(ParseScalarExpression),
 
+    /// Returns a value selected from the source using an array of keys or
+    /// indicies representing the selection path.
+    Select(SelectScalarExpression),
+
     /// Returns a slice of characters from an inner string value, a slice of
     /// items from an inner array value, or null for invalid input.
     Slice(SliceScalarExpression),
@@ -62,6 +66,9 @@ pub enum ScalarExpression {
 
     /// Resolve a static value provided directly in a query.
     Static(StaticScalarExpression),
+
+    /// Contains scalar functions for working with date and time values.
+    Temporal(TemporalScalarExpression),
 
     /// Contains scalar functions for performing text operations.
     Text(TextScalarExpression),
@@ -87,6 +94,7 @@ impl ScalarExpression {
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
             ScalarExpression::Constant(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Collection(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::GetType(_) => Ok(Some(ValueType::String)),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(scope),
@@ -98,6 +106,7 @@ impl ScalarExpression {
             ScalarExpression::Temporal(t) => t.try_resolve_value_type(scope),
             ScalarExpression::Text(r) => r.try_resolve_value_type(scope),
             ScalarExpression::Math(m) => m.try_resolve_value_type(scope),
+            ScalarExpression::Select(s) => s.try_resolve_value_type(scope),
         }
     }
 
@@ -138,10 +147,9 @@ impl ScalarExpression {
         *self = ScalarExpression::Static(computed);
 
         if let ScalarExpression::Static(s) = self {
-            return Ok(Some(match s.foldable() {
-                true => ResolvedStaticScalarExpression::FoldEligibleReference(s),
-                false => ResolvedStaticScalarExpression::Reference(s),
-            }));
+            return Ok(Some(ResolvedStaticScalarExpression::FoldEligibleReference(
+                s,
+            )));
         }
 
         unreachable!()
@@ -184,12 +192,14 @@ impl ScalarExpression {
             ScalarExpression::Conditional(c) => c.try_resolve_static(scope),
             ScalarExpression::Case(c) => c.try_resolve_static(scope),
             ScalarExpression::Convert(c) => c.try_resolve_static(scope),
+            ScalarExpression::GetType(g) => g.try_resolve_static(scope),
             ScalarExpression::Length(l) => l.try_resolve_static(scope),
             ScalarExpression::Slice(s) => s.try_resolve_static(scope),
             ScalarExpression::Parse(p) => p.try_resolve_static(scope),
             ScalarExpression::Temporal(t) => t.try_resolve_static(scope),
             ScalarExpression::Text(r) => r.try_resolve_static(scope),
             ScalarExpression::Math(m) => m.try_resolve_static(scope),
+            ScalarExpression::Select(s) => s.try_resolve_static(scope),
         }
     }
 }
@@ -203,6 +213,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Static(s) => s.get_query_location(),
             ScalarExpression::Constant(c) => c.get_query_location(),
             ScalarExpression::Collection(c) => c.get_query_location(),
+            ScalarExpression::GetType(g) => g.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
@@ -214,6 +225,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Temporal(t) => t.get_query_location(),
             ScalarExpression::Text(r) => r.get_query_location(),
             ScalarExpression::Math(m) => m.get_query_location(),
+            ScalarExpression::Select(s) => s.get_query_location(),
         }
     }
 
@@ -224,6 +236,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
             ScalarExpression::Static(s) => s.get_name(),
             ScalarExpression::Collection(_) => "ScalarExpression(Collection)",
+            ScalarExpression::GetType(_) => "ScalarExpression(GetType)",
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
@@ -236,6 +249,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Temporal(t) => t.get_name(),
             ScalarExpression::Text(r) => r.get_name(),
             ScalarExpression::Math(m) => m.get_name(),
+            ScalarExpression::Select(_) => "ScalarExpression(Select)",
         }
     }
 
@@ -248,6 +262,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Collection(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::Conditional(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::Convert(c) => c.fmt_with_indent(f, indent),
+            ScalarExpression::GetType(g) => g.fmt_with_indent(f, indent),
             ScalarExpression::Temporal(t) => t.fmt_with_indent(f, indent),
             ScalarExpression::Length(l) => l.fmt_with_indent(f, indent),
             ScalarExpression::Logical(l) => l.fmt_with_indent(f, indent),
@@ -258,6 +273,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Static(s) => s.fmt_with_indent(f, indent),
             ScalarExpression::Text(t) => t.fmt_with_indent(f, indent),
             ScalarExpression::Variable(v) => v.fmt_with_indent(f, indent),
+            ScalarExpression::Select(s) => s.fmt_with_indent(f, indent),
         }
     }
 }
@@ -294,6 +310,10 @@ impl SourceScalarExpression {
 
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
+    }
+
+    pub fn get_value_accessor_mut(&mut self) -> &mut ValueAccessor {
+        &mut self.accessor
     }
 
     pub fn get_value_type(&self) -> Option<ValueType> {
@@ -545,7 +565,10 @@ impl Expression for ReferenceConstantScalarExpression {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Constant(Reference)")?;
         writeln!(f, "{indent}├── ValueType: {:?}", self.get_value_type())?;
-        writeln!(f, "{indent}└── Id: {}", self.get_constant_id())?;
+        writeln!(f, "{indent}├── Id: {}", self.get_constant_id())?;
+        write!(f, "{indent}└── Accessor: ")?;
+        self.accessor
+            .fmt_with_indent(f, format!("{indent}    ").as_str())?;
         Ok(())
     }
 }
@@ -1202,9 +1225,180 @@ impl Expression for SliceScalarExpression {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetTypeScalarExpression {
+    query_location: QueryLocation,
+    value: Box<ScalarExpression>,
+}
+
+impl GetTypeScalarExpression {
+    pub fn new(query_location: QueryLocation, value: ScalarExpression) -> GetTypeScalarExpression {
+        Self {
+            query_location,
+            value: value.into(),
+        }
+    }
+
+    pub fn get_value(&self) -> &ScalarExpression {
+        &self.value
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        ScalarStaticResolutionResult::Ok(match self.value.try_resolve_static(scope)? {
+            Some(s) => {
+                let value_type = s.to_value().get_value_type();
+
+                Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        self.query_location.clone(),
+                        value_type.into(),
+                    )),
+                ))
+            }
+            None => None,
+        })
+    }
+}
+
+impl Expression for GetTypeScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "GetTypeScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        write!(f, "GetType(Scalar): ")?;
+        self.value.fmt_with_indent(f, indent)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectScalarExpression {
+    query_location: QueryLocation,
+    value: Box<ScalarExpression>,
+    selectors: Box<ScalarExpression>,
+}
+
+impl SelectScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value: ScalarExpression,
+        selectors: ScalarExpression,
+    ) -> SelectScalarExpression {
+        Self {
+            query_location,
+            value: value.into(),
+            selectors: selectors.into(),
+        }
+    }
+
+    pub fn get_value(&self) -> &ScalarExpression {
+        &self.value
+    }
+
+    pub fn get_selectors(&self) -> &ScalarExpression {
+        &self.selectors
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        match self.try_resolve_static(scope)? {
+            None => Ok(None),
+            Some(s) => Ok(Some(s.as_ref().get_value_type())),
+        }
+    }
+
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> ScalarStaticResolutionResult<'a> {
+        let location = self.selectors.get_query_location().clone();
+        match (
+            self.value.try_resolve_static(scope)?,
+            self.selectors.try_resolve_static(scope)?,
+        ) {
+            (Some(value), Some(selectors)) => match selectors.as_ref() {
+                StaticScalarExpression::Array(selectors) => {
+                    let mut selectors: Vec<ScalarStaticResolutionResult> = selectors
+                        .get_values()
+                        .iter()
+                        .map(|v| Ok(Some(ResolvedStaticScalarExpression::Reference(v))))
+                        .collect();
+
+                    match value {
+                        ResolvedStaticScalarExpression::Computed(c) => {
+                            match ValueAccessor::select_from_value(&c, &mut selectors.drain(..))? {
+                                None => Ok(None),
+                                Some(s) => {
+                                    Ok(Some(ResolvedStaticScalarExpression::Computed(s.clone())))
+                                }
+                            }
+                        }
+                        ResolvedStaticScalarExpression::Reference(r)
+                        | ResolvedStaticScalarExpression::FoldEligibleReference(r) => {
+                            match ValueAccessor::select_from_value(r, &mut selectors.drain(..))? {
+                                None => Ok(None),
+                                Some(s) => match s.foldable() {
+                                    true => Ok(Some(
+                                        ResolvedStaticScalarExpression::FoldEligibleReference(s),
+                                    )),
+                                    false => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
+                                },
+                            }
+                        }
+                    }
+                }
+                v => Err(ExpressionError::ValidationFailure(
+                    location,
+                    format!(
+                        "Value of '{}' type returned by scalar expression was not an array",
+                        v.get_value_type()
+                    ),
+                )),
+            },
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Expression for SelectScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "SelectScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Select")?;
+        write!(f, "{indent}├── Value(Scalar): ")?;
+        self.value
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+        write!(f, "{indent}└── Selectors(Scalar): ")?;
+        self.selectors
+            .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use chrono::{TimeDelta, Utc};
+    use regex::Regex;
 
     use crate::{BooleanScalarExpression, StringScalarExpression};
 
@@ -2674,6 +2868,280 @@ mod tests {
                 .to_value(),
             ),
             None,
+        );
+    }
+
+    #[test]
+    fn test_get_type_try_resolve_static() {
+        fn run_test_success(input: ScalarExpression, expected: &str) {
+            let pipeline: PipelineExpression = Default::default();
+
+            let mut get_type = GetTypeScalarExpression::new(QueryLocation::new_fake(), input);
+
+            let actual_value = get_type
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(
+                Some(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        expected
+                    ))
+                    .to_value()
+                ),
+                actual_value.as_ref().map(|v| v.to_value())
+            );
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "Array",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            "Boolean",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::DateTime(
+                DateTimeScalarExpression::new(QueryLocation::new_fake(), Utc::now().into()),
+            )),
+            "DateTime",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                0.0,
+            ))),
+            "Double",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+            )),
+            "Integer",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            ))),
+            "Map",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+            "Null",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            ))),
+            "Regex",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "",
+            ))),
+            "String",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                TimeSpanScalarExpression::new(QueryLocation::new_fake(), TimeDelta::minutes(1)),
+            )),
+            "TimeSpan",
+        );
+    }
+
+    #[test]
+    pub fn test_select_scalar_expression_try_resolve() {
+        fn run_test_success(mut input: SelectScalarExpression, expected_value: Option<Value>) {
+            let pipeline: PipelineExpression = Default::default();
+
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(
+                expected_value.as_ref().map(|v| v.get_value_type()),
+                actual_type
+            );
+
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
+        }
+
+        fn run_test_failure(mut input: SelectScalarExpression, expected_msg: &str) {
+            let pipeline: PipelineExpression = Default::default();
+
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_type {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_value {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+        }
+
+        run_test_success(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        ))],
+                    ),
+                )),
+            ),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "value1",
+            ))),
+        );
+
+        run_test_success(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "value1"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                )),
+            ),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "value1",
+            ))),
+        );
+
+        run_test_failure(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "value1"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                    QueryLocation::new_fake(),
+                ))),
+            ),
+            "Value of 'Null' type returned by scalar expression was not an array",
+        );
+
+        run_test_failure(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::Null(NullScalarExpression::new(
+                            QueryLocation::new_fake(),
+                        ))],
+                    ),
+                )),
+            ),
+            "Unexpected scalar expression with 'Null' value type encountered in accessor expression",
+        );
+
+        run_test_failure(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Map(MapScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    HashMap::from([(
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "value1",
+                        )),
+                    )]),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )],
+                    ),
+                )),
+            ),
+            "Could not search for array index '0' specified in accessor expression because current node is a 'Map' value",
+        );
+
+        run_test_failure(
+            SelectScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "item1",
+                        ))],
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        ))],
+                    ),
+                )),
+            ),
+            "Could not search for map key 'key1' specified in accessor expression because current node is a 'Array' value",
         );
     }
 }

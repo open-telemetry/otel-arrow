@@ -54,15 +54,13 @@ const fn default_live_quorum() -> Quorum {
 }
 
 const fn default_ready_quorum() -> Quorum {
-    Quorum::All
+    Quorum::Percent(100)
 }
 
 /// Quorum expresses how many cores must satisfy a predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[allow(variant_size_differences)]
 pub enum Quorum {
-    /// All non-deleted cores must satisfy the predicate.
-    All,
     /// At least an absolute number of non-deleted cores must satisfy the predicate.
     AtLeast(usize),
     /// At least this percentage (0..=100) of non-deleted cores must satisfy the predicate.

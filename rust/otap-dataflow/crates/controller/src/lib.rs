@@ -21,7 +21,6 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::node::NodeKind;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -32,7 +31,7 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
@@ -330,7 +329,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever(metrics_reporter, pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx)
+            .run_forever(
+                pipeline_key,
+                obs_evt_reporter,
+                metrics_reporter,
+                pipeline_ctrl_msg_tx,
+                pipeline_ctrl_msg_rx,
+            )
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })
@@ -353,52 +358,6 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
         _ => ErrorSummary::Pipeline {
             error_kind: "runtime".into(),
             message: error.to_string(),
-            source: None,
-        },
-    }
-}
-
-fn error_summary_from(err: &EngineError) -> ErrorSummary {
-    match err {
-        EngineError::ReceiverError {
-            receiver,
-            kind,
-            error,
-            source_detail,
-        } => ErrorSummary::Node {
-            node: receiver.name.to_string(),
-            node_kind: NodeKind::Receiver,
-            error_kind: kind.to_string(),
-            message: error.clone(),
-            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-        },
-        EngineError::ProcessorError {
-            processor,
-            kind,
-            error,
-            source_detail,
-        } => ErrorSummary::Node {
-            node: processor.name.to_string(),
-            node_kind: NodeKind::Processor,
-            error_kind: kind.to_string(),
-            message: error.clone(),
-            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-        },
-        EngineError::ExporterError {
-            exporter,
-            kind,
-            error,
-            source_detail,
-        } => ErrorSummary::Node {
-            node: exporter.name.to_string(),
-            node_kind: NodeKind::Exporter,
-            error_kind: kind.to_string(),
-            message: error.clone(),
-            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
-        },
-        _ => ErrorSummary::Pipeline {
-            error_kind: err.variant_name(),
-            message: err.to_string(),
             source: None,
         },
     }

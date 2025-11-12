@@ -33,7 +33,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::control::{AckMsg, NackMsg};
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, ProcessorErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::message::Message;
@@ -44,7 +44,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -214,6 +214,14 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_timer(duration).await
     }
 
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
     /// Send an Ack to a node of known-interest.
     pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
     where
@@ -228,6 +236,11 @@ impl<PData> EffectHandler<PData> {
         F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         self.core.route_nack(nack, cxf).await
+    }
+
+    /// Delay data.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.delay_data(when, data).await
     }
 
     /// Reports metrics collected by the processor.

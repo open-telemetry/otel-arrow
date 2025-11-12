@@ -85,10 +85,11 @@ pub struct Quota {
 }
 
 /// Defines how CPU cores should be allocated for pipeline execution.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreAllocation {
     /// Use all available CPU cores.
+    #[default]
     AllCores,
     /// Use a specific number of CPU cores (starting from core 0).
     /// If the requested number exceeds available cores, use all available cores.
@@ -120,12 +121,6 @@ impl Display for CoreAllocation {
                 Ok(())
             }
         }
-    }
-}
-
-impl Default for CoreAllocation {
-    fn default() -> Self {
-        Self::AllCores
     }
 }
 

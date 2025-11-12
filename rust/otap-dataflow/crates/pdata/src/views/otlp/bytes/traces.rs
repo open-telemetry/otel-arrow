@@ -6,7 +6,7 @@
 
 use std::{cell::Cell, num::NonZeroUsize};
 
-use otel_arrow_rust::{
+use crate::{
     proto::{
         consts::{
             field_num::traces::{
@@ -27,18 +27,18 @@ use otel_arrow_rust::{
         opentelemetry::trace::v1::{span::SpanKind, status::StatusCode},
     },
     schema::{SpanId, TraceId},
-};
-
-use crate::views::{
-    otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue},
-    otlp::bytes::decode::{
-        FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-        from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
-        to_nonzero_range,
-    },
-    otlp::bytes::resource::RawResource,
-    trace::{
-        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
+    views::{
+        otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue},
+        otlp::bytes::decode::{
+            FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+            from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim,
+            read_varint, to_nonzero_range,
+        },
+        otlp::bytes::resource::RawResource,
+        trace::{
+            EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView,
+            TracesView,
+        },
     },
 };
 

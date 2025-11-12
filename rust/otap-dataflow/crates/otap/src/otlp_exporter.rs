@@ -5,10 +5,10 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
@@ -21,11 +21,12 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +43,10 @@ pub struct Config {
     pub grpc_endpoint: String,
     /// The compression method to use for the gRPC connection
     pub compression_method: Option<CompressionMethod>,
+    /// Timeout for RPC requests. If not specified, no timeout is applied.
+    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
+    #[serde(default, with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 /// Exporter that sends OTLP data via gRPC
@@ -108,8 +113,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let channel = Channel::from_shared(self.config.grpc_endpoint.clone())
-            .map_err(|e| {
+        let mut endpoint =
+            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -117,8 +122,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     error: format!("grpc channel error {e}"),
                     source_detail,
                 }
-            })?
-            .connect_lazy();
+            })?;
+
+        // Apply timeout if configured
+        if let Some(timeout) = self.config.timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
+
+        let channel = endpoint.connect_lazy();
 
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::new(channel.clone());
@@ -303,7 +314,7 @@ async fn handle_export_result<T>(
 /// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
 /// and handling Ack/Nack delivery.
 async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
-    mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
+    mut otap_batch: otap_df_pdata::otap::OtapArrowRecords,
     context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
@@ -375,11 +386,6 @@ mod tests {
 
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
-    };
     use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
@@ -394,6 +400,11 @@ mod tests {
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
+    };
+    use otap_df_pdata::proto::opentelemetry::collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
@@ -607,6 +618,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -671,6 +683,7 @@ mod tests {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
+                    timeout: None,
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },

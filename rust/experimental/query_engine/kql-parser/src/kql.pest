@@ -20,6 +20,7 @@ positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
 
 // Logical Tokens
+invalid_equals_token = @{ "=" ~ !("="|"~") }
 equals_token = @{ "==" }
 equals_insensitive_token = @{ "=~" }
 not_equals_token = @{ "!=" }
@@ -75,18 +76,21 @@ string_literal = @{
     ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
-null_literal = {
-    ("bool(" ~ "null" ~ ")") |
-    ("datetime(" ~ "null" ~ ")") |
-    ("dynamic(" ~ "null" ~ ")") |
-    ("guid(" ~ "null" ~ ")") |
-    ("int(" ~ "null" ~ ")") |
-    ("long(" ~ "null" ~ ")") |
-    ("real(" ~ "null" ~ ")") |
-    ("double(" ~ "null" ~ ")") |
-    ("timespan(" ~ "null" ~ ")") |
-    ("regex(" ~ "null" ~ ")")
+type_literal = {
+    "bool"
+    | "datetime"
+    | "decimal"
+    | "double"
+    | "dynamic"
+    | "guid"
+    | "int"
+    | "long"
+    | "real"
+    | "regex"
+    | "string"
+    | "timespan"
 }
+null_literal = { type_literal ~ "(" ~ "null" ~ ")" }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 identifier_or_pattern_literal = ${
     (("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
@@ -142,6 +146,9 @@ type_unary_expressions = {
     | integer_literal
     | string_literal
 }
+
+get_type_expression = { "gettype" ~ "(" ~ scalar_expression ~ ")" }
+typeof_expression = { "typeof" ~ "(" ~ type_literal ~ ")" }
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
@@ -217,12 +224,15 @@ logical_unary_expressions = {
     not_expression
 }
 
+extract_json_expression = { "extract_json" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ typeof_expression)? ~ ")" }
+
 /* Note: Order is imporant here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
 scalar_unary_expression = {
     type_unary_expressions
+    | get_type_expression
     | conditional_unary_expressions
     | conversion_unary_expressions
     | string_unary_expressions
@@ -231,6 +241,7 @@ scalar_unary_expression = {
     | temporal_unary_expressions
     | logical_unary_expressions
     | parse_unary_expressions
+    | extract_json_expression
     | accessor_expression
     | "(" ~ scalar_expression ~ ")"
 }
@@ -240,7 +251,7 @@ scalar_arithmetic_binary_expression = _{
     | (plus_token|minus_token) ~ scalar_unary_expression
 }
 scalar_logical_binary_expression = _{
-    (equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_unary_expression
+    (equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token|invalid_equals_token) ~ scalar_unary_expression
     | matches_regex_token ~ scalar_unary_expression
     | (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token) ~ scalar_unary_expression
     | (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ scalar_list_expression

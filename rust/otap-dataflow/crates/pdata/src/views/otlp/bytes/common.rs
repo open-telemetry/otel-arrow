@@ -7,20 +7,20 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
-use crate::views::otlp::bytes::decode::{
-    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
-    from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
-    read_varint, to_nonzero_range,
-};
-use otel_arrow_rust::proto::consts::field_num::common::{
+use crate::proto::consts::field_num::common::{
     ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE,
     ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE, ANY_VALUE_STRING_VALUE, ARRAY_VALUE_VALUES,
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION, KEY_VALUE_KEY,
     KEY_VALUE_LIST_VALUES, KEY_VALUE_VALUE,
 };
-use otel_arrow_rust::proto::consts::wire_types;
+use crate::proto::consts::wire_types;
+use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
+use crate::views::otlp::bytes::decode::{
+    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
+    from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
+    read_varint, to_nonzero_range,
+};
 
 /// Implementation of `AttributeView` backed by protobuf serialized `KeyValue` message
 pub struct RawKeyValue<'a> {

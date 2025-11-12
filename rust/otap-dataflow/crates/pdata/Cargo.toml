@@ -9,7 +9,35 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-otel-arrow-rust = { workspace = true }
+ahash = { workspace = true }
+arrow = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-schema = { workspace = true }
+ciborium = { workspace = true }
+itertools = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-pdata-otlp-macros = { workspace = true }
+otap-df-pdata-otlp-model = { workspace = true }
+nix = { workspace = true }
+num_enum = { workspace = true }
+paste = { workspace = true }
+pretty_assertions = { workspace = true }
+prost = { workspace = true }
+rand = { workspace = true }
+roaring = { workspace = true }
+simdutf8 = { workspace = true }
+serde = { workspace = true }
+serde_cbor = { workspace = true }
+replace_with = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[dev-dependencies]
+tokio-stream = { workspace = true }
+prost = { workspace = true }
 
 [lints]
 workspace = true
