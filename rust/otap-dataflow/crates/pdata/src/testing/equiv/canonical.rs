@@ -59,3 +59,13 @@ where
         vec.push(decoded);
     }
 }
+
+// Canonicalize a messqage into bytes, assuming infallible.
+pub(crate) fn canonicalize_message<T>(msg: T) -> Vec<u8>
+where
+    T: Message,
+{
+    let mut buf = Vec::new();
+    msg.encode(&mut buf).expect("encoding should not fail");
+    buf
+}

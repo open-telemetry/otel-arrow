@@ -4,8 +4,9 @@
 //! Trace equivalence checking.
 
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
-use crate::testing::equiv::canonical::{canonicalize_any_value, canonicalize_vec};
-use prost::Message;
+use crate::testing::equiv::canonical::{
+    canonicalize_any_value, canonicalize_message, canonicalize_vec,
+};
 use std::collections::BTreeSet;
 
 /// Split a TracesData into individual singleton TracesData messages (one per span).
@@ -34,7 +35,7 @@ fn traces_split_into_singletons(traces_data: &TracesData) -> Vec<TracesData> {
 }
 
 /// Canonicalize a singleton TracesData by sorting all fields that need canonical ordering.
-fn traces_canonicalize_singleton(traces_data: &mut TracesData) {
+fn traces_canonicalize_singleton_in_place(traces_data: &mut TracesData) {
     // Canonicalize resource attributes
     for resource_spans in &mut traces_data.resource_spans {
         if let Some(resource) = &mut resource_spans.resource {
@@ -87,23 +88,6 @@ fn traces_canonicalize_singleton(traces_data: &mut TracesData) {
 }
 
 /// Assert that two collections of `TracesData` instances are equivalent.
-///
-/// This checks all structured fields and attributes, comparing them in canonical order
-/// so that field order doesn't matter.
-///
-/// Approach:
-/// 1. Split each TracesData into singleton messages (one span per message)
-/// 2. Clone and canonicalize each singleton (sort attributes, events, links, etc.)
-/// 3. Encode each canonicalized singleton as bytes using Prost encoding
-/// 4. Collect encoded bytes into BTreeSet<Vec<u8>>
-/// 5. Compare sets
-///
-/// Using bytes as the comparison key works around the fact that Prost doesn't
-/// generate Eq/Ord for messages with f64 fields (due to NaN). The encoding
-/// is deterministic for canonicalized messages.
-///
-/// # Panics
-/// Panics if the two collections are not equivalent.
 pub fn assert_traces_equivalent(left: &[TracesData], right: &[TracesData]) {
     // Split into singletons from all TracesData in the slices
     let mut left_singletons: Vec<TracesData> =
@@ -115,29 +99,21 @@ pub fn assert_traces_equivalent(left: &[TracesData], right: &[TracesData]) {
 
     // Canonicalize each singleton
     for singleton in &mut left_singletons {
-        traces_canonicalize_singleton(singleton);
+        traces_canonicalize_singleton_in_place(singleton);
     }
     for singleton in &mut right_singletons {
-        traces_canonicalize_singleton(singleton);
+        traces_canonicalize_singleton_in_place(singleton);
     }
 
     // Encode to bytes and collect into BTreeSets
     let left_set: BTreeSet<Vec<u8>> = left_singletons
         .into_iter()
-        .map(|msg| {
-            let mut buf = Vec::new();
-            msg.encode(&mut buf).expect("encoding should not fail");
-            buf
-        })
+        .map(canonicalize_message)
         .collect();
 
     let right_set: BTreeSet<Vec<u8>> = right_singletons
         .into_iter()
-        .map(|msg| {
-            let mut buf = Vec::new();
-            msg.encode(&mut buf).expect("encoding should not fail");
-            buf
-        })
+        .map(canonicalize_message)
         .collect();
 
     // Use pretty_assertions for nice diff output

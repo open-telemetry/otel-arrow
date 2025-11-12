@@ -3,9 +3,8 @@
 
 //! Log equivalence checking.
 
-use super::canonical::{canonicalize_any_value, canonicalize_vec};
+use super::canonical::{canonicalize_any_value, canonicalize_message, canonicalize_vec};
 use crate::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
-use prost::Message;
 use std::collections::BTreeSet;
 
 /// Split a LogsData into individual singleton LogsData messages (one per log record).
@@ -35,7 +34,7 @@ fn logs_split_into_singletons(logs_data: &LogsData) -> Vec<LogsData> {
 
 /// Canonicalize a presumed-singleton LogsData by sorting all
 /// item-level fields that need canonical ordering.
-fn logs_canonicalize_singleton(logs_data: &mut LogsData) {
+fn logs_canonicalize_singleton_in_place(logs_data: &mut LogsData) {
     // Canonicalize resource attributes
     for resource_logs in &mut logs_data.resource_logs {
         if let Some(resource) = &mut resource_logs.resource {
@@ -83,29 +82,21 @@ pub fn assert_logs_equivalent(left: &[LogsData], right: &[LogsData]) {
 
     // Canonicalize each singleton
     for singleton in &mut left_singletons {
-        logs_canonicalize_singleton(singleton);
+        logs_canonicalize_singleton_in_place(singleton);
     }
     for singleton in &mut right_singletons {
-        logs_canonicalize_singleton(singleton);
+        logs_canonicalize_singleton_in_place(singleton);
     }
 
     // Encode to bytes and collect into BTreeSets
     let left_set: BTreeSet<Vec<u8>> = left_singletons
         .into_iter()
-        .map(|msg| {
-            let mut buf = Vec::new();
-            msg.encode(&mut buf).expect("encoding should not fail");
-            buf
-        })
+        .map(canonicalize_message)
         .collect();
 
     let right_set: BTreeSet<Vec<u8>> = right_singletons
         .into_iter()
-        .map(|msg| {
-            let mut buf = Vec::new();
-            msg.encode(&mut buf).expect("encoding should not fail");
-            buf
-        })
+        .map(canonicalize_message)
         .collect();
 
     // Use pretty_assertions for nice diff output
