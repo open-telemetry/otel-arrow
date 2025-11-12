@@ -20,6 +20,7 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::future::{LocalBoxFuture, poll_fn};
+use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
 use h2::server::{self, SendResponse};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
@@ -1186,70 +1187,36 @@ where
 }
 
 struct LocalFutureSet<F> {
-    slots: Vec<Option<F>>,
-    free_stack: Vec<usize>,
-    active_queue: VecDeque<usize>,
+    futures: FuturesUnordered<F>,
+    capacity: usize,
 }
 
 impl<F> LocalFutureSet<F> {
     fn with_capacity(capacity: usize) -> Self {
-        let mut slots = Vec::with_capacity(capacity);
-        slots.resize_with(capacity, || None);
-        let free_stack = (0..capacity).rev().collect::<Vec<_>>();
         Self {
-            slots,
-            free_stack,
-            active_queue: VecDeque::with_capacity(capacity),
+            futures: FuturesUnordered::new(),
+            capacity,
         }
     }
 
     fn len(&self) -> usize {
-        self.active_queue.len()
+        self.futures.len()
     }
 
     fn push(&mut self, future: F) -> Result<(), F> {
-        let Some(index) = self.free_stack.pop() else {
-            return Err(future);
-        };
-        self.slots[index] = Some(future);
-        self.active_queue.push_back(index);
-        Ok(())
+        if self.len() >= self.capacity {
+            Err(future)
+        } else {
+            self.futures.push(future);
+            Ok(())
+        }
     }
 
     fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<<F as Future>::Output>>
     where
         F: Future + Unpin,
     {
-        if self.active_queue.is_empty() {
-            return Poll::Ready(None);
-        }
-
-        let iterations = self.active_queue.len();
-        for _ in 0..iterations {
-            let Some(index) = self.active_queue.pop_front() else {
-                break;
-            };
-            let Some(future) = self.slots[index].as_mut() else {
-                continue;
-            };
-            let mut pinned = Pin::new(future);
-            match pinned.as_mut().poll(cx) {
-                Poll::Ready(output) => {
-                    self.slots[index] = None;
-                    self.free_stack.push(index);
-                    return Poll::Ready(Some(output));
-                }
-                Poll::Pending => {
-                    self.active_queue.push_back(index);
-                }
-            }
-        }
-
-        if self.active_queue.is_empty() {
-            Poll::Ready(None)
-        } else {
-            Poll::Pending
-        }
+        Pin::new(&mut self.futures).poll_next(cx)
     }
 }
 
