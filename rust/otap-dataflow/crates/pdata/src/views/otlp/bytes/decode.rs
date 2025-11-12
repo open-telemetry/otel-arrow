@@ -17,7 +17,7 @@ impl<T: FieldRanges> Clone for ProtoBytesParser<'_, T> {
         Self {
             buf: self.buf,
             pos: self.pos.clone(),
-            field_offsets: self.field_offsets.clone(),
+            field_ranges: self.field_ranges.clone(),
         }
     }
 }
@@ -101,7 +101,7 @@ pub struct ProtoBytesParser<'a, T: FieldRanges> {
     pos: Rc<Cell<usize>>,
 
     /// offsets within the buffer of fields that have been encountered as the buffer is parsed
-    field_offsets: Rc<T>,
+    field_ranges: Rc<T>,
 }
 
 impl<'a, T> ProtoBytesParser<'a, T>
@@ -114,7 +114,7 @@ where
         Self {
             buf,
             pos: Rc::new(Cell::new(0)),
-            field_offsets: Rc::new(T::new()),
+            field_ranges: Rc::new(T::new()),
         }
     }
 
@@ -124,7 +124,7 @@ where
     #[must_use]
     pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
         // Check if the field offset is already cached before entering the parsing loop
-        if let Some((start, end)) = self.field_offsets.get_field_range(field_num) {
+        if let Some((start, end)) = self.field_ranges.get_field_range(field_num) {
             return Some(&self.buf[start..end]);
         }
 
@@ -147,7 +147,7 @@ where
             self.pos.set(end);
 
             // save the offset of the field we've encountered
-            self.field_offsets
+            self.field_ranges
                 .set_field_range(field, wire_type, start, end);
 
             // Check if this is the field we're looking for
@@ -211,7 +211,7 @@ pub struct RepeatedFieldProtoBytesParser<'a, T: FieldRanges> {
     // `pos` is a shared offset representing how far parsing has progressed in the buffer
     pos: Rc<Cell<usize>>,
 
-    /// offsets within the buffer of fields that have been encountered as the buffer is parsed
+    /// ranges within the buffer of fields that have been encountered as the buffer is parsed
     field_ranges: Rc<T>,
 
     field_num: u64,
@@ -239,7 +239,7 @@ where
         Self {
             buf: other.buf,
             pos: other.pos.clone(),
-            field_ranges: other.field_offsets.clone(),
+            field_ranges: other.field_ranges.clone(),
             field_num,
             expected_wire_type,
             next_range: None,
@@ -326,26 +326,47 @@ where
     }
 }
 
+/// This is a helper trait for adapting iterators of primitive fields using the packed encoding
+/// so that they can be used generically in [`RepeatedPrimitiveIter`]
+trait PackedIter<'a> {
+    type DecodedValue;
+
+    fn new(buffer: &'a [u8]) -> Self;
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue>;
+}
+
 /// Iterator for producing elements whose type is a repeated primitive where that primitive
-/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64`. OTLP uses the
-/// packed encoding for these types of fields
-/// https://protobuf.dev/editions/features/#repeated_field_encoding
+/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64` and the field
+/// is encoded using packed encoding.
+///
+/// Note this is for internal use only. The proto documentation states that decoders should
+/// have the flexibility to accept both packed and expanded encodings. Unless we're sure that
+/// the field is packed encoded, it's safer to use [`RepeatedFixed64Iter`] which automatically
+/// handles both encodings.
 pub struct PackedFixed64Iter<'a, V: FromFixed64> {
     buffer: &'a [u8],
     pos: usize,
     _pd: PhantomData<V>,
 }
 
-impl<'a, V> PackedFixed64Iter<'a, V>
+impl<'a, V> PackedIter<'a> for PackedFixed64Iter<'a, V>
 where
     V: FromFixed64,
 {
-    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+    type DecodedValue = V;
+
+    fn new(buffer: &'a [u8]) -> Self {
         Self {
             buffer,
             pos: 0,
             _pd: PhantomData,
         }
+    }
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue> {
+        let slice: [u8; 8] = slice.try_into().ok()?;
+        Some(V::from_fixed64_slice(slice))
     }
 }
 
@@ -389,17 +410,28 @@ impl FromFixed64 for u64 {
 }
 
 /// Iterator for producing elements whose type is a repeated primitive where that primitive
-/// can be encoded as a varint. e.g. `repeated uint64`. OTLP uses the packed encoding for these
-/// types of fields:
-/// https://protobuf.dev/editions/features/#repeated_field_encoding
+/// can be encoded as a varint. e.g. `repeated uint64`. and the field is encoded using packed
+/// encoding.
+///
+/// Note this is for internal use only. The proto documentation states that decoders should
+/// have the flexibility to accept both packed and expanded encodings. Unless we're sure that
+/// the field is packed encoded, it's safer to use [`RepeatedFixed64Iter`] which automatically
+/// handles both encodings.
 pub struct PackedVarintIter<'a> {
     buffer: &'a [u8],
     pos: usize,
 }
 
-impl<'a> PackedVarintIter<'a> {
-    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+impl<'a> PackedIter<'a> for PackedVarintIter<'a> {
+    type DecodedValue = u64;
+
+    fn new(buffer: &'a [u8]) -> Self {
         Self { buffer, pos: 0 }
+    }
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue> {
+        let (val, _) = read_varint(slice, 0)?;
+        Some(val)
     }
 }
 
@@ -414,6 +446,184 @@ impl<'a> Iterator for PackedVarintIter<'a> {
         self.pos = next_pos;
 
         Some(val)
+    }
+}
+
+/// Trait for [`FieldRanges`] that also contain repeated primitive fields which may be encoded
+/// using either packed or expanded encoding.
+///
+/// The expectation here is that the implementation of the trait will also discover the type
+/// of encoding that is used when `FieldRanges::set_field_range` is set because the wire type
+/// is also passed to this call.
+pub trait RepeatedFieldEncodings: FieldRanges {
+    /// returns `true` if the field is using packed encoding or `false` if the field is using
+    /// expanded encoding.
+    fn is_packed(&self, field_num: u64) -> bool;
+}
+
+/// Generic iterator for repeated primitive fields that are possibly using the packed encoding
+///
+/// This iterator will determine the encoding, and produce the decoded field values (of type `V`)
+/// from the proto buffer which contains the repeated values.
+pub struct RepeatedPrimitiveIter<'a, T: RepeatedFieldEncodings, V, P> {
+    buf: &'a [u8],
+    field_num: u64,
+    pos: Rc<Cell<usize>>,
+    field_ranges: Rc<T>,
+
+    // expected wire type for the repeated field .. e.g. if the field is type `repeated double`
+    // this would be wire_types::FIXED64
+    repeated_wire_type: u64,
+
+    // this will be used to iterate over either:
+    // - the repeated values (in case that the encoding is expanded)
+    // - the segments containing the packed fields (in case that the encoding is packed)
+    field_iter: Option<RepeatedFieldProtoBytesParser<'a, T>>,
+
+    // this will be initialized lazily if the encoding is packed. one instance of the packed
+    // encoder (type P) wil be created for each segment of the buffer containing packed values
+    packed_iter: Option<P>,
+
+    // flag for whether the field is packed or expanded. this will be initialized lazily
+    // as well once the encoding is determined
+    packed: bool,
+
+    _pd: PhantomData<V>,
+}
+
+impl<'a, T, V, P> RepeatedPrimitiveIter<'a, T, V, P>
+where
+    T: RepeatedFieldEncodings,
+{
+    fn from_byte_parser_inner(
+        other: &ProtoBytesParser<'a, T>,
+        field_num: u64,
+        repeated_wire_type: u64,
+    ) -> Self {
+        Self {
+            buf: other.buf,
+            field_num,
+            pos: other.pos.clone(),
+            field_ranges: other.field_ranges.clone(),
+            repeated_wire_type,
+            _pd: PhantomData,
+
+            // following fields will be initialized lazily once encoding determined
+            packed: Default::default(),
+            field_iter: None,
+            packed_iter: None,
+        }
+    }
+}
+
+impl<'a, T, V, P> Iterator for RepeatedPrimitiveIter<'a, T, V, P>
+where
+    P: PackedIter<'a, DecodedValue = V> + Iterator<Item = V>,
+    T: RepeatedFieldEncodings,
+{
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // initialize the inner iterator
+        while self.field_iter.is_none() {
+            let range = self.field_ranges.get_field_range(self.field_num);
+            match range {
+                Some(range) => {
+                    self.packed = self.field_ranges.is_packed(self.field_num);
+                    self.field_iter = Some(RepeatedFieldProtoBytesParser {
+                        buf: self.buf,
+                        pos: self.pos.clone(),
+                        field_ranges: self.field_ranges.clone(),
+                        field_num: self.field_num,
+                        next_range: Some(range),
+                        values_exhausted: false,
+                        expected_wire_type: if self.packed {
+                            wire_types::LEN
+                        } else {
+                            self.repeated_wire_type
+                        },
+                    });
+                }
+                None => {
+                    // advance
+                    let pos = self.pos.get();
+                    if pos >= self.buf.len() {
+                        // end of buffer, field not found
+                        return None;
+                    }
+
+                    let (tag, next_pos) = read_varint(self.buf, pos)?;
+                    let field = tag >> 3;
+                    let wire_type = tag & 7;
+
+                    let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
+
+                    // save the offset of the field we've encountered
+                    self.field_ranges
+                        .set_field_range(field, wire_type, start, end);
+
+                    self.pos.set(end)
+                }
+            }
+        }
+
+        // safety: this will have been initialized already
+        let field_iter = self.field_iter.as_mut().expect("field iter initialized");
+
+        if self.packed {
+            if self.packed_iter.is_none() {
+                let next_packed_slice = field_iter.next()?;
+                self.packed_iter = Some(P::new(next_packed_slice));
+            }
+
+            let packed_iter = self.packed_iter.as_mut().expect("packed iter initialized");
+            match packed_iter.next() {
+                Some(val) => Some(val),
+                None => {
+                    // try to initialize a new packed iter for the next range
+                    let next_packed_slice = field_iter.next()?;
+                    let mut next_packed_iter = P::new(next_packed_slice);
+                    let result = next_packed_iter.next()?;
+                    self.packed_iter = Some(next_packed_iter);
+                    Some(result)
+                }
+            }
+        } else {
+            field_iter.next().and_then(P::decode_value)
+        }
+    }
+}
+
+/// This iterator can be used for repeated primitives whose types are are encoded as `fixed64`.
+/// For example it can be used for field types such as `repeated double` or `repeated fixed64`
+pub type RepeatedFixed64Iter<'a, T, V> = RepeatedPrimitiveIter<'a, T, V, PackedFixed64Iter<'a, V>>;
+
+impl<'a, T, V> RepeatedFixed64Iter<'a, T, V>
+where
+    T: RepeatedFieldEncodings,
+    V: FromFixed64,
+{
+    /// Initialize a new instance using the [`ProtoBytesParser`] which was parsing the prot buffer
+    /// that contains this repeated field
+    #[must_use]
+    pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
+        Self::from_byte_parser_inner(other, field_num, wire_types::FIXED64)
+    }
+}
+
+/// This iterator can be used for repeated primitives whose types are are encoded as `varint`.
+/// For example it can be used for field types such as `repeated uint64`
+pub type RepeatedVarintIter<'a, T> = RepeatedPrimitiveIter<'a, T, u64, PackedVarintIter<'a>>;
+
+impl<'a, T> RepeatedVarintIter<'a, T>
+where
+    T: RepeatedFieldEncodings,
+{
+    /// Initialize a new instance using the [`ProtoBytesParser`] which was parsing the prot buffer
+    /// that contains this repeated field
+    #[must_use]
+    pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
+        Self::from_byte_parser_inner(other, field_num, wire_types::VARINT)
     }
 }
 
