@@ -3,7 +3,6 @@
 
 //! This module contains various types and methods for interacting with and manipulating
 //! OTAP data / record batches
-
 use arrow::array::RecordBatch;
 use otap_df_config::SignalType;
 use transform::transport_optimize::{
@@ -19,6 +18,9 @@ use crate::{
 };
 
 pub mod batching;
+#[cfg(test)]
+mod batching_tests;
+
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;
