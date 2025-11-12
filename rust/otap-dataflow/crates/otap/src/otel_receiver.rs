@@ -25,7 +25,7 @@ use futures::{Stream, StreamExt};
 use h2::server::{self, SendResponse};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::admitter::{AdmitDecision, Admitter, ConnectionGuard};
@@ -38,14 +38,12 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
-use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces, from_record_messages};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     BatchArrowRecords, BatchStatus, StatusCode as ProtoStatusCode,
 };
-use otel_arrow_rust::{
-    Consumer,
-    otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
-};
+use otap_df_pdata::{Consumer, OtapArrowRecords};
+use otap_df_telemetry::metrics::MetricSet;
 use prost::Message;
 use serde::Deserialize;
 use smallvec::smallvec;

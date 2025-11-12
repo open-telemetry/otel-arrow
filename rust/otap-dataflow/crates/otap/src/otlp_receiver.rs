@@ -30,7 +30,6 @@ use crate::otap_grpc::common::SignalAckRoutingState;
 use crate::otap_grpc::{GrpcServerSettings, common};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -263,24 +262,6 @@ mod tests {
     use super::*;
 
     use crate::compression::CompressionMethod;
-    use crate::pdata::OtlpProtoBytes;
-    use crate::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
-    use crate::proto::opentelemetry::collector::logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse,
-    };
-    use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
-    use crate::proto::opentelemetry::collector::metrics::v1::{
-        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-    };
-    use crate::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
-    use crate::proto::opentelemetry::collector::trace::v1::{
-        ExportTraceServiceRequest, ExportTraceServiceResponse,
-    };
-    use crate::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use crate::proto::opentelemetry::resource::v1::Resource;
-    use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;

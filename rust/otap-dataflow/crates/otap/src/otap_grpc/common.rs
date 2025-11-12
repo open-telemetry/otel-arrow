@@ -6,7 +6,7 @@
 use crate::otap_grpc::GrpcServerSettings;
 use crate::otap_grpc::otlp::server::{AckSubscriptionState, RouteResponse};
 use crate::pdata::OtapPdata;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_engine::control::{AckMsg, NackMsg};
 use tonic::transport::Server;
 
