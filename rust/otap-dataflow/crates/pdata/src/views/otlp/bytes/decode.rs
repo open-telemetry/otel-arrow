@@ -17,7 +17,7 @@ impl<T: FieldRanges> Clone for ProtoBytesParser<'_, T> {
         Self {
             buf: self.buf,
             pos: self.pos.clone(),
-            field_offsets: self.field_offsets.clone(),
+            field_ranges: self.field_ranges.clone(),
         }
     }
 }
@@ -101,7 +101,7 @@ pub struct ProtoBytesParser<'a, T: FieldRanges> {
     pos: Rc<Cell<usize>>,
 
     /// offsets within the buffer of fields that have been encountered as the buffer is parsed
-    field_offsets: Rc<T>,
+    field_ranges: Rc<T>,
 }
 
 impl<'a, T> ProtoBytesParser<'a, T>
@@ -114,7 +114,7 @@ where
         Self {
             buf,
             pos: Rc::new(Cell::new(0)),
-            field_offsets: Rc::new(T::new()),
+            field_ranges: Rc::new(T::new()),
         }
     }
 
@@ -124,7 +124,7 @@ where
     #[must_use]
     pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
         // Check if the field offset is already cached before entering the parsing loop
-        if let Some((start, end)) = self.field_offsets.get_field_range(field_num) {
+        if let Some((start, end)) = self.field_ranges.get_field_range(field_num) {
             return Some(&self.buf[start..end]);
         }
 
@@ -147,7 +147,7 @@ where
             self.pos.set(end);
 
             // save the offset of the field we've encountered
-            self.field_offsets
+            self.field_ranges
                 .set_field_range(field, wire_type, start, end);
 
             // Check if this is the field we're looking for
@@ -211,7 +211,7 @@ pub struct RepeatedFieldProtoBytesParser<'a, T: FieldRanges> {
     // `pos` is a shared offset representing how far parsing has progressed in the buffer
     pos: Rc<Cell<usize>>,
 
-    /// offsets within the buffer of fields that have been encountered as the buffer is parsed
+    /// ranges within the buffer of fields that have been encountered as the buffer is parsed
     field_ranges: Rc<T>,
 
     field_num: u64,
@@ -239,7 +239,7 @@ where
         Self {
             buf: other.buf,
             pos: other.pos.clone(),
-            field_ranges: other.field_offsets.clone(),
+            field_ranges: other.field_ranges.clone(),
             field_num,
             expected_wire_type,
             next_range: None,
@@ -326,6 +326,14 @@ where
     }
 }
 
+trait PackedIter<'a> {
+    type DecodedValue;
+
+    fn new(buffer: &'a [u8]) -> Self;
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue>;
+}
+
 /// Iterator for producing elements whose type is a repeated primitive where that primitive
 /// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64`. OTLP uses the
 /// packed encoding for these types of fields
@@ -336,16 +344,23 @@ pub struct PackedFixed64Iter<'a, V: FromFixed64> {
     _pd: PhantomData<V>,
 }
 
-impl<'a, V> PackedFixed64Iter<'a, V>
+impl<'a, V> PackedIter<'a> for PackedFixed64Iter<'a, V>
 where
     V: FromFixed64,
 {
-    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+    type DecodedValue = V;
+
+    fn new(buffer: &'a [u8]) -> Self {
         Self {
             buffer,
             pos: 0,
             _pd: PhantomData,
         }
+    }
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue> {
+        let slice: [u8; 8] = slice.try_into().ok()?;
+        Some(V::from_fixed64_slice(slice))
     }
 }
 
@@ -397,9 +412,16 @@ pub struct PackedVarintIter<'a> {
     pos: usize,
 }
 
-impl<'a> PackedVarintIter<'a> {
-    pub(crate) fn new(buffer: &'a [u8]) -> Self {
+impl<'a> PackedIter<'a> for PackedVarintIter<'a> {
+    type DecodedValue = u64;
+
+    fn new(buffer: &'a [u8]) -> Self {
         Self { buffer, pos: 0 }
+    }
+
+    fn decode_value(slice: &[u8]) -> Option<Self::DecodedValue> {
+        let (val, _) = read_varint(slice, 0)?;
+        Some(val)
     }
 }
 
@@ -417,32 +439,145 @@ impl<'a> Iterator for PackedVarintIter<'a> {
     }
 }
 
-enum RepeatedPrimitiveIterInner<P, E> {
+/// Trait for [`FieldRanges`] that also contain repeated primitive fields which may be encoded
+/// using either packed or expanded encoding.
+///
+/// The expectation here is that the implementation of the trait will also discover the type
+/// of encoding that is used when `FieldRanges::set_field_range` is set because the wire type
+/// is also passed to this call.
+pub trait RepeatedFieldEncodings: FieldRanges {
+    /// returns `true` if the field is using packed encoding or `false` if the field is using
+    /// expanded encoding.
+    fn is_packed(&self, field_num: u64) -> bool;
+}
+
+enum RepeatedPrimitiveIterInner<'a, P, T: FieldRanges> {
     Packed(P),
-    Expanded(E),
+    Expanded(RepeatedFieldProtoBytesParser<'a, T>),
 }
 
 ///
-pub struct RepeatedPrimitiveIter<'a, T, V, P, E> {
+pub struct RepeatedPrimitiveIter<'a, T: RepeatedFieldEncodings, V, P> {
     buf: &'a [u8],
     field_num: u64,
-    field_ranges: T,
-    inner: Option<RepeatedPrimitiveIterInner<P, E>>,
-    _pd: PhantomData<V>
+    pos: Rc<Cell<usize>>,
+    field_ranges: Rc<T>,
+    inner: Option<RepeatedPrimitiveIterInner<'a, P, T>>,
+    expected_wire_type: u64,
+    _pd: PhantomData<V>,
 }
 
-impl<'a, T, V, P, E> Iterator for RepeatedPrimitiveIter<'a, T, V, P, E> 
+impl<'a, T, V, P> RepeatedPrimitiveIter<'a, T, V, P>
 where
-    T: FieldRanges
+    T: RepeatedFieldEncodings,
+{
+    fn from_byte_parser_inner(
+        other: &ProtoBytesParser<'a, T>,
+        field_num: u64,
+        expected_wire_type: u64,
+    ) -> Self {
+        Self {
+            buf: other.buf,
+            field_num,
+            pos: other.pos.clone(),
+            field_ranges: other.field_ranges.clone(),
+            inner: None,
+            expected_wire_type,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<'a, T, V, P> Iterator for RepeatedPrimitiveIter<'a, T, V, P>
+where
+    P: PackedIter<'a, DecodedValue = V> + Iterator<Item = V>,
+    T: RepeatedFieldEncodings,
 {
     type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // initialize the inner iterator
         while self.inner.is_none() {
-            let range = self.field_ranges.get()
+            let range = self.field_ranges.get_field_range(self.field_num);
+            match range {
+                Some(range) => {
+                    if self.field_ranges.is_packed(self.field_num) {
+                        let slice = &self.buf[range.0..range.1];
+                        let inner_iter = P::new(slice);
+                        self.inner = Some(RepeatedPrimitiveIterInner::Packed(inner_iter));
+                    } else {
+                        let inner_iter = RepeatedFieldProtoBytesParser {
+                            buf: self.buf,
+                            pos: self.pos.clone(),
+                            field_ranges: self.field_ranges.clone(),
+                            field_num: self.field_num,
+                            expected_wire_type: self.expected_wire_type,
+                            next_range: Some(range),
+                            values_exhausted: false,
+                        };
+                        self.inner = Some(RepeatedPrimitiveIterInner::Expanded(inner_iter))
+                    }
+                }
+                None => {
+                    // advance
+                    let pos = self.pos.get();
+                    if pos >= self.buf.len() {
+                        // end of buffer, field not found
+                        return None;
+                    }
+
+                    let (tag, next_pos) = read_varint(self.buf, pos)?;
+                    let field = tag >> 3;
+                    let wire_type = tag & 7;
+
+                    let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
+
+                    // save the offset of the field we've encountered
+                    self.field_ranges
+                        .set_field_range(field, wire_type, start, end);
+
+                    self.pos.set(end)
+                }
+            }
         }
 
-        todo!()
+        match &mut self.inner {
+            Some(RepeatedPrimitiveIterInner::Expanded(inner)) => {
+                inner.next().and_then(P::decode_value)
+            }
+            Some(RepeatedPrimitiveIterInner::Packed(inner)) => inner.next(),
+            None => {
+                // safety: we've initialized the inner iterator in the block above
+                unreachable!("inner it should be initialized")
+            }
+        }
+    }
+}
+
+/// TODO
+pub type RepeatedFixed64Iter<'a, T, V> = RepeatedPrimitiveIter<'a, T, V, PackedFixed64Iter<'a, V>>;
+
+impl<'a, T, V> RepeatedFixed64Iter<'a, T, V>
+where
+    T: RepeatedFieldEncodings,
+    V: FromFixed64,
+{
+    /// TODO
+    pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
+        Self::from_byte_parser_inner(other, field_num, wire_types::FIXED64)
+    }
+}
+
+/// TODO
+pub type RepeatedVarintIter<'a, T> = RepeatedPrimitiveIter<'a, T, u64, PackedVarintIter<'a>>;
+
+impl<'a, T> RepeatedVarintIter<'a, T>
+where
+    T: RepeatedFieldEncodings,
+{
+    /// TODO
+    pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
+        Self::from_byte_parser_inner(other, field_num, wire_types::VARINT)
     }
 }
 
