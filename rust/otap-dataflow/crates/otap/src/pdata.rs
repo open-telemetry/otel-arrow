@@ -1,6 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! This module manages how telemetry pipeline data (pdata) flows through pipeline
+//! components (receivers, processors, exporters) and how components receive
+//! acknowledgments (Ack) and negative acknowledgments (Nack) about this pdata.
+//!
+//! This includes:
+//! - Context: a stack of pipeline component subscriptions
+//! - Interests: allows components to declare whether they subscribe to Ack/Nack
+//!
+//! Components can subscribe to receive notifications when their pdata is accepted (Ack) or
+//! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
+//! This functionality is exposed through various traits implemented by effect handlers.
+
 use async_trait::async_trait;
 use otap_df_config::SignalType;
 use otap_df_engine::error::Error;
