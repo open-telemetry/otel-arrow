@@ -1797,13 +1797,11 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
         Self: 'att;
 
     type BucketCountIter<'bc>
-        // = PackedFixed64Iter<'bc, u64>
         = RepeatedFixed64Iter<'bc, HistogramDataPointFieldRanges, u64>
     where
         Self: 'bc;
 
     type ExplicitBoundsIter<'eb>
-        // = PackedFixed64Iter<'eb, f64>
         = RepeatedFixed64Iter<'eb, HistogramDataPointFieldRanges, f64>
     where
         Self: 'eb;
