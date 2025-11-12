@@ -7,8 +7,6 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Code for encoding OTAP batch from pdata view
-pub mod encoder;
 /// Implementation of OTAP Exporter that implements the exporter trait
 pub mod otap_exporter;
 /// gRPC service implementation
@@ -32,9 +30,6 @@ pub mod retry_processor;
 
 /// Receiver that reads in syslog data
 pub mod syslog_cef_receiver;
-
-/// Generated protobuf files
-pub mod proto;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;

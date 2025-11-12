@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::pdata::OtapPdata;
 use arrow::array::{
     ArrowPrimitiveType, FixedSizeBinaryArray, PrimitiveArray, RecordBatch, StringArray,
     TimestampNanosecondArray, UInt8Array,
@@ -8,19 +9,18 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type};
 use arrow_ipc::writer::StreamWriter;
 use fluke_hpack::Encoder;
-use otel_arrow_rust::otlp::attributes::AttributeValueType;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
-use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otel_arrow_rust::proto::opentelemetry::common::v1::KeyValue;
-use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-use otel_arrow_rust::schema::consts::{self, metadata};
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
+use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue;
+use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otap_df_pdata::schema::consts::{self, metadata};
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
 
 pub struct SimpleDataGenOptions {
     pub id_offset: u16,

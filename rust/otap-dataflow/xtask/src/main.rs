@@ -15,6 +15,7 @@
 
 use std::process::Command;
 
+mod genproto;
 mod structure_check;
 
 #[cfg(not(tarpaulin_include))]
@@ -32,7 +33,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
             "compile-proto" => {
-                compile_proto()?;
+                genproto::compile_proto()?;
                 Ok(())
             }
             "structure-check" => structure_check::run(),
@@ -89,35 +90,6 @@ fn test_all() -> anyhow::Result<()> {
     println!("🚀 Running workspace tests with cargo test...");
     run("cargo", &["test", "--workspace"])?;
     println!("✅ All tests passed successfully.\n");
-    Ok(())
-}
-
-fn compile_proto() -> anyhow::Result<()> {
-    let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    tonic_prost_build::configure()
-        .out_dir("crates/otap/src/proto")
-        .compile_protos(
-            &[
-                // OTLP
-                "opentelemetry/proto/common/v1/common.proto",
-                "opentelemetry/proto/resource/v1/resource.proto",
-                "opentelemetry/proto/profiles/v1development/profiles.proto",
-                "opentelemetry/proto/trace/v1/trace.proto",
-                "opentelemetry/proto/metrics/v1/metrics.proto",
-                "opentelemetry/proto/logs/v1/logs.proto",
-                "opentelemetry/proto/collector/logs/v1/logs_service.proto",
-                "opentelemetry/proto/collector/trace/v1/trace_service.proto",
-                "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
-                "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
-                // OTAP
-                "proto/experimental/arrow/v1/arrow_service.proto",
-            ],
-            &[
-                format!("{base}/../../../proto/opentelemetry-proto").as_str(),
-                format!("{base}/../../../proto/opentelemetry").as_str(),
-            ],
-        )
-        .expect("Failed to compile protos.");
     Ok(())
 }
 

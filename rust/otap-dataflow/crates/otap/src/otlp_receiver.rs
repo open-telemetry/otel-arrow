@@ -30,6 +30,7 @@ use crate::otap_grpc::common::SignalAckRoutingState;
 use crate::otap_grpc::{GrpcServerSettings, common};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -289,6 +290,24 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+    };
+    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    };
+    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use std::net::SocketAddr;

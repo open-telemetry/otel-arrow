@@ -1,4 +1,6 @@
 # Manual version of the pipeline perf test that can be triggered for a given PR.
+# This workflow writes to / expects to find a placeholder status on the PR ref since we aren't
+# able to directly insert a state into it from 'outside' of that context.
 name: Pipeline Performance Tests - Manual PR
 permissions:
   contents: read
@@ -26,7 +28,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-512gb-x86-64
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
         with:
           egress-policy: audit
 
@@ -52,6 +54,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
+          # Run disk cleanup script
+          bash ./.github/workflows/scripts/disk-cleanup.sh
+
           sudo dnf -y install oracle-epel-release-el8 || true
           sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
           sudo dnf -y makecache
@@ -84,3 +90,35 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --debug --config "${{ inputs.suite_config }}"
+
+      - name: Set PR status based on result
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            // Read PR number from workflow inputs
+            const prNumber = context.payload.inputs.pr_number;
+
+            // Get PR info
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const sha = pr.head.sha;
+
+            // Map job result to status state
+            const state = '{{ job.status }}' === 'success' ? 'success' : 'failure';
+
+            // Set commit status on PR
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'perf-tests',
+              description: state === 'success'
+                ? 'Manual pipeline performance tests ran'
+                : 'Manual pipeline performance tests failed'
+            });

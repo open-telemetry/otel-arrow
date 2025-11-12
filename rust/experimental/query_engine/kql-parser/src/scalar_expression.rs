@@ -29,7 +29,8 @@ static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
         .op(Op::infix(equals_token, Left)
             | Op::infix(equals_insensitive_token, Left)
             | Op::infix(not_equals_token, Left)
-            | Op::infix(not_equals_insensitive_token, Left))
+            | Op::infix(not_equals_insensitive_token, Left)
+            | Op::infix(invalid_equals_token, Left))
         // <= >= < >
         .op(Op::infix(less_than_or_equal_to_token, Left)
             | Op::infix(greater_than_or_equal_to_token, Left)
@@ -126,6 +127,13 @@ pub(crate) fn parse_scalar_expression(
                     ))
                     .into(),
                 ),
+
+                Rule::invalid_equals_token => {
+                    return Err(ParserError::SyntaxError(
+                        location,
+                        "Unexpected assignment operator. Did you mean to use '==' instead?".into(),
+                    ));
+                }
 
                 Rule::greater_than_token => ScalarExpression::Logical(
                     LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(

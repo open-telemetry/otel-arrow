@@ -85,44 +85,32 @@ pub struct SignalTypeRouterMetrics {
 }
 
 impl SignalTypeRouterMetrics {
-    fn inc_received(&mut self, st: otap_df_config::experimental::SignalType) {
+    fn inc_received(&mut self, st: otap_df_config::SignalType) {
         match st {
-            otap_df_config::experimental::SignalType::Logs => self.signals_received_logs.inc(),
-            otap_df_config::experimental::SignalType::Metrics => {
-                self.signals_received_metrics.inc()
-            }
-            otap_df_config::experimental::SignalType::Traces => self.signals_received_traces.inc(),
+            otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
         }
     }
-    fn inc_routed_named(&mut self, st: otap_df_config::experimental::SignalType) {
+    fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
         match st {
-            otap_df_config::experimental::SignalType::Logs => self.signals_routed_named_logs.inc(),
-            otap_df_config::experimental::SignalType::Metrics => {
-                self.signals_routed_named_metrics.inc()
-            }
-            otap_df_config::experimental::SignalType::Traces => {
-                self.signals_routed_named_traces.inc()
-            }
+            otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
         }
     }
-    fn inc_routed_default(&mut self, st: otap_df_config::experimental::SignalType) {
+    fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
         match st {
-            otap_df_config::experimental::SignalType::Logs => {
-                self.signals_routed_default_logs.inc()
-            }
-            otap_df_config::experimental::SignalType::Metrics => {
-                self.signals_routed_default_metrics.inc()
-            }
-            otap_df_config::experimental::SignalType::Traces => {
-                self.signals_routed_default_traces.inc()
-            }
+            otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
         }
     }
-    fn inc_dropped(&mut self, st: otap_df_config::experimental::SignalType) {
+    fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
         match st {
-            otap_df_config::experimental::SignalType::Logs => self.signals_dropped_logs.inc(),
-            otap_df_config::experimental::SignalType::Metrics => self.signals_dropped_metrics.inc(),
-            otap_df_config::experimental::SignalType::Traces => self.signals_dropped_traces.inc(),
+            otap_df_config::SignalType::Logs => self.signals_dropped_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_dropped_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_dropped_traces.inc(),
         }
     }
 }
@@ -188,9 +176,9 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
                 // Determine desired out port by signal type
                 let desired_port = match st {
-                    otap_df_config::experimental::SignalType::Traces => PORT_TRACES,
-                    otap_df_config::experimental::SignalType::Metrics => PORT_METRICS,
-                    otap_df_config::experimental::SignalType::Logs => PORT_LOGS,
+                    otap_df_config::SignalType::Traces => PORT_TRACES,
+                    otap_df_config::SignalType::Metrics => PORT_METRICS,
+                    otap_df_config::SignalType::Logs => PORT_LOGS,
                 };
 
                 // Probe connections to decide if named route exists (avoid falling back on unrelated errors)
@@ -292,7 +280,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
 mod tests {
     use super::*;
     use otap_df_engine::testing::{processor::TestRuntime, test_node};
-    use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
+    use otap_df_pdata::otap::{Logs, OtapArrowRecords};
     use serde_json::json;
 
     #[test]
@@ -382,11 +370,11 @@ mod tests {
         };
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
+        use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::MetricsSystem;
         use otap_df_telemetry::config::Config as TelemetryConfig;
         use otap_df_telemetry::registry::MetricsRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
-        use otel_arrow_rust::otap::{Logs, OtapArrowRecords};
         use std::collections::HashMap;
         use std::time::Duration;
         use tokio::task::JoinHandle;

@@ -12,17 +12,29 @@
 //! A data plane is a collection of pipeline groups, where each group can have multiple pipelines.
 //! A pipeline is a collection of nodes interconnected in a directed acyclic graph (DAG).
 
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+
 pub mod byte_units;
 pub mod engine;
 pub mod error;
-pub mod experimental;
 pub mod health;
 pub mod node;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
 pub mod urn;
+
+/// Signal types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SignalType {
+    /// Signal representing a stream of spans.
+    Traces,
+    /// Signal representing a stream of metrics.
+    Metrics,
+    /// Signal representing a stream of logs.
+    Logs,
+}
 
 /// The id of a pipeline group.
 pub type PipelineGroupId = Cow<'static, str>;

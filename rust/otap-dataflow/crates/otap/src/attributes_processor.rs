@@ -34,8 +34,8 @@
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
@@ -44,14 +44,14 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otap::{
+use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
         AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
     },
 };
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -443,7 +443,7 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 
 // Pre-computed arrays for all domain combinations
 mod payload_sets {
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
     pub(super) const EMPTY: &[A] = &[];
 
@@ -528,45 +528,46 @@ mod payload_sets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use prost::Message as _;
-    use serde_json::json;
-
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::{
+    use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use prost::Message as _;
+    use serde_json::json;
 
     fn build_logs_with_attrs(
         res_attrs: Vec<KeyValue>,
         scope_attrs: Vec<KeyValue>,
         log_attrs: Vec<KeyValue>,
     ) -> ExportLogsServiceRequest {
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource {
+        ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource {
                 attributes: res_attrs,
                 ..Default::default()
-            })
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope {
+            },
+            vec![ScopeLogs::new(
+                InstrumentationScope {
                     attributes: scope_attrs,
                     ..Default::default()
-                })
-                .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                },
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .event_name("")
                         .attributes(log_attrs)
                         .finish(),
-                ])
-                .finish(),
-            ])
-            .finish(),
-        ])
+                ],
+            )],
+        )])
     }
 
     #[test]
@@ -742,7 +743,7 @@ mod tests {
                 assert!(log_attrs.iter().any(|kv| {
                     if kv.key != "b" { return false; }
                     match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-                        Some(otel_arrow_rust::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
+                        Some(otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
                         _ => false,
                     }
                 }));
@@ -988,12 +989,13 @@ mod tests {
 #[cfg(test)]
 mod telemetry_tests {
     use super::*;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_pdata::OtlpProtoBytes;
     use prost::Message as _;
     use serde_json::json;
 
@@ -1025,7 +1027,7 @@ mod telemetry_tests {
 
         // 4) Build a minimal OTLP logs request that has a signal-level attribute 'a'
         let input_bytes = {
-            use otel_arrow_rust::proto::opentelemetry::{
+            use otap_df_pdata::proto::opentelemetry::{
                 collector::logs::v1::ExportLogsServiceRequest,
                 common::v1::{
                     AnyValue, InstrumentationScope, KeyValue, any_value::Value as AnyVal,

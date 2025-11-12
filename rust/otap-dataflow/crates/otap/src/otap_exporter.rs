@@ -13,7 +13,7 @@ use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -25,16 +25,16 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::Producer;
-use otel_arrow_rust::encode::producer::ProducerOptions;
-use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+use otap_df_pdata::Producer;
+use otap_df_pdata::encode::producer::ProducerOptions;
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
+use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -228,7 +228,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         // TODO(#1098): Note context is dropped.
                         let message: OtapArrowRecords = payload
                             .try_into()
-                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
+                            .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))
+                            ?;
 
                         _ = match signal_type {
                             SignalType::Logs => logs_sender.send(message).await,
@@ -473,15 +474,15 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::net::SocketAddr;
     use std::ops::Add;

@@ -4,7 +4,7 @@
 //! Implementation of the filter definition for the debug processor
 
 use super::predicate::Predicate;
-use otel_arrow_rust::proto::opentelemetry::{
+use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde::Deserialize;

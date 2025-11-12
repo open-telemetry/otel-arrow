@@ -4,7 +4,7 @@
 //! Implementation of the configuration of the filter processor
 //!
 
-use otel_arrow_rust::otap::filter::logs::LogFilter;
+use otap_df_pdata::otap::filter::logs::LogFilter;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

@@ -4,13 +4,13 @@
 //! Benchmarks for implementations of pdata view implementations
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+use otap_df_pdata::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
 };
-use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 
 /// creates a log data with every field present in the proto message
@@ -43,19 +43,18 @@ fn create_logs_data() -> LogsData {
     LogsData::new(
         (0..5)
             .map(|_| {
-                ResourceLogs::build(
-                    Resource::build(vec![KeyValue::new(
-                        "resource_attr1",
-                        AnyValue::new_string("resource_value"),
-                    )])
-                    .dropped_attributes_count(1u32),
-                )
-                .schema_url("https://schema.opentelemetry.io/resource_schema")
-                .scope_logs(
+                ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new(
+                            "resource_attr1",
+                            AnyValue::new_string("resource_value"),
+                        )])
+                        .dropped_attributes_count(1u32),
                     (0..10)
                         .map(|_| {
-                            ScopeLogs::build(
-                                InstrumentationScope::build("library")
+                            ScopeLogs::new(
+                                InstrumentationScope::build()
+                                    .name("library")
                                     .version("scopev1")
                                     .attributes(vec![
                                         KeyValue::new(
@@ -73,35 +72,31 @@ fn create_logs_data() -> LogsData {
                                     ])
                                     .dropped_attributes_count(2u32)
                                     .finish(),
-                            )
-                            .schema_url("https://schema.opentelemetry.io/scope_schema")
-                            .log_records(
                                 (0..5)
                                     .map(|_| {
-                                        LogRecord::build(
-                                            2_000_000_000u64,
-                                            SeverityNumber::Info,
-                                            "event1",
-                                        )
-                                        .observed_time_unix_nano(3_000_000_000u64)
-                                        .trace_id(vec![
-                                            0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-                                        ])
-                                        .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                                        .severity_text("Info")
-                                        .attributes(log_attributes.clone())
-                                        .dropped_attributes_count(3u32)
-                                        .flags(LogRecordFlags::TraceFlagsMask)
-                                        .body(AnyValue::new_string("log_body"))
-                                        .finish()
+                                        LogRecord::build()
+                                            .time_unix_nano(2_000_000_000u64)
+                                            .severity_number(SeverityNumber::Info)
+                                            .event_name("event1")
+                                            .observed_time_unix_nano(3_000_000_000u64)
+                                            .trace_id(vec![
+                                                0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+                                            ])
+                                            .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                                            .severity_text("Info")
+                                            .attributes(log_attributes.clone())
+                                            .dropped_attributes_count(3u32)
+                                            .flags(LogRecordFlags::TraceFlagsMask)
+                                            .body(AnyValue::new_string("log_body"))
+                                            .finish()
                                     })
                                     .collect::<Vec<_>>(),
                             )
-                            .finish()
+                            .set_schema_url("https://schema.opentelemetry.io/scope_schema")
                         })
                         .collect::<Vec<_>>(),
                 )
-                .finish()
+                .set_schema_url("https://schema.opentelemetry.io/resource_schema")
             })
             .collect::<Vec<_>>(),
     )

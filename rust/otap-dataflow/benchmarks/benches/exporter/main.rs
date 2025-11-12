@@ -20,7 +20,7 @@ use otap_df_otap::{
     pdata::{Context, OtapPdata},
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
-use otel_arrow_rust::{
+use otap_df_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
     proto::opentelemetry::arrow::v1::{
@@ -31,7 +31,7 @@ use otel_arrow_rust::{
     },
 };
 
-use otap_df_otap::proto::opentelemetry::collector::{
+use otap_df_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
         logs_service_server::{LogsService, LogsServiceServer},

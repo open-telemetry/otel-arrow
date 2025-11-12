@@ -23,7 +23,7 @@
 //!            └── Summary
 //! ```
 
-use otel_arrow_rust::proto::opentelemetry::metrics::v1 as proto;
+use crate::proto::opentelemetry::metrics::v1 as proto;
 
 use crate::views::{
     common::{AttributeView, InstrumentationScopeView, SpanId, Str, TraceId},
@@ -70,7 +70,7 @@ pub trait ResourceMetricsView {
     fn scopes(&self) -> Self::ScopesIter<'_>;
 
     /// The schema URL for the resource.
-    fn schema_url(&self) -> Str<'_>;
+    fn schema_url(&self) -> Option<Str<'_>>;
 }
 
 /// View for ScopeMetrics
@@ -138,22 +138,22 @@ pub trait MetricView {
 pub enum DataType {
     /// Gauge represents the type of a scalar metric that always exports the "current value" for
     /// every data point.
-    Gauge = 5,
+    Gauge = 1,
 
     /// Sum represents the type of a scalar metric that is calculated as a sum of all reported
     /// measurements over a time interval.
-    Sum = 7,
+    Sum = 2,
 
     /// Histogram represents the type of a metric that is calculated by aggregating as a Histogram
     /// of all reported measurements over a time interval.
-    Histogram = 9,
+    Histogram = 3,
 
     /// ExponentialHistogram represents the type of a metric that is calculated by aggregating as a
     /// ExponentialHistogram of all reported double measurements over a time interval.
-    ExponentialHistogram = 10,
+    ExponentialHistogram = 4,
 
     /// Summary metric data are used to convey quantile summaries.
-    Summary = 11,
+    Summary = 5,
 }
 
 impl From<&proto::metric::Data> for DataType {
@@ -171,16 +171,6 @@ impl From<&proto::metric::Data> for DataType {
 
 /// View for Data
 pub trait DataView<'val> {
-    /// The `NumberDataPointView` type associated with this implementation.
-    type NumberDataPoint<'dp>: NumberDataPointView
-    where
-        Self: 'dp;
-
-    /// An iterator type that yields instances of Self::NumberDataPoint.
-    type NumberDataPointIter<'dp>: Iterator<Item = Self::NumberDataPoint<'dp>>
-    where
-        Self: 'dp;
-
     /// A type that wraps references to `Gauge`
     type Gauge<'gauge>: GaugeView
     where
@@ -218,7 +208,7 @@ pub trait DataView<'val> {
     /// Get the Histogram value
     fn as_histogram(&self) -> Option<Self::Histogram<'_>>;
 
-    /// Get the ExpoenentialHistogram value
+    /// Get the ExponentialHistogram value
     fn as_exponential_histogram(&self) -> Option<Self::ExponentialHistogram<'_>>;
 
     /// Get the Summary value
@@ -513,6 +503,16 @@ impl From<proto::AggregationTemporality> for AggregationTemporality {
     }
 }
 
+impl From<u32> for AggregationTemporality {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => AggregationTemporality::Delta,
+            2 => AggregationTemporality::Cumulative,
+            _ => AggregationTemporality::Unspecified,
+        }
+    }
+}
+
 /// View for Histogram
 pub trait HistogramView {
     /// The `HistogramDataPointView` type associated with this implementation.
@@ -545,12 +545,12 @@ pub trait HistogramDataPointView {
         Self: 'att;
 
     /// Iterator type for yielding bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 
     /// Iterator type for yielding explicit bounds.
-    type ExplicitBoundsIter<'eb>: Iterator<Item = &'eb f64>
+    type ExplicitBoundsIter<'eb>: Iterator<Item = f64>
     where
         Self: 'eb;
 
@@ -693,7 +693,7 @@ pub trait ExponentialHistogramDataPointView {
 /// View for Bucket
 pub trait BucketsView {
     /// Iterator type for bucket counts.
-    type BucketCountIter<'bc>: Iterator<Item = &'bc u64>
+    type BucketCountIter<'bc>: Iterator<Item = u64>
     where
         Self: 'bc;
 

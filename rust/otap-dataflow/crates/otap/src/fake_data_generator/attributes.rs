@@ -3,7 +3,7 @@
 
 //! Handles mapping attributes defined in a resolved registry to a KeyValue pair for a otlp signal
 
-use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use rand::seq::IndexedRandom;
 use weaver_resolved_schema::attribute::Attribute;
 use weaver_semconv::attribute::ValueSpec;

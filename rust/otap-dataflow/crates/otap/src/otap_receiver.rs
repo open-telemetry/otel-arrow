@@ -37,6 +37,7 @@ use crate::otap_grpc::{
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -47,14 +48,14 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use std::ops::Add;
@@ -287,9 +288,9 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otel_arrow_rust::Producer;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    use otap_df_pdata::Producer;
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
@@ -670,7 +671,7 @@ mod tests {
     ) where
         S: futures::Stream<
                 Item = Result<
-                    otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchStatus,
+                    otap_df_pdata::proto::opentelemetry::arrow::v1::BatchStatus,
                     tonic::Status,
                 >,
             > + Unpin,

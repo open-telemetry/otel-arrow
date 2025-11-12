@@ -8,7 +8,7 @@
 //!
 
 use crate::otlp_grpc::OTLPData;
-use crate::proto::opentelemetry::collector::{
+use otap_df_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
     },

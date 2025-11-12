@@ -18,7 +18,7 @@ use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{

@@ -5,10 +5,10 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{Context, OtapPayload, OtapPayloadHelpers, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
@@ -21,11 +21,12 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_rust::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_rust::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_rust::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -311,7 +312,7 @@ async fn handle_export_result<T>(
 /// Generic function for encoding OTAP records to protobuf, exporting via gRPC,
 /// and handling Ack/Nack delivery.
 async fn handle_otap_export<Enc: ProtoBytesEncoder, T2, Resp, S>(
-    mut otap_batch: otel_arrow_rust::otap::OtapArrowRecords,
+    mut otap_batch: otap_df_pdata::otap::OtapArrowRecords,
     context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
@@ -383,11 +384,6 @@ mod tests {
 
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
-    };
     use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
@@ -402,6 +398,11 @@ mod tests {
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
+    };
+    use otap_df_pdata::proto::opentelemetry::collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::MetricsRegistryHandle;

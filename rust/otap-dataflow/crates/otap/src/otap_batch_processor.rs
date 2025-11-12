@@ -8,8 +8,8 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::error::Error as EngineError;
@@ -28,8 +28,8 @@ use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_telemetry::metrics::MetricSet;
 // For optional conversion during flush/partitioning
-use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::otap::batching::make_output_batches;
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::otap::batching::make_output_batches;
 
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
@@ -777,72 +777,80 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 #[cfg(test)]
 mod test_helpers {
     use super::*;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::InstrumentationScope;
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
     };
-    use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::status::StatusCode;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::status::StatusCode;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
     };
 
     // Test helper constants to avoid magic strings in scope names
     pub(super) fn one_trace_record() -> OtapArrowRecords {
-        let traces = TracesData::new(vec![
-            ResourceSpans::build(Resource::default())
-                .scope_spans(vec![
-                    ScopeSpans::build(InstrumentationScope::new("lib"))
-                        .spans(vec![
-                            Span::build(vec![0; 16], vec![1; 8], "span", 1u64)
-                                .status(Status::new("ok", StatusCode::Ok))
-                                .finish(),
-                        ])
+        let traces = TracesData::new(vec![ResourceSpans::new(
+            Resource::default(),
+            vec![ScopeSpans::new(
+                InstrumentationScope::build().name("lib").finish(),
+                vec![
+                    Span::build()
+                        .trace_id(vec![0; 16])
+                        .span_id(vec![1; 8])
+                        .name("span")
+                        .start_time_unix_nano(1u64)
+                        .status(Status::new(StatusCode::Ok, "ok"))
                         .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_spans_otap_batch(&traces).expect("encode traces")
+                ],
+            )],
+        )]);
+        otap_df_pdata::encode::encode_spans_otap_batch(&traces).expect("encode traces")
     }
 
     pub(super) fn one_metric_record() -> OtapArrowRecords {
         // Minimal metrics: one Gauge with one NumberDataPoint
-        let md = MetricsData::new(vec![
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(vec![
-                    ScopeMetrics::build(InstrumentationScope::new("lib"))
-                        .metrics(vec![
-                            Metric::build_gauge(
-                                "g",
-                                Gauge::new(vec![NumberDataPoint::build_double(0u64, 1.0).finish()]),
-                            )
-                            .finish(),
-                        ])
+        let md = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().name("lib").finish(),
+                vec![
+                    Metric::build()
+                        .name("g")
+                        .data_gauge(Gauge::new(vec![
+                            NumberDataPoint::build()
+                                .time_unix_nano(0u64)
+                                .value_double(1.0)
+                                .finish(),
+                        ]))
                         .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_metrics_otap_batch(&md).expect("encode metrics")
+                ],
+            )],
+        )]);
+        otap_df_pdata::encode::encode_metrics_otap_batch(&md).expect("encode metrics")
     }
 
     pub(super) fn logs_record_with_n_entries(n: usize) -> OtapArrowRecords {
         let logs: Vec<LogRecord> = (0..n)
-            .map(|i| LogRecord::build(i as u64, SeverityNumber::Info, format!("log{i}")).finish())
+            .map(|i| {
+                LogRecord::build()
+                    .time_unix_nano(i as u64)
+                    .severity_number(SeverityNumber::Info)
+                    .body(AnyValue::new_string(format!("log{i}")))
+                    .finish()
+            })
             .collect();
-        let logs_data = LogsData::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::new("lib"))
-                        .log_records(logs)
-                        .finish(),
-                ])
-                .finish(),
-        ]);
-        crate::encoder::encode_logs_otap_batch(&logs_data).expect("encode logs")
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("lib").finish(),
+                logs,
+            )],
+        )]);
+        otap_df_pdata::encode::encode_logs_otap_batch(&logs_data).expect("encode logs")
     }
 
     /// Construct a processor wrapper from a JSON configuration object and processor runtime config.
@@ -869,7 +877,7 @@ mod tests {
     use super::*;
     use super::{Config, OTAP_BATCH_PROCESSOR_URN, OtapBatchProcessor};
     use crate::otap_batch_processor::metrics::OtapBatchProcessorMetrics;
-    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use crate::pdata::OtapPdata;
     use otap_df_config::PipelineGroupId;
     use otap_df_config::PipelineId;
     use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
@@ -881,9 +889,10 @@ mod tests {
     use otap_df_engine::node::Node; // bring trait in scope for user_config()
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::otap::OtapArrowRecords;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use serde_json::json;
     use std::collections::HashMap;
     use std::collections::HashSet;
@@ -985,7 +994,7 @@ mod tests {
         let validation = phase.run_test(|mut ctx| async move {
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
-            // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
+            // TODO(telemetry-logs-rows): Once otap-df-pdata encodes non-empty logs batches (or
             // OtapArrowRecords::batch_length handles logs), switch assertions to consumed_items_logs.
             let pdata_logs: OtapPdata =
                 OtapPdata::new_default(logs_record_with_n_entries(3).into());

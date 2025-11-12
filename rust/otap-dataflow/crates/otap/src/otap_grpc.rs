@@ -18,7 +18,7 @@ use futures::{
 use otap_df_engine::{
     Interests, ProducerEffectHandlerExtension, control::NackMsg, shared::receiver as shared,
 };
-use otel_arrow_rust::{
+use otap_df_pdata::{
     Consumer,
     otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
     proto::opentelemetry::arrow::v1::{

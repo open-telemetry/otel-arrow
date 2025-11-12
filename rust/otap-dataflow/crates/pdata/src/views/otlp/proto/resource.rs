@@ -9,7 +9,7 @@ use crate::views::{
     resource::ResourceView,
 };
 
-use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+use crate::proto::opentelemetry::resource::v1::Resource;
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 

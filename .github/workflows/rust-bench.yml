@@ -20,7 +20,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
         - experimental/syslog-cef-receivers

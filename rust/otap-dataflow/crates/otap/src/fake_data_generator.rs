@@ -5,12 +5,12 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
+use crate::OTAP_RECEIVER_FACTORIES;
 use crate::fake_data_generator::config::{Config, OTLPSignal};
 use crate::fake_data_generator::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
-use crate::{OTAP_RECEIVER_FACTORIES, pdata};
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
@@ -23,8 +23,9 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::metrics::MetricSet;
-use prost::{EncodeError, Message};
+use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
@@ -393,27 +394,23 @@ async fn generate_signal(
 
     Ok(())
 }
+
 impl TryFrom<OTLPSignal> for OtapPdata {
     type Error = Error;
 
     fn try_from(value: OTLPSignal) -> Result<Self, Self::Error> {
-        let map_error = |e: EncodeError| {
-            Error::from(pdata::error::Error::ConversionError {
-                error: format!("error encoding protobuf: {e}"),
-            })
-        };
         let mut bytes = vec![];
         Ok(match value {
             OTLPSignal::Logs(logs_data) => {
-                logs_data.encode(&mut bytes).map_err(map_error)?;
+                logs_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
             OTLPSignal::Metrics(metrics_data) => {
-                metrics_data.encode(&mut bytes).map_err(map_error)?;
+                metrics_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
             OTLPSignal::Traces(trace_data) => {
-                trace_data.encode(&mut bytes).map_err(map_error)?;
+                trace_data.encode(&mut bytes)?;
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
@@ -432,11 +429,11 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep};
