@@ -533,6 +533,7 @@ impl ArrowRouter {
         let mut send_stream = respond
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
+        let mut encode_buf = BytesMut::with_capacity(512);
 
         while let Some(next) = status_stream.next().await {
             match next {
@@ -542,7 +543,7 @@ impl ArrowRouter {
                     //     status.batch_id,
                     //     status.status_code
                     // );
-                    let bytes = encode_message(&status)?;
+                    let bytes = encode_message(&status, &mut encode_buf)?;
                     if let Err(e) = send_stream.send_data(bytes, false) {
                         log::debug!("send_data failed: {e}");
                         return Ok(());
@@ -1435,14 +1436,18 @@ fn local_overloaded_status(batch_id: i64) -> BatchStatus {
     }
 }
 
-fn encode_message<M: Message>(message: &M) -> Result<Bytes, Status> {
-    let mut buf = BytesMut::with_capacity(5 + message.encoded_len());
+fn encode_message<M: Message>(message: &M, buf: &mut BytesMut) -> Result<Bytes, Status> {
+    buf.clear();
+    let needed = 5 + message.encoded_len();
+    if buf.capacity() < needed {
+        buf.reserve(needed - buf.capacity());
+    }
     buf.put_u8(0);
     buf.put_u32(message.encoded_len() as u32);
     message
-        .encode(&mut buf)
+        .encode(buf)
         .map_err(|e| Status::internal(format!("failed to encode response: {e}")))?;
-    Ok(buf.freeze())
+    Ok(buf.split().freeze())
 }
 
 fn send_ok_trailers(mut stream: h2::SendStream<Bytes>) {
