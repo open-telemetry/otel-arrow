@@ -202,12 +202,17 @@ pub(crate) fn proto_encode_histogram_data_point(
             // encode using packed encoding for repeated primitive
             // https://protobuf.dev/programming-guides/encoding/#repeated
 
+            // append tag & len
             result_buf.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
             let num_values = values.len() - values.null_count();
             result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
-            for val in values.iter().flatten() {
-                result_buf.extend_from_slice(&val.to_le_bytes());
-            }
+
+            // write values
+            values
+                .iter()
+                .flatten()
+                .map(u64::to_le_bytes)
+                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
         }
     }
 
@@ -221,12 +226,17 @@ pub(crate) fn proto_encode_histogram_data_point(
             // encode using packed encoding for repeated primitive
             // https://protobuf.dev/programming-guides/encoding/#repeated
 
+            // append tag & len
             result_buf.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
             let num_values = values.len() - values.null_count();
             result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
-            for val in values.iter().flatten() {
-                result_buf.extend_from_slice(&val.to_le_bytes());
-            }
+
+            // write values
+            values
+                .iter()
+                .flatten()
+                .map(f64::to_le_bytes)
+                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
         }
     }
 
