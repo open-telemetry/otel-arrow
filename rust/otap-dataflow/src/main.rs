@@ -242,11 +242,19 @@ mod tests {
     fn parse_core_allocation_ok() {
         assert_eq!(
             parse_core_id_allocation("0..=4,5,6-7"),
-            Ok(CoreAllocation::CoreSet { set: vec![CoreRange { start: 0, end: 4 }, CoreRange { start: 5, end: 5 }, CoreRange { start: 6, end: 7 }]})
+            Ok(CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 0, end: 4 },
+                    CoreRange { start: 5, end: 5 },
+                    CoreRange { start: 6, end: 7 }
+                ]
+            })
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
-            Ok(CoreAllocation::CoreSet { set: vec![CoreRange{ start: 0, end: 4 }]})
+            Ok(CoreAllocation::CoreSet {
+                set: vec![CoreRange { start: 0, end: 4 }]
+            })
         );
     }
 
