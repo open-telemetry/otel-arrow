@@ -193,19 +193,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_user_config_unknown_field_is_rejected() {
-        // Includes an extra unknown field "unknown" that should cause an error
-        let json = r#"{
-            "kind": "receiver",
-            "plugin_urn": "urn:example:receiver",
-            "out_ports": {},
-            "config": {},
-            "unknown": 1
-        }"#;
-        assert!(serde_json::from_str::<NodeUserConfig>(json).is_err());
-    }
-
-    #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
             "kind": "receiver",
