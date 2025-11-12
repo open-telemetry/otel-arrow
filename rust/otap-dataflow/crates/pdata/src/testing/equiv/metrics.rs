@@ -3,14 +3,14 @@
 
 //! Metric equivalence checking.
 
-use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::metrics::v1::MetricsData;
 
 /// Assert that two metric requests are semantically equivalent.
 ///
 /// TODO: Implement data point flattening similar to logs
 pub fn assert_metrics_equivalent(
-    _expected: &ExportMetricsServiceRequest,
-    _actual: &ExportMetricsServiceRequest,
+    _expected: &MetricsData,
+    _actual: &MetricsData,
 ) {
     unimplemented!("Metric equivalence checking not yet implemented")
 }

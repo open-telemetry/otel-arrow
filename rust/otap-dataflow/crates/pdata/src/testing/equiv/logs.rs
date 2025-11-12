@@ -5,9 +5,8 @@
 
 use super::canonical::{compare_attributes, CanonicalValue};
 use crate::proto::opentelemetry::{
-    collector::logs::v1::ExportLogsServiceRequest,
     common::v1::InstrumentationScope,
-    logs::v1::LogRecord,
+    logs::v1::{LogRecord, LogsData},
     resource::v1::Resource,
 };
 use std::cmp::Ordering;
@@ -145,7 +144,7 @@ impl<'a> Ord for LogItemKey<'a> {
 
 /// Iterator over all log items in a request, flattened with their context.
 pub fn iter_log_items(
-    request: &ExportLogsServiceRequest,
+    request: &LogsData,
 ) -> impl Iterator<Item = LogItemKey<'_>> + '_ {
     request.resource_logs.iter().flat_map(|rl| {
         let resource = rl.resource.as_ref();
@@ -169,8 +168,8 @@ pub fn iter_log_items(
 /// This compares the set of log items, ignoring structural differences like
 /// how resources and scopes are grouped.
 pub fn assert_logs_equivalent(
-    expected: &ExportLogsServiceRequest,
-    actual: &ExportLogsServiceRequest,
+    expected: &LogsData,
+    actual: &LogsData,
 ) {
     let expected_items: BTreeSet<LogItemKey<'_>> = iter_log_items(expected).collect();
     let actual_items: BTreeSet<LogItemKey<'_>> = iter_log_items(actual).collect();
@@ -216,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_logs_equivalent_identical() {
-        let request1 = ExportLogsServiceRequest {
+        let request1 = LogsData {
             resource_logs: vec![ResourceLogs {
                 resource: Some(Resource {
                     attributes: vec![KeyValue::new("service", AnyValue::new_string("test"))],
@@ -245,7 +244,7 @@ mod tests {
     #[test]
     fn test_logs_equivalent_restructured() {
         // One resource with two logs
-        let request1 = ExportLogsServiceRequest {
+        let request1 = LogsData {
             resource_logs: vec![ResourceLogs {
                 resource: Some(Resource {
                     attributes: vec![KeyValue::new("service", AnyValue::new_string("test"))],
@@ -275,7 +274,7 @@ mod tests {
         };
 
         // Same logs split into two resources (same attributes)
-        let request2 = ExportLogsServiceRequest {
+        let request2 = LogsData {
             resource_logs: vec![
                 ResourceLogs {
                     resource: Some(Resource {

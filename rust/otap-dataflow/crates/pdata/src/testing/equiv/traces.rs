@@ -3,7 +3,7 @@
 
 //! Trace equivalence checking.
 
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use crate::proto::opentelemetry::trace::v1::TracesData;
 use crate::proto::opentelemetry::common::v1::InstrumentationScope;
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::proto::opentelemetry::trace::v1::Span;
@@ -194,7 +194,7 @@ fn compare_span_status(
 }
 
 /// Flatten trace hierarchy into an iterator of SpanItemKeys
-fn iter_span_items(request: &ExportTraceServiceRequest) -> impl Iterator<Item = SpanItemKey<'_>> {
+fn iter_span_items(request: &TracesData) -> impl Iterator<Item = SpanItemKey<'_>> {
     request.resource_spans.iter().flat_map(|rs| {
         let resource = rs.resource.as_ref();
         let resource_schema_url = rs.schema_url.as_str();
@@ -219,8 +219,8 @@ fn iter_span_items(request: &ExportTraceServiceRequest) -> impl Iterator<Item = 
 /// This compares the flattened span items from both requests, treating them as sets.
 /// Spans are compared in canonical order with attributes sorted by key.
 pub fn assert_traces_equivalent(
-    expected: &ExportTraceServiceRequest,
-    actual: &ExportTraceServiceRequest,
+    expected: &TracesData,
+    actual: &TracesData,
 ) {
     let expected_items: BTreeSet<_> = iter_span_items(expected).collect();
     let actual_items: BTreeSet<_> = iter_span_items(actual).collect();
