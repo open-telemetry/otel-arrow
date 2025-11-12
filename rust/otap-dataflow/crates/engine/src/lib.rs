@@ -35,6 +35,7 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
+pub mod admitter;
 mod attributes;
 pub mod config;
 pub mod context;
@@ -47,7 +48,6 @@ pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
 pub mod testing;
-pub mod admitter;
 
 /// Trait for factory types that expose a name.
 ///

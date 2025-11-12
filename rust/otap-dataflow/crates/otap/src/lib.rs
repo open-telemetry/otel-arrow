@@ -13,9 +13,9 @@ pub mod encoder;
 pub mod otap_exporter;
 /// gRPC service implementation
 pub mod otap_grpc;
-pub mod otel_receiver;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
+pub mod otel_receiver;
 
 /// This receiver receives OTLP bytes from the grpc service request and
 /// produce for the pipeline OTAP PData

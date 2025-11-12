@@ -23,6 +23,7 @@ pub enum AdmissionClass {
 /// The type parameter `T` is the guard returned on success (e.g. `ConnectionGuard`,
 /// `DatagramGuard`, or a wrapper `Guard` enum for convenience).
 #[derive(Debug)]
+#[must_use]
 pub enum AdmitDecision<T> {
     /// The request was admitted. The returned guard must be kept alive for the
     /// lifetime of the work. Dropping it releases the reserved slot(s).
@@ -68,6 +69,7 @@ struct Inner {
 /// in a thread-per-core model where each core has its own `Admitter` instance. It also means
 /// that cloning is cheap and can be done freely to hand out references to guards.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Admitter {
     inner: Rc<Inner>,
 }
@@ -191,6 +193,7 @@ impl ConnectionGuard {
     }
 
     /// Current number of in-flight streams on this connection.
+    #[must_use]
     pub fn streams_inflight(&self) -> u32 {
         self.state.streams_inflight.get()
     }
@@ -236,6 +239,7 @@ impl Drop for DatagramGuard {
 
 /// Lightweight observability snapshot for counters and breaker state.
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct Report {
     /// Current number of in-flight connections.
     pub inflight_conns: u32,

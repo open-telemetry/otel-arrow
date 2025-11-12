@@ -170,9 +170,9 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
 
         let router = Rc::new(ArrowRouter {
             effect_handler: effect_handler.clone(),
-            logs_ack_registry: logs_ack_registry,
-            metrics_ack_registry: metrics_ack_registry,
-            traces_ack_registry: traces_ack_registry,
+            logs_ack_registry,
+            metrics_ack_registry,
+            traces_ack_registry,
             max_in_flight_per_connection: max_in_flight,
         });
 
@@ -336,11 +336,9 @@ async fn run_grpc_server(
 
             // 3) Observe progress/completion of any connection task
             maybe_done = tcp_conn_tasks.join_next(), if !tcp_conn_tasks.is_empty() => {
-                if let Some(join_res) = maybe_done {
-                    if let Err(join_err) = join_res {
-                        if log::log_enabled!(log::Level::Debug) {
-                            log::debug!("H2 connection task join error: {join_err}");
-                        }
+                if let Some(Err(join_err)) = maybe_done {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("H2 connection task join error: {join_err}");
                     }
                 }
             }
@@ -530,7 +528,7 @@ impl ArrowRouter {
             .header("content-type", "application/grpc")
             .header("grpc-encoding", "identity") // support compressed responses later
             .body(())
-            .unwrap();
+            .map_err(|e| Status::internal(format!("failed to build response: {e}")))?;
         let mut send_stream = respond
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
@@ -623,7 +621,7 @@ fn starts_with_ascii_case_insensitive(value: &[u8], prefix: &[u8]) -> bool {
 }
 
 fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
-    lhs == rhs || lhs.to_ascii_lowercase() == rhs.to_ascii_lowercase()
+    lhs == rhs || lhs.eq_ignore_ascii_case(&rhs)
 }
 
 #[derive(Clone, Copy)]
@@ -715,7 +713,10 @@ impl FrameBuf {
     fn into_bytes(mut self) -> Bytes {
         match self.chunks.len() {
             0 => Bytes::new(),
-            1 => self.chunks.pop_front().unwrap(),
+            1 => self
+                .chunks
+                .pop_front()
+                .expect("frame buffer length mismatch"),
             _ => {
                 let mut buf = BytesMut::with_capacity(self.remaining);
                 while let Some(chunk) = self.chunks.pop_front() {
@@ -792,7 +793,7 @@ impl GrpcStreamingBody {
             }
         }
     }
-    fn decompress<'a>(&'a mut self, payload: Bytes) -> Result<&'a [u8], Status> {
+    fn decompress(&mut self, payload: Bytes) -> Result<&[u8], Status> {
         match self.encoding {
             GrpcEncoding::Identity => {
                 log::error!("Received compressed frame but grpc-encoding=identity");
@@ -817,7 +818,8 @@ impl GrpcStreamingBody {
                             .zstd
                             .as_mut()
                             .expect("decompressor must be initialized");
-                        decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
+                        decompressor
+                            .decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
                     };
                     match result {
                         Ok(_) => return Ok(self.decompressed_buf.as_slice()),
@@ -826,9 +828,8 @@ impl GrpcStreamingBody {
                             if err.kind() == io::ErrorKind::Other
                                 && err_msg.contains("Destination buffer is too small")
                             {
-                                required_capacity = required_capacity
-                                    .checked_mul(2)
-                                    .ok_or_else(|| {
+                                required_capacity =
+                                    required_capacity.checked_mul(2).ok_or_else(|| {
                                         log::error!(
                                             "zstd decompression failed: required buffer overflow"
                                         );
@@ -997,38 +998,36 @@ where
             return Poll::Ready(None);
         }
 
-        loop {
-            if this.pending.is_none() {
-                let state = match this.state.take() {
-                    Some(state) => state,
-                    None => {
-                        this.finished = true;
-                        return Poll::Ready(None);
-                    }
-                };
-                this.pending = Some(Self::drive_next(state));
-            }
+        if this.pending.is_none() {
+            let state = match this.state.take() {
+                Some(state) => state,
+                None => {
+                    this.finished = true;
+                    return Poll::Ready(None);
+                }
+            };
+            this.pending = Some(Self::drive_next(state));
+        }
 
-            match this
-                .pending
-                .as_mut()
-                .expect("pending future must exist")
-                .as_mut()
-                .poll(cx)
-            {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready((state, step)) => {
-                    this.pending = None;
-                    match step {
-                        StreamStep::Yield(item) => {
-                            this.state = Some(state);
-                            return Poll::Ready(Some(item));
-                        }
-                        StreamStep::Done => {
-                            this.finished = true;
-                            this.state = None;
-                            return Poll::Ready(None);
-                        }
+        match this
+            .pending
+            .as_mut()
+            .expect("pending future must exist")
+            .as_mut()
+            .poll(cx)
+        {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready((state, step)) => {
+                this.pending = None;
+                match step {
+                    StreamStep::Yield(item) => {
+                        this.state = Some(state);
+                        Poll::Ready(Some(item))
+                    }
+                    StreamStep::Done => {
+                        this.finished = true;
+                        this.state = None;
+                        Poll::Ready(None)
                     }
                 }
             }
@@ -1575,11 +1574,18 @@ fn send_error_trailers(mut stream: h2::SendStream<Bytes>, status: Status) {
 }
 
 fn respond_with_error(mut respond: SendResponse<Bytes>, status: Status) {
-    let response = Response::builder()
+    let response = match Response::builder()
         .status(HttpStatusCode::OK)
         .header("content-type", "application/grpc")
         .body(())
-        .unwrap();
+    {
+        Ok(response) => response,
+        Err(e) => {
+            log::debug!("failed to build error response: {e}");
+            return;
+        }
+    };
+
     match respond.send_response(response, false) {
         Ok(stream) => send_error_trailers(stream, status),
         Err(e) => log::debug!("failed to send error response: {e}"),
