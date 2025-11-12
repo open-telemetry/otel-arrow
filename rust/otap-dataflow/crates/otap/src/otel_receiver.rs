@@ -19,13 +19,15 @@ use crate::otap_receiver::OtapReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use futures::{Stream, StreamExt};
 use futures::future::{LocalBoxFuture, poll_fn};
+use futures::{Stream, StreamExt};
 use h2::server::{self, SendResponse};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
 use linkme::distributed_slice;
 use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::admitter::{AdmitDecision, Admitter, ConnectionGuard};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg};
@@ -34,7 +36,6 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
@@ -48,26 +49,30 @@ use prost::Message;
 use serde::Deserialize;
 use smallvec::smallvec;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io::Cursor;
-use std::mem;
 use std::marker::PhantomData;
+use std::mem;
 use std::ops::Add;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::{Duration, Instant};
-use tokio::task::spawn_local;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
 use zstd::stream::decode_all;
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
-const ARROW_LOGS_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs";
-const ARROW_METRICS_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
-const ARROW_TRACES_SERVICE: &str = "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
+const ARROW_LOGS_SERVICE: &str =
+    "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs";
+const ARROW_METRICS_SERVICE: &str =
+    "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
+const ARROW_TRACES_SERVICE: &str =
+    "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
 
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
@@ -133,6 +138,11 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let admitter = Admitter::new(
+            100000,
+            self.config.grpc.max_concurrent_streams.unwrap_or(100),
+            100000,
+        );
         let config = Rc::new(self.config.grpc.clone());
         let listener = effect_handler.tcp_listener(config.listening_addr)?;
         let mut incoming = config.build_tcp_incoming(listener);
@@ -214,11 +224,12 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                 return ctrl_msg_result;
             }
 
-            server_result = run_h2_server(
+            server_result = run_grpc_server(
                 &mut incoming,
                 Rc::clone(&config),
                 Rc::clone(&router),
                 cancel_token.clone(),
+                admitter.clone(),
             ) => {
                 if let Err(error) = server_result {
                     log::error!("OTAP H2 receiver server loop failed: {error}");
@@ -240,54 +251,6 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
     }
 }
 
-async fn run_h2_server(
-    incoming: &mut TcpIncoming,
-    config: Rc<GrpcServerSettings>,
-    router: Rc<ArrowRouter>,
-    cancel: CancellationToken,
-) -> Result<(), std::io::Error> {
-    let mut connections: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            Some(res) = incoming.next() => {
-                let socket = res?;
-                let peer = socket
-                    .peer_addr()
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|_| "<unknown>".to_string());
-                // log::info!("Accepted OTAP H2 connection from {}", peer);
-                if let Err(e) = socket.set_nodelay(config.tcp_nodelay) {
-                    log::warn!("Failed to set TCP_NODELAY: {e}");
-                }
-                let builder = build_h2_builder(&config);
-                let router = Rc::clone(&router);
-
-                let handle = spawn_local(async move {
-                    if let Err(err) = handle_connection(socket, builder, router).await {
-                        log::debug!("H2 connection ended with error: {err}");
-                    }
-                });
-                connections.push(handle);
-            }
-            else => break,
-        }
-
-        connections.retain(|handle| !handle.is_finished());
-    }
-
-    for handle in connections {
-        if !handle.is_finished() {
-            if let Err(err) = handle.await {
-                log::debug!("H2 connection task join error: {err}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn build_h2_builder(settings: &GrpcServerSettings) -> server::Builder {
     let mut builder = server::Builder::new();
     if let Some(window) = settings.initial_stream_window_size {
@@ -302,23 +265,186 @@ fn build_h2_builder(settings: &GrpcServerSettings) -> server::Builder {
     builder
 }
 
-async fn handle_connection(
+async fn run_grpc_server(
+    incoming: &mut TcpIncoming,
+    grpc_config: Rc<GrpcServerSettings>,
+    arrow_router: Rc<ArrowRouter>,
+    cancel: CancellationToken,
+    admitter: Admitter,
+) -> Result<(), std::io::Error> {
+    // Track all per-tcp-connection tasks.
+    let mut tcp_conn_tasks: JoinSet<()> = JoinSet::new();
+    let mut accepting = true;
+    let h2_builder = build_h2_builder(&grpc_config);
+
+    loop {
+        tokio::select! {
+            // 1) Cancellation: stop accepting and break to drain
+            _ = cancel.cancelled() => break,
+
+            // 2) Accept next TCP connection while accepting (and under cap, if any)
+            res = incoming.next(), if accepting => {
+                match res {
+                    Some(Ok(tcp_conn)) => {
+                        if let Err(e) = tcp_conn.set_nodelay(grpc_config.tcp_nodelay) {   // ToDo check it's already done in the TCPIncoming?
+                            if log::log_enabled!(log::Level::Warn) {
+                                log::warn!("Failed to set TCP_NODELAY: {e}");
+                            }
+                        }
+
+                        // Admit a connection before spawning the task.
+                        match admitter.try_admit_connection() {
+                            AdmitDecision::Admitted(conn_guard) => {
+                                let h2_builder = h2_builder.clone();
+                                let router = Rc::clone(&arrow_router);
+
+                                // Hold `conn_guard` inside the task for the connection lifetime.
+                                // Ignore the AbortHandler for now.
+                                _ = tcp_conn_tasks.spawn_local(async move {
+                                    if let Err(err) = handle_tcp_conn(tcp_conn, h2_builder, router, conn_guard).await {
+                                        if log::log_enabled!(log::Level::Debug) {
+                                            log::debug!("H2 connection ended with error: {err}");
+                                        }
+                                    }
+                                });
+                            }
+                            AdmitDecision::Busy => {
+                                // Soft backpressure: do not spawn; let the kernel backlog absorb.
+                                if log::log_enabled!(log::Level::Trace) {
+                                    log::trace!("Connection admission busy; pausing accepts briefly");
+                                }
+                                drop(tcp_conn);
+                                // Yield to avoid a tight loop.
+                                tokio::task::yield_now().await;
+                            }
+                            AdmitDecision::Reject { message } => {
+                                // Hard reject (circuit breaker, policy). Drop the TCP stream.
+                                if log::log_enabled!(log::Level::Warn) {
+                                    log::warn!("Connection admission rejected: {message}");
+                                }
+                                drop(tcp_conn);
+                            }
+                        }
+                    }
+                    Some(Err(err)) => return Err(err),
+                    None => {
+                        accepting = false;
+                    }
+                }
+            }
+
+            // 3) Observe progress/completion of any connection task
+            maybe_done = tcp_conn_tasks.join_next(), if !tcp_conn_tasks.is_empty() => {
+                if let Some(join_res) = maybe_done {
+                    if let Err(join_err) = join_res {
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("H2 connection task join error: {join_err}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no more accepts will arrive and all tasks are done, we can exit
+        if !accepting && tcp_conn_tasks.is_empty() {
+            break;
+        }
+    }
+
+    // Graceful drain after cancellation or incoming end
+    while let Some(join_res) = tcp_conn_tasks.join_next().await {
+        if let Err(join_err) = join_res {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!("H2 connection task join error: {join_err}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_tcp_conn(
     socket: tokio::net::TcpStream,
     builder: server::Builder,
     router: Rc<ArrowRouter>,
+    // IMPORTANT: this keeps one connection slot while the connection is alive.
+    tcp_conn_guard: ConnectionGuard,
 ) -> Result<(), h2::Error> {
-    let mut connection = builder.handshake(socket).await?;
-    log::trace!("H2 handshake established");
-    while let Some(result) = connection.accept().await {
-        let (request, respond) = result?;
-        let router = router.clone();
-        let _ = spawn_local(async move {
-            log::trace!("Received new H2 stream for path {}", request.uri().path());
-            if let Err(status) = router.handle_request(request, respond).await {
-                log::debug!("Request failed: {}", status);
-            }
-        });
+    // HTTP/2 handshake
+    let mut http2_conn = builder.handshake(socket).await?;
+    if log::log_enabled!(log::Level::Trace) {
+        log::trace!("H2 handshake established");
     }
+
+    let mut stream_tasks: JoinSet<()> = JoinSet::new();
+    let mut accepting = true;
+
+    loop {
+        tokio::select! {
+            // Accept next H2 stream while accepting
+            result = http2_conn.accept(), if accepting => {
+                match result {
+                    Some(Ok((request, respond))) => {
+                        // Try to open a *stream* on this connection.
+                        match tcp_conn_guard.try_open_stream() {
+                            AdmitDecision::Admitted(stream_guard) => {
+                                let router = router.clone();
+                                // Keep `stream_guard` alive for the request lifetime.
+                                // Ignore the AbortHandler for now.
+                                _ = stream_tasks.spawn_local(async move {
+                                    if log::log_enabled!(log::Level::Trace) {
+                                        // `request.uri()` is cheap, but we still avoid doing it if TRACE is off.
+                                        log::trace!("New H2 stream: {}", request.uri().path());
+                                    }
+                                    if let Err(status) = router.handle_request(request, respond).await {
+                                        if log::log_enabled!(log::Level::Debug) {
+                                            log::debug!("Request failed: {}", status);
+                                        }
+                                    }
+                                    // release stream slot
+                                    drop(stream_guard);
+                                });
+                            }
+                            AdmitDecision::Busy => {
+                                // Per-connection stream capacity is full: reply immediately.
+                                respond_with_error(respond, Status::resource_exhausted("stream capacity exhausted"));
+                            }
+                            AdmitDecision::Reject { message } => {
+                                // Breaker/policy: reject this stream immediately.
+                               respond_with_error(respond, Status::unavailable(message));
+                            }
+                        }
+                    }
+                    Some(Err(err)) => return Err(err),
+                    None => accepting = false,
+                }
+            }
+
+            // Join completed stream tasks
+            maybe_done = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
+                if let Some(Err(join_err)) = maybe_done {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("stream task join error: {join_err}");
+                    }
+                }
+            }
+        }
+
+        // Exit when no more streams will arrive and all tasks are done
+        if !accepting && stream_tasks.is_empty() {
+            break;
+        }
+    }
+
+    // Drain in-flight stream tasks
+    while let Some(res) = stream_tasks.join_next().await {
+        if let Err(join_err) = res {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!("stream task join error: {join_err}");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -401,7 +527,7 @@ impl ArrowRouter {
         let response = Response::builder()
             .status(HttpStatusCode::OK)
             .header("content-type", "application/grpc")
-            .header("grpc-encoding", "identity")        // support compressed responses later
+            .header("grpc-encoding", "identity") // support compressed responses later
             .body(())
             .unwrap();
         let mut send_stream = respond
@@ -475,7 +601,6 @@ fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
                 log::error!("Unsupported grpc-encoding {}", enc_str);
                 Err(Status::unimplemented("grpc compression not supported"))
             }
-
         }
     }
 }
@@ -852,73 +977,82 @@ where
                 .push(LocalAckWaitFuture::new(batch_id, token, state))
             {
                 log::error!("In-flight future set unexpectedly full");
-                return PreparedBatch::Immediate(StreamStep::Yield(Ok(
-                    local_overloaded_status(batch_id),
-                )));
+                return PreparedBatch::Immediate(StreamStep::Yield(Ok(local_overloaded_status(
+                    batch_id,
+                ))));
             }
             PreparedBatch::Enqueued
         } else {
-            PreparedBatch::Immediate(StreamStep::Yield(Ok(local_success_status(
-                batch_id,
-            ))))
+            PreparedBatch::Immediate(StreamStep::Yield(Ok(local_success_status(batch_id))))
         }
     }
 }
 
 struct LocalFutureSet<F> {
     slots: Vec<Option<F>>,
-    active: usize,
+    free_stack: Vec<usize>,
+    active_queue: VecDeque<usize>,
 }
 
 impl<F> LocalFutureSet<F> {
     fn with_capacity(capacity: usize) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
-        Self { slots, active: 0 }
+        let free_stack = (0..capacity).rev().collect::<Vec<_>>();
+        Self {
+            slots,
+            free_stack,
+            active_queue: VecDeque::with_capacity(capacity),
+        }
     }
 
     fn len(&self) -> usize {
-        self.active
+        self.active_queue.len()
     }
 
     fn push(&mut self, future: F) -> Result<(), F> {
-        if self.active == self.slots.len() {
+        let Some(index) = self.free_stack.pop() else {
             return Err(future);
-        }
-        for slot in &mut self.slots {
-            if slot.is_none() {
-                *slot = Some(future);
-                self.active += 1;
-                return Ok(());
-            }
-        }
-        Err(future)
+        };
+        self.slots[index] = Some(future);
+        self.active_queue.push_back(index);
+        Ok(())
     }
 
-    fn poll_next(
-        &mut self,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<Option<<F as Future>::Output>>
+    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<<F as Future>::Output>>
     where
         F: Future + Unpin,
     {
-        if self.active == 0 {
+        if self.active_queue.is_empty() {
             return Poll::Ready(None);
         }
-        for slot in &mut self.slots {
-            if let Some(future) = slot.as_mut() {
-                let mut pinned = Pin::new(future);
-                match pinned.as_mut().poll(cx) {
-                    Poll::Ready(output) => {
-                        *slot = None;
-                        self.active -= 1;
-                        return Poll::Ready(Some(output));
-                    }
-                    Poll::Pending => {}
+
+        let iterations = self.active_queue.len();
+        for _ in 0..iterations {
+            let Some(index) = self.active_queue.pop_front() else {
+                break;
+            };
+            let Some(future) = self.slots[index].as_mut() else {
+                continue;
+            };
+            let mut pinned = Pin::new(future);
+            match pinned.as_mut().poll(cx) {
+                Poll::Ready(output) => {
+                    self.slots[index] = None;
+                    self.free_stack.push(index);
+                    return Poll::Ready(Some(output));
+                }
+                Poll::Pending => {
+                    self.active_queue.push_back(index);
                 }
             }
         }
-        Poll::Pending
+
+        if self.active_queue.is_empty() {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -1180,10 +1314,7 @@ impl AckRegistries {
         }
     }
 
-    fn ack_registry_for_signal(
-        &self,
-        signal: SignalType,
-    ) -> Option<&AckRegistry> {
+    fn ack_registry_for_signal(&self, signal: SignalType) -> Option<&AckRegistry> {
         match signal {
             SignalType::Logs => self.logs.as_ref(),
             SignalType::Metrics => self.metrics.as_ref(),
@@ -1192,10 +1323,7 @@ impl AckRegistries {
     }
 }
 
-fn route_local_ack_response(
-    states: &AckRegistries,
-    ack: AckMsg<OtapPdata>,
-) -> RouteResponse {
+fn route_local_ack_response(states: &AckRegistries, ack: AckMsg<OtapPdata>) -> RouteResponse {
     let Some(token) = AckToken::from_calldata(&ack.calldata) else {
         return RouteResponse::Invalid;
     };
