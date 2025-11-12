@@ -3,264 +3,329 @@
 
 //! Trace equivalence checking.
 
-use crate::proto::opentelemetry::common::v1::InstrumentationScope;
-use crate::proto::opentelemetry::resource::v1::Resource;
-use crate::proto::opentelemetry::trace::v1::Span;
-use crate::proto::opentelemetry::trace::v1::TracesData;
-use std::cmp::Ordering;
+use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
+use crate::testing::equiv::canonical::{canonicalize_any_value, canonicalize_vec};
+use prost::Message;
 use std::collections::BTreeSet;
 
-use super::canonical::compare_attributes;
+/// Split a TracesData into individual singleton TracesData messages (one per span).
+fn traces_split_into_singletons(traces_data: &TracesData) -> Vec<TracesData> {
+    let mut result = Vec::new();
 
-/// A key that uniquely identifies a span within a trace request.
-///
-/// This struct holds references to the parent structures (resource, scope) and the span itself.
-/// The Ord implementation defines canonical ordering for comparison.
-#[derive(Debug, Clone)]
-struct SpanItemKey<'a> {
-    resource: Option<&'a Resource>,
-    resource_schema_url: &'a str,
-    scope: Option<&'a InstrumentationScope>,
-    scope_schema_url: &'a str,
-    span: &'a Span,
-}
-
-impl<'a> PartialEq for SpanItemKey<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl<'a> Eq for SpanItemKey<'a> {}
-
-impl<'a> PartialOrd for SpanItemKey<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<'a> Ord for SpanItemKey<'a> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Compare resource
-        match (self.resource, other.resource) {
-            (Some(r1), Some(r2)) => match compare_attributes(&r1.attributes, &r2.attributes) {
-                Ordering::Equal => {}
-                other => return other,
-            },
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (None, None) => {}
-        }
-
-        // Compare resource_schema_url
-        match self.resource_schema_url.cmp(other.resource_schema_url) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-
-        // Compare scope
-        match (self.scope, other.scope) {
-            (Some(s1), Some(s2)) => {
-                match s1.name.cmp(&s2.name) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match s1.version.cmp(&s2.version) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match compare_attributes(&s1.attributes, &s2.attributes) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match s1
-                    .dropped_attributes_count
-                    .cmp(&s2.dropped_attributes_count)
-                {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-            }
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (None, None) => {}
-        }
-
-        // Compare scope_schema_url
-        match self.scope_schema_url.cmp(other.scope_schema_url) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-
-        // Compare span fields
-        self.span
-            .trace_id
-            .cmp(&other.span.trace_id)
-            .then_with(|| self.span.span_id.cmp(&other.span.span_id))
-            .then_with(|| self.span.trace_state.cmp(&other.span.trace_state))
-            .then_with(|| self.span.parent_span_id.cmp(&other.span.parent_span_id))
-            .then_with(|| self.span.flags.cmp(&other.span.flags))
-            .then_with(|| self.span.name.cmp(&other.span.name))
-            .then_with(|| self.span.kind.cmp(&other.span.kind))
-            .then_with(|| {
-                self.span
-                    .start_time_unix_nano
-                    .cmp(&other.span.start_time_unix_nano)
-            })
-            .then_with(|| {
-                self.span
-                    .end_time_unix_nano
-                    .cmp(&other.span.end_time_unix_nano)
-            })
-            .then_with(|| compare_attributes(&self.span.attributes, &other.span.attributes))
-            .then_with(|| {
-                self.span
-                    .dropped_attributes_count
-                    .cmp(&other.span.dropped_attributes_count)
-            })
-            .then_with(|| compare_span_events(&self.span.events, &other.span.events))
-            .then_with(|| {
-                self.span
-                    .dropped_events_count
-                    .cmp(&other.span.dropped_events_count)
-            })
-            .then_with(|| compare_span_links(&self.span.links, &other.span.links))
-            .then_with(|| {
-                self.span
-                    .dropped_links_count
-                    .cmp(&other.span.dropped_links_count)
-            })
-            .then_with(|| compare_span_status(&self.span.status, &other.span.status))
-    }
-}
-
-/// Compare span events in canonical order (sorted by time, name, attributes)
-fn compare_span_events(
-    a: &[crate::proto::opentelemetry::trace::v1::span::Event],
-    b: &[crate::proto::opentelemetry::trace::v1::span::Event],
-) -> Ordering {
-    a.len().cmp(&b.len()).then_with(|| {
-        for (ea, eb) in a.iter().zip(b.iter()) {
-            let ord = ea
-                .time_unix_nano
-                .cmp(&eb.time_unix_nano)
-                .then_with(|| ea.name.cmp(&eb.name))
-                .then_with(|| compare_attributes(&ea.attributes, &eb.attributes))
-                .then_with(|| {
-                    ea.dropped_attributes_count
-                        .cmp(&eb.dropped_attributes_count)
+    for resource_spans in &traces_data.resource_spans {
+        for scope_spans in &resource_spans.scope_spans {
+            for span in &scope_spans.spans {
+                result.push(TracesData {
+                    resource_spans: vec![ResourceSpans {
+                        resource: resource_spans.resource.clone(),
+                        scope_spans: vec![ScopeSpans {
+                            scope: scope_spans.scope.clone(),
+                            spans: vec![span.clone()],
+                            schema_url: scope_spans.schema_url.clone(),
+                        }],
+                        schema_url: resource_spans.schema_url.clone(),
+                    }],
                 });
-            if ord != Ordering::Equal {
-                return ord;
             }
         }
-        Ordering::Equal
-    })
+    }
+
+    result
 }
 
-/// Compare span links in canonical order (sorted by trace_id, span_id, etc.)
-fn compare_span_links(
-    a: &[crate::proto::opentelemetry::trace::v1::span::Link],
-    b: &[crate::proto::opentelemetry::trace::v1::span::Link],
-) -> Ordering {
-    a.len().cmp(&b.len()).then_with(|| {
-        for (la, lb) in a.iter().zip(b.iter()) {
-            let ord = la
-                .trace_id
-                .cmp(&lb.trace_id)
-                .then_with(|| la.span_id.cmp(&lb.span_id))
-                .then_with(|| la.trace_state.cmp(&lb.trace_state))
-                .then_with(|| compare_attributes(&la.attributes, &lb.attributes))
-                .then_with(|| {
-                    la.dropped_attributes_count
-                        .cmp(&lb.dropped_attributes_count)
-                })
-                .then_with(|| la.flags.cmp(&lb.flags));
-            if ord != Ordering::Equal {
-                return ord;
+/// Canonicalize a singleton TracesData by sorting all fields that need canonical ordering.
+fn traces_canonicalize_singleton(traces_data: &mut TracesData) {
+    // Canonicalize resource attributes
+    for resource_spans in &mut traces_data.resource_spans {
+        if let Some(resource) = &mut resource_spans.resource {
+            canonicalize_vec(&mut resource.attributes, |attr| {
+                if let Some(value) = &mut attr.value {
+                    canonicalize_any_value(value);
+                }
+            });
+        }
+
+        // Canonicalize scope attributes
+        for scope_spans in &mut resource_spans.scope_spans {
+            if let Some(scope) = &mut scope_spans.scope {
+                canonicalize_vec(&mut scope.attributes, |attr| {
+                    if let Some(value) = &mut attr.value {
+                        canonicalize_any_value(value);
+                    }
+                });
+            }
+
+            // Canonicalize span fields
+            for span in &mut scope_spans.spans {
+                // Canonicalize span attributes
+                canonicalize_vec(&mut span.attributes, |attr| {
+                    if let Some(value) = &mut attr.value {
+                        canonicalize_any_value(value);
+                    }
+                });
+
+                // Canonicalize span events
+                canonicalize_vec(&mut span.events, |event| {
+                    canonicalize_vec(&mut event.attributes, |attr| {
+                        if let Some(value) = &mut attr.value {
+                            canonicalize_any_value(value);
+                        }
+                    });
+                });
+
+                // Canonicalize span links
+                canonicalize_vec(&mut span.links, |link| {
+                    canonicalize_vec(&mut link.attributes, |attr| {
+                        if let Some(value) = &mut attr.value {
+                            canonicalize_any_value(value);
+                        }
+                    });
+                });
             }
         }
-        Ordering::Equal
-    })
-}
-
-/// Compare span status
-fn compare_span_status(
-    a: &Option<crate::proto::opentelemetry::trace::v1::Status>,
-    b: &Option<crate::proto::opentelemetry::trace::v1::Status>,
-) -> Ordering {
-    match (a, b) {
-        (Some(s1), Some(s2)) => s1
-            .message
-            .cmp(&s2.message)
-            .then_with(|| s1.code.cmp(&s2.code)),
-        (None, Some(_)) => Ordering::Less,
-        (Some(_), None) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
     }
 }
 
-/// Flatten trace hierarchy into an iterator of SpanItemKeys
-fn iter_span_items(request: &TracesData) -> impl Iterator<Item = SpanItemKey<'_>> {
-    request.resource_spans.iter().flat_map(|rs| {
-        let resource = rs.resource.as_ref();
-        let resource_schema_url = rs.schema_url.as_str();
+/// Assert that two collections of `TracesData` instances are equivalent.
+///
+/// This checks all structured fields and attributes, comparing them in canonical order
+/// so that field order doesn't matter.
+///
+/// Approach:
+/// 1. Split each TracesData into singleton messages (one span per message)
+/// 2. Clone and canonicalize each singleton (sort attributes, events, links, etc.)
+/// 3. Encode each canonicalized singleton as bytes using Prost encoding
+/// 4. Collect encoded bytes into BTreeSet<Vec<u8>>
+/// 5. Compare sets
+///
+/// Using bytes as the comparison key works around the fact that Prost doesn't
+/// generate Eq/Ord for messages with f64 fields (due to NaN). The encoding
+/// is deterministic for canonicalized messages.
+///
+/// # Panics
+/// Panics if the two collections are not equivalent.
+pub fn assert_traces_equivalent(left: &[TracesData], right: &[TracesData]) {
+    // Split into singletons from all TracesData in the slices
+    let mut left_singletons: Vec<TracesData> =
+        left.iter().flat_map(traces_split_into_singletons).collect();
+    let mut right_singletons: Vec<TracesData> = right
+        .iter()
+        .flat_map(traces_split_into_singletons)
+        .collect();
 
-        rs.scope_spans.iter().flat_map(move |ss| {
-            let scope = ss.scope.as_ref();
-            let scope_schema_url = ss.schema_url.as_str();
+    // Canonicalize each singleton
+    for singleton in &mut left_singletons {
+        traces_canonicalize_singleton(singleton);
+    }
+    for singleton in &mut right_singletons {
+        traces_canonicalize_singleton(singleton);
+    }
 
-            ss.spans.iter().map(move |span| SpanItemKey {
-                resource,
-                resource_schema_url,
-                scope,
-                scope_schema_url,
-                span,
-            })
+    // Encode to bytes and collect into BTreeSets
+    let left_set: BTreeSet<Vec<u8>> = left_singletons
+        .into_iter()
+        .map(|msg| {
+            let mut buf = Vec::new();
+            msg.encode(&mut buf).expect("encoding should not fail");
+            buf
         })
-    })
+        .collect();
+
+    let right_set: BTreeSet<Vec<u8>> = right_singletons
+        .into_iter()
+        .map(|msg| {
+            let mut buf = Vec::new();
+            msg.encode(&mut buf).expect("encoding should not fail");
+            buf
+        })
+        .collect();
+
+    // Use pretty_assertions for nice diff output
+    pretty_assertions::assert_eq!(left_set, right_set, "TracesData not equivalent");
 }
 
-/// Assert that two trace requests are semantically equivalent.
-///
-/// This compares the flattened span items from both requests, treating them as sets.
-/// Spans are compared in canonical order with attributes sorted by key.
-pub fn assert_traces_equivalent(expected: &[TracesData], actual: &[TracesData]) {
-    let expected_items: BTreeSet<_> = expected.iter().flat_map(iter_span_items).collect();
-    let actual_items: BTreeSet<_> = actual.iter().flat_map(iter_span_items).collect();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, Status,
+        span::{Event, Link},
+    };
 
-    let missing: Vec<_> = expected_items.difference(&actual_items).collect();
-    let unexpected: Vec<_> = actual_items.difference(&expected_items).collect();
+    #[test]
+    fn test_traces_equivalent_with_unordered_fields() {
+        // Test that spans with attributes, events, and links in different orders are considered equivalent
+        let request1 = TracesData {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![
+                        KeyValue::new("service", AnyValue::new_string("test")),
+                        KeyValue::new("version", AnyValue::new_string("1.0")),
+                    ],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "scope1".into(),
+                        attributes: vec![
+                            KeyValue::new("scope.key1", AnyValue::new_string("value1")),
+                            KeyValue::new("scope.key2", AnyValue::new_int(42)),
+                        ],
+                        ..Default::default()
+                    }),
+                    spans: vec![Span {
+                        trace_id: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+                        span_id: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                        name: "test-span".into(),
+                        start_time_unix_nano: 1000,
+                        end_time_unix_nano: 2000,
+                        attributes: vec![
+                            KeyValue::new("span.key1", AnyValue::new_string("value1")),
+                            KeyValue::new("span.key2", AnyValue::new_int(100)),
+                        ],
+                        events: vec![
+                            Event {
+                                time_unix_nano: 1500,
+                                name: "event1".into(),
+                                attributes: vec![
+                                    KeyValue::new("event.key1", AnyValue::new_string("ev1")),
+                                    KeyValue::new("event.key2", AnyValue::new_bool(true)),
+                                ],
+                                ..Default::default()
+                            },
+                            Event {
+                                time_unix_nano: 1600,
+                                name: "event2".into(),
+                                attributes: vec![KeyValue::new(
+                                    "event.key3",
+                                    AnyValue::new_int(99),
+                                )],
+                                ..Default::default()
+                            },
+                        ],
+                        links: vec![
+                            Link {
+                                trace_id: vec![
+                                    10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+                                ],
+                                span_id: vec![10, 11, 12, 13, 14, 15, 16, 17],
+                                attributes: vec![KeyValue::new(
+                                    "link.key1",
+                                    AnyValue::new_string("link1"),
+                                )],
+                                ..Default::default()
+                            },
+                            Link {
+                                trace_id: vec![
+                                    20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+                                ],
+                                span_id: vec![20, 21, 22, 23, 24, 25, 26, 27],
+                                attributes: vec![KeyValue::new(
+                                    "link.key2",
+                                    AnyValue::new_int(200),
+                                )],
+                                ..Default::default()
+                            },
+                        ],
+                        status: Some(Status {
+                            code: 1,
+                            message: "OK".into(),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
 
-    if !missing.is_empty() || !unexpected.is_empty() {
-        let mut msg = String::from("Trace requests are not equivalent:\n");
+        // Same data but with all Vec fields in different order
+        let request2 = TracesData {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![
+                        KeyValue::new("version", AnyValue::new_string("1.0")),
+                        KeyValue::new("service", AnyValue::new_string("test")),
+                    ],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "scope1".into(),
+                        attributes: vec![
+                            KeyValue::new("scope.key2", AnyValue::new_int(42)),
+                            KeyValue::new("scope.key1", AnyValue::new_string("value1")),
+                        ],
+                        ..Default::default()
+                    }),
+                    spans: vec![Span {
+                        trace_id: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+                        span_id: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                        name: "test-span".into(),
+                        start_time_unix_nano: 1000,
+                        end_time_unix_nano: 2000,
+                        attributes: vec![
+                            KeyValue::new("span.key2", AnyValue::new_int(100)),
+                            KeyValue::new("span.key1", AnyValue::new_string("value1")),
+                        ],
+                        events: vec![
+                            Event {
+                                time_unix_nano: 1600,
+                                name: "event2".into(),
+                                attributes: vec![KeyValue::new(
+                                    "event.key3",
+                                    AnyValue::new_int(99),
+                                )],
+                                ..Default::default()
+                            },
+                            Event {
+                                time_unix_nano: 1500,
+                                name: "event1".into(),
+                                attributes: vec![
+                                    KeyValue::new("event.key2", AnyValue::new_bool(true)),
+                                    KeyValue::new("event.key1", AnyValue::new_string("ev1")),
+                                ],
+                                ..Default::default()
+                            },
+                        ],
+                        links: vec![
+                            Link {
+                                trace_id: vec![
+                                    20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+                                ],
+                                span_id: vec![20, 21, 22, 23, 24, 25, 26, 27],
+                                attributes: vec![KeyValue::new(
+                                    "link.key2",
+                                    AnyValue::new_int(200),
+                                )],
+                                ..Default::default()
+                            },
+                            Link {
+                                trace_id: vec![
+                                    10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+                                ],
+                                span_id: vec![10, 11, 12, 13, 14, 15, 16, 17],
+                                attributes: vec![KeyValue::new(
+                                    "link.key1",
+                                    AnyValue::new_string("link1"),
+                                )],
+                                ..Default::default()
+                            },
+                        ],
+                        status: Some(Status {
+                            code: 1,
+                            message: "OK".into(),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
 
-        if !missing.is_empty() {
-            msg.push_str(&format!("Missing {} spans:\n", missing.len()));
-            for item in missing.iter().take(5) {
-                msg.push_str(&format!(
-                    "  - span_id={:?}, name={}, trace_id={:?}\n",
-                    item.span.span_id, item.span.name, item.span.trace_id
-                ));
-            }
-            if missing.len() > 5 {
-                msg.push_str(&format!("  ... and {} more\n", missing.len() - 5));
-            }
-        }
-
-        if !unexpected.is_empty() {
-            msg.push_str(&format!("Unexpected {} spans:\n", unexpected.len()));
-            for item in unexpected.iter().take(5) {
-                msg.push_str(&format!(
-                    "  + span_id={:?}, name={}, trace_id={:?}\n",
-                    item.span.span_id, item.span.name, item.span.trace_id
-                ));
-            }
-            if unexpected.len() > 5 {
-                msg.push_str(&format!("  ... and {} more\n", unexpected.len() - 5));
-            }
-        }
-
-        panic!("{}", msg);
+        assert_traces_equivalent(&[request1], &[request2]);
     }
 }

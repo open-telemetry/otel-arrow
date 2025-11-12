@@ -16,7 +16,6 @@ mod logs;
 mod metrics;
 mod traces;
 
-pub use canonical::CanonicalValue;
 pub use logs::assert_logs_equivalent;
 pub use metrics::assert_metrics_equivalent;
 pub use traces::assert_traces_equivalent;
