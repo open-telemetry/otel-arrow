@@ -634,7 +634,7 @@ enum GrpcEncoding {
 
 struct GrpcStreamingBody {
     recv: h2::RecvStream,
-    buffer: BytesMut,
+    buffer: ChunkBuffer,
     current_frame: Option<FrameHeader>,
     finished: bool,
     encoding: GrpcEncoding,
@@ -648,11 +648,121 @@ struct FrameHeader {
     compressed: bool,
 }
 
+struct ChunkBuffer {
+    chunks: VecDeque<Bytes>,
+    len: usize,
+}
+
+impl ChunkBuffer {
+    fn new() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn push(&mut self, chunk: Bytes) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.len += chunk.len();
+        self.chunks.push_back(chunk);
+    }
+
+    fn split_frame(&mut self, size: usize) -> Option<FrameBuf> {
+        if size > self.len {
+            return None;
+        }
+        if size == 0 {
+            return Some(FrameBuf::new(VecDeque::new(), 0));
+        }
+
+        let mut needed = size;
+        let mut parts = VecDeque::new();
+        while needed > 0 {
+            let mut chunk = self.chunks.pop_front()?;
+            if chunk.len() > needed {
+                let part = chunk.split_to(needed);
+                self.len -= needed;
+                parts.push_back(part);
+                self.chunks.push_front(chunk);
+                needed = 0;
+            } else {
+                needed -= chunk.len();
+                self.len -= chunk.len();
+                parts.push_back(chunk);
+            }
+        }
+        Some(FrameBuf::new(parts, size))
+    }
+}
+
+struct FrameBuf {
+    chunks: VecDeque<Bytes>,
+    remaining: usize,
+}
+
+impl FrameBuf {
+    fn new(chunks: VecDeque<Bytes>, remaining: usize) -> Self {
+        Self { chunks, remaining }
+    }
+
+    fn into_bytes(mut self) -> Bytes {
+        match self.chunks.len() {
+            0 => Bytes::new(),
+            1 => self.chunks.pop_front().unwrap(),
+            _ => {
+                let mut buf = BytesMut::with_capacity(self.remaining);
+                while let Some(chunk) = self.chunks.pop_front() {
+                    buf.extend_from_slice(&chunk);
+                }
+                buf.freeze()
+            }
+        }
+    }
+}
+
+impl Buf for FrameBuf {
+    fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.chunks
+            .front()
+            .map(|bytes| bytes.as_ref())
+            .unwrap_or(&[])
+    }
+
+    fn advance(&mut self, mut cnt: usize) {
+        assert!(cnt <= self.remaining);
+        self.remaining -= cnt;
+        while cnt > 0 {
+            let Some(front_len) = self.chunks.front().map(|b| b.len()) else {
+                break;
+            };
+            if cnt < front_len {
+                if let Some(front) = self.chunks.front_mut() {
+                    front.advance(cnt);
+                }
+                break;
+            } else {
+                cnt -= front_len;
+                let _ = self.chunks.pop_front();
+            }
+        }
+    }
+}
+
 impl GrpcStreamingBody {
     fn new(recv: h2::RecvStream, encoding: GrpcEncoding) -> Self {
         Self {
             recv,
-            buffer: BytesMut::with_capacity(1024),
+            buffer: ChunkBuffer::new(),
             current_frame: None,
             finished: false,
             encoding,
@@ -667,8 +777,9 @@ impl GrpcStreamingBody {
         }
         match self.recv.data().await {
             Some(Ok(bytes)) => {
-                self.buffer.extend_from_slice(&bytes);
-                if let Err(err) = self.recv.flow_control().release_capacity(bytes.len()) {
+                let chunk_len = bytes.len();
+                self.buffer.push(bytes);
+                if let Err(err) = self.recv.flow_control().release_capacity(chunk_len) {
                     log::debug!("release_capacity failed: {err}");
                 }
                 Ok(())
@@ -768,14 +879,13 @@ impl ArrowRequestStream for GrpcStreamingBody {
                     self.fill_buffer().await?;
                     continue;
                 }
-                let compressed = self.buffer[0] == 1;
-                let len = u32::from_be_bytes([
-                    self.buffer[1],
-                    self.buffer[2],
-                    self.buffer[3],
-                    self.buffer[4],
-                ]) as usize;
-                self.buffer.advance(5);
+                let header = self
+                    .buffer
+                    .split_frame(5)
+                    .expect("buffer len checked above")
+                    .into_bytes();
+                let compressed = header[0] == 1;
+                let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
                 self.current_frame = Some(FrameHeader {
                     length: len,
                     compressed,
@@ -793,9 +903,12 @@ impl ArrowRequestStream for GrpcStreamingBody {
                     continue;
                 }
 
-                let payload = self.buffer.split_to(header.length).freeze();
+                let payload = self
+                    .buffer
+                    .split_frame(header.length)
+                    .expect("buffer len checked above");
                 let decoded = if header.compressed {
-                    let bytes = self.decompress(payload)?;
+                    let bytes = self.decompress(payload.into_bytes())?;
                     BatchArrowRecords::decode(bytes)
                 } else {
                     BatchArrowRecords::decode(payload)
