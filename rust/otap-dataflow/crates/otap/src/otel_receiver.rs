@@ -51,7 +51,7 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::io::Cursor;
+use std::io;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Add;
@@ -64,7 +64,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
-use zstd::stream::decode_all;
+use zstd::bulk::Decompressor as ZstdDecompressor;
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
 const ARROW_LOGS_SERVICE: &str =
@@ -271,7 +271,7 @@ async fn run_grpc_server(
     arrow_router: Rc<ArrowRouter>,
     cancel: CancellationToken,
     admitter: Admitter,
-) -> Result<(), std::io::Error> {
+) -> Result<(), io::Error> {
     // Track all per-tcp-connection tasks.
     let mut tcp_conn_tasks: JoinSet<()> = JoinSet::new();
     let mut accepting = true;
@@ -618,6 +618,8 @@ struct GrpcStreamingBody {
     current_frame: Option<FrameHeader>,
     finished: bool,
     encoding: GrpcEncoding,
+    zstd: Option<ZstdDecompressor<'static>>,
+    decompressed_buf: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -634,6 +636,8 @@ impl GrpcStreamingBody {
             current_frame: None,
             finished: false,
             encoding,
+            zstd: None,
+            decompressed_buf: Vec::new(),
         }
     }
 
@@ -656,18 +660,77 @@ impl GrpcStreamingBody {
             }
         }
     }
-    fn decompress(&self, payload: Bytes) -> Result<Bytes, Status> {
+    fn decompress<'a>(&'a mut self, payload: Bytes) -> Result<&'a [u8], Status> {
         match self.encoding {
             GrpcEncoding::Identity => {
                 log::error!("Received compressed frame but grpc-encoding=identity");
                 Err(Status::unimplemented("message compression not negotiated"))
             }
             GrpcEncoding::Zstd => {
-                let cursor = Cursor::new(payload.as_ref());
-                decode_all(cursor).map(Bytes::from).map_err(|e| {
-                    log::error!("zstd decompression failed: {e}");
-                    Status::internal(format!("zstd decompression failed: {e}"))
-                })
+                self.ensure_zstd_decompressor()?;
+                let mut required_capacity = self
+                    .decompressed_buf
+                    .capacity()
+                    .max(payload.len().saturating_mul(2))
+                    .max(8 * 1024);
+
+                loop {
+                    if self.decompressed_buf.capacity() < required_capacity {
+                        self.decompressed_buf
+                            .reserve(required_capacity - self.decompressed_buf.capacity());
+                    }
+                    self.decompressed_buf.clear();
+                    let result = {
+                        let decompressor = self
+                            .zstd
+                            .as_mut()
+                            .expect("decompressor must be initialized");
+                        decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
+                    };
+                    match result {
+                        Ok(_) => return Ok(self.decompressed_buf.as_slice()),
+                        Err(err) => {
+                            let err_msg = err.to_string();
+                            if err.kind() == io::ErrorKind::Other
+                                && err_msg.contains("Destination buffer is too small")
+                            {
+                                required_capacity = required_capacity
+                                    .checked_mul(2)
+                                    .ok_or_else(|| {
+                                        log::error!(
+                                            "zstd decompression failed: required buffer overflow"
+                                        );
+                                        Status::internal(
+                                            "zstd decompression failed: output too large",
+                                        )
+                                    })?;
+                                continue;
+                            }
+                            log::error!("zstd decompression failed: {err_msg}");
+                            return Err(Status::internal(format!(
+                                "zstd decompression failed: {err_msg}"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn ensure_zstd_decompressor(&mut self) -> Result<(), Status> {
+        if self.zstd.is_some() {
+            return Ok(());
+        }
+        match ZstdDecompressor::new() {
+            Ok(decoder) => {
+                self.zstd = Some(decoder);
+                Ok(())
+            }
+            Err(err) => {
+                log::error!("Failed to construct zstd decompressor: {err}");
+                Err(Status::internal(format!(
+                    "failed to initialize zstd decompressor: {err}"
+                )))
             }
         }
     }
@@ -711,12 +774,13 @@ impl ArrowRequestStream for GrpcStreamingBody {
                 }
 
                 let payload = self.buffer.split_to(header.length).freeze();
-                let message_bytes = if header.compressed {
-                    self.decompress(payload)?
+                let decoded = if header.compressed {
+                    let bytes = self.decompress(payload)?;
+                    BatchArrowRecords::decode(bytes)
                 } else {
-                    payload
+                    BatchArrowRecords::decode(payload)
                 };
-                let message = BatchArrowRecords::decode(message_bytes.clone()).map_err(|e| {
+                let message = decoded.map_err(|e| {
                     log::error!("Failed to decode BatchArrowRecords: {e}");
                     Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
                 })?;
