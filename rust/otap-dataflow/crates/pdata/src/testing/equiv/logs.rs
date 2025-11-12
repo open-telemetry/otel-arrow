@@ -168,11 +168,11 @@ pub fn iter_log_items(
 /// This compares the set of log items, ignoring structural differences like
 /// how resources and scopes are grouped.
 pub fn assert_logs_equivalent(
-    expected: &LogsData,
-    actual: &LogsData,
+    expected: &[LogsData],
+    actual: &[LogsData],
 ) {
-    let expected_items: BTreeSet<LogItemKey<'_>> = iter_log_items(expected).collect();
-    let actual_items: BTreeSet<LogItemKey<'_>> = iter_log_items(actual).collect();
+    let expected_items: BTreeSet<LogItemKey<'_>> = expected.iter().flat_map(iter_log_items).collect();
+    let actual_items: BTreeSet<LogItemKey<'_>> = actual.iter().flat_map(iter_log_items).collect();
 
     let missing_expected: Vec<_> = expected_items.difference(&actual_items).collect();
     let missing_actual: Vec<_> = actual_items.difference(&expected_items).collect();
@@ -238,7 +238,7 @@ mod tests {
         };
 
         let request2 = request1.clone();
-        assert_logs_equivalent(&request1, &request2);
+        assert_logs_equivalent(&[request1], &[request2]);
     }
 
     #[test]
@@ -317,6 +317,6 @@ mod tests {
             ],
         };
 
-        assert_logs_equivalent(&request1, &request2);
+        assert_logs_equivalent(&[request1], &[request2]);
     }
 }

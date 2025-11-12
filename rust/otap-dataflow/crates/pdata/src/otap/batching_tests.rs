@@ -24,7 +24,6 @@ use crate::testing::equiv::assert_logs_equivalent;
 use crate::testing::equiv::assert_metrics_equivalent;
 use crate::testing::equiv::assert_traces_equivalent;
 use otap_df_config::SignalType;
-use pretty_assertions::assert_eq;
 use prost::Message as ProstMessage;
 use std::num::NonZeroU64;
 
@@ -243,13 +242,13 @@ fn make_metrics_otlp() -> MetricsData {
 
 #[test]
 fn test_simple_split_logs() {
-    let logs_otlp = make_logs_otlp();
-    let logs_otap = encode_logs(&logs_otlp);
+    let inputs_otlp = vec![make_logs_otlp()];
+    let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_logs(o)).collect();
 
     // Split with max_output_batch=2
     let result = make_output_batches(
         SignalType::Logs,
-        vec![logs_otap],
+        inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
     .expect("batching should succeed");
@@ -258,19 +257,22 @@ fn test_simple_split_logs() {
     let merged_result =
         make_output_batches(SignalType::Logs, result, None).expect("merge should succeed");
 
-    let merged_otlp = decode_logs(merged_result[0].clone());
-    assert_logs_equivalent(&logs_otlp, &merged_otlp);
+    let outputs_otlp: Vec<_> = merged_result
+        .iter()
+        .map(|o| decode_logs(o.clone()))
+        .collect();
+    assert_logs_equivalent(&inputs_otlp, &outputs_otlp);
 }
 
 #[test]
 fn test_simple_split_traces() {
-    let traces_otlp = make_traces_otlp();
-    let traces_otap = encode_traces(&traces_otlp);
+    let inputs_otlp = vec![make_traces_otlp()];
+    let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_traces(o)).collect();
 
     // Split with max_output_batch=2
     let result = make_output_batches(
         SignalType::Traces,
-        vec![traces_otap],
+        inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
     .expect("batching should succeed");
@@ -279,19 +281,22 @@ fn test_simple_split_traces() {
     let merged_result =
         make_output_batches(SignalType::Traces, result, None).expect("merge should succeed");
 
-    let merged_otlp = decode_traces(merged_result[0].clone());
-    assert_traces_equivalent(&traces_otlp, &merged_otlp);
+    let outputs_otlp: Vec<_> = merged_result
+        .iter()
+        .map(|o| decode_traces(o.clone()))
+        .collect();
+    assert_traces_equivalent(&inputs_otlp, &outputs_otlp);
 }
 
 #[test]
 fn test_simple_split_metrics() {
-    let metrics_otlp = make_metrics_otlp();
-    let metrics_otap = encode_metrics(&metrics_otlp);
+    let inputs_otlp = vec![make_metrics_otlp()];
+    let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_metrics(o)).collect();
 
     // Split with max_output_batch=2
     let result = make_output_batches(
         SignalType::Metrics,
-        vec![metrics_otap],
+        inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
     .expect("batching should succeed");
@@ -300,6 +305,9 @@ fn test_simple_split_metrics() {
     let merged_result =
         make_output_batches(SignalType::Metrics, result, None).expect("merge should succeed");
 
-    let merged_otlp = decode_metrics(merged_result[0].clone());
-    assert_metrics_equivalent(&metrics_otlp, &merged_otlp);
+    let outputs_otlp: Vec<_> = merged_result
+        .iter()
+        .map(|o| decode_metrics(o.clone()))
+        .collect();
+    assert_metrics_equivalent(&inputs_otlp, &outputs_otlp);
 }

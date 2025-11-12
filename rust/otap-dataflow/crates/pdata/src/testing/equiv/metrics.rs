@@ -9,8 +9,8 @@ use crate::proto::opentelemetry::metrics::v1::MetricsData;
 ///
 /// TODO: Implement data point flattening similar to logs
 pub fn assert_metrics_equivalent(
-    _expected: &MetricsData,
-    _actual: &MetricsData,
+    _expected: &[MetricsData],
+    _actual: &[MetricsData],
 ) {
     unimplemented!("Metric equivalence checking not yet implemented")
 }

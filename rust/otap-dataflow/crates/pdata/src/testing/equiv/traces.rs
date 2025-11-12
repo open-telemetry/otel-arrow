@@ -219,11 +219,11 @@ fn iter_span_items(request: &TracesData) -> impl Iterator<Item = SpanItemKey<'_>
 /// This compares the flattened span items from both requests, treating them as sets.
 /// Spans are compared in canonical order with attributes sorted by key.
 pub fn assert_traces_equivalent(
-    expected: &TracesData,
-    actual: &TracesData,
+    expected: &[TracesData],
+    actual: &[TracesData],
 ) {
-    let expected_items: BTreeSet<_> = iter_span_items(expected).collect();
-    let actual_items: BTreeSet<_> = iter_span_items(actual).collect();
+    let expected_items: BTreeSet<_> = expected.iter().flat_map(iter_span_items).collect();
+    let actual_items: BTreeSet<_> = actual.iter().flat_map(iter_span_items).collect();
 
     let missing: Vec<_> = expected_items.difference(&actual_items).collect();
     let unexpected: Vec<_> = actual_items.difference(&expected_items).collect();
