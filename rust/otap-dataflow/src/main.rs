@@ -32,7 +32,7 @@ struct Args {
     #[arg(long, default_value = "0", conflicts_with = "core_id_range")]
     num_cores: usize,
 
-    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3", "0..=3").
+    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3,5", "0..=3,6-7").
     #[arg(long, value_name = "START..END", value_parser = parse_core_id_allocation, conflicts_with = "num_cores")]
     core_id_range: Option<CoreAllocation>,
 
@@ -235,6 +235,18 @@ mod tests {
         assert_eq!(
             parse_core_id_range("0-4"),
             Ok(CoreRange { start: 0, end: 4 })
+        );
+    }
+
+    #[test]
+    fn parse_core_allocation_ok() {
+        assert_eq!(
+            parse_core_id_allocation("0..=4,5,6-7"),
+            Ok(CoreAllocation::CoreSet { set: vec![CoreRange { start: 0, end: 4 }, CoreRange { start: 5, end: 5 }, CoreRange { start: 6, end: 7 }]})
+        );
+        assert_eq!(
+            parse_core_id_allocation("0..4"),
+            Ok(CoreAllocation::CoreSet { set: vec![CoreRange{ start: 0, end: 4 }]})
         );
     }
 
