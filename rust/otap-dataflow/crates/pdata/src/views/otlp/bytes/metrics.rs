@@ -910,8 +910,8 @@ impl FieldRanges for BucketsFieldRanges {
                 }
             }
             EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
-                if wire_type == wire_types::LEN
-                    || wire_type == wire_types::VARINT && self.first_bucket_count.get().is_none()
+                if (wire_type == wire_types::LEN
+                    || wire_type == wire_types::VARINT) && self.first_bucket_count.get().is_none()
                 {
                     let packed = wire_type == wire_types::LEN;
                     self.first_bucket_count.set(Some((range, packed)))
