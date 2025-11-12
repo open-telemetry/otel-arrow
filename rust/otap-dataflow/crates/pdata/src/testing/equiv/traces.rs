@@ -3,10 +3,10 @@
 
 //! Trace equivalence checking.
 
-use crate::proto::opentelemetry::trace::v1::TracesData;
 use crate::proto::opentelemetry::common::v1::InstrumentationScope;
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::proto::opentelemetry::trace::v1::Span;
+use crate::proto::opentelemetry::trace::v1::TracesData;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -43,12 +43,10 @@ impl<'a> Ord for SpanItemKey<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Compare resource
         match (self.resource, other.resource) {
-            (Some(r1), Some(r2)) => {
-                match compare_attributes(&r1.attributes, &r2.attributes) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-            }
+            (Some(r1), Some(r2)) => match compare_attributes(&r1.attributes, &r2.attributes) {
+                Ordering::Equal => {}
+                other => return other,
+            },
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
             (None, None) => {}
@@ -75,7 +73,10 @@ impl<'a> Ord for SpanItemKey<'a> {
                     Ordering::Equal => {}
                     other => return other,
                 }
-                match s1.dropped_attributes_count.cmp(&s2.dropped_attributes_count) {
+                match s1
+                    .dropped_attributes_count
+                    .cmp(&s2.dropped_attributes_count)
+                {
                     Ordering::Equal => {}
                     other => return other,
                 }
@@ -145,7 +146,10 @@ fn compare_span_events(
                 .cmp(&eb.time_unix_nano)
                 .then_with(|| ea.name.cmp(&eb.name))
                 .then_with(|| compare_attributes(&ea.attributes, &eb.attributes))
-                .then_with(|| ea.dropped_attributes_count.cmp(&eb.dropped_attributes_count));
+                .then_with(|| {
+                    ea.dropped_attributes_count
+                        .cmp(&eb.dropped_attributes_count)
+                });
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -167,7 +171,10 @@ fn compare_span_links(
                 .then_with(|| la.span_id.cmp(&lb.span_id))
                 .then_with(|| la.trace_state.cmp(&lb.trace_state))
                 .then_with(|| compare_attributes(&la.attributes, &lb.attributes))
-                .then_with(|| la.dropped_attributes_count.cmp(&lb.dropped_attributes_count))
+                .then_with(|| {
+                    la.dropped_attributes_count
+                        .cmp(&lb.dropped_attributes_count)
+                })
                 .then_with(|| la.flags.cmp(&lb.flags));
             if ord != Ordering::Equal {
                 return ord;
@@ -218,10 +225,7 @@ fn iter_span_items(request: &TracesData) -> impl Iterator<Item = SpanItemKey<'_>
 ///
 /// This compares the flattened span items from both requests, treating them as sets.
 /// Spans are compared in canonical order with attributes sorted by key.
-pub fn assert_traces_equivalent(
-    expected: &[TracesData],
-    actual: &[TracesData],
-) {
+pub fn assert_traces_equivalent(expected: &[TracesData], actual: &[TracesData]) {
     let expected_items: BTreeSet<_> = expected.iter().flat_map(iter_span_items).collect();
     let actual_items: BTreeSet<_> = actual.iter().flat_map(iter_span_items).collect();
 

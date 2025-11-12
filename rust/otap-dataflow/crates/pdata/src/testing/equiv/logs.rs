@@ -3,214 +3,199 @@
 
 //! Log equivalence checking.
 
-use super::canonical::{compare_attributes, CanonicalValue};
-use crate::proto::opentelemetry::{
-    common::v1::InstrumentationScope,
-    logs::v1::{LogRecord, LogsData},
-    resource::v1::Resource,
-};
-use std::cmp::Ordering;
+use crate::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
+use prost::Message;
 use std::collections::BTreeSet;
 
-/// A flattened, comparable representation of a single log record with all its context.
+/// Split a LogsData into individual singleton LogsData messages (one per log record).
 ///
-/// This holds references to the original structs and implements comparison by
-/// comparing fields in canonical order (with sorted attributes).
-#[derive(Debug, Clone)]
-pub struct LogItemKey<'a> {
-    pub resource: Option<&'a Resource>,
-    pub resource_schema_url: &'a str,
-    pub scope: Option<&'a InstrumentationScope>,
-    pub scope_schema_url: &'a str,
-    pub log_record: &'a LogRecord,
-}
+/// This flattens the structure so each output contains exactly one log record
+/// with its complete context (resource, scope).
+fn split_into_singletons(logs_data: &LogsData) -> Vec<LogsData> {
+    let mut result = Vec::new();
 
-impl<'a> PartialEq for LogItemKey<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+    for resource_logs in &logs_data.resource_logs {
+        for scope_logs in &resource_logs.scope_logs {
+            for log_record in &scope_logs.log_records {
+                result.push(LogsData {
+                    resource_logs: vec![ResourceLogs {
+                        resource: resource_logs.resource.clone(),
+                        scope_logs: vec![ScopeLogs {
+                            scope: scope_logs.scope.clone(),
+                            log_records: vec![log_record.clone()],
+                            schema_url: scope_logs.schema_url.clone(),
+                        }],
+                        schema_url: resource_logs.schema_url.clone(),
+                    }],
+                });
+            }
+        }
     }
+
+    result
 }
 
-impl<'a> Eq for LogItemKey<'a> {}
+/// Canonicalize a singleton LogsData by sorting all fields that need canonical ordering.
+///
+/// This mutates the message in place to sort:
+/// - Resource attributes
+/// - Scope attributes
+/// - Log record attributes
+/// - Key-value lists in AnyValue (recursively)
+fn canonicalize_singleton(logs_data: &mut LogsData) {
+    use crate::proto::opentelemetry::common::v1::any_value;
 
-impl<'a> PartialOrd for LogItemKey<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<'a> Ord for LogItemKey<'a> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Compare resource
-        match (self.resource, other.resource) {
-            (Some(r1), Some(r2)) => {
-                match compare_attributes(&r1.attributes, &r2.attributes) {
-                    Ordering::Equal => {}
-                    other => return other,
+    // Helper to recursively canonicalize AnyValue
+    fn canonicalize_any_value(av: &mut crate::proto::opentelemetry::common::v1::AnyValue) {
+        if let Some(value) = &mut av.value {
+            match value {
+                any_value::Value::ArrayValue(arr) => {
+                    for v in &mut arr.values {
+                        canonicalize_any_value(v);
+                    }
                 }
-                match r1.dropped_attributes_count.cmp(&r2.dropped_attributes_count) {
-                    Ordering::Equal => {}
-                    other => return other,
+                any_value::Value::KvlistValue(kvlist) => {
+                    // Sort by key
+                    kvlist.values.sort_by(|a, b| a.key.cmp(&b.key));
+                    // Recursively canonicalize values
+                    for kv in &mut kvlist.values {
+                        if let Some(v) = &mut kv.value {
+                            canonicalize_any_value(v);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Canonicalize resource attributes
+    for resource_logs in &mut logs_data.resource_logs {
+        if let Some(resource) = &mut resource_logs.resource {
+            resource.attributes.sort_by(|a, b| a.key.cmp(&b.key));
+            for attr in &mut resource.attributes {
+                if let Some(value) = &mut attr.value {
+                    canonicalize_any_value(value);
                 }
             }
-            (None, None) => {}
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-        }
-        match self.resource_schema_url.cmp(other.resource_schema_url) {
-            Ordering::Equal => {}
-            other => return other,
         }
 
-        // Compare scope
-        match (self.scope, other.scope) {
-            (Some(s1), Some(s2)) => {
-                match s1.name.cmp(&s2.name) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match s1.version.cmp(&s2.version) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match compare_attributes(&s1.attributes, &s2.attributes) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-                match s1.dropped_attributes_count.cmp(&s2.dropped_attributes_count) {
-                    Ordering::Equal => {}
-                    other => return other,
+        // Canonicalize scope attributes
+        for scope_logs in &mut resource_logs.scope_logs {
+            if let Some(scope) = &mut scope_logs.scope {
+                scope.attributes.sort_by(|a, b| a.key.cmp(&b.key));
+                for attr in &mut scope.attributes {
+                    if let Some(value) = &mut attr.value {
+                        canonicalize_any_value(value);
+                    }
                 }
             }
-            (None, None) => {}
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-        }
-        match self.scope_schema_url.cmp(other.scope_schema_url) {
-            Ordering::Equal => {}
-            other => return other,
-        }
 
-        // Compare log record
-        let lr1 = self.log_record;
-        let lr2 = other.log_record;
+            // Canonicalize log record attributes
+            for log_record in &mut scope_logs.log_records {
+                log_record.attributes.sort_by(|a, b| a.key.cmp(&b.key));
+                for attr in &mut log_record.attributes {
+                    if let Some(value) = &mut attr.value {
+                        canonicalize_any_value(value);
+                    }
+                }
 
-        match lr1.time_unix_nano.cmp(&lr2.time_unix_nano) {
-            Ordering::Equal => {}
-            other => return other,
+                // Canonicalize body
+                if let Some(body) = &mut log_record.body {
+                    canonicalize_any_value(body);
+                }
+            }
         }
-        match lr1.observed_time_unix_nano.cmp(&lr2.observed_time_unix_nano) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-        match lr1.severity_number.cmp(&lr2.severity_number) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-        match lr1.severity_text.cmp(&lr2.severity_text) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-
-        // Compare body
-        let body1 = CanonicalValue::from(lr1.body.as_ref());
-        let body2 = CanonicalValue::from(lr2.body.as_ref());
-        match body1.cmp(&body2) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-
-        // Compare attributes (sorted)
-        match compare_attributes(&lr1.attributes, &lr2.attributes) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-
-        match lr1.dropped_attributes_count.cmp(&lr2.dropped_attributes_count) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-        match lr1.flags.cmp(&lr2.flags) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-        match lr1.trace_id.cmp(&lr2.trace_id) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-        lr1.span_id.cmp(&lr2.span_id)
     }
 }
 
-/// Iterator over all log items in a request, flattened with their context.
-pub fn iter_log_items(
-    request: &LogsData,
-) -> impl Iterator<Item = LogItemKey<'_>> + '_ {
-    request.resource_logs.iter().flat_map(|rl| {
-        let resource = rl.resource.as_ref();
-        let resource_schema_url = rl.schema_url.as_str();
-        rl.scope_logs.iter().flat_map(move |sl| {
-            let scope = sl.scope.as_ref();
-            let scope_schema_url = sl.schema_url.as_str();
-            sl.log_records.iter().map(move |lr| LogItemKey {
-                resource,
-                resource_schema_url,
-                scope,
-                scope_schema_url,
-                log_record: lr,
-            })
+/// Assert that two collections of `LogsData` instances are equivalent.
+///
+/// This checks all structured fields and attributes, comparing them in canonical order
+/// so that field order doesn't matter.
+///
+/// Approach:
+/// 1. Split each LogsData into singleton messages (one log record per message)
+/// 2. Clone and canonicalize each singleton (sort attributes, key-value lists, etc.)
+/// 3. Encode each canonicalized singleton as bytes using Prost encoding
+/// 4. Collect encoded bytes into BTreeSet<Vec<u8>>
+/// 5. Compare sets
+///
+/// Using bytes as the comparison key works around the fact that Prost doesn't
+/// generate Eq/Ord for messages with f64 fields (due to NaN). The encoding
+/// is deterministic for canonicalized messages.
+///
+/// # Panics
+/// Panics if the two collections are not equivalent.
+pub fn assert_logs_equivalent(left: &[LogsData], right: &[LogsData]) {
+    // Split into singletons from all LogsData in the slices
+    let mut left_singletons: Vec<LogsData> = left
+        .iter()
+        .flat_map(split_into_singletons)
+        .collect();
+    let mut right_singletons: Vec<LogsData> = right
+        .iter()
+        .flat_map(split_into_singletons)
+        .collect();
+    
+    // Canonicalize each singleton
+    for singleton in &mut left_singletons {
+        canonicalize_singleton(singleton);
+    }
+    for singleton in &mut right_singletons {
+        canonicalize_singleton(singleton);
+    }
+    
+    // Encode to bytes and collect into BTreeSets
+    let left_set: BTreeSet<Vec<u8>> = left_singletons
+        .into_iter()
+        .map(|msg| {
+            let mut buf = Vec::new();
+            msg.encode(&mut buf).expect("encoding should not fail");
+            buf
         })
-    })
-}
-
-/// Assert that two log requests are semantically equivalent.
-///
-/// This compares the set of log items, ignoring structural differences like
-/// how resources and scopes are grouped.
-pub fn assert_logs_equivalent(
-    expected: &[LogsData],
-    actual: &[LogsData],
-) {
-    let expected_items: BTreeSet<LogItemKey<'_>> = expected.iter().flat_map(iter_log_items).collect();
-    let actual_items: BTreeSet<LogItemKey<'_>> = actual.iter().flat_map(iter_log_items).collect();
-
-    let missing_expected: Vec<_> = expected_items.difference(&actual_items).collect();
-    let missing_actual: Vec<_> = actual_items.difference(&expected_items).collect();
-
-    if !missing_expected.is_empty() {
-        eprintln!("Missing expected log items ({} items):", missing_expected.len());
-        for (i, item) in missing_expected.iter().enumerate().take(5) {
-            eprintln!("  [{}] {:?}", i, item);
-        }
-        if missing_expected.len() > 5 {
-            eprintln!("  ... and {} more", missing_expected.len() - 5);
-        }
+        .collect();
+    
+    let right_set: BTreeSet<Vec<u8>> = right_singletons
+        .into_iter()
+        .map(|msg| {
+            let mut buf = Vec::new();
+            msg.encode(&mut buf).expect("encoding should not fail");
+            buf
+        })
+        .collect();
+    
+    if left_set != right_set {
+        // For debugging, decode the differences back to messages
+        let only_left: Vec<_> = left_set
+            .difference(&right_set)
+            .filter_map(|bytes| LogsData::decode(bytes.as_slice()).ok())
+            .collect();
+        let only_right: Vec<_> = right_set
+            .difference(&left_set)
+            .filter_map(|bytes| LogsData::decode(bytes.as_slice()).ok())
+            .collect();
+        
+        panic!(
+            "LogsData not equivalent:\n\
+             Only in left ({} items):\n{:#?}\n\
+             Only in right ({} items):\n{:#?}",
+            only_left.len(),
+            only_left,
+            only_right.len(),
+            only_right
+        );
     }
-
-    if !missing_actual.is_empty() {
-        eprintln!("Unexpected log items ({} items):", missing_actual.len());
-        for (i, item) in missing_actual.iter().enumerate().take(5) {
-            eprintln!("  [{}] {:?}", i, item);
-        }
-        if missing_actual.len() > 5 {
-            eprintln!("  ... and {} more", missing_actual.len() - 5);
-        }
-    }
-
-    assert!(
-        missing_expected.is_empty() && missing_actual.is_empty(),
-        "Log requests are not equivalent: {} missing expected, {} unexpected",
-        missing_expected.len(),
-        missing_actual.len()
-    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::{
         common::v1::{AnyValue, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+        resource::v1::Resource,
     };
 
     #[test]

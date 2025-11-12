@@ -3,8 +3,7 @@
 
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
-    StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt,
-    get_u8_array,
+    StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error::{Error, Result};
 use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
