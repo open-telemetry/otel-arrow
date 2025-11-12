@@ -455,13 +455,13 @@ mod test {
         otlp_service_request.encode(&mut otlp_bytes).unwrap();
         let pdata: OtapPayload = OtlpProtoBytes::ExportMetricsRequest(otlp_bytes).into();
 
-        // test can go OtlpBytes -> OtapBatch & back
+        // test can go OtlpBytes (written by prost) to OTAP & back (using prost)
         let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Metrics(_)));
-        let pdata: OtapPayload = otap_batch.into();
+        let pdata: OtapPayload = otap_batch.clone().into();
 
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
-        let bytes = match otlp_bytes {
+        let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
         };
@@ -469,9 +469,12 @@ mod test {
         let result = ExportMetricsServiceRequest::decode(bytes.as_ref()).unwrap();
         assert_eq!(otlp_service_request, result);
 
-        // check that we can also re-decode the proto bytes that we encode, directly into
-        // OTAP and if we read it back we get the same result
-
+        // check that we can also re-decode the OTLP proto bytes that we encode directly
+        // from OTAP, that we get the same result
+        // TODO add this same check to other signal types
+        let pdata: OtapPayload = otlp_bytes.into();
+        let otap_batch2: OtapArrowRecords = pdata.try_into().unwrap();
+        assert_eq!(otap_batch, otap_batch2);
     }
 
     #[test]
