@@ -310,13 +310,18 @@ fn proto_encode_buckets(
         let value_offsets = buckets_arrays.bucket_count.list.value_offsets();
         let start = value_offsets[index] as usize;
         let end = value_offsets[index + 1] as usize;
+        let values = buckets_arrays.bucket_count.value.slice(start, end - start);
 
-        for i in start..end {
-            if buckets_arrays.bucket_count.value.is_valid(i) {
-                let val = buckets_arrays.bucket_count.value.value(i);
-                result_buf.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
-                result_buf.encode_varint(val);
-            }
-        }
+        // encode using "packed" encoding for repeated primitive
+        // https://protobuf.dev/programming-guides/encoding/#repeated
+
+        proto_encode_len_delimited_unknown_size!(
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS,
+            values
+                .iter()
+                .flatten()
+                .for_each(|val| result_buf.encode_varint(val)),
+            result_buf
+        );
     }
 }
