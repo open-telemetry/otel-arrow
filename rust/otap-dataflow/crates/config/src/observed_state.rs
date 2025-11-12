@@ -9,7 +9,6 @@ use std::time::Duration;
 
 /// Configuration for the observed state store.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ObservedStateSettings {
     /// The size of the reporting channel.
     pub reporting_channel_size: usize,

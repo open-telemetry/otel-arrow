@@ -1,88 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the pipeline data that is passed between pipeline components.
+//! This module manages how telemetry pipeline data (pdata) flows through pipeline
+//! components (receivers, processors, exporters) and how components receive
+//! acknowledgments (Ack) and negative acknowledgments (Nack) about this pdata.
 //!
-//! Internally, the data can be represented in the following formats:
-//! - OTLP Bytes - contain the OTLP service request messages serialized as protobuf
-//! - OTAP Arrow Bytes - the data is contained in `BatchArrowRecords` type which
-//!   contains the Arrow batches for each payload, serialized as Arrow IPC. This type is
-//!   what we'd receive from the OTAP GRPC service.
-//! - OTAP Arrow Records - the data is contained in Arrow `[RecordBatch]`s organized by
-//!   for efficient access by the arrow payload type.
+//! This includes:
+//! - Context: a stack of pipeline component subscriptions
+//! - Interests: allows components to declare whether they subscribe to Ack/Nack
 //!
-//! This module also contains conversions between the various types using the `From`
-//! and `TryFrom` traits. For example:
-//! ```
-//! # use std::sync::Arc;
-//! # use arrow::array::{RecordBatch, UInt16Array};
-//! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
-//! # use otap_df_pdata::proto::opentelemetry::{
-//!     arrow::v1::ArrowPayloadType,
-//!     collector::logs::v1::ExportLogsServiceRequest,
-//!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
-//!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
-//!     resource::v1::Resource
-//! };
-//! # use otap_df_otap::pdata::{Context, OtapPdata};
-//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-//! # use prost::Message;
-//! let otlp_service_req = ExportLogsServiceRequest::new(vec![
-//!    ResourceLogs::new(
-//!        Resource::default(),
-//!        vec![
-//!            ScopeLogs::new(
-//!                InstrumentationScope::default(),
-//!                vec![
-//!                    LogRecord::build()
-//!                        .time_unix_nano(2u64)
-//!                        .severity_number(SeverityNumber::Info)
-//!                        .event_name("event")
-//!                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-//!                        .finish(),
-//!                ],
-//!            ),
-//!        ],
-//!    ),
-//!  ]);
-//! let mut buf = Vec::new();
-//! otlp_service_req.encode(&mut buf).unwrap();
-//!
-//! // Create a new OtapPdata with default context
-//! let context = Context::default();
-//! let mut pdata = OtapPdata::new(context, OtlpProtoBytes::ExportLogsRequest(buf).into());
-//!
-//! // Split the request, convert to Otap Arrow Records
-//! let (context, payload) = pdata.into_parts();
-//! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
-//! ```
-//!
-//! Internally, conversions are happening using various utility functions:
-//! ```text
-//!                                      ┌───────────────────────┐
-//!                                      │                       │
-//!                                      │      OTLP Bytes       │
-//!                                      │                       │
-//!                                      └───┬───────────────────┘
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
-//!                                      ┌─────────────────────┴───┐
-//!                                      │                         │
-//!                                      │    OTAP Arrow Records   │
-//!                                      │                         │
-//!                                      └─────────────────────────┘
-//! ```
-// ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
-// directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
-// this diagram may need to be updated (https://github.com/open-telemetry/otel-arrow/issues/1095)
+//! Components can subscribe to receive notifications when their pdata is accepted (Ack) or
+//! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
+//! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
 use otap_df_config::SignalType;
