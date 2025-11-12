@@ -44,6 +44,7 @@ smallvec = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
+flate2 = { workspace = true }
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }

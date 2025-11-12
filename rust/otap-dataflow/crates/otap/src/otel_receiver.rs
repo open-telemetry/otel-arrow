@@ -7,10 +7,11 @@
 //!
 //! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
 //  ToDo Preferred response encoding: store negotiated codec in per-stream state (fall back to identity), set the response header accordingly, and ensure encode_message flips the compression bit and runs the right compressor.
-//  ToDo Codec support matrix: extend GrpcEncoding to include gzip & snappy. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
+//  ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
 //  ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
 //  ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
 
+use crate::compression::CompressionMethod;
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::otap_grpc::common;
 use crate::otap_grpc::otlp::server::RouteResponse;
@@ -19,6 +20,7 @@ use crate::otap_receiver::OtapReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use flate2::read::{GzDecoder, ZlibDecoder};
 use futures::future::{LocalBoxFuture, poll_fn};
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
@@ -50,7 +52,7 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::io;
+use std::io::{self, Read};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Add;
@@ -72,6 +74,7 @@ const ARROW_METRICS_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
 const ARROW_TRACES_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
+const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
 
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
@@ -166,12 +169,17 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             traces_ack_registry.clone(),
         );
 
+        let request_encoding_methods = config.request_compression_methods();
+        let request_encodings =
+            AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
+
         let router = Rc::new(ArrowRouter {
             effect_handler: effect_handler.clone(),
             logs_ack_registry,
             metrics_ack_registry,
             traces_ack_registry,
             max_in_flight_per_connection: max_in_flight,
+            request_encodings,
         });
 
         let cancel_token = CancellationToken::new();
@@ -451,6 +459,7 @@ struct ArrowRouter {
     metrics_ack_registry: Option<AckRegistry>,
     traces_ack_registry: Option<AckRegistry>,
     max_in_flight_per_connection: usize,
+    request_encodings: AcceptedGrpcEncodings,
 }
 
 impl ArrowRouter {
@@ -509,7 +518,7 @@ impl ArrowRouter {
     where
         T: OtapBatchStore + 'static,
     {
-        let encoding = parse_grpc_encoding(request.headers())?;
+        let encoding = parse_grpc_encoding(request.headers(), &self.request_encodings)?;
         let recv_stream = request.into_body();
         let body = GrpcStreamingBody::new(recv_stream, encoding);
 
@@ -559,7 +568,10 @@ impl ArrowRouter {
     }
 }
 
-fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
+fn parse_grpc_encoding(
+    headers: &HeaderMap,
+    accepted: &AcceptedGrpcEncodings,
+) -> Result<GrpcEncoding, Status> {
     match headers.get(http::header::CONTENT_TYPE) {
         Some(value) if value.as_bytes().starts_with(b"application/grpc") => {}
         other => {
@@ -580,22 +592,36 @@ fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
             let ascii = trimmed.as_bytes();
             const PREFIX: &[u8] = b"zstdarrow";
 
-            if ascii.is_empty() || eq_ascii_case_insensitive(ascii, b"identity") {
-                Ok(GrpcEncoding::Identity)
+            let encoding = if ascii.is_empty() || eq_ascii_case_insensitive(ascii, b"identity") {
+                GrpcEncoding::Identity
             } else if eq_ascii_case_insensitive(ascii, b"zstd") {
-                Ok(GrpcEncoding::Zstd)
+                GrpcEncoding::Zstd
+            } else if eq_ascii_case_insensitive(ascii, b"gzip") {
+                GrpcEncoding::Gzip
+            } else if eq_ascii_case_insensitive(ascii, b"deflate") {
+                GrpcEncoding::Deflate
             } else if ascii.len() >= PREFIX.len()
                 && starts_with_ascii_case_insensitive(ascii, PREFIX)
             {
                 let tail = &ascii[PREFIX.len()..];
                 if tail.len() == 1 && tail[0].is_ascii_digit() {
-                    Ok(GrpcEncoding::Zstd)
+                    GrpcEncoding::Zstd
                 } else {
                     log::error!("Unsupported grpc-encoding {}", trimmed);
-                    Err(Status::unimplemented("grpc compression not supported"))
+                    return Err(Status::unimplemented("grpc compression not supported"));
                 }
             } else {
                 log::error!("Unsupported grpc-encoding {}", trimmed);
+                return Err(Status::unimplemented("grpc compression not supported"));
+            };
+
+            if accepted.allows(encoding) {
+                Ok(encoding)
+            } else {
+                log::error!(
+                    "grpc-encoding {} not enabled in server configuration",
+                    trimmed
+                );
                 Err(Status::unimplemented("grpc compression not supported"))
             }
         }
@@ -626,7 +652,45 @@ fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
 enum GrpcEncoding {
     Identity,
     Zstd,
-    // ToDo: Gzip, Snappy (to follow Go implementation)
+    Gzip,
+    Deflate,
+    // ToDo Add support for Snappy to follow Go implementation
+}
+
+#[derive(Clone, Copy)]
+struct AcceptedGrpcEncodings {
+    zstd: bool,
+    gzip: bool,
+    deflate: bool,
+}
+
+impl AcceptedGrpcEncodings {
+    fn from_methods(methods: &[CompressionMethod]) -> Self {
+        let mut encodings = Self {
+            zstd: false,
+            gzip: false,
+            deflate: false,
+        };
+
+        for method in methods {
+            match method {
+                CompressionMethod::Zstd => encodings.zstd = true,
+                CompressionMethod::Gzip => encodings.gzip = true,
+                CompressionMethod::Deflate => encodings.deflate = true,
+            }
+        }
+
+        encodings
+    }
+
+    fn allows(self, encoding: GrpcEncoding) -> bool {
+        match encoding {
+            GrpcEncoding::Identity => true,
+            GrpcEncoding::Zstd => self.zstd,
+            GrpcEncoding::Gzip => self.gzip,
+            GrpcEncoding::Deflate => self.deflate,
+        }
+    }
 }
 
 struct GrpcStreamingBody {
@@ -791,61 +855,100 @@ impl GrpcStreamingBody {
             }
         }
     }
+    fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
+        let required_capacity = payload_len
+            .saturating_mul(2)
+            .max(MIN_DECOMPRESSED_CAPACITY);
+        if self.decompressed_buf.capacity() < required_capacity {
+            self.decompressed_buf
+                .reserve(required_capacity - self.decompressed_buf.capacity());
+        }
+    }
+
     fn decompress(&mut self, payload: Bytes) -> Result<&[u8], Status> {
         match self.encoding {
             GrpcEncoding::Identity => {
                 log::error!("Received compressed frame but grpc-encoding=identity");
                 Err(Status::unimplemented("message compression not negotiated"))
             }
-            GrpcEncoding::Zstd => {
-                self.ensure_zstd_decompressor()?;
-                let mut required_capacity = self
-                    .decompressed_buf
-                    .capacity()
-                    .max(payload.len().saturating_mul(2))
-                    .max(8 * 1024);
+            GrpcEncoding::Zstd => self.decompress_zstd(payload),
+            GrpcEncoding::Gzip => self.decompress_gzip(payload),
+            GrpcEncoding::Deflate => self.decompress_deflate(payload),
+        }
+    }
 
-                loop {
-                    if self.decompressed_buf.capacity() < required_capacity {
-                        self.decompressed_buf
-                            .reserve(required_capacity - self.decompressed_buf.capacity());
+    fn decompress_zstd(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+        self.ensure_zstd_decompressor()?;
+        let mut required_capacity = self
+            .decompressed_buf
+            .capacity()
+            .max(payload.len().saturating_mul(2))
+            .max(MIN_DECOMPRESSED_CAPACITY);
+
+        loop {
+            if self.decompressed_buf.capacity() < required_capacity {
+                self.decompressed_buf
+                    .reserve(required_capacity - self.decompressed_buf.capacity());
+            }
+            self.decompressed_buf.clear();
+            let result = {
+                let decompressor = self
+                    .zstd
+                    .as_mut()
+                    .expect("decompressor must be initialized");
+                decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
+            };
+            match result {
+                Ok(_) => return Ok(self.decompressed_buf.as_slice()),
+                Err(err) => {
+                    let err_msg = err.to_string();
+                    if err.kind() == io::ErrorKind::Other
+                        && err_msg.contains("Destination buffer is too small")
+                    {
+                        required_capacity =
+                            required_capacity.checked_mul(2).ok_or_else(|| {
+                                log::error!(
+                                    "zstd decompression failed: required buffer overflow"
+                                );
+                                Status::internal(
+                                    "zstd decompression failed: output too large",
+                                )
+                            })?;
+                        continue;
                     }
-                    self.decompressed_buf.clear();
-                    let result = {
-                        let decompressor = self
-                            .zstd
-                            .as_mut()
-                            .expect("decompressor must be initialized");
-                        decompressor
-                            .decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
-                    };
-                    match result {
-                        Ok(_) => return Ok(self.decompressed_buf.as_slice()),
-                        Err(err) => {
-                            let err_msg = err.to_string();
-                            if err.kind() == io::ErrorKind::Other
-                                && err_msg.contains("Destination buffer is too small")
-                            {
-                                required_capacity =
-                                    required_capacity.checked_mul(2).ok_or_else(|| {
-                                        log::error!(
-                                            "zstd decompression failed: required buffer overflow"
-                                        );
-                                        Status::internal(
-                                            "zstd decompression failed: output too large",
-                                        )
-                                    })?;
-                                continue;
-                            }
-                            log::error!("zstd decompression failed: {err_msg}");
-                            return Err(Status::internal(format!(
-                                "zstd decompression failed: {err_msg}"
-                            )));
-                        }
-                    }
+                    log::error!("zstd decompression failed: {err_msg}");
+                    return Err(Status::internal(format!(
+                        "zstd decompression failed: {err_msg}"
+                    )));
                 }
             }
         }
+    }
+
+    fn decompress_gzip(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+        self.reserve_decompressed_capacity(payload.len());
+        self.decompressed_buf.clear();
+        let mut decoder = GzDecoder::new(payload.as_ref());
+        let _ = decoder
+            .read_to_end(&mut self.decompressed_buf)
+            .map_err(|err| {
+                log::error!("gzip decompression failed: {err}");
+                Status::internal(format!("gzip decompression failed: {err}"))
+            })?;
+        Ok(self.decompressed_buf.as_slice())
+    }
+
+    fn decompress_deflate(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+        self.reserve_decompressed_capacity(payload.len());
+        self.decompressed_buf.clear();
+        let mut decoder = ZlibDecoder::new(payload.as_ref());
+        let _ = decoder
+            .read_to_end(&mut self.decompressed_buf)
+            .map_err(|err| {
+                log::error!("deflate decompression failed: {err}");
+                Status::internal(format!("deflate decompression failed: {err}"))
+            })?;
+        Ok(self.decompressed_buf.as_slice())
     }
 
     fn ensure_zstd_decompressor(&mut self) -> Result<(), Status> {

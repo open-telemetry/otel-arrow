@@ -65,6 +65,7 @@ criterion = "0.7.0"
 data-encoding = "2.9.0"
 fluke-hpack = "0.3.1"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
+flate2 = "1.1.5"
 futures = "0.3.31"
 futures-channel = "0.3"
 futures-timer = "3.0"
