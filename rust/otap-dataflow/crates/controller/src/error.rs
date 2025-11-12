@@ -4,6 +4,7 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
+use otap_df_config::pipeline_group::CoreAllocation;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
@@ -50,13 +51,11 @@ pub enum Error {
     #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
     CoreDetectionUnavailable,
 
-    /// Invalid or out-of-bounds requested CPU core ID range.
-    #[error("Invalid core ID range [{start}..={end}]. Available core IDs: {available:?}")]
-    InvalidCoreRange {
-        /// Start of the requested range (inclusive).
-        start: usize,
-        /// End of the requested range (inclusive).
-        end: usize,
+    /// Invalid or out-of-bounds requested CPU core ID allocation.
+    #[error("Invalid core ID allocation [{alloc}]. Available core IDs: {available:?}")]
+    InvalidCoreAllocation {
+        /// Invalid of out-of-bounds CPU core ID allocation.
+        alloc: CoreAllocation,
         /// Error message.
         message: String,
         /// The available CPU core IDs detected on this system.

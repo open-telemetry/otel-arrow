@@ -9,6 +9,7 @@ use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Display;
 
 /// Configuration for a single pipeline group.
 /// Contains group-specific settings and all its pipelines.
@@ -95,17 +96,92 @@ pub enum CoreAllocation {
         /// Number of cores to use. If 0, uses all available cores.
         count: usize,
     },
-    /// Use a specific range of CPU core IDs (inclusive).
-    CoreRange {
-        /// Start core ID (inclusive).
-        start: usize,
-        /// End core ID (inclusive).
-        end: usize,
+    /// Defines a set of CPU cores should be allocated for pipeline execution.
+    CoreSet {
+        /// Core set defined as a set of ranges.
+        set: Vec<CoreRange>,
     },
+}
+
+impl Display for CoreAllocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CoreAllocation::AllCores => write!(f, "*"),
+            CoreAllocation::CoreCount { count } => write!(f, "[{count} cores]"),
+            CoreAllocation::CoreSet { set } => {
+                let mut first = true;
+                for item in set {
+                    if !first {
+                        write!(f, ",")?
+                    }
+                    write!(f, "{item}")?;
+                    first = false
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl Default for CoreAllocation {
     fn default() -> Self {
         Self::AllCores
+    }
+}
+
+/// Defines a range of CPU cores should be allocated for pipeline execution.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub struct CoreRange {
+    /// Start core ID (inclusive).
+    pub start: usize,
+    /// End core ID (inclusive).
+    pub end: usize,
+}
+
+impl Display for CoreRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}", self.start)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_core_allocation_display_all_cores() {
+        let allocation = CoreAllocation::AllCores;
+        assert_eq!(allocation.to_string(), "*");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_count() {
+        let allocation = CoreAllocation::CoreCount { count: 4 };
+        assert_eq!(allocation.to_string(), "[4 cores]");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_set_single_range() {
+        let allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 0, end: 3 }],
+        };
+        assert_eq!(allocation.to_string(), "0-3");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_set_multiple_ranges() {
+        let allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 0, end: 3 },
+                CoreRange { start: 8, end: 11 },
+                CoreRange { start: 16, end: 16 },
+            ],
+        };
+        assert_eq!(allocation.to_string(), "0-3,8-11,16");
     }
 }
