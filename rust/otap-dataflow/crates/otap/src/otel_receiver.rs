@@ -575,35 +575,54 @@ fn parse_grpc_encoding(headers: &HeaderMap) -> Result<GrpcEncoding, Status> {
     match headers.get("grpc-encoding") {
         None => Ok(GrpcEncoding::Identity),
         Some(value) => {
-            let enc = value
-                .to_str()
-                .map_err(|_| {
-                    log::error!("Non-UTF8 grpc-encoding header");
-                    Status::invalid_argument("invalid grpc-encoding header")
-                })?
-                .trim()
-                .to_ascii_lowercase();
-            let enc_str = enc.as_str();
-            const PREFIX: &str = "zstdarrow";
+            let raw = value.to_str().map_err(|_| {
+                log::error!("Non-UTF8 grpc-encoding header");
+                Status::invalid_argument("invalid grpc-encoding header")
+            })?;
+            let trimmed = raw.trim();
+            let ascii = trimmed.as_bytes();
+            const PREFIX: &[u8] = b"zstdarrow";
 
-            if enc_str.is_empty() || enc_str == "identity" {
+            if ascii.is_empty() || eq_ascii_case_insensitive(ascii, b"identity") {
                 Ok(GrpcEncoding::Identity)
-            } else if enc_str == "zstd" {
+            } else if eq_ascii_case_insensitive(ascii, b"zstd") {
                 Ok(GrpcEncoding::Zstd)
-            } else if enc_str.starts_with(PREFIX) {
-                let tail = &enc_str[PREFIX.len()..];
-                if tail.len() == 1 && tail.as_bytes()[0].is_ascii_digit() {
+            } else if ascii.len() >= PREFIX.len()
+                && starts_with_ascii_case_insensitive(ascii, PREFIX)
+            {
+                let tail = &ascii[PREFIX.len()..];
+                if tail.len() == 1 && tail[0].is_ascii_digit() {
                     Ok(GrpcEncoding::Zstd)
                 } else {
-                    log::error!("Unsupported grpc-encoding {}", enc_str);
+                    log::error!("Unsupported grpc-encoding {}", trimmed);
                     Err(Status::unimplemented("grpc compression not supported"))
                 }
             } else {
-                log::error!("Unsupported grpc-encoding {}", enc_str);
+                log::error!("Unsupported grpc-encoding {}", trimmed);
                 Err(Status::unimplemented("grpc compression not supported"))
             }
         }
     }
+}
+
+fn eq_ascii_case_insensitive(value: &[u8], expected: &[u8]) -> bool {
+    value.len() == expected.len()
+        && value
+            .iter()
+            .zip(expected)
+            .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
+}
+
+fn starts_with_ascii_case_insensitive(value: &[u8], prefix: &[u8]) -> bool {
+    value.len() >= prefix.len()
+        && value
+            .iter()
+            .zip(prefix)
+            .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
+}
+
+fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
+    lhs == rhs || lhs.to_ascii_lowercase() == rhs.to_ascii_lowercase()
 }
 
 #[derive(Clone, Copy)]
