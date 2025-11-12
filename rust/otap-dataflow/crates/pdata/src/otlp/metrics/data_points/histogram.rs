@@ -190,8 +190,6 @@ pub(crate) fn proto_encode_histogram_data_point(
         }
     }
 
-    // TODO should there be unit tests to ensure we write these using packed encoding?
-
     if let Some(bucket_counts) = &hist_dp_arrays.histogram_bucket_counts {
         if bucket_counts.list.is_valid(index) {
             let value_offsets = bucket_counts.list.value_offsets();
