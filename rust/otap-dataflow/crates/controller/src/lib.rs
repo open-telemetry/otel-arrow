@@ -253,28 +253,31 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 };
                 Ok(available_core_ids.into_iter().take(count).collect())
             }
-            CoreAllocation::CoreRange { start, end } => {
-                // Validate range
-                if start > end {
-                    return Err(Error::InvalidCoreRange {
-                        start,
-                        end,
-                        message: "Start of range is greater than end".to_owned(),
-                        available: available_core_ids.iter().map(|c| c.id).collect(),
-                    });
-                }
+            CoreAllocation::CoreSet { ref set } => {
+                set.iter().try_for_each(|r| {
+                    if r.start > r.end {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: "Start of range is greater than end".to_owned(),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                    Ok(())
+                })?;
 
                 // Filter cores in range
                 let selected: Vec<_> = available_core_ids
                     .into_iter()
-                    .filter(|c| c.id >= start && c.id <= end)
+                    // Naively check if each interval contains the point
+                    // This problem is known as the "Interval Stabbing Problem"
+                    // and has more efficient but more complex solutions
+                    .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
                     .collect();
 
                 if selected.is_empty() {
-                    return Err(Error::InvalidCoreRange {
-                        start,
-                        end,
-                        message: "No available cores in the specified range".to_owned(),
+                    return Err(Error::InvalidCoreAllocation {
+                        alloc: quota.core_allocation.clone(),
+                        message: "No available cores in the specified ranges".to_owned(),
                         available: core_affinity::get_core_ids()
                             .unwrap_or_default()
                             .iter()
@@ -363,6 +366,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::pipeline_group::CoreRange;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -414,9 +418,11 @@ mod tests {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
         let quota = Quota {
-            core_allocation: CoreAllocation::CoreRange {
-                start: first_id,
-                end: first_id,
+            core_allocation: CoreAllocation::CoreSet {
+                set: vec![CoreRange {
+                    start: first_id,
+                    end: first_id,
+                }],
             },
         };
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
@@ -426,24 +432,31 @@ mod tests {
     #[test]
     fn select_with_valid_multi_core_range() {
         let quota = Quota {
-            core_allocation: CoreAllocation::CoreRange { start: 2, end: 5 },
+            core_allocation: CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 2, end: 5 },
+                    CoreRange { start: 6, end: 6 },
+                ],
+            },
         };
         let available_core_ids = available_core_ids();
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
-        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
     }
 
     #[test]
     fn select_with_inverted_range_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 2, end: 1 }],
+        };
         let quota = Quota {
-            core_allocation: CoreAllocation::CoreRange { start: 2, end: 1 },
+            core_allocation: core_allocation.clone(),
         };
         let available_core_ids = available_core_ids();
         let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
         match err {
-            Error::InvalidCoreRange { start, end, .. } => {
-                assert_eq!(start, 2);
-                assert_eq!(end, 1);
+            Error::InvalidCoreAllocation { alloc, .. } => {
+                assert_eq!(alloc, core_allocation);
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -453,17 +466,17 @@ mod tests {
     fn select_with_out_of_bounds_range_errors() {
         let start = 100;
         let end = 110;
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start, end }],
+        };
         let quota = Quota {
-            core_allocation: CoreAllocation::CoreRange { start, end },
+            core_allocation: core_allocation.clone(),
         };
         let available_core_ids = available_core_ids();
         let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
         match err {
-            Error::InvalidCoreRange {
-                start: s, end: e, ..
-            } => {
-                assert_eq!(s, start);
-                assert_eq!(e, end);
+            Error::InvalidCoreAllocation { alloc, .. } => {
+                assert_eq!(alloc, core_allocation);
             }
             other => panic!("unexpected error: {other:?}"),
         }

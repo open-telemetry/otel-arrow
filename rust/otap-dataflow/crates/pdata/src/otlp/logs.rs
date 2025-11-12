@@ -8,7 +8,7 @@ use arrow::datatypes::{DataType, Fields};
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
+    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -33,7 +33,7 @@ use crate::schema::consts;
 use super::attributes::AttributeValueType;
 
 struct LogsArrays<'a> {
-    id: &'a UInt16Array,
+    id: Option<&'a UInt16Array>,
     schema_url: Option<StringArrayAccessor<'a>>,
     time_unix_nano: Option<&'a TimestampNanosecondArray>,
     observed_time_unix_nano: Option<&'a TimestampNanosecondArray>,
@@ -51,7 +51,7 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = get_u16_array(rb, consts::ID)?;
+        let id = get_u16_array_opt(rb, consts::ID)?;
         let schema_url = rb
             .column_by_name(consts::SCHEMA_URL)
             .map(StringArrayAccessor::try_new)
@@ -433,15 +433,17 @@ impl LogsProtoBytesEncoder {
         }
 
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
-            if let Some(id) = log_arrays.id.value_at(index) {
-                let attrs_index_iter =
-                    ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
-                for attr_index in attrs_index_iter {
-                    proto_encode_len_delimited_unknown_size!(
-                        LOG_RECORD_ATTRIBUTES,
-                        encode_key_value(log_attrs, attr_index, result_buf)?,
-                        result_buf
-                    );
+            if let Some(id_array) = log_arrays.id {
+                if let Some(id) = id_array.value_at(index) {
+                    let attrs_index_iter =
+                        ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
+                    for attr_index in attrs_index_iter {
+                        proto_encode_len_delimited_unknown_size!(
+                            LOG_RECORD_ATTRIBUTES,
+                            encode_key_value(log_attrs, attr_index, result_buf)?,
+                            result_buf
+                        );
+                    }
                 }
             }
         }
@@ -674,6 +676,117 @@ mod test {
                 ],
             ),
         ]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_proto_encode_without_id_column() {
+        // Test encoding logs that have no attributes, which means no
+        // ID column is encoded or decoded.
+
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]);
+        let body_struct_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]);
+
+        let logs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(res_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(
+                    consts::BODY,
+                    DataType::Struct(body_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    res_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 0]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([0, 0])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "test-scope",
+                            "test-scope",
+                        ])),
+                    ],
+                    None,
+                )),
+                Arc::new(TimestampNanosecondArray::from_iter_values([100, 200])),
+                Arc::new(StringArray::from_iter_values(vec!["ERROR", "INFO"])),
+                Arc::new(StructArray::new(
+                    body_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            AttributeValueType::Str as u8,
+                            2,
+                        ))),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "log message 1",
+                            "log message 2",
+                        ])),
+                    ],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, logs_record_batch);
+
+        let mut result_buf = ProtoBuffer::new();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().name("test-scope").finish(),
+                vec![
+                    LogRecord::build()
+                        // No attributes
+                        .time_unix_nano(100u64)
+                        .severity_text("ERROR")
+                        .body(AnyValue::new_string("log message 1"))
+                        .finish(),
+                    LogRecord::build()
+                        // No attributes
+                        .time_unix_nano(200u64)
+                        .severity_text("INFO")
+                        .body(AnyValue::new_string("log message 2"))
+                        .finish(),
+                ],
+            )],
+        )]);
 
         assert_eq!(result, expected);
     }
