@@ -326,6 +326,8 @@ where
     }
 }
 
+/// This is a helper trait for adapting iterators of primitive fields using the packed encoding
+/// so that they can be used generically in [`RepeatedPrimitiveIter`]
 trait PackedIter<'a> {
     type DecodedValue;
 
@@ -335,9 +337,13 @@ trait PackedIter<'a> {
 }
 
 /// Iterator for producing elements whose type is a repeated primitive where that primitive
-/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64`. OTLP uses the
-/// packed encoding for these types of fields
-/// https://protobuf.dev/editions/features/#repeated_field_encoding
+/// can be encoded as a fixed64. e.g. `repeated double` or `repeated fixed64` and the field
+/// is encoded using packed encoding.
+///
+/// Note this is for internal use only. The proto documentation states that decoders should
+/// have the flexibility to accept both packed and expanded encodings. Unless we're sure that
+/// the field is packed encoded, it's safer to use [`RepeatedFixed64Iter`] which automatically
+/// handles both encodings.
 pub struct PackedFixed64Iter<'a, V: FromFixed64> {
     buffer: &'a [u8],
     pos: usize,
@@ -404,9 +410,13 @@ impl FromFixed64 for u64 {
 }
 
 /// Iterator for producing elements whose type is a repeated primitive where that primitive
-/// can be encoded as a varint. e.g. `repeated uint64`. OTLP uses the packed encoding for these
-/// types of fields:
-/// https://protobuf.dev/editions/features/#repeated_field_encoding
+/// can be encoded as a varint. e.g. `repeated uint64`. and the field is encoded using packed
+/// encoding.
+///
+/// Note this is for internal use only. The proto documentation states that decoders should
+/// have the flexibility to accept both packed and expanded encodings. Unless we're sure that
+/// the field is packed encoded, it's safer to use [`RepeatedFixed64Iter`] which automatically
+/// handles both encodings.
 pub struct PackedVarintIter<'a> {
     buffer: &'a [u8],
     pos: usize,
@@ -451,19 +461,33 @@ pub trait RepeatedFieldEncodings: FieldRanges {
     fn is_packed(&self, field_num: u64) -> bool;
 }
 
-enum RepeatedPrimitiveIterInner<'a, P, T: FieldRanges> {
-    Packed(P),
-    Expanded(RepeatedFieldProtoBytesParser<'a, T>),
-}
-
+/// Generic iterator for repeated primitive fields that are possibly using the packed encoding
 ///
+/// This iterator will determine the encoding, and produce the decoded field values (of type `V`)
+/// from the proto buffer which contains the repeated values.
 pub struct RepeatedPrimitiveIter<'a, T: RepeatedFieldEncodings, V, P> {
     buf: &'a [u8],
     field_num: u64,
     pos: Rc<Cell<usize>>,
     field_ranges: Rc<T>,
-    inner: Option<RepeatedPrimitiveIterInner<'a, P, T>>,
-    expected_wire_type: u64,
+
+    // expected wire type for the repeated field .. e.g. if the field is type `repeated double`
+    // this would be wire_types::FIXED64
+    repeated_wire_type: u64,
+
+    // this will be used to iterate over either:
+    // - the repeated values (in case that the encoding is expanded)
+    // - the segments containing the packed fields (in case that the encoding si packed)
+    field_iter: Option<RepeatedFieldProtoBytesParser<'a, T>>,
+
+    // this will be initialized lazily if the encoding is packed. one instance of the packed
+    // encoder (type P) wil be created for each segment of the buffer containing packed values
+    packed_iter: Option<P>,
+
+    // flag for whether the field is packed or expanded. this will be initialized lazily
+    // as well once the encoding is determined
+    packed: bool,
+
     _pd: PhantomData<V>,
 }
 
@@ -474,16 +498,20 @@ where
     fn from_byte_parser_inner(
         other: &ProtoBytesParser<'a, T>,
         field_num: u64,
-        expected_wire_type: u64,
+        repeated_wire_type: u64,
     ) -> Self {
         Self {
             buf: other.buf,
             field_num,
             pos: other.pos.clone(),
             field_ranges: other.field_ranges.clone(),
-            inner: None,
-            expected_wire_type,
+            repeated_wire_type,
             _pd: PhantomData,
+
+            // following fields will be initialized lazily once encoding determined
+            packed: Default::default(),
+            field_iter: None,
+            packed_iter: None,
         }
     }
 }
@@ -497,26 +525,24 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         // initialize the inner iterator
-        while self.inner.is_none() {
+        while self.field_iter.is_none() {
             let range = self.field_ranges.get_field_range(self.field_num);
             match range {
                 Some(range) => {
-                    if self.field_ranges.is_packed(self.field_num) {
-                        let slice = &self.buf[range.0..range.1];
-                        let inner_iter = P::new(slice);
-                        self.inner = Some(RepeatedPrimitiveIterInner::Packed(inner_iter));
-                    } else {
-                        let inner_iter = RepeatedFieldProtoBytesParser {
-                            buf: self.buf,
-                            pos: self.pos.clone(),
-                            field_ranges: self.field_ranges.clone(),
-                            field_num: self.field_num,
-                            expected_wire_type: self.expected_wire_type,
-                            next_range: Some(range),
-                            values_exhausted: false,
-                        };
-                        self.inner = Some(RepeatedPrimitiveIterInner::Expanded(inner_iter))
-                    }
+                    self.packed = self.field_ranges.is_packed(self.field_num);
+                    self.field_iter = Some(RepeatedFieldProtoBytesParser {
+                        buf: self.buf,
+                        pos: self.pos.clone(),
+                        field_ranges: self.field_ranges.clone(),
+                        field_num: self.field_num,
+                        next_range: Some(range),
+                        values_exhausted: false,
+                        expected_wire_type: if self.packed {
+                            wire_types::LEN
+                        } else {
+                            self.repeated_wire_type
+                        },
+                    });
                 }
                 None => {
                     // advance
@@ -541,20 +567,35 @@ where
             }
         }
 
-        match &mut self.inner {
-            Some(RepeatedPrimitiveIterInner::Expanded(inner)) => {
-                inner.next().and_then(P::decode_value)
+        // safety: this will have been initialized already
+        let field_iter = self.field_iter.as_mut().expect("field iter initialized");
+
+        if self.packed {
+            if self.packed_iter.is_none() {
+                let next_packed_slice = field_iter.next()?;
+                self.packed_iter = Some(P::new(next_packed_slice));
             }
-            Some(RepeatedPrimitiveIterInner::Packed(inner)) => inner.next(),
-            None => {
-                // safety: we've initialized the inner iterator in the block above
-                unreachable!("inner it should be initialized")
+
+            let packed_iter = self.packed_iter.as_mut().expect("packed iter initialized");
+            match packed_iter.next() {
+                Some(val) => Some(val),
+                None => {
+                    // try to initialize a new packed iter for the next range
+                    let next_packed_slice = field_iter.next()?;
+                    let mut next_packed_iter = P::new(next_packed_slice);
+                    let result = next_packed_iter.next()?;
+                    self.packed_iter = Some(next_packed_iter);
+                    Some(result)
+                }
             }
+        } else {
+            field_iter.next().and_then(P::decode_value)
         }
     }
 }
 
-/// TODO
+/// This iterator can be used for repeated primitives whose types are are encoded as `fixed64`.
+/// For example it can be used for field types such as `repeated double` or `repeated fixed64`
 pub type RepeatedFixed64Iter<'a, T, V> = RepeatedPrimitiveIter<'a, T, V, PackedFixed64Iter<'a, V>>;
 
 impl<'a, T, V> RepeatedFixed64Iter<'a, T, V>
@@ -562,20 +603,25 @@ where
     T: RepeatedFieldEncodings,
     V: FromFixed64,
 {
-    /// TODO
+    /// Initialize a new instance using the [`ProtoBytesParser`] which was parsing the prot buffer
+    /// that contains this repeated field
+    #[must_use]
     pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
         Self::from_byte_parser_inner(other, field_num, wire_types::FIXED64)
     }
 }
 
-/// TODO
+/// This iterator can be used for repeated primitives whose types are are encoded as `varint`.
+/// For example it can be used for field types such as `repeated uint64`
 pub type RepeatedVarintIter<'a, T> = RepeatedPrimitiveIter<'a, T, u64, PackedVarintIter<'a>>;
 
 impl<'a, T> RepeatedVarintIter<'a, T>
 where
     T: RepeatedFieldEncodings,
 {
-    /// TODO
+    /// Initialize a new instance using the [`ProtoBytesParser`] which was parsing the prot buffer
+    /// that contains this repeated field
+    #[must_use]
     pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64) -> Self {
         Self::from_byte_parser_inner(other, field_num, wire_types::VARINT)
     }
