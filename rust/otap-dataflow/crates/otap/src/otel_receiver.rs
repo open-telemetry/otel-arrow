@@ -6,7 +6,6 @@
 //! the thread-per-core runtime without requiring `Send + Sync` futures.
 //!
 //! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
-//  ToDo Preferred response encoding: store negotiated codec in per-stream state (fall back to identity), set the response header accordingly, and ensure encode_message flips the compression bit and runs the right compressor.
 //  ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
 //  ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
 //  ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
@@ -21,6 +20,8 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use flate2::read::{GzDecoder, ZlibDecoder};
+use flate2::write::{GzEncoder, ZlibEncoder};
+use flate2::Compression;
 use futures::future::{LocalBoxFuture, poll_fn};
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
@@ -52,7 +53,7 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Add;
@@ -65,7 +66,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
-use zstd::bulk::Decompressor as ZstdDecompressor;
+use zstd::bulk::{Compressor as ZstdCompressor, Decompressor as ZstdDecompressor};
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
 const ARROW_LOGS_SERVICE: &str =
@@ -75,6 +76,7 @@ const ARROW_METRICS_SERVICE: &str =
 const ARROW_TRACES_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
 const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
+const MIN_COMPRESSED_CAPACITY: usize = 1024;
 
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
@@ -172,6 +174,9 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         let request_encoding_methods = config.request_compression_methods();
         let request_encodings =
             AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
+        let request_accept_header =
+            build_accept_encoding_header(&request_encoding_methods);
+        let response_methods = config.response_compression_methods();
 
         let router = Rc::new(ArrowRouter {
             effect_handler: effect_handler.clone(),
@@ -180,6 +185,8 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             traces_ack_registry,
             max_in_flight_per_connection: max_in_flight,
             request_encodings,
+            request_accept_header,
+            response_methods,
         });
 
         let cancel_token = CancellationToken::new();
@@ -412,11 +419,21 @@ async fn handle_tcp_conn(
                             }
                             AdmitDecision::Busy => {
                                 // Per-connection stream capacity is full: reply immediately.
-                                respond_with_error(respond, Status::resource_exhausted("stream capacity exhausted"));
+                                respond_with_error(
+                                    respond,
+                                    Status::resource_exhausted(
+                                        "stream capacity exhausted",
+                                    ),
+                                    &router.request_accept_header,
+                                );
                             }
                             AdmitDecision::Reject { message } => {
                                 // Breaker/policy: reject this stream immediately.
-                               respond_with_error(respond, Status::unavailable(message));
+                                respond_with_error(
+                                    respond,
+                                    Status::unavailable(message),
+                                    &router.request_accept_header,
+                                );
                             }
                         }
                     }
@@ -460,6 +477,8 @@ struct ArrowRouter {
     traces_ack_registry: Option<AckRegistry>,
     max_in_flight_per_connection: usize,
     request_encodings: AcceptedGrpcEncodings,
+    request_accept_header: HeaderValue,
+    response_methods: Vec<CompressionMethod>,
 }
 
 impl ArrowRouter {
@@ -502,7 +521,11 @@ impl ArrowRouter {
             }
             _ => {
                 log::warn!("Unknown OTAP Arrow path {}", path);
-                respond_with_error(respond, Status::unimplemented("unknown method"));
+                respond_with_error(
+                    respond,
+                    Status::unimplemented("unknown method"),
+                    &self.request_accept_header,
+                );
                 Ok(())
             }
         }
@@ -519,6 +542,10 @@ impl ArrowRouter {
         T: OtapBatchStore + 'static,
     {
         let encoding = parse_grpc_encoding(request.headers(), &self.request_encodings)?;
+        let client_accept = parse_grpc_accept_encoding(request.headers());
+        let response_encoding =
+            negotiate_response_encoding(&self.response_methods, &client_accept);
+        let mut response_encoder = GrpcMessageEncoder::new(response_encoding);
         let recv_stream = request.into_body();
         let body = GrpcStreamingBody::new(recv_stream, encoding);
 
@@ -530,16 +557,19 @@ impl ArrowRouter {
             self.max_in_flight_per_connection,
         );
 
-        let response = Response::builder()
+        let mut response_builder = Response::builder()
             .status(HttpStatusCode::OK)
             .header("content-type", "application/grpc")
-            .header("grpc-encoding", "identity") // support compressed responses later
+            .header("grpc-accept-encoding", self.request_accept_header.clone());
+        if let Some(token) = grpc_encoding_token(response_encoding) {
+            response_builder = response_builder.header("grpc-encoding", token);
+        }
+        let response = response_builder
             .body(())
             .map_err(|e| Status::internal(format!("failed to build response: {e}")))?;
         let mut send_stream = respond
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
-        let mut encode_buf = BytesMut::with_capacity(512);
 
         while let Some(next) = status_stream.next().await {
             match next {
@@ -549,7 +579,7 @@ impl ArrowRouter {
                     //     status.batch_id,
                     //     status.status_code
                     // );
-                    let bytes = encode_message(&status, &mut encode_buf)?;
+                    let bytes = response_encoder.encode(&status)?;
                     if let Err(e) = send_stream.send_data(bytes, false) {
                         log::debug!("send_data failed: {e}");
                         return Ok(());
@@ -648,6 +678,67 @@ fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
     lhs == rhs || lhs.eq_ignore_ascii_case(&rhs)
 }
 
+fn parse_grpc_accept_encoding(headers: &HeaderMap) -> ClientAcceptEncodings {
+    let Some(value) = headers.get("grpc-accept-encoding") else {
+        return ClientAcceptEncodings::identity_only();
+    };
+    let raw = match value.to_str() {
+        Ok(raw) => raw,
+        Err(_) => return ClientAcceptEncodings::identity_only(),
+    };
+
+    let mut encodings = ClientAcceptEncodings {
+        identity: false,
+        zstd: false,
+        gzip: false,
+        deflate: false,
+    };
+    let mut recognized = false;
+
+    for token in raw.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let ascii = trimmed.as_bytes();
+        if eq_ascii_case_insensitive(ascii, b"identity") {
+            encodings.identity = true;
+            recognized = true;
+        } else if eq_ascii_case_insensitive(ascii, b"zstd") {
+            encodings.zstd = true;
+            recognized = true;
+        } else if eq_ascii_case_insensitive(ascii, b"gzip") {
+            encodings.gzip = true;
+            recognized = true;
+        } else if eq_ascii_case_insensitive(ascii, b"deflate") {
+            encodings.deflate = true;
+            recognized = true;
+        }
+    }
+
+    if recognized {
+        encodings
+    } else {
+        ClientAcceptEncodings::identity_only()
+    }
+}
+
+fn negotiate_response_encoding(
+    configured: &[CompressionMethod],
+    client: &ClientAcceptEncodings,
+) -> GrpcEncoding {
+    for method in configured {
+        if client.supports(*method) {
+            return match method {
+                CompressionMethod::Zstd => GrpcEncoding::Zstd,
+                CompressionMethod::Gzip => GrpcEncoding::Gzip,
+                CompressionMethod::Deflate => GrpcEncoding::Deflate,
+            };
+        }
+    }
+    GrpcEncoding::Identity
+}
+
 #[derive(Clone, Copy)]
 enum GrpcEncoding {
     Identity,
@@ -690,6 +781,61 @@ impl AcceptedGrpcEncodings {
             GrpcEncoding::Gzip => self.gzip,
             GrpcEncoding::Deflate => self.deflate,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ClientAcceptEncodings {
+    identity: bool,
+    zstd: bool,
+    gzip: bool,
+    deflate: bool,
+}
+
+impl ClientAcceptEncodings {
+    fn identity_only() -> Self {
+        Self {
+            identity: true,
+            zstd: false,
+            gzip: false,
+            deflate: false,
+        }
+    }
+
+    fn supports(self, method: CompressionMethod) -> bool {
+        match method {
+            CompressionMethod::Zstd => self.zstd,
+            CompressionMethod::Gzip => self.gzip,
+            CompressionMethod::Deflate => self.deflate,
+        }
+    }
+}
+
+fn build_accept_encoding_header(methods: &[CompressionMethod]) -> HeaderValue {
+    let mut tokens = Vec::with_capacity(methods.len() + 1);
+    for method in methods {
+        tokens.push(compression_method_token(*method));
+    }
+    // `identity` is always supported but least preferred.
+    tokens.push("identity");
+    let joined = tokens.join(",");
+    HeaderValue::from_str(&joined).unwrap_or_else(|_| HeaderValue::from_static("identity"))
+}
+
+fn compression_method_token(method: CompressionMethod) -> &'static str {
+    match method {
+        CompressionMethod::Zstd => "zstd",
+        CompressionMethod::Gzip => "gzip",
+        CompressionMethod::Deflate => "deflate",
+    }
+}
+
+fn grpc_encoding_token(encoding: GrpcEncoding) -> Option<&'static str> {
+    match encoding {
+        GrpcEncoding::Identity => None,
+        GrpcEncoding::Zstd => Some("zstd"),
+        GrpcEncoding::Gzip => Some("gzip"),
+        GrpcEncoding::Deflate => Some("deflate"),
     }
 }
 
@@ -1021,6 +1167,165 @@ impl ArrowRequestStream for GrpcStreamingBody {
                     Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
                 })?;
                 return Ok(Some(message));
+            }
+        }
+    }
+}
+
+struct GrpcMessageEncoder {
+    compression: GrpcEncoding,
+    frame_buf: BytesMut,
+    message_buf: BytesMut,
+    compressed_buf: Vec<u8>,
+    zstd: Option<ZstdCompressor<'static>>,
+}
+
+impl GrpcMessageEncoder {
+    fn new(compression: GrpcEncoding) -> Self {
+        Self {
+            compression,
+            frame_buf: BytesMut::with_capacity(512),
+            message_buf: BytesMut::with_capacity(512),
+            compressed_buf: Vec::new(),
+            zstd: None,
+        }
+    }
+
+    fn encode<M: Message>(&mut self, message: &M) -> Result<Bytes, Status> {
+        self.message_buf.clear();
+        message
+            .encode(&mut self.message_buf)
+            .map_err(|e| Status::internal(format!("failed to encode response: {e}")))?;
+        let uncompressed = self.message_buf.split().freeze();
+
+        match self.compression {
+            GrpcEncoding::Identity => {
+                self.finish_frame(false, uncompressed.as_ref())
+            }
+            GrpcEncoding::Zstd => {
+                self.compress_zstd(uncompressed.as_ref())?;
+                let mut payload = mem::take(&mut self.compressed_buf);
+                let result = self.finish_frame(true, payload.as_slice());
+                payload.clear();
+                self.compressed_buf = payload;
+                result
+            }
+            GrpcEncoding::Gzip => {
+                self.compress_gzip(uncompressed.as_ref())?;
+                let mut payload = mem::take(&mut self.compressed_buf);
+                let result = self.finish_frame(true, payload.as_slice());
+                payload.clear();
+                self.compressed_buf = payload;
+                result
+            }
+            GrpcEncoding::Deflate => {
+                self.compress_deflate(uncompressed.as_ref())?;
+                let mut payload = mem::take(&mut self.compressed_buf);
+                let result = self.finish_frame(true, payload.as_slice());
+                payload.clear();
+                self.compressed_buf = payload;
+                result
+            }
+        }
+    }
+
+    fn finish_frame(&mut self, compressed: bool, payload: &[u8]) -> Result<Bytes, Status> {
+        let needed = 5 + payload.len();
+        if self.frame_buf.capacity() < needed {
+            self.frame_buf
+                .reserve(needed - self.frame_buf.capacity());
+        }
+        self.frame_buf.clear();
+        self.frame_buf.put_u8(u8::from(compressed));
+        self.frame_buf.put_u32(payload.len() as u32);
+        self.frame_buf.extend_from_slice(payload);
+        Ok(self.frame_buf.split().freeze())
+    }
+
+    fn compress_zstd(&mut self, payload: &[u8]) -> Result<(), Status> {
+        self.ensure_zstd_encoder()?;
+        let mut required_capacity = payload.len().max(MIN_COMPRESSED_CAPACITY);
+        loop {
+            if self.compressed_buf.len() != required_capacity {
+                self.compressed_buf.resize(required_capacity, 0);
+            }
+            let result = {
+                let encoder = self
+                    .zstd
+                    .as_mut()
+                    .expect("zstd encoder must exist");
+                encoder.compress_to_buffer(payload, self.compressed_buf.as_mut_slice())
+            };
+            match result {
+                Ok(written) => {
+                    self.compressed_buf.truncate(written);
+                    return Ok(());
+                }
+                Err(err)
+                    if err.kind() == io::ErrorKind::Other
+                        && err.to_string().contains("Destination buffer is too small") =>
+                {
+                    required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
+                        log::error!("zstd compression failed: required buffer overflow");
+                        Status::internal("zstd compression failed: output too large")
+                    })?;
+                }
+                Err(err) => {
+                    log::error!("zstd compression failed: {err}");
+                    return Err(Status::internal(format!(
+                        "zstd compression failed: {err}"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn compress_gzip(&mut self, payload: &[u8]) -> Result<(), Status> {
+        self.compressed_buf.clear();
+        {
+            let mut encoder =
+                GzEncoder::new(&mut self.compressed_buf, Compression::default());
+            encoder
+                .write_all(payload)
+                .and_then(|_| encoder.try_finish())
+                .map_err(|err| {
+                    log::error!("gzip compression failed: {err}");
+                    Status::internal(format!("gzip compression failed: {err}"))
+                })?;
+        }
+        Ok(())
+    }
+
+    fn compress_deflate(&mut self, payload: &[u8]) -> Result<(), Status> {
+        self.compressed_buf.clear();
+        {
+            let mut encoder =
+                ZlibEncoder::new(&mut self.compressed_buf, Compression::default());
+            encoder
+                .write_all(payload)
+                .and_then(|_| encoder.try_finish())
+                .map_err(|err| {
+                    log::error!("deflate compression failed: {err}");
+                    Status::internal(format!("deflate compression failed: {err}"))
+                })?;
+        }
+        Ok(())
+    }
+
+    fn ensure_zstd_encoder(&mut self) -> Result<(), Status> {
+        if self.zstd.is_some() {
+            return Ok(());
+        }
+        match ZstdCompressor::new(0) {
+            Ok(encoder) => {
+                self.zstd = Some(encoder);
+                Ok(())
+            }
+            Err(err) => {
+                log::error!("Failed to construct zstd compressor: {err}");
+                Err(Status::internal(format!(
+                    "failed to initialize zstd compressor: {err}"
+                )))
             }
         }
     }
@@ -1635,20 +1940,6 @@ fn local_overloaded_status(batch_id: i64) -> BatchStatus {
     }
 }
 
-fn encode_message<M: Message>(message: &M, buf: &mut BytesMut) -> Result<Bytes, Status> {
-    buf.clear();
-    let needed = 5 + message.encoded_len();
-    if buf.capacity() < needed {
-        buf.reserve(needed - buf.capacity());
-    }
-    buf.put_u8(0);
-    buf.put_u32(message.encoded_len() as u32);
-    message
-        .encode(buf)
-        .map_err(|e| Status::internal(format!("failed to encode response: {e}")))?;
-    Ok(buf.split().freeze())
-}
-
 fn send_ok_trailers(mut stream: h2::SendStream<Bytes>) {
     let mut trailers = HeaderMap::new();
     let _ = trailers.insert("grpc-status", HeaderValue::from_static("0"));
@@ -1674,10 +1965,15 @@ fn send_error_trailers(mut stream: h2::SendStream<Bytes>, status: Status) {
     }
 }
 
-fn respond_with_error(mut respond: SendResponse<Bytes>, status: Status) {
+fn respond_with_error(
+    mut respond: SendResponse<Bytes>,
+    status: Status,
+    accept_header: &HeaderValue,
+) {
     let response = match Response::builder()
         .status(HttpStatusCode::OK)
         .header("content-type", "application/grpc")
+        .header("grpc-accept-encoding", accept_header.clone())
         .body(())
     {
         Ok(response) => response,
