@@ -93,9 +93,8 @@ impl OtapArrowRecords {
         }
     }
 
-    /// Return the signal type.
     #[must_use]
-    pub const fn signal_type(&self) -> SignalType {
+    const fn tag(&self) -> SignalType {
         match self {
             Self::Logs(_) => SignalType::Logs,
             Self::Metrics(_) => SignalType::Metrics,
