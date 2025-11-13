@@ -228,6 +228,7 @@ fn test_batching(inputs_otlp: Vec<OtlpProtoMessage>, max_output_batch: Option<No
     if let Some(max_batch) = max_output_batch {
         for (i, output) in outputs_otlp.iter().enumerate() {
             let batch_len = output.batch_length();
+            assert_ne!(batch_len, 0usize);
             assert!(
                 batch_len <= max_batch.get() as usize,
                 "batch {} length {} exceeds limit {}",

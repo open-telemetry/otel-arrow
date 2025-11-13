@@ -307,12 +307,18 @@ fn generic_split<const N: usize>(
                 original_length,
                 split_primary.iter().map(|rb| rb.num_rows()).sum::<usize>()
             );
-            let ids = IDSeqs::from_col(IDColumn::extract(&rb, consts::ID)?, &lengths);
+
+            // Extract IDs only if the column exists, for splitting child tables.
+            let ids_opt = rb
+                .column_by_name(consts::ID)
+                .map(|col| IDColumn::from_array(consts::ID, col))
+                .transpose()?
+                .map(|ids| IDSeqs::from_col(ids, &lengths));
 
             // use ids to split the child tables: call split_child_record_batch
             let new_batch_count = split_primary.len();
             result.extend(repeat_n([const { None }; N], new_batch_count));
-            let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
+            let result_len = result.len();
             // this is where we're going to be writing the rest of this split batch into!
             let new_batch = &mut result[result_len - new_batch_count..];
 
@@ -320,12 +326,16 @@ fn generic_split<const N: usize>(
             for (i, split_primary) in split_primary.drain(..).enumerate() {
                 new_batch[i][primary_offset] = Some(split_primary);
             }
-            for payload in allowed_payloads
-                .iter()
-                .filter(|payload| **payload != primary_payload)
-                .copied()
-            {
-                generic_split_helper(batches, payload, primary_payload, &ids, new_batch)?;
+
+            // Only process child tables if we have IDs
+            if let Some(ids) = ids_opt.as_ref() {
+                for payload in allowed_payloads
+                    .iter()
+                    .filter(|payload| **payload != primary_payload)
+                    .copied()
+                {
+                    generic_split_helper(batches, payload, primary_payload, ids, new_batch)?;
+                }
             }
         } else {
             panic!("expected to have primary for every group");
@@ -680,7 +690,7 @@ fn split_metric_batches<const N: usize>(
 
     let mut result = Vec::new();
     let max_output_batch = max_output_batch.get() as usize;
-    let mut batch_size = max_output_batch;
+    let mut batch_size_remaining = max_output_batch;
 
     for (batch_index, batches) in batches.iter().enumerate() {
         use arrow::array::as_primitive_array;
@@ -704,13 +714,20 @@ fn split_metric_batches<const N: usize>(
         // column can have gaps.
 
         let batch_len = batch_length(batches);
-        if batch_len <= batch_size {
-            // We know that this batch is too small to split, so don't bother computing
+        
+        // If this batch doesn't fit in remaining space AND we've already used some space,
+        // start a fresh output batch
+        if batch_len > batch_size_remaining && batch_size_remaining < max_output_batch {
+            batch_size_remaining = max_output_batch;
+        }
+
+        if batch_len <= batch_size_remaining {
+            // We know that this batch is small enough to include whole, so don't bother computing
             // `cumulative_child_counts`.
-            batch_size -= batch_len;
-            if batch_size == 0 {
-                result.push((batch_index, 0..metric_length));
-                batch_size = max_output_batch;
+            batch_size_remaining -= batch_len;
+            result.push((batch_index, 0..metric_length));
+            if batch_size_remaining == 0 {
+                batch_size_remaining = max_output_batch;
             }
         } else {
             child_counts.clear();
@@ -742,15 +759,19 @@ fn split_metric_batches<const N: usize>(
 
             // We want to partition `cumulative_child_counts` into chunks where the difference
             // between the first and last value of each chunk is as close to but less than
-            // `batch_size`.
+            // the available batch size.
             let mut last_cumulative_child_count = 0;
             let mut starting_index = 0;
             loop {
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
-                    cum_child_count < last_cumulative_child_count + batch_size as u64
+                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
                 });
+                
+                let ending_index = candidate_index.max(starting_index + 1).min(metric_length);
+                
+                // Update for next iteration
                 last_cumulative_child_count = cumulative_child_counts
-                    .get(candidate_index)
+                    .get(ending_index - 1)
                     .copied()
                     .unwrap_or(
                         cumulative_child_counts
@@ -758,16 +779,28 @@ fn split_metric_batches<const N: usize>(
                             .copied()
                             .expect("non-empty list"),
                     );
-                let ending_index = (candidate_index + 1).min(metric_length);
+                
                 // We should always make forward progress
-                assert!(ending_index > starting_index || ending_index >= metric_length - 1);
+                assert!(ending_index > starting_index);
 
                 result.push((batch_index, starting_index..ending_index));
                 if ending_index >= metric_length {
+                    // Calculate remaining capacity in the last chunk we just emitted
+                    let data_points_in_last_chunk = last_cumulative_child_count
+                        - cumulative_child_counts
+                            .get(starting_index.saturating_sub(1))
+                            .copied()
+                            .unwrap_or(0);
+                    batch_size_remaining = (max_output_batch as u64)
+                        .saturating_sub(data_points_in_last_chunk)
+                        as usize;
                     break;
                 }
                 starting_index = ending_index;
+                // After emitting the first chunk, subsequent chunks should use max_output_batch
+                batch_size_remaining = max_output_batch;
             }
+            // Note: No reset here! We've already calculated batch_size_remaining in the loop above.
         }
     }
     Ok(result)
@@ -819,7 +852,11 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                     options,
                 }]
             }
-            _ => unreachable!(),
+            // No id or parent_id columns - nothing to sort, return as-is
+            _ => {
+                return RecordBatch::try_new(schema, columns)
+                    .map_err(|e| Error::Batching { source: e });
+            }
         };
 
     // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported
@@ -855,10 +892,10 @@ fn generic_concatenate<const N: usize>(
     for batches in batches {
         let emit_new_batch = max_output_batch
             .map(|max_output_batch| {
-                (current_batch_length + batch_length(&batches)) as u64 >= max_output_batch.get()
+                (current_batch_length + batch_length(&batches)) as u64 > max_output_batch.get()
             })
             .unwrap_or(false);
-        if emit_new_batch {
+        if emit_new_batch && !current.is_empty() {
             reindex(&mut current, allowed_payloads)?;
             result.push(generic_schemaless_concatenate(&mut current)?);
             current_batch_length = 0;
@@ -866,10 +903,10 @@ fn generic_concatenate<const N: usize>(
                 assert_eq!(batches, &[const { None }; N]);
             }
             current.clear();
-        } else {
-            current_batch_length += batch_length(&batches);
-            current.push(batches);
         }
+        // Always add the current batch to the accumulator
+        current_batch_length += batch_length(&batches);
+        current.push(batches);
     }
 
     if !current.is_empty() {
@@ -994,6 +1031,11 @@ fn reindex_record_batch(
     column_name: &'static str,
     mut next_starting_id: u32,
 ) -> Result<(RecordBatch, u32)> {
+    // If the column doesn't exist, return the batch unchanged
+    if rb.column_by_name(column_name).is_none() {
+        return Ok((rb, 0));
+    }
+
     let id = IDColumn::extract(&rb, column_name)?;
 
     let maybe_new_ids = match id {
