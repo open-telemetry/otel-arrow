@@ -41,7 +41,7 @@ use smallvec::SmallVec;
 /// maintain an invariant that the primary table for each telemetry type in each batch is not None
 /// and has more than zero records.
 #[derive(Clone, Debug, PartialEq)]
-pub enum RecordsGroup {
+pub(crate) enum RecordsGroup {
     /// A sequence of batches representing log data
     Logs(Vec<[Option<RecordBatch>; Logs::COUNT]>),
     /// A sequence of batches representing metric data
@@ -103,7 +103,7 @@ impl RecordsGroup {
     }
 
     /// Separate expecting only logs
-    pub fn separate_logs(records: Vec<OtapArrowRecords>) -> Result<Self> {
+    pub(crate) fn separate_logs(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !metrics.is_empty() || !traces.is_empty() {
             Err(Error::MixedSignals)
@@ -113,7 +113,7 @@ impl RecordsGroup {
     }
 
     /// Separate expecting only metrics
-    pub fn separate_metrics(records: Vec<OtapArrowRecords>) -> Result<Self> {
+    pub(crate) fn separate_metrics(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !traces.is_empty() {
             Err(Error::MixedSignals)
@@ -123,7 +123,7 @@ impl RecordsGroup {
     }
 
     /// Separate expecting only traces
-    pub fn separate_traces(records: Vec<OtapArrowRecords>) -> Result<Self> {
+    pub(crate) fn separate_traces(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !metrics.is_empty() {
             Err(Error::MixedSignals)
@@ -134,7 +134,7 @@ impl RecordsGroup {
 
     /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
-    pub fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
+    pub(crate) fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
         Ok(match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
                 items,
@@ -158,7 +158,7 @@ impl RecordsGroup {
     }
 
     /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
-    pub fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
+    pub(crate) fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
         Ok(match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(
                 items,
@@ -181,7 +181,7 @@ impl RecordsGroup {
     // FIXME: replace this with an Extend impl to avoid unnecessary allocations
     /// Convert into a sequence of `OtapArrowRecords`
     #[must_use]
-    pub fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
+    pub(crate) fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
         match self {
             RecordsGroup::Logs(items) => items
                 .into_iter()
@@ -200,21 +200,11 @@ impl RecordsGroup {
 
     /// Is the container empty?
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         match self {
             Self::Logs(logs) => logs.is_empty(),
             Self::Metrics(metrics) => metrics.is_empty(),
             Self::Traces(traces) => traces.is_empty(),
-        }
-    }
-
-    /// Find the number of OtapArrowRecords we've got.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        match self {
-            Self::Logs(logs) => logs.len(),
-            Self::Metrics(metrics) => metrics.len(),
-            Self::Traces(traces) => traces.len(),
         }
     }
 }
@@ -292,7 +282,6 @@ fn generic_split<const N: usize>(
     } else {
         split_non_metric_batches(max_output_batch, &batches)?
     };
-
     let groups = splits.into_iter().chunk_by(|(batch_index, _)| *batch_index);
     let mut splits = Vec::new();
     let mut lengths = Vec::new();
@@ -318,18 +307,12 @@ fn generic_split<const N: usize>(
                 original_length,
                 split_primary.iter().map(|rb| rb.num_rows()).sum::<usize>()
             );
-
-            // Extract IDs only if the column exists, for splitting child tables.
-            let ids_opt = rb
-                .column_by_name(consts::ID)
-                .map(|col| IDColumn::from_array(consts::ID, col))
-                .transpose()?
-                .map(|ids| IDSeqs::from_col(ids, &lengths));
+            let ids = IDSeqs::from_col(IDColumn::extract(&rb, consts::ID)?, &lengths);
 
             // use ids to split the child tables: call split_child_record_batch
             let new_batch_count = split_primary.len();
             result.extend(repeat_n([const { None }; N], new_batch_count));
-            let result_len = result.len();
+            let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
             // this is where we're going to be writing the rest of this split batch into!
             let new_batch = &mut result[result_len - new_batch_count..];
 
@@ -337,16 +320,12 @@ fn generic_split<const N: usize>(
             for (i, split_primary) in split_primary.drain(..).enumerate() {
                 new_batch[i][primary_offset] = Some(split_primary);
             }
-
-            // Only process child tables if we have IDs
-            if let Some(ids) = ids_opt.as_ref() {
-                for payload in allowed_payloads
-                    .iter()
-                    .filter(|payload| **payload != primary_payload)
-                    .copied()
-                {
-                    generic_split_helper(batches, payload, primary_payload, ids, new_batch)?;
-                }
+            for payload in allowed_payloads
+                .iter()
+                .filter(|payload| **payload != primary_payload)
+                .copied()
+            {
+                generic_split_helper(batches, payload, primary_payload, &ids, new_batch)?;
             }
         } else {
             panic!("expected to have primary for every group");
@@ -408,12 +387,9 @@ fn generic_split_helper<const N: usize>(
 }
 
 /// I'm a convenient wrapper for dealing with ID and PARENT_ID columns in generic code.
-/// Handles both plain arrays (borrowed) and dictionary-encoded arrays (decoded and owned).
 enum IDColumn<'rb> {
     U16(&'rb UInt16Array),
     U32(&'rb UInt32Array),
-    U16Owned(Arc<UInt16Array>),
-    U32Owned(Arc<UInt32Array>),
 }
 
 impl<'rb> IDColumn<'rb> {
@@ -424,29 +400,7 @@ impl<'rb> IDColumn<'rb> {
                 name: column_name.into(),
             })?;
 
-        // Handle dictionary-encoded columns by decoding them
-        match id.data_type() {
-            DataType::Dictionary(_key_type, value_type) => {
-                let decoded =
-                    cast(id.as_ref(), value_type).map_err(|e| Error::Batching { source: e })?;
-                Self::from_decoded_array(column_name, decoded)
-            }
-            _ => Self::from_array(column_name, id),
-        }
-    }
-
-    fn from_decoded_array(column_name: &'static str, array: ArrayRef) -> Result<IDColumn<'rb>> {
-        if let Some(array) = array.as_any().downcast_ref::<UInt16Array>() {
-            return Ok(Self::U16Owned(Arc::new(array.clone())));
-        }
-        if let Some(array) = array.as_any().downcast_ref::<UInt32Array>() {
-            return Ok(Self::U32Owned(Arc::new(array.clone())));
-        }
-        Err(Error::ColumnDataTypeMismatch {
-            name: column_name.into(),
-            expect: DataType::UInt16,
-            actual: array.data_type().clone(),
-        })
+        Self::from_array(column_name, id)
     }
 
     fn from_array(column_name: &'static str, id: &'rb dyn Array) -> Result<IDColumn<'rb>> {
@@ -491,8 +445,6 @@ impl IDSeqs {
         match ids {
             IDColumn::U16(array) => Self::from_generic_array(array, lengths),
             IDColumn::U32(array) => Self::from_generic_array(array, lengths),
-            IDColumn::U16Owned(array) => Self::from_generic_array(array.as_ref(), lengths),
-            IDColumn::U32Owned(array) => Self::from_generic_array(array.as_ref(), lengths),
         }
     }
 
@@ -572,21 +524,33 @@ impl IDSeqs {
             .map(|rb| IDColumn::extract(rb, column_name))
             .collect();
         let ids = ids?;
-
-        // Build array references for concatenation
-        // We need to keep owned Arcs alive, so collect refs in a way that works for both
-        let refs: Vec<&dyn Array> = ids
-            .iter()
-            .map(|id| match id {
-                IDColumn::U16(arr) => *arr as &dyn Array,
-                IDColumn::U32(arr) => *arr as &dyn Array,
-                IDColumn::U16Owned(arr) => arr.as_ref() as &dyn Array,
-                IDColumn::U32Owned(arr) => arr.as_ref() as &dyn Array,
-            })
-            .collect();
-
-        let concatenated_array =
-            arrow::compute::concat(&refs).map_err(|e| Error::Batching { source: e })?;
+        let concatenated_array = match ids.first().expect("there should be at least one input") {
+            IDColumn::U16(_) => {
+                let mut refs = Vec::with_capacity(lengths.len());
+                for id in ids {
+                    if let IDColumn::U16(next_array) = id {
+                        let next_array: &dyn Array = next_array;
+                        refs.push(next_array);
+                    } else {
+                        panic!();
+                    }
+                }
+                arrow::compute::concat(&refs)
+            }
+            IDColumn::U32(_) => {
+                let mut refs = Vec::with_capacity(lengths.len());
+                for id in ids {
+                    if let IDColumn::U32(next_array) = id {
+                        let next_array: &dyn Array = next_array;
+                        refs.push(next_array);
+                    } else {
+                        panic!();
+                    }
+                }
+                arrow::compute::concat(&refs)
+            }
+        }
+        .map_err(|e| Error::Batching { source: e })?;
 
         let ids = IDColumn::from_array(column_name, &concatenated_array)?;
         Ok(Self::from_col(ids, &lengths))
@@ -598,17 +562,11 @@ impl IDSeqs {
             (IDSeqs::RangeU16(id_ranges), IDColumn::U16(parent_ids)) => {
                 Self::generic_split_child_record_batch(id_ranges, parent_ids, input)
             }
-            (IDSeqs::RangeU16(id_ranges), IDColumn::U16Owned(parent_ids)) => {
-                Self::generic_split_child_record_batch(id_ranges, parent_ids.as_ref(), input)
-            }
             (IDSeqs::RangeU32(id_ranges), IDColumn::U32(parent_ids)) => {
                 Self::generic_split_child_record_batch(id_ranges, parent_ids, input)
             }
-            (IDSeqs::RangeU32(id_ranges), IDColumn::U32Owned(parent_ids)) => {
-                Self::generic_split_child_record_batch(id_ranges, parent_ids.as_ref(), input)
-            }
             _ => {
-                panic!("Mismatched ID column types in split_child_record_batch");
+                panic!();
             }
         })
     }
@@ -706,7 +664,6 @@ fn split_metric_batches<const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
 ) -> Result<Vec<(usize, Range<usize>)>> {
     assert_eq!(N, Metrics::COUNT);
-
     // Because the metrics table has non-nullable 16-bit IDs, you can never have a batch with more
     // than u16::MAX metrics.
 
@@ -723,12 +680,12 @@ fn split_metric_batches<const N: usize>(
 
     let mut result = Vec::new();
     let max_output_batch = max_output_batch.get() as usize;
-    let mut batch_size_remaining = max_output_batch;
+    let mut batch_size = max_output_batch;
 
-    for (batch_index, thisdata) in batches.iter().enumerate() {
+    for (batch_index, batches) in batches.iter().enumerate() {
         use arrow::array::as_primitive_array;
 
-        let metrics = thisdata[METRICS_INDEX]
+        let metrics = batches[METRICS_INDEX]
             .as_ref()
             .expect("we've alredy ensured that every batch has a non-null primary table");
         let metric_ids: &PrimitiveArray<UInt16Type> = as_primitive_array(
@@ -746,65 +703,26 @@ fn split_metric_batches<const N: usize>(
         // Note that `max_metric_id` can differ from `metric_length` because the values in the ID
         // column can have gaps.
 
-        let thisdata_len = batch_length(thisdata);
-
-        // If this batch doesn't fit in remaining space AND we've already used some space,
-        // start a fresh output batch
-        if thisdata_len > batch_size_remaining && batch_size_remaining < max_output_batch {
-            batch_size_remaining = max_output_batch;
-        }
-
-        if thisdata_len <= batch_size_remaining {
-            // BRANCH 1: This batch is small enough to include whole
-            // `thisdata_len` is the total count of data points across all DataPoints tables
-            // We can include all metrics from this batch (0..metric_length) in the output
-            println!("    BRANCH 1: Including whole batch (0..{})", metric_length);
-            batch_size_remaining -= thisdata_len;
-            result.push((batch_index, 0..metric_length));
-            println!(
-                "    After BRANCH 1: batch_size_remaining={}",
-                batch_size_remaining
-            );
-            if batch_size_remaining == 0 {
-                batch_size_remaining = max_output_batch;
-                println!("    Reset batch_size_remaining to {}", max_output_batch);
+        let batch_len = batch_length(batches);
+        if batch_len <= batch_size {
+            // We know that this batch is too small to split, so don't bother computing
+            // `cumulative_child_counts`.
+            batch_size -= batch_len;
+            if batch_size == 0 {
+                result.push((batch_index, 0..metric_length));
+                batch_size = max_output_batch;
             }
         } else {
-            println!("    BRANCH 2: Batch too large, needs splitting");
-            // BRANCH 2: This batch is too large and must be split into multiple ranges
-            // We need to partition the metrics in this batch so each partition has
-            // ≤ max_output_batch data points.
-            //
-            // BACKGROUND: In OTAP UnivariateMetrics, the parent batch contains metric metadata
-            // (one row per metric: name, type, unit, etc.), while the "children" are the actual
-            // data point batches:
-            //   - NumberDataPoints (for Sum and Gauge metrics)
-            //   - HistogramDataPoints (for Histogram metrics)
-            //   - SummaryDataPoints (for Summary metrics)
-            //   - ExpHistogramDataPoints (for Exponential Histogram metrics)
-            //
-            // Each metric (identified by its metric_id) can have multiple data points in these
-            // child batches. The child batches have a PARENT_ID column linking back to the metric.
-            // We partition by metric_id to keep each metric's data points together, but we need
-            // to know how many data points each metric has to respect max_output_batch limits.
-
-            // Step 1: Build child_counts[metric_id] = number of data points for this metric
-            // This tells us how "expensive" each metric is in terms of batch_length.
-            // We iterate through all data point type batches (NumberDataPoints, HistogramDataPoints,
-            // etc.) and count how many points reference each metric_id via PARENT_ID.
             child_counts.clear();
             child_counts.resize(max_metric_id as usize + 1, 0);
             for dpt in DATA_POINTS_TYPES {
-                let child = thisdata[POSITION_LOOKUP[dpt as usize]].as_ref();
+                let child = batches[POSITION_LOOKUP[dpt as usize]].as_ref();
                 if let Some(child) = child {
                     let parent_id: &PrimitiveArray<UInt16Type> = as_primitive_array(
                         child
                             .column_by_name(consts::PARENT_ID)
                             .expect("PARENT_ID column should be present"),
                     );
-                    // Count how many data points belong to each metric (parent_id)
-                    // The PARENT_ID array is sorted by metric_id, so dedup_with_count efficiently
-                    // counts consecutive runs of the same parent_id
                     for (count, parent_id) in parent_id.values().iter().dedup_with_count() {
                         let parent_id = *parent_id as usize;
                         child_counts[parent_id] += count as u64;
@@ -812,65 +730,27 @@ fn split_metric_batches<const N: usize>(
                 }
             }
 
-            // Step 2: Build cumulative_child_counts[i] = total data points from metric 0 through i
-            // This is like a prefix sum - cumulative_child_counts[i] - cumulative_child_counts[j]
-            // tells us how many data points are in metrics j+1 through i.
-            // We'll use binary search (partition_point) on this to efficiently find split boundaries
-            // where the cumulative count reaches max_output_batch.
             cumulative_child_counts.clear();
             cumulative_child_counts.extend(child_counts.iter().scan(0, |accumulator, &element| {
                 *accumulator += element;
                 Some(*accumulator)
             }));
-            // A batch of metrics with no data points types should have a batch_length of 0, which
+            // A betch of metrics with no data points types should have a batch_length of 0, which
             // means we should have added the whole thing to the output and never reached this point
             // in the code.
             assert!(!cumulative_child_counts.is_empty());
-            println!("      child_counts: {:?}", child_counts);
-            println!(
-                "      cumulative_child_counts: {:?}",
-                cumulative_child_counts
-            );
 
-            // Step 3: Partition metrics into chunks where each chunk has ≤ max_output_batch data points
-            // Each iteration of this loop emits one chunk (range of metrics).
-            //
-            // ORDERING: The metrics are processed in their original order (metric_id 0, 1, 2, ...),
-            // and we partition them into consecutive ranges. For example, if we have 10 metrics
-            // and need to split, we might emit ranges like [0..4), [4..7), [7..10) where each
-            // range respects the max_output_batch limit based on the cumulative data point counts.
-            let mut last_cumulative_child_count = 0; // Total data points before current chunk
-            let mut starting_index = 0; // First metric index in current chunk
-            println!(
-                "    Starting BRANCH 2 loop with batch_size_remaining={}",
-                batch_size_remaining
-            );
+            // We want to partition `cumulative_child_counts` into chunks where the difference
+            // between the first and last value of each chunk is as close to but less than
+            // `batch_size`.
+            let mut last_cumulative_child_count = 0;
+            let mut starting_index = 0;
             loop {
-                // Find the metric index where adding it would exceed our budget
-                // partition_point finds the first index where the predicate is false
-                println!(
-                    "      Loop iteration: starting_index={}, last_cumulative_child_count={}, budget={}",
-                    starting_index, last_cumulative_child_count, batch_size_remaining
-                );
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
-                    // cum_child_count = total data points from metric 0 through this index
-                    // last_cumulative_child_count = total data points before current chunk started
-                    // So (cum_child_count - last_cumulative_child_count) = data points in current chunk
-                    // Use batch_size_remaining for the first chunk, max_output_batch for subsequent chunks
-                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
+                    cum_child_count < last_cumulative_child_count + batch_size as u64
                 });
-                println!("      candidate_index={}", candidate_index);
-
-                // The ending_index for this chunk is candidate_index (exclusive end).
-                // partition_point returns the first index where the predicate is FALSE,
-                // meaning candidate_index is the first metric that would exceed our budget.
-                // So we take metrics [starting_index..candidate_index), which includes all
-                // metrics up to but NOT including candidate_index.
-                let ending_index = candidate_index.max(starting_index + 1).min(metric_length);
-
-                // Update for next iteration: track total data points consumed so far
                 last_cumulative_child_count = cumulative_child_counts
-                    .get(ending_index - 1)
+                    .get(candidate_index)
                     .copied()
                     .unwrap_or(
                         cumulative_child_counts
@@ -878,51 +758,18 @@ fn split_metric_batches<const N: usize>(
                             .copied()
                             .expect("non-empty list"),
                     );
-
-                println!(
-                    "      ending_index={}, last_cumulative_child_count={}",
-                    ending_index, last_cumulative_child_count
-                );
-
+                let ending_index = (candidate_index + 1).min(metric_length);
                 // We should always make forward progress
-                assert!(ending_index > starting_index);
+                assert!(ending_index > starting_index || ending_index >= metric_length - 1);
 
-                // Emit this range of metrics from the current batch
-                // NOTE: We're splitting ONE input batch into multiple output ranges
-                // Each range becomes a separate output batch in generic_split, containing:
-                //   - A subset of metric rows (the metadata)
-                //   - All data points (from child batches) that reference those metrics
-                println!(
-                    "      Emitting range: (batch={}, {}..{})",
-                    batch_index, starting_index, ending_index
-                );
                 result.push((batch_index, starting_index..ending_index));
-
                 if ending_index >= metric_length {
-                    // We've consumed all metrics in this input batch
-                    // Calculate remaining capacity in the last chunk we just emitted
-                    let data_points_in_last_chunk = last_cumulative_child_count
-                        - cumulative_child_counts
-                            .get(starting_index.saturating_sub(1))
-                            .copied()
-                            .unwrap_or(0);
-                    batch_size_remaining = (max_output_batch as u64)
-                        .saturating_sub(data_points_in_last_chunk)
-                        as usize;
-                    println!(
-                        "      Finished batch: data_points_in_last_chunk={}, new batch_size_remaining={}",
-                        data_points_in_last_chunk, batch_size_remaining
-                    );
                     break;
                 }
                 starting_index = ending_index;
-                // After emitting the first chunk, subsequent chunks should use max_output_batch as the budget
-                batch_size_remaining = max_output_batch;
             }
-            // Note: No reset here! We've already calculated batch_size_remaining in the loop above.
         }
     }
-
     Ok(result)
 }
 
@@ -972,11 +819,7 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                     options,
                 }]
             }
-            // No id or parent_id columns - nothing to sort, return as-is
-            _ => {
-                return RecordBatch::try_new(schema, columns)
-                    .map_err(|e| Error::Batching { source: e });
-            }
+            _ => unreachable!(),
         };
 
     // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported
@@ -1012,10 +855,10 @@ fn generic_concatenate<const N: usize>(
     for batches in batches {
         let emit_new_batch = max_output_batch
             .map(|max_output_batch| {
-                (current_batch_length + batch_length(&batches)) as u64 > max_output_batch.get()
+                (current_batch_length + batch_length(&batches)) as u64 >= max_output_batch.get()
             })
             .unwrap_or(false);
-        if emit_new_batch && !current.is_empty() {
+        if emit_new_batch {
             reindex(&mut current, allowed_payloads)?;
             result.push(generic_schemaless_concatenate(&mut current)?);
             current_batch_length = 0;
@@ -1023,10 +866,10 @@ fn generic_concatenate<const N: usize>(
                 assert_eq!(batches, &[const { None }; N]);
             }
             current.clear();
+        } else {
+            current_batch_length += batch_length(&batches);
+            current.push(batches);
         }
-        // Always add the current batch to the accumulator
-        current_batch_length += batch_length(&batches);
-        current.push(batches);
     }
 
     if !current.is_empty() {
@@ -1036,7 +879,6 @@ fn generic_concatenate<const N: usize>(
             assert_eq!(batches, &[const { None }; N]);
         }
     }
-
     Ok(result)
 }
 
@@ -1152,57 +994,24 @@ fn reindex_record_batch(
     column_name: &'static str,
     mut next_starting_id: u32,
 ) -> Result<(RecordBatch, u32)> {
-    // If the column doesn't exist, return the batch unchanged
-    if rb.column_by_name(column_name).is_none() {
-        return Ok((rb, 0));
-    }
-
-    // Decompose the RecordBatch first
-    let (schema, mut columns, _len) = rb.into_parts();
-
-    let column_index = schema
-        .fields
-        .find(column_name)
-        .expect("column should exist")
-        .0;
-    let original_data_type = schema.fields()[column_index].data_type().clone();
-    let was_dictionary = matches!(original_data_type, DataType::Dictionary(_, _));
-
-    // Extract ID column from the column array (decodes dictionaries if present)
-    let id_array = &columns[column_index];
-    let id_array_decoded = if was_dictionary {
-        if let DataType::Dictionary(_key_type, value_type) = id_array.data_type() {
-            cast(id_array.as_ref(), value_type).map_err(|e| Error::Batching { source: e })?
-        } else {
-            id_array.clone()
-        }
-    } else {
-        id_array.clone()
-    };
-
-    let id = IDColumn::from_array(column_name, id_array_decoded.as_ref())?;
+    let id = IDColumn::extract(&rb, column_name)?;
 
     let maybe_new_ids = match id {
         IDColumn::U16(array) => IDRange::<u16>::reindex_column(array, next_starting_id)?,
         IDColumn::U32(array) => IDRange::<u32>::reindex_column(array, next_starting_id)?,
-        IDColumn::U16Owned(array) => {
-            IDRange::<u16>::reindex_column(array.as_ref(), next_starting_id)?
-        }
-        IDColumn::U32Owned(array) => {
-            IDRange::<u32>::reindex_column(array.as_ref(), next_starting_id)?
-        }
     };
 
-    if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
-        // If original was dictionary-encoded, re-encode the new array as dictionary
-        let final_array = if was_dictionary {
-            cast(new_id_array.as_ref(), &original_data_type)
-                .map_err(|e| Error::Batching { source: e })?
-        } else {
-            new_id_array
-        };
+    // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
+    // `RecordBatch` without taking it apart entirely and then putting it back together.
+    let (schema, mut columns, _len) = rb.into_parts();
 
-        columns[column_index] = final_array;
+    if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
+        let column_index = schema
+            .fields
+            .find(column_name)
+            .expect("we already extracted this column")
+            .0;
+        columns[column_index] = new_id_array;
         next_starting_id = new_next_starting_id;
     }
 
@@ -1491,22 +1300,16 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             // All the present columns should have the same Field definition, so just pick the first
             // one arbitrarily; we know there has to be at least one because if there were none, we
             // wouldn't have a mismatch to begin with.
-            let mut field = schemas[*present_batch_indices
-                .iter()
-                .next()
-                .expect("there should be at least one schema")]
-            .field_with_name(missing_field_name)
-            .map_err(|e| Error::Batching { source: e })?
-            .clone();
-
-            // If we're adding this field as nulls to batches that don't have it, we need to ensure
-            // it's marked as nullable, even if the original field wasn't. This handles schema
-            // mismatches gracefully.
-            if !field.is_nullable() {
-                field = field.with_nullable(true);
-            }
-            let field = Arc::new(field);
-
+            let field = Arc::new(
+                schemas[*present_batch_indices
+                    .iter()
+                    .next()
+                    .expect("there should be at least one schema")]
+                .field_with_name(missing_field_name)
+                .map_err(|e| Error::Batching { source: e })?
+                .clone(),
+            );
+            assert!(field.is_nullable());
             for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
             {
                 if let Some(batch) = batches[missing_batch_index][payload_type_index].take() {
