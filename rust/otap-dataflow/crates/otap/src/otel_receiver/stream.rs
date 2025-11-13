@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Glue between incoming OTAP Arrow streams and the ACK registry.
+//!
+//! This module owns `StatusStream`, which fans batches from a gRPC request into
+//! the local pipeline and fans ACK/NACK notifications back into `BatchStatus`
+//! responses. By keeping the concurrency limits, inflight tracking, and timeout
+//! handling here, the top-level router can stay focused on transport setup.
+
 use super::ack::{
     AckPollResult, AckRegistry, AckToken, nack_status, overloaded_status, success_status,
 };
@@ -21,6 +28,7 @@ use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use tonic::Status;
 
+/// Builds the stream of OTAP batch statuses for a single gRPC request.
 pub(crate) fn stream_batch_statuses<S, T, F>(
     input_stream: S,
     effect_handler: local::EffectHandler<OtapPdata>,
@@ -43,6 +51,7 @@ where
     StatusStream::new(state)
 }
 
+/// Drives an inbound OTAP stream while waiting for ACK/NACK outcomes.
 pub(crate) struct StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
@@ -131,6 +140,7 @@ where
     }
 }
 
+/// Mutable state carried across polls while the `StatusStream` is active.
 struct StatusStreamState<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
@@ -281,6 +291,7 @@ where
     }
 }
 
+/// Bounded collection of ACK wait futures that enforces inflight limits.
 struct InFlightSet<F> {
     futures: FuturesUnordered<F>,
     capacity: usize,
@@ -315,6 +326,7 @@ impl<F> InFlightSet<F> {
     }
 }
 
+/// Future that resolves once a specific batch receives an ACK or NACK.
 struct AckWaitFuture {
     batch_id: i64,
     token: AckToken,

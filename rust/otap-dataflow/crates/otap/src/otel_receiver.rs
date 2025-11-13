@@ -502,6 +502,7 @@ async fn handle_tcp_conn(
     Ok(())
 }
 
+/// Tracks whether a connection needs a HTTP/2 PING/PONG to keep the client alive.
 struct Http2Keepalive {
     ping_pong: PingPong,
     interval: Duration,
@@ -573,6 +574,7 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
+/// Routes each inbound gRPC request to the appropriate OTAP signal stream.
 struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,

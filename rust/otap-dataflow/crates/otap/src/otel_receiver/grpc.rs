@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Low-level gRPC helpers for the experimental OTAP receiver.
+//!
+//! Everything in here is concerned with gRPC/H2 mechanics: negotiating
+//! compression, decoding/encoding length-prefixed frames, managing request time
+//! limits, and abstracting the underlying `RecvStream` so it can be fuzzed in
+//! tests. Higher-level modules only need to interact with the re-exported
+//! surface (`GrpcStreamingBody`, `GrpcMessageEncoder`, etc.).
+
 pub(crate) use impls::{
     AcceptedGrpcEncodings, BodyStream, BodyStreamError, GrpcEncoding, GrpcMessageEncoder,
     GrpcStreamingBody, MIN_COMPRESSED_CAPACITY, RequestTimeout, build_accept_encoding_header,
@@ -184,6 +192,7 @@ mod impls {
     }
 
     #[derive(Clone, Copy)]
+    /// Bit-mask indicating which compression methods the server allows.
     pub(crate) struct AcceptedGrpcEncodings {
         zstd: bool,
         gzip: bool,
@@ -220,6 +229,7 @@ mod impls {
     }
 
     #[derive(Clone, Copy)]
+    /// Parsed view of the client's `grpc-accept-encoding` preference list.
     pub(crate) struct ClientAcceptEncodings {
         pub(crate) identity: bool,
         pub(crate) zstd: bool,
@@ -309,6 +319,7 @@ mod impls {
         }
     }
 
+    /// Pull-based view over an h2 stream that yields decoded `BatchArrowRecords`.
     pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
         recv: S,
         buffer: ChunkBuffer,
@@ -651,6 +662,7 @@ mod impls {
         }
     }
 
+    /// Builds length-prefixed gRPC frames with optional compression.
     pub(crate) struct GrpcMessageEncoder {
         compression: GrpcEncoding,
         frame_buf: BytesMut,
@@ -801,6 +813,7 @@ mod impls {
         }
     }
 
+    /// Utility wrapper that enforces per-request idle deadlines.
     pub(crate) struct RequestTimeout {
         duration: Option<Duration>,
         sleep: Option<Pin<Box<Sleep>>>,

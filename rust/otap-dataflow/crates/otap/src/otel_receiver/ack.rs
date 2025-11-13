@@ -1,13 +1,26 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Ack/Nack bookkeeping for the experimental OTEL receiver.
+//! Ack/Nack bookkeeping for the experimental OTAP receiver.
 //!
-//! The code in this module owns the `AckRegistry` and related helpers that turn
-//! pipeline notifications back into OTAP `BatchStatus` responses. Keeping the
-//! state machine isolated here lets the higher-level router focus purely on gRPC
-//! transport concerns while this module tracks slot lifetimes, wakeups, and
-//! status message formatting.
+//! The receiver runs in the thread-per-core engine where tasks, channels, and
+//! effect handlers are NOT `Send`. Instead of locking, we rely on `Rc` +
+//! `RefCell` and the fact that each registry is only ever touched from the same
+//! single-threaded async runtime. The registry acts like a tiny slab of "wait
+//! slots", and we bound the number of slots to participate in backpressure: if
+//! no slots remain, new batches get an immediate "Too many concurrent requests"
+//! status, preventing runaway resource use. When a request wants an ACK/NACK,
+//! it allocates a slot, subscribes, and passes the token downstream. Later, the
+//! pipeline produces a `NodeControlMsg::Ack/Nack`, the token is recovered, and
+//! the waiting future resolves back into a `BatchStatus`. Keeping this state
+//! machine isolated here lets the router focus purely on gRPC/H2 plumbing while
+//! this module tracks slot lifetimes, wakers, and status formatting.
+//!
+//! General design goals:
+//! - O(1) allocate/free so the hot path stays predictable.
+//! - No locking or atomic work, since nothing ever leaves the local executor.
+//! - Strict control over memory/concurrency so we can apply backpressure when
+//!   the pipeline can't keep up.
 
 use crate::otap_grpc::otlp::server::RouteResponse;
 use crate::pdata::OtapPdata;
@@ -20,17 +33,25 @@ use std::mem;
 use std::rc::Rc;
 use std::task::{Context as TaskContext, Poll, Waker};
 
+/// Result returned when polling a registry slot for completion.
 pub(crate) enum AckPollResult {
     Ack,
     Nack(String),
     Cancelled,
 }
 
+/// Manages the fixed-size set of wait slots used to correlate ACK/NACK responses.
+/// Relies on `Rc<RefCell<_>>` because it only lives within the single-threaded receiver task.
 #[derive(Clone)]
 pub(crate) struct AckRegistry {
     inner: Rc<RefCell<AckRegistryInner>>,
 }
 
+/// We pre-allocate a boxed slice of slots so indices remain stable and
+/// `AckToken` can cheaply refer to one.  `free_stack` is a simple LIFO of
+/// currently unused slot indices: allocate = `pop()`, complete/cancel =
+/// `push()`.  Because the registry is tiny and single-threaded, this gives us
+/// O(1) operations with minimal bookkeeping.
 struct AckRegistryInner {
     slots: Box<[AckSlot]>,
     free_stack: Vec<usize>,
@@ -54,6 +75,7 @@ impl AckRegistry {
         }
     }
 
+    /// Attempts to allocate a free slot, returning its token on success.
     pub(crate) fn allocate(&self) -> Option<AckToken> {
         let mut inner = self.inner.borrow_mut();
         let slot_index = inner.free_stack.pop()?;
@@ -67,6 +89,7 @@ impl AckRegistry {
         })
     }
 
+    /// Marks the slot as completed with the provided outcome, waking any waiter.
     pub(crate) fn complete(&self, token: AckToken, result: Result<(), String>) -> RouteResponse {
         let mut inner = self.inner.borrow_mut();
         let Some(slot) = inner.slots.get_mut(token.slot_index) else {
@@ -90,6 +113,12 @@ impl AckRegistry {
         }
     }
 
+    /// Polls the slot, registering the waker if it is still pending.
+    ///
+    /// This simply inspects the slot outcome and, when still pending, stores the
+    /// current task’s waker so the eventual `complete` call can wake the same
+    /// future. The returned `AckPollResult` drives the higher-level
+    /// `AckWaitFuture` to emit the correct `BatchStatus`.
     pub(crate) fn poll_slot(
         &self,
         token: AckToken,
@@ -130,6 +159,7 @@ impl AckRegistry {
         }
     }
 
+    /// Cancels the slot if it is still waiting (e.g. drop without completion).
     pub(crate) fn cancel(&self, token: AckToken) {
         let mut inner = self.inner.borrow_mut();
         if let Some(slot) = inner.slots.get_mut(token.slot_index) {
@@ -144,6 +174,7 @@ impl AckRegistry {
     }
 }
 
+/// Individual slot that may be free or waiting for a result.
 struct AckSlot {
     generation: u32,
     state: SlotState,
@@ -158,11 +189,13 @@ impl AckSlot {
     }
 }
 
+/// Tracks whether a slot is unused or actively waiting.
 enum SlotState {
     Free,
     Waiting(WaitingSlot),
 }
 
+/// Carrier for a waiting slot's waker and eventual outcome.
 struct WaitingSlot {
     waker: Option<Waker>,
     outcome: AckOutcome,
@@ -177,12 +210,14 @@ impl WaitingSlot {
     }
 }
 
+/// Final disposition for a slot once the pipeline responds.
 enum AckOutcome {
     Pending,
     Ack,
     Nack(String),
 }
 
+/// Handle that flows through the pipeline to identify an Ack slot.
 #[derive(Clone, Copy)]
 pub(crate) struct AckToken {
     slot_index: usize,
@@ -210,6 +245,7 @@ impl AckToken {
     }
 }
 
+/// Convenience holder for the three per-signal registries.
 #[derive(Clone, Default)]
 pub(crate) struct AckRegistries {
     logs: Option<AckRegistry>,
@@ -239,6 +275,7 @@ impl AckRegistries {
     }
 }
 
+/// Routes an Ack control message back into the appropriate registry.
 pub(crate) fn route_local_ack_response(
     states: &AckRegistries,
     ack: AckMsg<OtapPdata>,
@@ -252,6 +289,7 @@ pub(crate) fn route_local_ack_response(
         .unwrap_or(RouteResponse::None)
 }
 
+/// Routes a Nack control message back into the appropriate registry.
 pub(crate) fn route_local_nack_response(
     states: &AckRegistries,
     nack: NackMsg<OtapPdata>,
@@ -265,6 +303,7 @@ pub(crate) fn route_local_nack_response(
         .unwrap_or(RouteResponse::None)
 }
 
+/// Helper to produce the canonical success status used across signals.
 pub(crate) fn success_status(batch_id: i64) -> BatchStatus {
     BatchStatus {
         batch_id,
@@ -273,6 +312,7 @@ pub(crate) fn success_status(batch_id: i64) -> BatchStatus {
     }
 }
 
+/// Helper to produce a nack status with the provided reason.
 pub(crate) fn nack_status(batch_id: i64, reason: String) -> BatchStatus {
     BatchStatus {
         batch_id,
@@ -281,6 +321,7 @@ pub(crate) fn nack_status(batch_id: i64, reason: String) -> BatchStatus {
     }
 }
 
+/// Helper to produce the status returned when the registry runs out of slots.
 pub(crate) fn overloaded_status(batch_id: i64) -> BatchStatus {
     BatchStatus {
         batch_id,
