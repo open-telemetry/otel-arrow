@@ -95,6 +95,7 @@ impl OtapArrowRecords {
         }
     }
 
+    /// TODO: Rename signal_type()
     #[must_use]
     const fn tag(&self) -> SignalType {
         match self {
