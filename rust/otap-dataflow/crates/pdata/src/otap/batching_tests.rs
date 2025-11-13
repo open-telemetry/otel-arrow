@@ -245,22 +245,16 @@ fn test_simple_split_logs() {
     let inputs_otlp = vec![make_logs_otlp()];
     let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_logs(o)).collect();
 
-    // Split with max_output_batch=2
-    let result = make_output_batches(
+    let outputs_otlp: Vec<_> = make_output_batches(
         SignalType::Logs,
         inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
-    .expect("batching should succeed");
+    .expect("batching should succeed")
+    .into_iter()
+    .map(decode_logs)
+    .collect();
 
-    // Merge back and verify equivalence
-    let merged_result =
-        make_output_batches(SignalType::Logs, result, None).expect("merge should succeed");
-
-    let outputs_otlp: Vec<_> = merged_result
-        .iter()
-        .map(|o| decode_logs(o.clone()))
-        .collect();
     assert_logs_equivalent(&inputs_otlp, &outputs_otlp);
 }
 
@@ -269,22 +263,16 @@ fn test_simple_split_traces() {
     let inputs_otlp = vec![make_traces_otlp()];
     let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_traces(o)).collect();
 
-    // Split with max_output_batch=2
-    let result = make_output_batches(
+    let outputs_otlp: Vec<_> = make_output_batches(
         SignalType::Traces,
         inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
-    .expect("batching should succeed");
+    .expect("batching should succeed")
+    .into_iter()
+    .map(decode_traces)
+    .collect();
 
-    // Merge back and verify equivalence
-    let merged_result =
-        make_output_batches(SignalType::Traces, result, None).expect("merge should succeed");
-
-    let outputs_otlp: Vec<_> = merged_result
-        .iter()
-        .map(|o| decode_traces(o.clone()))
-        .collect();
     assert_traces_equivalent(&inputs_otlp, &outputs_otlp);
 }
 
@@ -293,21 +281,15 @@ fn test_simple_split_metrics() {
     let inputs_otlp = vec![make_metrics_otlp()];
     let inputs_otap: Vec<_> = inputs_otlp.iter().map(|o| encode_metrics(o)).collect();
 
-    // Split with max_output_batch=2
-    let result = make_output_batches(
+    let outputs_otlp: Vec<_> = make_output_batches(
         SignalType::Metrics,
         inputs_otap,
         Some(NonZeroU64::new(2).unwrap()),
     )
-    .expect("batching should succeed");
+    .expect("batching should succeed")
+    .into_iter()
+    .map(decode_metrics)
+    .collect();
 
-    // Merge back and verify equivalence
-    let merged_result =
-        make_output_batches(SignalType::Metrics, result, None).expect("merge should succeed");
-
-    let outputs_otlp: Vec<_> = merged_result
-        .iter()
-        .map(|o| decode_metrics(o.clone()))
-        .collect();
     assert_metrics_equivalent(&inputs_otlp, &outputs_otlp);
 }
