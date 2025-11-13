@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module focuses on taking a filter definition for Traces and building a filter
-//! as a BooleanArray for the Traces, ResourceAttr, and LogsAttr OTAP Record Batches
+//! as a BooleanArray for the Spans, ResourceAttr, SpansAttr, SpanEvents, SpanEventAttrs, and SpanLinkAttrs OTAP Record Batches
 //!
 
 use crate::arrays::{get_required_array, get_required_array_from_struct_array_from_record_batch};
@@ -10,8 +10,8 @@ use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
     AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
-    build_uint16_id_filter, default_match_type, get_uint16_ids, new_filter, nulls_to_false,
-    regex_match_column, update_filter, update_primary_filter,
+    build_uint16_id_filter, default_match_type, get_uint16_ids, new_optional_record_batch_filter, nulls_to_false,
+    regex_match_column, update_optional_record_batch_filter, update_primary_record_batch_filter,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -20,21 +20,21 @@ use arrow::buffer::BooleanBuffer;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// struct that describes the overall requirements to use in order to filter logs
+/// struct that describes the overall requirements to use in order to filter traces
 #[derive(Debug, Clone, Deserialize)]
 pub struct TraceFilter {
-    // Include match properties describe logs that should be included in the Collector Service pipeline,
-    // all other logs should be dropped from further processing.
+    // Include match properties describe traces that should be included in the Collector Service pipeline,
+    // all other traces should be dropped from further processing.
     // If both Include and Exclude are specified, Include filtering occurs first.
     include: Option<TraceMatchProperties>,
-    // Exclude match properties describe logs that should be excluded from the Collector Service pipeline,
-    // all other logs should be included.
+    // Exclude match properties describe traces that should be excluded from the Collector Service pipeline,
+    // all other traces should be included.
     // If both Include and Exclude are specified, Include filtering occurs first.
     exclude: Option<TraceMatchProperties>,
     // ToDo: Add ottl support -> see golang version https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/8558294afa723b9ed917ed5d6bb6c656bb096a49/processor/filterprocessor/config.go#L90
 }
 
-/// LogMatchProperties specifies the set of properties in a log to match against and the type of string pattern matching to use.
+/// TraceMatchProperties specifies the set of properties in a trace to match against and the type of string pattern matching to use.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TraceMatchProperties {
     // MatchType specifies the type of matching desired
@@ -70,7 +70,7 @@ pub struct TraceMatchProperties {
 }
 
 impl TraceFilter {
-    /// create a new log filter
+    /// create a new trace filter
     #[must_use]
     pub fn new(
         include: Option<TraceMatchProperties>,
@@ -79,7 +79,7 @@ impl TraceFilter {
         Self { include, exclude }
     }
 
-    /// take a logs payload and return the filtered result
+    /// take a traces payload and return the filtered result
     pub fn filter(&self, mut traces_payload: OtapArrowRecords) -> Result<OtapArrowRecords> {
         let (
             resource_attr_filter,
@@ -188,7 +188,7 @@ impl TraceFilter {
         span_event_filter: BooleanArray,
         span_event_attr_filter: BooleanArray,
         span_link_attr_filter: BooleanArray,
-    ) -> Result<((BooleanArray, HashMap<ArrowPayloadType, BooleanArray>))> {
+    ) -> Result<(BooleanArray, HashMap<ArrowPayloadType, BooleanArray>)> {
         // get the record batches we are going to filter
         let resource_attrs = traces_payload.get(ArrowPayloadType::ResourceAttrs);
         let spans = traces_payload
@@ -217,11 +217,11 @@ impl TraceFilter {
         // optional record batch
         match resource_attrs {
             Some(resource_attrs_record_batch) => {
-                span_filter = update_primary_filter(
-                    record_batch,
-                    id_column,
-                    filter_to_update,
-                    primary_filter,
+                span_filter = update_primary_record_batch_filter(
+                    resource_attrs_record_batch,
+                    span_resource_ids_column,
+                    &resource_attr_filter,
+                    &span_filter,
                 )?;
                 // apply current logic
             }
@@ -239,11 +239,11 @@ impl TraceFilter {
 
         match span_attrs {
             Some(span_attrs_record_batch) => {
-                span_filter = update_primary_filter(
-                    record_batch,
-                    id_column,
-                    filter_to_update,
-                    primary_filter,
+                span_filter = update_primary_record_batch_filter(
+                    span_attrs_record_batch,
+                    span_ids_column,
+                    &span_attr_filter,
+                    &span_filter,
                 )?;
             }
             None => {
@@ -260,11 +260,11 @@ impl TraceFilter {
 
         match span_events {
             Some(span_events_record_batch) => {
-                span_filter = update_primary_filter(
-                    record_batch,
-                    id_column,
-                    filter_to_update,
-                    primary_filter,
+                span_filter = update_primary_record_batch_filter(
+                    span_events_record_batch,
+                    span_ids_column,
+                    &span_event_filter,
+                    &span_filter,
                 )?;
             }
             None => {
@@ -281,11 +281,11 @@ impl TraceFilter {
 
         match span_event_attrs {
             Some(span_event_attrs_record_batch) => {
-                span_filter = update_primary_filter(
-                    record_batch,
-                    id_column,
-                    filter_to_update,
-                    primary_filter,
+                span_filter = update_primary_record_batch_filter(
+                    span_event_attrs_record_batch,
+                    span_ids_column,
+                    &span_event_attr_filter,
+                    &span_filter,
                 )?;
             }
             None => {
@@ -302,11 +302,11 @@ impl TraceFilter {
 
         match span_link_attrs {
             Some(span_link_attrs_record_batch) => {
-                span_filter = update_primary_filter(
-                    record_batch,
-                    id_column,
-                    filter_to_update,
-                    primary_filter,
+                span_filter = update_primary_record_batch_filter(
+                    span_link_attrs_record_batch,
+                    span_ids_column,
+                    &span_link_attr_filter,
+                    &span_filter,
                 )?;
             }
             None => {
@@ -330,7 +330,7 @@ impl TraceFilter {
         if let Some(span_attrs_record_batch) = span_attrs {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::SpanAttrs,
-                update_filter(
+                update_optional_record_batch_filter(
                     span_attrs_record_batch,
                     span_ids_column,
                     &span_attr_filter,
@@ -342,7 +342,7 @@ impl TraceFilter {
         if let Some(span_events_record_batch) = span_events {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::SpanEvents,
-                update_filter(
+                update_optional_record_batch_filter(
                     span_events_record_batch,
                     span_ids_column,
                     &span_event_filter,
@@ -354,7 +354,7 @@ impl TraceFilter {
         if let Some(span_event_attrs_record_batch) = span_event_attrs {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::SpanEventAttrs,
-                update_filter(
+                update_optional_record_batch_filter(
                     span_event_attrs_record_batch,
                     span_ids_column,
                     &span_event_attr_filter,
@@ -366,7 +366,7 @@ impl TraceFilter {
         if let Some(span_link_attrs_record_batch) = span_link_attrs {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::SpanLinkAttrs,
-                update_filter(
+                update_optional_record_batch_filter(
                     span_link_attrs_record_batch,
                     span_ids_column,
                     &span_link_attr_filter,
@@ -375,14 +375,12 @@ impl TraceFilter {
             );
         }
 
-        // part 4: clean up resource attrs
-
         if let Some(resource_attrs_record_batch) = resource_attrs {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::ResourceAttrs,
-                update_filter(
+                update_optional_record_batch_filter(
                     resource_attrs_record_batch,
-                    span_ids_column,
+                    span_resource_ids_column,
                     &resource_attr_filter,
                     &span_filter,
                 )?,
@@ -392,7 +390,7 @@ impl TraceFilter {
         if let Some(scope_attrs_record_batch) = scope_attrs {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::ScopeAttrs,
-                new_filter(
+                new_optional_record_batch_filter(
                     scope_attrs_record_batch,
                     span_scope_ids_column,
                     &span_filter,
@@ -403,7 +401,7 @@ impl TraceFilter {
         if let Some(span_links_record_batch) = span_links {
             _ = optional_record_batch_filters.insert(
                 ArrowPayloadType::SpanLinks,
-                new_filter(span_links_record_batch, span_ids_column, &span_filter)?,
+                new_optional_record_batch_filter(span_links_record_batch, span_ids_column, &span_filter)?,
             );
         }
 
@@ -412,7 +410,7 @@ impl TraceFilter {
 }
 
 impl TraceMatchProperties {
-    /// create a new LogMatchProperties
+    /// create a new TraceMatchProperties
     #[must_use]
     pub fn new(
         match_type: MatchType,
@@ -636,9 +634,8 @@ impl TraceMatchProperties {
         build_uint16_id_filter(parent_id_column, ids_counted.into_keys().collect())
     }
 
-    /// Creates a booleanarray that will filter a log record record batch based on the
-    /// defined severity_text, log body, and severity_number (if definied). A log record should match all
-    /// defined requirements.
+    /// Creates a booleanarray that will filter a span record batch based on the
+    /// span name. A span should have one of the defined span names
     fn get_span_filter(&self, traces_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         let spans = traces_payload
             .get(ArrowPayloadType::Spans)
@@ -785,7 +782,7 @@ impl TraceMatchProperties {
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
-        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
+        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span
         let parent_id_column = get_required_array(span_attrs, consts::PARENT_ID)?;
 
         let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
@@ -966,7 +963,7 @@ impl TraceMatchProperties {
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
-        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
+        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span event
         let parent_id_column = get_required_array(span_event_attrs, consts::PARENT_ID)?;
 
         let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
@@ -1087,7 +1084,7 @@ impl TraceMatchProperties {
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
 
-        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
+        // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span link
         let parent_id_column = get_required_array(span_link_attrs, consts::PARENT_ID)?;
 
         let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;

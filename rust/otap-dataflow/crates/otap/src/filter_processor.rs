@@ -126,20 +126,19 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                 }
                             })?
                     }
-                    SignalType::Traces => {
-                        self.config
-                            .span_filters()
-                            .filter(arrow_records)
-                            .map_err(|e| {
-                                let source_detail = format_error_sources(&e);
-                                Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Filter error: {e}"),
-                                    source_detail,
-                                }
-                            })?
-                    }
+                    SignalType::Traces => self
+                        .config
+                        .span_filters()
+                        .filter(arrow_records)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?,
                 };
                 effect_handler
                     .send_message(OtapPdata::new(context, filtered_arrow_records.into()))
@@ -165,6 +164,7 @@ mod tests {
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
+        traces::TraceFilter,
     };
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -544,7 +544,9 @@ mod tests {
             Vec::new(), // log_record ignored
         );
 
-        let config = Config::new(log_filter);
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
@@ -700,7 +702,9 @@ mod tests {
             Vec::new(), // log_record ignored
         );
 
-        let config = Config::new(log_filter);
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
@@ -860,7 +864,9 @@ mod tests {
             Vec::new(), // log_record ignored
         );
 
-        let config = Config::new(log_filter);
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
@@ -1034,7 +1040,9 @@ mod tests {
             Vec::new(), // log_record ignored
         );
 
-        let config = Config::new(log_filter);
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);

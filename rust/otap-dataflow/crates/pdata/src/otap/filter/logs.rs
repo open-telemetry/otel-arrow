@@ -7,13 +7,13 @@
 
 use crate::arrays::{
     get_required_array, get_required_array_from_struct_array,
-    get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
+    get_required_array_from_struct_array_from_record_batch, get_required_struct_array
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
     AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
-    build_uint16_id_filter, default_match_type, get_uint16_ids, nulls_to_false, regex_match_column,
+    build_uint16_id_filter, default_match_type, get_uint16_ids, nulls_to_false, regex_match_column, update_optional_record_batch_filter, update_primary_record_batch_filter, new_optional_record_batch_filter
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -140,7 +140,7 @@ impl LogFilter {
             return Ok(logs_payload);
         };
 
-        let (resource_attr_filter, scope_attr_filter, log_record_filter, log_attr_filter) = self
+        let (log_record_filter, optional_record_batch_filters) = self
             .sync_up_filters(
                 &logs_payload,
                 resource_attr_filter,
@@ -154,17 +154,10 @@ impl LogFilter {
             &log_record_filter,
         )?;
 
-        if let Some(filter) = resource_attr_filter {
-            apply_filter(&mut logs_payload, ArrowPayloadType::ResourceAttrs, &filter)?;
+        for (payload_type, filter) in optional_record_batch_filters {
+            apply_filter(&mut logs_payload, payload_type, &filter)?;
         }
 
-        if let Some(filter) = scope_attr_filter {
-            apply_filter(&mut logs_payload, ArrowPayloadType::ScopeAttrs, &filter)?;
-        }
-
-        if let Some(filter) = log_attr_filter {
-            apply_filter(&mut logs_payload, ArrowPayloadType::LogAttrs, &filter)?;
-        }
 
         Ok(logs_payload)
     }
@@ -178,10 +171,8 @@ impl LogFilter {
         mut log_record_filter: BooleanArray,
         log_attr_filter: BooleanArray,
     ) -> Result<(
-        Option<BooleanArray>,
-        Option<BooleanArray>,
         BooleanArray,
-        Option<BooleanArray>,
+        HashMap<ArrowPayloadType, BooleanArray>
     )> {
         // get the record batches we are going to filter
         let resource_attrs = logs_payload.get(ArrowPayloadType::ResourceAttrs);
@@ -208,41 +199,20 @@ impl LogFilter {
         // optional record batch
         match resource_attrs {
             Some(resource_attrs_record_batch) => {
-                // starting with the resource_attr
-                // -> get ids of filtered attributes
-                // -> map ids to resource_ids in log_record
-                // -> create filter to require these resource_ids
-                // -> update log_record filter
-                let resource_attr_parent_ids_column =
-                    get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
-
-                let resource_attr_parent_ids_filtered = get_uint16_ids(
-                    resource_attr_parent_ids_column,
-                    &resource_attr_filter,
-                    consts::PARENT_ID,
-                )?;
-
-                // create filter to remove these ids from log_record
-                let log_record_resource_ids_filter = build_uint16_id_filter(
+                log_record_filter = update_primary_record_batch_filter(
+                    resource_attrs_record_batch,
                     log_record_resource_ids_column,
-                    resource_attr_parent_ids_filtered,
+                    &resource_attr_filter,
+                    &log_record_filter,
                 )?;
-
-                // update the log_record_filter
-                log_record_filter =
-                    arrow::compute::and_kleene(&log_record_filter, &log_record_resource_ids_filter)
-                        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-                // apply current logic
             }
             None => {
                 if resource_attr_filter.true_count() == 0 {
                     // the configuration required certain resource_attributes but found none so we can return early
                     // remove all elements as nothing matches
                     return Ok((
-                        None,
-                        None,
                         BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
-                        None,
+                        HashMap::new()
                     ));
                 }
             }
@@ -250,95 +220,70 @@ impl LogFilter {
 
         match log_attrs {
             Some(log_attrs_record_batch) => {
-                let log_attr_parent_ids_column =
-                    get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
-
-                // repeat with ids from log_attrs
-                let log_attr_parent_ids_filtered = get_uint16_ids(
-                    log_attr_parent_ids_column,
+                log_record_filter = update_primary_record_batch_filter(
+                    log_attrs_record_batch,
+                    log_record_ids_column,
                     &log_attr_filter,
-                    consts::PARENT_ID,
+                    &log_record_filter,
                 )?;
-                let log_record_ids_filter =
-                    build_uint16_id_filter(log_record_ids_column, log_attr_parent_ids_filtered)?;
-                log_record_filter =
-                    arrow::compute::and_kleene(&log_record_filter, &log_record_ids_filter)
-                        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             }
             None => {
                 if log_attr_filter.true_count() == 0 {
                     // the configuration required certain resource_attributes but found none so we can return early
                     // remove all elements as nothing matches
                     return Ok((
-                        None,
-                        None,
                         BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
-                        None,
+                        HashMap::new()
                     ));
                 }
             }
         }
 
         // now using the updated log_record_filter we need to update the rest of the filers
-        let updated_log_attr_filter = if let Some(log_attrs_record_batch) = log_attrs {
-            let log_attr_parent_ids_column =
-                get_required_array(log_attrs_record_batch, consts::PARENT_ID)?;
 
-            let log_record_ids_filtered =
-                get_uint16_ids(log_record_ids_column, &log_record_filter, consts::ID)?;
-            let log_attr_parent_ids_filter =
-                build_uint16_id_filter(log_attr_parent_ids_column, log_record_ids_filtered)?;
+        // use hashmap to map filters to their payload types to return,
+        // only record batches that exist will have their filter added to this hashmap
+        let mut optional_record_batch_filters = HashMap::new();
 
-            Some(
-                arrow::compute::and_kleene(&log_attr_filter, &log_attr_parent_ids_filter)
-                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
-            )
-        } else {
-            None
-        };
+        if let Some(log_attrs_record_batch) = log_attrs {
+            _ = optional_record_batch_filters.insert(
+                ArrowPayloadType::LogAttrs,
+                update_optional_record_batch_filter(
+                    log_attrs_record_batch,
+                    log_record_ids_column,
+                    &log_attr_filter,
+                    &log_record_filter,
+                )?,
+            );
+        } 
 
-        // part 4: clean up resource attrs
-
-        let updated_resource_attr_filter = if let Some(resource_attrs_record_batch) = resource_attrs
+        if let Some(resource_attrs_record_batch) = resource_attrs
         {
-            let resource_attr_parent_ids_column =
-                get_required_array(resource_attrs_record_batch, consts::PARENT_ID)?;
-            let log_record_resource_ids_filtered = get_uint16_ids(
-                log_record_resource_ids_column,
-                &log_record_filter,
-                consts::ID,
-            )?;
+            _ = optional_record_batch_filters.insert(
+                ArrowPayloadType::ResourceAttrs,
+                update_optional_record_batch_filter(
+                    resource_attrs_record_batch,
+                    log_record_resource_ids_column,
+                    &resource_attr_filter,
+                    &log_record_filter,
+                )?,
+            );
+        }
 
-            let resource_attr_parent_ids_filter = build_uint16_id_filter(
-                resource_attr_parent_ids_column,
-                log_record_resource_ids_filtered,
-            )?;
-            Some(
-                arrow::compute::and_kleene(&resource_attr_filter, &resource_attr_parent_ids_filter)
-                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
-            )
-        } else {
-            None
-        };
-
-        let scope_attr_filter = if let Some(scope_attrs_record_batch) = scope_attrs {
-            let scope_attr_parent_ids_column =
-                get_required_array(scope_attrs_record_batch, consts::PARENT_ID)?;
-            let log_record_scope_ids_filtered =
-                get_uint16_ids(log_record_scope_ids_column, &log_record_filter, consts::ID)?;
-            Some(build_uint16_id_filter(
-                scope_attr_parent_ids_column,
-                log_record_scope_ids_filtered,
-            )?)
-        } else {
-            None
-        };
+        if let Some(scope_attrs_record_batch) = scope_attrs {
+           _ = optional_record_batch_filters.insert(
+                ArrowPayloadType::ScopeAttrs,
+                new_optional_record_batch_filter(
+                    scope_attrs_record_batch,
+                    log_record_scope_ids_column,
+                    &log_record_filter,
+                )?,
+            );
+        }
 
         Ok((
-            updated_resource_attr_filter,
-            scope_attr_filter,
             log_record_filter,
-            updated_log_attr_filter,
+            optional_record_batch_filters
         ))
     }
 }

@@ -275,11 +275,13 @@ fn apply_filter(
     Ok(())
 }
 
-/// update_filter() takes the record batch, id column, filter to update and the primary filter
-/// that should be applied to the record batch to determine the ids that should be removed
+/// update_optional_record_batch_filter() takes an optional record batch, with it's respective filter
+/// id column from the primary record batch, and the primary record batch filter. 
+/// This function extracts the masked id from the primary record batch and uses these ids to update
+/// the optional record batch
 /// This function will return an error if the id column is not DataType::UInt16 or the filter
 /// column length doesn't match the record batch column length
-fn update_optional_filter(
+fn update_optional_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
     filter_to_update: &BooleanArray,
@@ -288,16 +290,23 @@ fn update_optional_filter(
     let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
     let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
     let parent_id_filter = build_uint16_id_filter(parent_id_column, ids_filtered)?;
-    Ok(
-        arrow::compute::and_kleene(filter_to_update, &parent_id_filter)
-            .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
-    )
+    
+    arrow::compute::and_kleene(filter_to_update, &parent_id_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })
+    
 }
 
-fn update_primary_filter(
+
+/// update_primary_record_batch_filter() takes an optional record batch, with it's respective filter
+/// id column from the primary record batch, and the primary record batch filter. 
+/// This function extracts the masked id from the optional record batch and uses these ids to update
+/// the primary record batch
+/// This function will return an error if the id column is not DataType::UInt16 or the filter
+/// column length doesn't match the record batch column length
+fn update_primary_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
-    filter_to_update: &BooleanArray,
+    secondary_filter: &BooleanArray,
     primary_filter: &BooleanArray,
 ) -> Result<BooleanArray> {
     // starting with the resource_attr
@@ -308,21 +317,28 @@ fn update_primary_filter(
     let parent_ids_column = get_required_array(record_batch, consts::PARENT_ID)?;
 
     let parent_ids_filtered =
-        get_uint16_ids(parent_ids_column, &primary_filter, consts::PARENT_ID)?;
+        get_uint16_ids(parent_ids_column, secondary_filter, consts::PARENT_ID)?;
 
     // create filter to remove these ids from span
-    let ids_filter = build_uint16_id_filter(ids_column, parent_ids_filtered)?;
+    let ids_filter = build_uint16_id_filter(id_column, parent_ids_filtered)?;
 
-    Ok(arrow::compute::and_kleene(primary_update, &ids_filter)
-        .map_err(|e| Error::ColumnLengthMismatch { source: e })?)
+    arrow::compute::and_kleene(primary_filter, &ids_filter)
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })
 }
 
-fn new_filter(
+
+/// new_optional_record_batch_filter() takes an optional record batch,
+/// id column from the primary record batch, and the primary record batch filter. 
+/// This function extracts the masked id from the primary record batch and uses these ids to
+/// create a filter for the provided optional record batch
+/// This function will return an error if the id column is not DataType::UInt16 or the filter
+/// column length doesn't match the record batch column length
+fn new_optional_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
     primary_filter: &BooleanArray,
 ) -> Result<BooleanArray> {
     let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
     let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
-    Ok(build_uint16_id_filter(parent_id_column, ids_filtered)?)
+    build_uint16_id_filter(parent_id_column, ids_filtered)
 }
