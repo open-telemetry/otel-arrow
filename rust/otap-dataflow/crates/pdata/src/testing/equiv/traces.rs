@@ -5,9 +5,8 @@
 
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
 use crate::testing::equiv::canonical::{
-    canonicalize_any_value, canonicalize_message, canonicalize_vec,
+    assert_equivalent, canonicalize_any_value, canonicalize_vec,
 };
-use std::collections::BTreeSet;
 
 /// Split a TracesData into individual singleton TracesData messages (one per span).
 fn traces_split_into_singletons(traces_data: &TracesData) -> Vec<TracesData> {
@@ -89,35 +88,13 @@ fn traces_canonicalize_singleton_in_place(traces_data: &mut TracesData) {
 
 /// Assert that two collections of `TracesData` instances are equivalent.
 pub fn assert_traces_equivalent(left: &[TracesData], right: &[TracesData]) {
-    // Split into singletons from all TracesData in the slices
-    let mut left_singletons: Vec<TracesData> =
-        left.iter().flat_map(traces_split_into_singletons).collect();
-    let mut right_singletons: Vec<TracesData> = right
-        .iter()
-        .flat_map(traces_split_into_singletons)
-        .collect();
-
-    // Canonicalize each singleton
-    for singleton in &mut left_singletons {
-        traces_canonicalize_singleton_in_place(singleton);
-    }
-    for singleton in &mut right_singletons {
-        traces_canonicalize_singleton_in_place(singleton);
-    }
-
-    // Encode to bytes and collect into BTreeSets
-    let left_set: BTreeSet<Vec<u8>> = left_singletons
-        .into_iter()
-        .map(canonicalize_message)
-        .collect();
-
-    let right_set: BTreeSet<Vec<u8>> = right_singletons
-        .into_iter()
-        .map(canonicalize_message)
-        .collect();
-
-    // Use pretty_assertions for nice diff output
-    pretty_assertions::assert_eq!(left_set, right_set, "TracesData not equivalent");
+    assert_equivalent(
+        left,
+        right,
+        traces_split_into_singletons,
+        traces_canonicalize_singleton_in_place,
+        "TracesData",
+    );
 }
 
 #[cfg(test)]

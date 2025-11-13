@@ -3,9 +3,10 @@
 
 //! Log equivalence checking.
 
-use super::canonical::{canonicalize_any_value, canonicalize_message, canonicalize_vec};
 use crate::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
-use std::collections::BTreeSet;
+use crate::testing::equiv::canonical::{
+    assert_equivalent, canonicalize_any_value, canonicalize_vec,
+};
 
 /// Split a LogsData into individual singleton LogsData messages (one per log record).
 fn logs_split_into_singletons(logs_data: &LogsData) -> Vec<LogsData> {
@@ -74,33 +75,13 @@ fn logs_canonicalize_singleton_in_place(logs_data: &mut LogsData) {
 
 /// Assert that two collections of `LogsData` instances are equivalent.
 pub fn assert_logs_equivalent(left: &[LogsData], right: &[LogsData]) {
-    // Split into singletons from all LogsData in the slices
-    let mut left_singletons: Vec<LogsData> =
-        left.iter().flat_map(logs_split_into_singletons).collect();
-    let mut right_singletons: Vec<LogsData> =
-        right.iter().flat_map(logs_split_into_singletons).collect();
-
-    // Canonicalize each singleton
-    for singleton in &mut left_singletons {
-        logs_canonicalize_singleton_in_place(singleton);
-    }
-    for singleton in &mut right_singletons {
-        logs_canonicalize_singleton_in_place(singleton);
-    }
-
-    // Encode to bytes and collect into BTreeSets
-    let left_set: BTreeSet<Vec<u8>> = left_singletons
-        .into_iter()
-        .map(canonicalize_message)
-        .collect();
-
-    let right_set: BTreeSet<Vec<u8>> = right_singletons
-        .into_iter()
-        .map(canonicalize_message)
-        .collect();
-
-    // Use pretty_assertions for nice diff output
-    pretty_assertions::assert_eq!(left_set, right_set, "LogsData not equivalent");
+    assert_equivalent(
+        left,
+        right,
+        logs_split_into_singletons,
+        logs_canonicalize_singleton_in_place,
+        "LogsData",
+    );
 }
 
 #[cfg(test)]
