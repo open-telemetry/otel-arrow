@@ -747,16 +747,30 @@ fn split_metric_batches<const N: usize>(
         // column can have gaps.
 
         let thisdata_len = batch_length(thisdata);
+
+        // If this batch doesn't fit in remaining space AND we've already used some space,
+        // start a fresh output batch
+        if thisdata_len > batch_size_remaining && batch_size_remaining < max_output_batch {
+            batch_size_remaining = max_output_batch;
+        }
+
         if thisdata_len <= batch_size_remaining {
             // BRANCH 1: This batch is small enough to include whole
             // `thisdata_len` is the total count of data points across all DataPoints tables
             // We can include all metrics from this batch (0..metric_length) in the output
+            println!("    BRANCH 1: Including whole batch (0..{})", metric_length);
             batch_size_remaining -= thisdata_len;
             result.push((batch_index, 0..metric_length));
+            println!(
+                "    After BRANCH 1: batch_size_remaining={}",
+                batch_size_remaining
+            );
             if batch_size_remaining == 0 {
                 batch_size_remaining = max_output_batch;
+                println!("    Reset batch_size_remaining to {}", max_output_batch);
             }
         } else {
+            println!("    BRANCH 2: Batch too large, needs splitting");
             // BRANCH 2: This batch is too large and must be split into multiple ranges
             // We need to partition the metrics in this batch so each partition has
             // ≤ max_output_batch data points.
@@ -812,6 +826,11 @@ fn split_metric_batches<const N: usize>(
             // means we should have added the whole thing to the output and never reached this point
             // in the code.
             assert!(!cumulative_child_counts.is_empty());
+            println!("      child_counts: {:?}", child_counts);
+            println!(
+                "      cumulative_child_counts: {:?}",
+                cumulative_child_counts
+            );
 
             // Step 3: Partition metrics into chunks where each chunk has ≤ max_output_batch data points
             // Each iteration of this loop emits one chunk (range of metrics).
@@ -822,15 +841,25 @@ fn split_metric_batches<const N: usize>(
             // range respects the max_output_batch limit based on the cumulative data point counts.
             let mut last_cumulative_child_count = 0; // Total data points before current chunk
             let mut starting_index = 0; // First metric index in current chunk
+            println!(
+                "    Starting BRANCH 2 loop with batch_size_remaining={}",
+                batch_size_remaining
+            );
             loop {
                 // Find the metric index where adding it would exceed our budget
                 // partition_point finds the first index where the predicate is false
+                println!(
+                    "      Loop iteration: starting_index={}, last_cumulative_child_count={}, budget={}",
+                    starting_index, last_cumulative_child_count, batch_size_remaining
+                );
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
                     // cum_child_count = total data points from metric 0 through this index
                     // last_cumulative_child_count = total data points before current chunk started
                     // So (cum_child_count - last_cumulative_child_count) = data points in current chunk
-                    cum_child_count < last_cumulative_child_count + max_output_batch as u64
+                    // Use batch_size_remaining for the first chunk, max_output_batch for subsequent chunks
+                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
                 });
+                println!("      candidate_index={}", candidate_index);
 
                 // The ending_index for this chunk is candidate_index (exclusive end).
                 // partition_point returns the first index where the predicate is FALSE,
@@ -850,6 +879,11 @@ fn split_metric_batches<const N: usize>(
                             .expect("non-empty list"),
                     );
 
+                println!(
+                    "      ending_index={}, last_cumulative_child_count={}",
+                    ending_index, last_cumulative_child_count
+                );
+
                 // We should always make forward progress
                 assert!(ending_index > starting_index);
 
@@ -858,18 +892,34 @@ fn split_metric_batches<const N: usize>(
                 // Each range becomes a separate output batch in generic_split, containing:
                 //   - A subset of metric rows (the metadata)
                 //   - All data points (from child batches) that reference those metrics
+                println!(
+                    "      Emitting range: (batch={}, {}..{})",
+                    batch_index, starting_index, ending_index
+                );
                 result.push((batch_index, starting_index..ending_index));
 
                 if ending_index >= metric_length {
                     // We've consumed all metrics in this input batch
+                    // Calculate remaining capacity in the last chunk we just emitted
+                    let data_points_in_last_chunk = last_cumulative_child_count
+                        - cumulative_child_counts
+                            .get(starting_index.saturating_sub(1))
+                            .copied()
+                            .unwrap_or(0);
+                    batch_size_remaining = (max_output_batch as u64)
+                        .saturating_sub(data_points_in_last_chunk)
+                        as usize;
+                    println!(
+                        "      Finished batch: data_points_in_last_chunk={}, new batch_size_remaining={}",
+                        data_points_in_last_chunk, batch_size_remaining
+                    );
                     break;
                 }
                 starting_index = ending_index;
+                // After emitting the first chunk, subsequent chunks should use max_output_batch as the budget
+                batch_size_remaining = max_output_batch;
             }
-
-            // After splitting this large batch, reset batch_size_remaining for next input batch
-            // (Each split chunk was sized to ≤ max_output_batch, so we start fresh)
-            batch_size_remaining = max_output_batch;
+            // Note: No reset here! We've already calculated batch_size_remaining in the loop above.
         }
     }
 
