@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, StringArray, UInt16Array,
+    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, RecordBatch, StringArray,
+    UInt16Array,
 };
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 
+use crate::arrays::get_required_array;
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -14,7 +16,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 pub mod logs;
-
+pub mod traces;
 // threshold numbers to determine which method to use for building id filter
 // ToDo: determine optimimal numbers
 const ID_COLUMN_LENGTH_MIN_THRESHOLD: usize = 2000;
@@ -271,4 +273,56 @@ fn apply_filter(
         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
     payload.set(payload_type, filtered_record_batch);
     Ok(())
+}
+
+/// update_filter() takes the record batch, id column, filter to update and the primary filter
+/// that should be applied to the record batch to determine the ids that should be removed
+/// This function will return an error if the id column is not DataType::UInt16 or the filter
+/// column length doesn't match the record batch column length
+fn update_optional_filter(
+    record_batch: &RecordBatch,
+    id_column: &Arc<dyn Array>,
+    filter_to_update: &BooleanArray,
+    primary_filter: &BooleanArray,
+) -> Result<BooleanArray> {
+    let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
+    let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
+    let parent_id_filter = build_uint16_id_filter(parent_id_column, ids_filtered)?;
+    Ok(
+        arrow::compute::and_kleene(filter_to_update, &parent_id_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?,
+    )
+}
+
+fn update_primary_filter(
+    record_batch: &RecordBatch,
+    id_column: &Arc<dyn Array>,
+    filter_to_update: &BooleanArray,
+    primary_filter: &BooleanArray,
+) -> Result<BooleanArray> {
+    // starting with the resource_attr
+    // -> get ids of filtered attributes
+    // -> map ids to resource_ids in span
+    // -> create filter to require these resource_ids
+    // -> update span filter
+    let parent_ids_column = get_required_array(record_batch, consts::PARENT_ID)?;
+
+    let parent_ids_filtered =
+        get_uint16_ids(parent_ids_column, &primary_filter, consts::PARENT_ID)?;
+
+    // create filter to remove these ids from span
+    let ids_filter = build_uint16_id_filter(ids_column, parent_ids_filtered)?;
+
+    Ok(arrow::compute::and_kleene(primary_update, &ids_filter)
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })?)
+}
+
+fn new_filter(
+    record_batch: &RecordBatch,
+    id_column: &Arc<dyn Array>,
+    primary_filter: &BooleanArray,
+) -> Result<BooleanArray> {
+    let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
+    let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
+    Ok(build_uint16_id_filter(parent_id_column, ids_filtered)?)
 }

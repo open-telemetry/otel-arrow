@@ -127,8 +127,18 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                             })?
                     }
                     SignalType::Traces => {
-                        // ToDo: Add support for traces
-                        arrow_records
+                        self.config
+                            .span_filters()
+                            .filter(arrow_records)
+                            .map_err(|e| {
+                                let source_detail = format_error_sources(&e);
+                                Error::ProcessorError {
+                                    processor: effect_handler.processor_id(),
+                                    kind: ProcessorErrorKind::Other,
+                                    error: format!("Filter error: {e}"),
+                                    source_detail,
+                                }
+                            })?
                     }
                 };
                 effect_handler

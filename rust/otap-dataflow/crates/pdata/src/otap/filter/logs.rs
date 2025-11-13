@@ -171,8 +171,6 @@ impl LogFilter {
 
     /// this function takes the filters for each record batch and makes sure that incomplete
     /// returns the cleaned up filters that can be immediately applied on the record batches
-    /// ToDo: RecordBatches that are optional and not present will result in the corresponding filter being returned as None
-    /// ToDo: Handle edge case where LogRecords don't have attributes are getting through when we want to filter on attributes as well.
     fn sync_up_filters(
         &self,
         logs_payload: &OtapArrowRecords,
