@@ -189,19 +189,19 @@ https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-a
 
 ## Features
 
-- ✅ **Logs only** - Specifically designed for log analytics
+- [x] **Logs only** - Specifically designed for log analytics
 
-- ✅ **Schema mapping** - Flexible OTLP to Azure field mapping
+- [x] **Schema mapping** - Flexible OTLP to Azure field mapping
 
-- ✅ **Gzip compression** - Automatic request compression
+- [x] **Gzip compression** - Automatic request compression
 
-- ✅ **Azure authentication** - Uses Azure SDK credential chain
+- [x] **Azure authentication** - Uses Azure SDK credential chain
 
-- ✅ **Error handling** - Detailed error messages and retry logic
+- [x] **Error handling** - Detailed error messages and retry logic
 
-- ❌ **Metrics** - Not supported (logs only)
+- [ ] **Metrics** - Not supported (logs only)
 
-- ❌ **Traces** - Not supported (logs only)
+- [ ] **Traces** - Not supported (logs only)
 
 ## Troubleshooting
 
