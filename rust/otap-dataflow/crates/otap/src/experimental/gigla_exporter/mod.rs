@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! GigLA (Geneva Infrastructure General-purpose Logging Analytics) exporter for OTAP.
 
 use linkme::distributed_slice;

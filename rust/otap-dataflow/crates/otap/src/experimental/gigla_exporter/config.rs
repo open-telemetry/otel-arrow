@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;

@@ -136,6 +136,7 @@ The GigLA exporter provides flexible schema mapping to transform OTLP data
 structures into Azure Log Analytics table format:
 
 ### Resource Mapping
+
 Maps OpenTelemetry resource attributes to Azure fields:
 
 ```yaml
@@ -144,7 +145,8 @@ resource_mapping:
   "host.name": "MachineName"         # Maps host.name → MachineName
 ```
 
-### Scope Mapping  
+### Scope Mapping
+
 Maps OpenTelemetry instrumentation scope to Azure fields:
 
 ```yaml
@@ -154,6 +156,7 @@ scope_mapping:
 ```
 
 ### Log Record Mapping
+
 Maps OTLP log record fields to Azure columns:
 
 ```yaml
@@ -180,7 +183,9 @@ Before using the GigLA exporter, you need to set up Azure Log Analytics:
 
 Example DCR endpoint:
 
+```text
 https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-abc123def456/streams/Custom-MyLogTable_CL
+```
 
 ## Features
 
