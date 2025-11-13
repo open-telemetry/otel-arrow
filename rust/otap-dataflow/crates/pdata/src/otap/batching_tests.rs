@@ -230,7 +230,7 @@ fn test_batching(inputs_otlp: Vec<OtlpProtoMessage>, max_output_batch: Option<No
             let batch_len = output.batch_length();
             assert!(
                 batch_len <= max_batch.get() as usize,
-                "Output batch {} length {} exceeds limit {}",
+                "batch {} length {} exceeds limit {}",
                 i,
                 batch_len,
                 max_batch
@@ -241,6 +241,14 @@ fn test_batching(inputs_otlp: Vec<OtlpProtoMessage>, max_output_batch: Option<No
     // Check OTLP equivalence
     assert_equivalent(&inputs_otlp, &outputs_otlp);
 }
+
+// Note: the tests below are quite simple, all they do is repeat
+// similar data N times, but with a very fixed subset of the OTLP
+// model: no attributes, no scope, just varying item counts.
+//
+// We envision extending this to more synthetic and corner-case data
+// in a future PR. The test_batching function makes a good entry point
+// for fuzz testing.
 
 #[test]
 fn test_simple_split_logs() {
