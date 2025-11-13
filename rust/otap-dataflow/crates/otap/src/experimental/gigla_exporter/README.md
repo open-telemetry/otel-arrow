@@ -141,8 +141,8 @@ Maps OpenTelemetry resource attributes to Azure fields:
 
 ```yaml
 resource_mapping:
-  "service.name": "ServiceName"      # Maps service.name → ServiceName
-  "host.name": "MachineName"         # Maps host.name → MachineName
+  "service.name": "ServiceName"      # Maps service.name to ServiceName
+  "host.name": "MachineName"         # Maps host.name to MachineName
 ```
 
 ### Scope Mapping
@@ -161,10 +161,10 @@ Maps OTLP log record fields to Azure columns:
 
 ```yaml
 log_record_mapping:
-  "body": "Message"                  # Log body → Message column
-  "time_unix_nano": "TimeGenerated"  # Timestamp → TimeGenerated
-  "severity_text": "Level"          # Severity → Level column
-  "trace_id": "TraceId"              # Trace ID → TraceId column
+  "body": "Message"                  # Log body to Message column
+  "time_unix_nano": "TimeGenerated"  # Timestamp to TimeGenerated
+  "severity_text": "Level"           # Severity to Level column
+  "trace_id": "TraceId"              # Trace ID to TraceId column
   "attributes":                      # Nested attribute mapping
     "user.id": "UserId"              # Specific attribute mapping
 ```
