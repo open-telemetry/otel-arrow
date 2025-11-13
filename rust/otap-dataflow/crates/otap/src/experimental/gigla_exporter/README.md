@@ -2,7 +2,10 @@
 
 **Status:** ALPHA (Functional - supports logs only)
 
-The GigLA (Geneva Infrastructure General-purpose Logging Analytics) Exporter sends OpenTelemetry logs to Azure Log Analytics using the Data Collection Rules (DCR) API. It transforms OTLP log data into the format expected by Azure Log Analytics and provides configurable schema mapping for custom log tables.
+The GigLA (Geneva Infrastructure General-purpose Logging Analytics) Exporter
+sends OpenTelemetry logs to Azure Log Analytics using the Data Collection Rules
+(DCR) API. It transforms OTLP log data into the format expected by Azure Log
+Analytics and provides configurable schema mapping for custom log tables.
 
 ## Build df_engine with GigLA Exporter
 
@@ -22,7 +25,8 @@ You should see `urn:otel:gigla:exporter` in the Exporters list.
 
 ## Configuration
 
-The GigLA exporter requires Azure authentication and Data Collection Rule configuration:
+The GigLA exporter requires Azure authentication and Data Collection Rule
+configuration:
 
 ### Basic Configuration
 
@@ -70,9 +74,14 @@ nodes:
 ### Authentication
 
 The exporter uses Azure SDK authentication with the following precedence:
-1. Environment variables (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`)
+
+1. Environment variables (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, 
+`AZURE_TENANT_ID`)
+
 2. Managed Identity (when running in Azure)
+
 3. Azure CLI credentials
+
 4. Visual Studio Code credentials
 
 ## Usage
@@ -123,7 +132,8 @@ grpcurl -plaintext \
 
 ## Schema Mapping
 
-The GigLA exporter provides flexible schema mapping to transform OTLP data structures into Azure Log Analytics table format:
+The GigLA exporter provides flexible schema mapping to transform OTLP data
+structures into Azure Log Analytics table format:
 
 ### Resource Mapping
 Maps OpenTelemetry resource attributes to Azure fields:
@@ -158,8 +168,11 @@ log_record_mapping:
 Before using the GigLA exporter, you need to set up Azure Log Analytics:
 
 1. **Create a Log Analytics Workspace**
+
 2. **Create a Data Collection Rule (DCR)** with a custom log table
+
 3. **Configure authentication** (service principal or managed identity)
+
 4. **Get the DCR endpoint URL** from the Azure portal
 
 Example DCR endpoint:
@@ -170,28 +183,43 @@ https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-a
 ## Features
 
 - ✅ **Logs only** - Specifically designed for log analytics
+
 - ✅ **Schema mapping** - Flexible OTLP to Azure field mapping
+
 - ✅ **Gzip compression** - Automatic request compression
+
 - ✅ **Azure authentication** - Uses Azure SDK credential chain
+
 - ✅ **Error handling** - Detailed error messages and retry logic
+
 - ❌ **Metrics** - Not supported (logs only)
+
 - ❌ **Traces** - Not supported (logs only)
 
 ## Troubleshooting
 
 ### Authentication Issues
+
 - Ensure Azure credentials are properly configured
+
 - Check that the service principal has Log Analytics Contributor role
+
 - Verify the scope URL is correct for your Azure environment
 
 ### Data Collection Issues
+
 - Confirm the DCR endpoint URL is correct
+
 - Verify the stream name matches your custom log table
+
 - Check that schema mappings align with your table structure
 
 ### Performance
+
 - Use multiple cores (`--num-cores`) for higher throughput
+
 - Consider adjusting compression settings for large payloads
+
 - Monitor Azure Log Analytics ingestion limits
 
 ## License
