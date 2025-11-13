@@ -6,9 +6,10 @@
 //! the thread-per-core runtime without requiring `Send + Sync` futures.
 //!
 //! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
-//  ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
-//  ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
-//  ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
+//! ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
+//! ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
+//! ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
+//! ToDo Add support for Unix domain sockets as a transport option.
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
