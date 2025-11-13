@@ -297,3 +297,97 @@ pub fn assert_metrics_equivalent(left: &[MetricsData], right: &[MetricsData]) {
         "MetricsData",
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::resource::v1::Resource;
+
+    #[test]
+    fn test_metrics_equivalent_with_unordered_attributes() {
+        // Test that metrics with attributes in different orders are considered equivalent
+        let request1 = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![
+                        KeyValue::new("service", AnyValue::new_string("test")),
+                        KeyValue::new("version", AnyValue::new_string("1.0")),
+                    ],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope {
+                        name: "scope1".into(),
+                        attributes: vec![
+                            KeyValue::new("scope.key1", AnyValue::new_string("value1")),
+                            KeyValue::new("scope.key2", AnyValue::new_int(42)),
+                        ],
+                        ..Default::default()
+                    }),
+                    metrics: vec![Metric {
+                        name: "test-metric".into(),
+                        description: "A test metric".into(),
+                        unit: "ms".into(),
+                        data: Some(metric::Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                attributes: vec![
+                                    KeyValue::new("key1", AnyValue::new_string("value1")),
+                                    KeyValue::new("key2", AnyValue::new_int(100)),
+                                ],
+                                time_unix_nano: 1000,
+                                ..Default::default()
+                            }],
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        // Same data but with all attributes in different order
+        let request2 = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![
+                        KeyValue::new("version", AnyValue::new_string("1.0")),
+                        KeyValue::new("service", AnyValue::new_string("test")),
+                    ],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope {
+                        name: "scope1".into(),
+                        attributes: vec![
+                            KeyValue::new("scope.key2", AnyValue::new_int(42)),
+                            KeyValue::new("scope.key1", AnyValue::new_string("value1")),
+                        ],
+                        ..Default::default()
+                    }),
+                    metrics: vec![Metric {
+                        name: "test-metric".into(),
+                        description: "A test metric".into(),
+                        unit: "ms".into(),
+                        data: Some(metric::Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                attributes: vec![
+                                    KeyValue::new("key2", AnyValue::new_int(100)),
+                                    KeyValue::new("key1", AnyValue::new_string("value1")),
+                                ],
+                                time_unix_nano: 1000,
+                                ..Default::default()
+                            }],
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        assert_metrics_equivalent(&[request1], &[request2]);
+    }
+}
