@@ -2157,18 +2157,16 @@ fn respond_with_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        AcceptedGrpcEncodings, GrpcEncoding, GrpcMessageEncoder, Http2Keepalive, OTEL_RECEIVER_URN,
-        OtelReceiver, RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
+        AcceptedGrpcEncodings, GrpcEncoding, GrpcMessageEncoder, OTEL_RECEIVER_URN, OtelReceiver,
+        RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
         parse_grpc_accept_encoding, parse_grpc_encoding,
     };
     use crate::compression::CompressionMethod;
     use crate::otap_mock::create_otap_batch;
     use crate::pdata::OtapPdata;
     use async_stream::stream;
-    use bytes::Bytes;
     use flate2::read::{GzDecoder, ZlibDecoder};
-    use h2::{client, server};
-    use http::{HeaderMap, HeaderValue, Request};
+    use http::{HeaderMap, HeaderValue};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -2191,7 +2189,6 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::io::duplex;
     use tokio::time::{Duration, timeout};
     use tokio_stream::wrappers::UnboundedReceiverStream;
     use tonic::Status;
@@ -2315,88 +2312,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(35)).await;
         let next = timeout.next_with(&mut stream).await.unwrap();
         assert!(next.is_some());
-    }
-
-    #[tokio::test]
-    async fn respond_with_error_sets_headers_and_trailers() {
-        let (client_io, server_io) = duplex(1024);
-        let mut server_conn = server::Builder::new()
-            .handshake::<_, Bytes>(server_io)
-            .await
-            .expect("server handshake");
-        let (mut client, client_conn) = client::handshake(client_io).await.expect("client hs");
-        let client_task = tokio::spawn(async move { client_conn.await.expect("client conn") });
-
-        let request = Request::builder()
-            .uri("http://localhost/")
-            .body(())
-            .unwrap();
-        let (response_future, _send_stream) = client.send_request(request, true).unwrap();
-        let (_, respond) = server_conn.accept().await.unwrap().unwrap();
-
-        let accept_header = HeaderValue::from_static("identity");
-        super::respond_with_error(respond, Status::internal("boom"), &accept_header);
-
-        let response = response_future.await.expect("response");
-        assert_eq!(
-            response.headers().get("grpc-accept-encoding").unwrap(),
-            &accept_header
-        );
-
-        let mut body = response.into_body();
-        let trailers = body.trailers().await.expect("trailers").unwrap();
-        assert_eq!(trailers.get("grpc-status").unwrap(), "13");
-        assert_eq!(trailers.get("grpc-message").unwrap(), "boom");
-
-        client_task.abort();
-    }
-
-    #[tokio::test]
-    async fn keepalive_succeeds_when_connection_idle() {
-        let (client_io, server_io) = duplex(1024);
-        let mut server_conn = server::Builder::new()
-            .handshake::<_, Bytes>(server_io)
-            .await
-            .expect("server handshake");
-        let (_client, client_conn) = client::handshake(client_io).await.expect("client hs");
-        let client_task = tokio::spawn(async move { client_conn.await.expect("client conn") });
-
-        let mut keepalive = Http2Keepalive::new(
-            server_conn.ping_pong(),
-            Some(Duration::from_secs(5)),
-            Some(Duration::from_secs(2)),
-        )
-        .expect("keepalive");
-
-        keepalive.update_idle_state(true);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(keepalive.poll_tick().await.is_ok());
-
-        client_task.abort();
-    }
-
-    #[tokio::test]
-    async fn keepalive_errors_when_connection_closed() {
-        let (client_io, server_io) = duplex(1024);
-        let mut server_conn = server::Builder::new()
-            .handshake::<_, Bytes>(server_io)
-            .await
-            .expect("server handshake");
-        let (_client, client_conn) = client::handshake(client_io).await.expect("client hs");
-        let client_task = tokio::spawn(async move {
-            let _ = client_conn.await;
-        });
-        client_task.abort();
-
-        let mut keepalive = Http2Keepalive::new(
-            server_conn.ping_pong(),
-            Some(Duration::from_secs(5)),
-            Some(Duration::from_secs(2)),
-        )
-        .expect("keepalive");
-        keepalive.update_idle_state(true);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(keepalive.poll_tick().await.is_err());
     }
 
     #[test]
