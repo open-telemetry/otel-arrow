@@ -56,18 +56,18 @@ nodes:
             "trace_id": "TraceId"
             "span_id": "SpanId"
           disable_schema_mapping: false
-      
+
       # Authentication configuration for AKS
       auth:
         # Use managed identity for AKS workloads
         method: "managedidentity"  # or "msi"
-        
+
         # For user-assigned managed identity (common in AKS)
         # Get this from your AKS managed identity configuration
         client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
-        
+
         # For system-assigned managed identity (less common in AKS)
         # Comment out the client_id field above
-        
+
         # OAuth scope for Azure Monitor
         scope: "https://monitor.azure.com/.default"
