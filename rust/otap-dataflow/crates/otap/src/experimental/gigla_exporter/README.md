@@ -62,11 +62,11 @@ nodes:
             "attributes":
               "message": "ParsedMessage"
           disable_schema_mapping: false
-      
+
       # Authentication configuration (uses Azure SDK defaults)
       auth:
         scope: "https://monitor.azure.com/.default"
-      
+
       # Optional: Disable export for testing
       disable_gig_export: false
 ```
