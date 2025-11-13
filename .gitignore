@@ -64,3 +64,9 @@ collector/cmd/otelarrowcol/otelarrowcol
 tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
 
 venv
+
+# Rust Analyzer
+target/rust-analyzer/
+
+# .git folder
+.git

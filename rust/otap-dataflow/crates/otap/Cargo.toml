@@ -63,13 +63,29 @@ zip.workspace = true
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.3.0", optional = true }
-opentelemetry-proto = { workspace = true, optional = true }
+
+# GigLA exporter dependencies
+azure_identity = { version = "0.29.0", optional = true }
+flate2 = { version = "1.1.5", optional = true }
+reqwest = { version = "0.12.24", optional = true }
+azure_core = { version = "0.29.1", optional = true }
+
+# OpenTelemetry proto with tonic feature enabled
+opentelemetry-proto = { workspace = true, features = ["tonic"], optional = true }
 
 [features]
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
+gigla-exporter = [
+    "experimental-exporters", 
+    "dep:opentelemetry-proto",
+    "dep:azure_identity",
+    "dep:flate2",
+    "dep:reqwest",
+    "dep:azure_core"
+]
 
 [dev-dependencies]
 flume = { workspace = true }
