@@ -26,6 +26,7 @@ use futures::future::{LocalBoxFuture, poll_fn};
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
 use h2::server::{self, SendResponse};
+use h2::{Ping, PingPong};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -52,6 +53,7 @@ use serde::Deserialize;
 use smallvec::smallvec;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fmt;
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
@@ -63,6 +65,7 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
+use tokio::time::{sleep, Sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
@@ -311,11 +314,22 @@ async fn run_grpc_server(
                             AdmitDecision::Admitted(conn_guard) => {
                                 let h2_builder = h2_builder.clone();
                                 let router = Rc::clone(&arrow_router);
+                                let keepalive_interval = grpc_config.http2_keepalive_interval;
+                                let keepalive_timeout = grpc_config.http2_keepalive_timeout;
 
                                 // Hold `conn_guard` inside the task for the connection lifetime.
                                 // Ignore the AbortHandler for now.
                                 _ = tcp_conn_tasks.spawn_local(async move {
-                                    if let Err(err) = handle_tcp_conn(tcp_conn, h2_builder, router, conn_guard).await {
+                                    if let Err(err) = handle_tcp_conn(
+                                        tcp_conn,
+                                        h2_builder,
+                                        router,
+                                        conn_guard,
+                                        keepalive_interval,
+                                        keepalive_timeout,
+                                    )
+                                    .await
+                                    {
                                         if log::log_enabled!(log::Level::Debug) {
                                             log::debug!("H2 connection ended with error: {err}");
                                         }
@@ -381,17 +395,31 @@ async fn handle_tcp_conn(
     router: Rc<ArrowRouter>,
     // IMPORTANT: this keeps one connection slot while the connection is alive.
     tcp_conn_guard: ConnectionGuard,
+    keepalive_interval: Option<Duration>,
+    keepalive_timeout: Option<Duration>,
 ) -> Result<(), h2::Error> {
     // HTTP/2 handshake
     let mut http2_conn = builder.handshake(socket).await?;
     if log::log_enabled!(log::Level::Trace) {
         log::trace!("H2 handshake established");
     }
+    let mut keepalive = Http2Keepalive::new(
+        http2_conn.ping_pong(),
+        keepalive_interval,
+        keepalive_timeout,
+    );
 
     let mut stream_tasks: JoinSet<()> = JoinSet::new();
     let mut accepting = true;
 
     loop {
+        if let Some(ka) = keepalive.as_mut() {
+            ka.update_idle_state(stream_tasks.is_empty());
+        }
+        let keepalive_armed = keepalive
+            .as_ref()
+            .is_some_and(Http2Keepalive::is_armed);
+
         tokio::select! {
             // Accept next H2 stream while accepting
             result = http2_conn.accept(), if accepting => {
@@ -450,6 +478,24 @@ async fn handle_tcp_conn(
                     }
                 }
             }
+
+            keepalive_result = async {
+                if let Some(ka) = keepalive.as_mut() {
+                    ka.poll_tick().await
+                } else {
+                    unreachable!("keepalive polled without being armed");
+                }
+            }, if keepalive_armed => {
+                match keepalive_result {
+                    Ok(()) => {}
+                    Err(err) => {
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("H2 keepalive failed: {err}");
+                        }
+                        break;
+                    }
+                }
+            }
         }
 
         // Exit when no more streams will arrive and all tasks are done
@@ -468,6 +514,77 @@ async fn handle_tcp_conn(
     }
 
     Ok(())
+}
+
+struct Http2Keepalive {
+    ping_pong: PingPong,
+    interval: Duration,
+    timeout: Duration,
+    sleep: Option<Pin<Box<Sleep>>>,
+}
+
+impl Http2Keepalive {
+    fn new(
+        ping_pong: Option<PingPong>,
+        interval: Option<Duration>,
+        timeout: Option<Duration>,
+    ) -> Option<Self> {
+        let (ping_pong, interval, timeout) = match (ping_pong, interval, timeout) {
+            (Some(ping_pong), Some(interval), Some(timeout)) if !interval.is_zero() => {
+                (ping_pong, interval, timeout)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            ping_pong,
+            interval,
+            timeout,
+            sleep: None,
+        })
+    }
+
+    fn update_idle_state(&mut self, idle: bool) {
+        if idle {
+            if self.sleep.is_none() {
+                self.sleep = Some(Box::pin(sleep(self.interval)));
+            }
+        } else if self.sleep.is_some() {
+            self.sleep = None;
+        }
+    }
+
+    fn is_armed(&self) -> bool {
+        self.sleep.is_some()
+    }
+
+    async fn poll_tick(&mut self) -> Result<(), Http2KeepaliveError> {
+        let mut sleeper = self
+            .sleep
+            .take()
+            .expect("keepalive polled without being armed");
+        sleeper.as_mut().await;
+        self.sleep = Some(Box::pin(sleep(self.interval)));
+
+        match tokio::time::timeout(self.timeout, self.ping_pong.ping(Ping::opaque())).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) => Err(Http2KeepaliveError::Ping(err)),
+            Err(_) => Err(Http2KeepaliveError::Timeout),
+        }
+    }
+}
+
+enum Http2KeepaliveError {
+    Timeout,
+    Ping(h2::Error),
+}
+
+impl fmt::Display for Http2KeepaliveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "keepalive timeout waiting for PONG"),
+            Self::Ping(err) => write!(f, "keepalive ping failed: {err}"),
+        }
+    }
 }
 
 struct ArrowRouter {
