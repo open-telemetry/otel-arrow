@@ -244,16 +244,16 @@ fn test_batching(inputs_otlp: Vec<OtlpProtoMessage>, max_output_batch: Option<No
 
 // Note: the tests below are quite simple, all they do is repeat
 // similar data N times, but with a very fixed subset of the OTLP
-// model: no attributes, no scope, just varying item counts.
+// model: no attributes, no scope, only repetition with timestam
+// variation.
 //
 // We envision extending this to more synthetic and corner-case data
-// in a future PR. The test_batching function makes a good entry point
-// for fuzz testing.
+// in a future PR.
 
 #[test]
-fn test_simple_split_logs() {
-    for input_count in 1..=10 {
-        for max_output_batch in 2..=4 {
+fn test_simple_batch_logs() {
+    for input_count in 1..=20 {
+        for max_output_batch in 3..=5 {
             let inputs: Vec<_> = (0..input_count)
                 .map(|i| make_logs_otlp(i * 10000))
                 .collect();
@@ -263,9 +263,9 @@ fn test_simple_split_logs() {
 }
 
 #[test]
-fn test_simple_split_traces() {
-    for input_count in 1..=10 {
-        for max_output_batch in 2..=4 {
+fn test_simple_batch_traces() {
+    for input_count in 1..=20 {
+        for max_output_batch in 3..=5 {
             let inputs: Vec<_> = (0..input_count)
                 .map(|i| make_traces_otlp(i * 10000))
                 .collect();
@@ -275,9 +275,9 @@ fn test_simple_split_traces() {
 }
 
 #[test]
-fn test_simple_split_metrics() {
-    for input_count in 1..=10 {
-        for max_output_batch in 2..=4 {
+fn test_simple_batch_metrics() {
+    for input_count in 1..=20 {
+        for max_output_batch in 3..=5 {
             let inputs: Vec<_> = (0..input_count)
                 .map(|i| make_metrics_otlp(i * 10000))
                 .collect();
