@@ -16,15 +16,12 @@ use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
 use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
 use crate::otap_receiver::OtapReceiverMetrics;
-use ack::{
-    AckRegistries, AckRegistry, AckToken, route_local_ack_response, route_local_nack_response,
-};
+use ack::{AckRegistries, AckRegistry, route_local_ack_response, route_local_nack_response};
 use futures::StreamExt;
 use grpc::{
-    AcceptedGrpcEncodings, BodyStream, BodyStreamError, GrpcEncoding, GrpcMessageEncoder,
-    GrpcStreamingBody, MIN_COMPRESSED_CAPACITY, RequestTimeout, build_accept_encoding_header,
-    grpc_encoding_token, negotiate_response_encoding, parse_grpc_accept_encoding,
-    parse_grpc_encoding,
+    AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
+    build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
+    parse_grpc_accept_encoding, parse_grpc_encoding,
 };
 use stream::stream_batch_statuses;
 
@@ -171,7 +168,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         let request_accept_header = build_accept_encoding_header(&request_encoding_methods);
         let response_methods = config.response_compression_methods();
 
-        let router = Rc::new(ArrowRouter {
+        let router = Rc::new(GrpcRequestRouter {
             effect_handler: effect_handler.clone(),
             logs_ack_registry,
             metrics_ack_registry,
@@ -276,7 +273,7 @@ fn build_h2_builder(settings: &GrpcServerSettings) -> server::Builder {
 async fn run_grpc_server(
     incoming: &mut TcpIncoming,
     grpc_config: Rc<GrpcServerSettings>,
-    arrow_router: Rc<ArrowRouter>,
+    arrow_router: Rc<GrpcRequestRouter>,
     cancel: CancellationToken,
     admitter: Admitter,
 ) -> Result<(), io::Error> {
@@ -383,7 +380,7 @@ async fn run_grpc_server(
 async fn handle_tcp_conn(
     socket: tokio::net::TcpStream,
     builder: server::Builder,
-    router: Rc<ArrowRouter>,
+    router: Rc<GrpcRequestRouter>,
     // IMPORTANT: this keeps one connection slot while the connection is alive.
     tcp_conn_guard: ConnectionGuard,
     keepalive_interval: Option<Duration>,
@@ -576,7 +573,7 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
-struct ArrowRouter {
+struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,
     metrics_ack_registry: Option<AckRegistry>,
@@ -588,7 +585,7 @@ struct ArrowRouter {
     request_timeout: Option<Duration>,
 }
 
-impl ArrowRouter {
+impl GrpcRequestRouter {
     async fn handle_request(
         self: Rc<Self>,
         request: Request<h2::RecvStream>,
@@ -774,14 +771,18 @@ fn respond_with_error(
 mod tests {
     use super::local;
     use super::{
-        AcceptedGrpcEncodings, AckRegistry, AckToken, GrpcEncoding, GrpcMessageEncoder,
-        GrpcStreamingBody, MIN_COMPRESSED_CAPACITY, OTEL_RECEIVER_URN, OtelReceiver,
-        RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
-        parse_grpc_accept_encoding, parse_grpc_encoding, stream_batch_statuses,
+        AcceptedGrpcEncodings, AckRegistry, GrpcMessageEncoder, GrpcStreamingBody,
+        OTEL_RECEIVER_URN, OtelReceiver, RequestTimeout, build_accept_encoding_header,
+        negotiate_response_encoding, parse_grpc_accept_encoding, parse_grpc_encoding,
+        stream_batch_statuses,
     };
     use crate::compression::CompressionMethod;
     use crate::otap_grpc::ArrowRequestStream;
     use crate::otap_mock::create_otap_batch;
+    use crate::otel_receiver::ack::AckToken;
+    use crate::otel_receiver::grpc::{
+        BodyStream, BodyStreamError, GrpcEncoding, MIN_COMPRESSED_CAPACITY,
+    };
     use crate::pdata::OtapPdata;
     use async_stream::stream;
     use async_trait::async_trait;
@@ -1308,15 +1309,15 @@ mod tests {
     }
 
     #[async_trait]
-    impl super::BodyStream for MockRecvStream {
-        async fn next_chunk(&mut self) -> Option<Result<Bytes, super::BodyStreamError>> {
+    impl BodyStream for MockRecvStream {
+        async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>> {
             yield_now().await;
             self.chunks
                 .pop_front()
                 .map(|res| res.map_err(|err| err.to_string()))
         }
 
-        fn release_capacity(&mut self, released: usize) -> Result<(), super::BodyStreamError> {
+        fn release_capacity(&mut self, released: usize) -> Result<(), BodyStreamError> {
             if let Ok(mut state) = self.state.lock() {
                 state.released_bytes += released;
             }

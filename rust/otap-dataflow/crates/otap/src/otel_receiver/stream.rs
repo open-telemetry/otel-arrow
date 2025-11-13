@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::ack::{
-    AckRegistry, AckToken, LocalPollResult, local_nack_status, local_overloaded_status,
-    local_success_status,
+    AckPollResult, AckRegistry, AckToken, nack_status, overloaded_status, success_status,
 };
 use crate::otap_grpc::ArrowRequestStream;
 use crate::pdata::{Context, OtapPdata};
@@ -28,40 +27,40 @@ pub(crate) fn stream_batch_statuses<S, T, F>(
     ack_registry: Option<AckRegistry>,
     otap_batch: F,
     max_in_flight_per_connection: usize,
-) -> ArrowBatchStatusStream<S, T, F>
+) -> StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
-    let state = ArrowBatchStreamState::new(
+    let state = StatusStreamState::new(
         input_stream,
         effect_handler,
         ack_registry,
         otap_batch,
         max_in_flight_per_connection,
     );
-    ArrowBatchStatusStream::new(state)
+    StatusStream::new(state)
 }
 
-pub(crate) struct ArrowBatchStatusStream<S, T, F>
+pub(crate) struct StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
-    state: Option<ArrowBatchStreamState<S, T, F>>,
-    pending: Option<LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)>>,
+    state: Option<StatusStreamState<S, T, F>>,
+    pending: Option<LocalBoxFuture<'static, (StatusStreamState<S, T, F>, StreamStep)>>,
     finished: bool,
 }
 
-impl<S, T, F> ArrowBatchStatusStream<S, T, F>
+impl<S, T, F> StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
-    fn new(state: ArrowBatchStreamState<S, T, F>) -> Self {
+    fn new(state: StatusStreamState<S, T, F>) -> Self {
         Self {
             state: Some(state),
             pending: None,
@@ -70,8 +69,8 @@ where
     }
 
     fn drive_next(
-        state: ArrowBatchStreamState<S, T, F>,
-    ) -> LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)> {
+        state: StatusStreamState<S, T, F>,
+    ) -> LocalBoxFuture<'static, (StatusStreamState<S, T, F>, StreamStep)> {
         Box::pin(async move {
             let mut state = state;
             let step = state.next_item().await;
@@ -80,7 +79,7 @@ where
     }
 }
 
-impl<S, T, F> Stream for ArrowBatchStatusStream<S, T, F>
+impl<S, T, F> Stream for StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
@@ -132,7 +131,7 @@ where
     }
 }
 
-struct ArrowBatchStreamState<S, T, F>
+struct StatusStreamState<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
@@ -143,7 +142,7 @@ where
     effect_handler: local::EffectHandler<OtapPdata>,
     state: Option<AckRegistry>,
     otap_batch: F,
-    in_flight: LocalFutureSet<LocalAckWaitFuture>,
+    in_flight: InFlightSet<AckWaitFuture>,
     max_in_flight: usize,
     finished: bool,
     _marker: PhantomData<fn() -> T>,
@@ -159,7 +158,7 @@ enum PreparedBatch {
     Immediate(StreamStep),
 }
 
-impl<S, T, F> ArrowBatchStreamState<S, T, F>
+impl<S, T, F> StatusStreamState<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
     T: OtapBatchStore + 'static,
@@ -178,7 +177,7 @@ where
             effect_handler,
             state,
             otap_batch,
-            in_flight: LocalFutureSet::with_capacity(max_in_flight_per_connection.max(1)),
+            in_flight: InFlightSet::with_capacity(max_in_flight_per_connection.max(1)),
             max_in_flight: max_in_flight_per_connection.max(1),
             finished: false,
             _marker: PhantomData,
@@ -242,9 +241,9 @@ where
             match state.allocate() {
                 None => {
                     error!("Too many concurrent requests");
-                    return PreparedBatch::Immediate(StreamStep::Yield(Ok(
-                        local_overloaded_status(batch_id),
-                    )));
+                    return PreparedBatch::Immediate(StreamStep::Yield(Ok(overloaded_status(
+                        batch_id,
+                    ))));
                 }
                 Some(token) => {
                     self.effect_handler.subscribe_to(
@@ -268,26 +267,26 @@ where
         if let Some((state, token)) = wait_token {
             if let Err(_future) = self
                 .in_flight
-                .push(LocalAckWaitFuture::new(batch_id, token, state))
+                .push(AckWaitFuture::new(batch_id, token, state))
             {
                 error!("In-flight future set unexpectedly full");
-                return PreparedBatch::Immediate(StreamStep::Yield(Ok(local_overloaded_status(
+                return PreparedBatch::Immediate(StreamStep::Yield(Ok(overloaded_status(
                     batch_id,
                 ))));
             }
             PreparedBatch::Enqueued
         } else {
-            PreparedBatch::Immediate(StreamStep::Yield(Ok(local_success_status(batch_id))))
+            PreparedBatch::Immediate(StreamStep::Yield(Ok(success_status(batch_id))))
         }
     }
 }
 
-struct LocalFutureSet<F> {
+struct InFlightSet<F> {
     futures: FuturesUnordered<F>,
     capacity: usize,
 }
 
-impl<F> LocalFutureSet<F> {
+impl<F> InFlightSet<F> {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             futures: FuturesUnordered::new(),
@@ -316,14 +315,14 @@ impl<F> LocalFutureSet<F> {
     }
 }
 
-struct LocalAckWaitFuture {
+struct AckWaitFuture {
     batch_id: i64,
     token: AckToken,
     state: AckRegistry,
     completed: bool,
 }
 
-impl LocalAckWaitFuture {
+impl AckWaitFuture {
     fn new(batch_id: i64, token: AckToken, state: AckRegistry) -> Self {
         Self {
             batch_id,
@@ -334,25 +333,22 @@ impl LocalAckWaitFuture {
     }
 }
 
-impl Future for LocalAckWaitFuture {
+impl Future for AckWaitFuture {
     type Output = StreamStep;
 
     fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.state.poll_slot(this.token, cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(LocalPollResult::Ack) => {
+            Poll::Ready(AckPollResult::Ack) => {
                 this.completed = true;
-                Poll::Ready(StreamStep::Yield(Ok(local_success_status(this.batch_id))))
+                Poll::Ready(StreamStep::Yield(Ok(success_status(this.batch_id))))
             }
-            Poll::Ready(LocalPollResult::Nack(reason)) => {
+            Poll::Ready(AckPollResult::Nack(reason)) => {
                 this.completed = true;
-                Poll::Ready(StreamStep::Yield(Ok(local_nack_status(
-                    this.batch_id,
-                    reason,
-                ))))
+                Poll::Ready(StreamStep::Yield(Ok(nack_status(this.batch_id, reason))))
             }
-            Poll::Ready(LocalPollResult::Cancelled) => {
+            Poll::Ready(AckPollResult::Cancelled) => {
                 this.completed = true;
                 Poll::Ready(StreamStep::Done)
             }
@@ -360,7 +356,7 @@ impl Future for LocalAckWaitFuture {
     }
 }
 
-impl Drop for LocalAckWaitFuture {
+impl Drop for AckWaitFuture {
     fn drop(&mut self) {
         if !self.completed {
             self.state.cancel(self.token);

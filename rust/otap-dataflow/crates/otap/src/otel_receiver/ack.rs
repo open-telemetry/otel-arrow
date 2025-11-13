@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Ack/Nack bookkeeping for the experimental OTEL receiver.
+//!
+//! The code in this module owns the `AckRegistry` and related helpers that turn
+//! pipeline notifications back into OTAP `BatchStatus` responses. Keeping the
+//! state machine isolated here lets the higher-level router focus purely on gRPC
+//! transport concerns while this module tracks slot lifetimes, wakeups, and
+//! status message formatting.
+
 use crate::otap_grpc::otlp::server::RouteResponse;
 use crate::pdata::OtapPdata;
 use otap_df_config::SignalType;
@@ -12,7 +20,7 @@ use std::mem;
 use std::rc::Rc;
 use std::task::{Context as TaskContext, Poll, Waker};
 
-pub(crate) enum LocalPollResult {
+pub(crate) enum AckPollResult {
     Ack,
     Nack(String),
     Cancelled,
@@ -86,13 +94,13 @@ impl AckRegistry {
         &self,
         token: AckToken,
         cx: &mut TaskContext<'_>,
-    ) -> Poll<LocalPollResult> {
+    ) -> Poll<AckPollResult> {
         let mut inner = self.inner.borrow_mut();
         let Some(slot) = inner.slots.get_mut(token.slot_index) else {
-            return Poll::Ready(LocalPollResult::Cancelled);
+            return Poll::Ready(AckPollResult::Cancelled);
         };
         if slot.generation != token.generation {
-            return Poll::Ready(LocalPollResult::Cancelled);
+            return Poll::Ready(AckPollResult::Cancelled);
         }
         match &mut slot.state {
             SlotState::Waiting(waiting) => match &mut waiting.outcome {
@@ -109,16 +117,16 @@ impl AckRegistry {
                 AckOutcome::Ack => {
                     slot.state = SlotState::Free;
                     inner.free_stack.push(token.slot_index);
-                    Poll::Ready(LocalPollResult::Ack)
+                    Poll::Ready(AckPollResult::Ack)
                 }
                 AckOutcome::Nack(reason) => {
                     let reason = mem::take(reason);
                     slot.state = SlotState::Free;
                     inner.free_stack.push(token.slot_index);
-                    Poll::Ready(LocalPollResult::Nack(reason))
+                    Poll::Ready(AckPollResult::Nack(reason))
                 }
             },
-            SlotState::Free => Poll::Ready(LocalPollResult::Cancelled),
+            SlotState::Free => Poll::Ready(AckPollResult::Cancelled),
         }
     }
 
@@ -257,7 +265,7 @@ pub(crate) fn route_local_nack_response(
         .unwrap_or(RouteResponse::None)
 }
 
-pub(crate) fn local_success_status(batch_id: i64) -> BatchStatus {
+pub(crate) fn success_status(batch_id: i64) -> BatchStatus {
     BatchStatus {
         batch_id,
         status_code: ProtoStatusCode::Ok as i32,
@@ -265,7 +273,7 @@ pub(crate) fn local_success_status(batch_id: i64) -> BatchStatus {
     }
 }
 
-pub(crate) fn local_nack_status(batch_id: i64, reason: String) -> BatchStatus {
+pub(crate) fn nack_status(batch_id: i64, reason: String) -> BatchStatus {
     BatchStatus {
         batch_id,
         status_code: ProtoStatusCode::Unavailable as i32,
@@ -273,7 +281,7 @@ pub(crate) fn local_nack_status(batch_id: i64, reason: String) -> BatchStatus {
     }
 }
 
-pub(crate) fn local_overloaded_status(batch_id: i64) -> BatchStatus {
+pub(crate) fn overloaded_status(batch_id: i64) -> BatchStatus {
     BatchStatus {
         batch_id,
         status_code: ProtoStatusCode::Unavailable as i32,
