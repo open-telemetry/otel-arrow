@@ -922,7 +922,7 @@ fn negotiate_response_encoding(
     GrpcEncoding::Identity
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum GrpcEncoding {
     Identity,
     Zstd,
@@ -1022,8 +1022,43 @@ fn grpc_encoding_token(encoding: GrpcEncoding) -> Option<&'static str> {
     }
 }
 
-struct GrpcStreamingBody {
-    recv: h2::RecvStream,
+type BodyStreamError = String;
+
+#[async_trait]
+trait BodyStream: Send {
+    async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>>;
+    fn release_capacity(&mut self, released: usize) -> Result<(), BodyStreamError>;
+}
+
+struct H2BodyStream {
+    inner: h2::RecvStream,
+}
+
+impl H2BodyStream {
+    fn new(inner: h2::RecvStream) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl BodyStream for H2BodyStream {
+    async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>> {
+        self.inner
+            .data()
+            .await
+            .map(|res| res.map_err(|err| err.to_string()))
+    }
+
+    fn release_capacity(&mut self, released: usize) -> Result<(), BodyStreamError> {
+        self.inner
+            .flow_control()
+            .release_capacity(released)
+            .map_err(|err| err.to_string())
+    }
+}
+
+struct GrpcStreamingBody<S = H2BodyStream> {
+    recv: S,
     buffer: ChunkBuffer,
     current_frame: Option<FrameHeader>,
     finished: bool,
@@ -1151,8 +1186,17 @@ impl Buf for FrameBuf {
     }
 }
 
-impl GrpcStreamingBody {
+impl GrpcStreamingBody<H2BodyStream> {
     fn new(recv: h2::RecvStream, encoding: GrpcEncoding) -> Self {
+        Self::with_stream(H2BodyStream::new(recv), encoding)
+    }
+}
+
+impl<S> GrpcStreamingBody<S>
+where
+    S: BodyStream,
+{
+    fn with_stream(recv: S, encoding: GrpcEncoding) -> Self {
         Self {
             recv,
             buffer: ChunkBuffer::new(),
@@ -1168,16 +1212,16 @@ impl GrpcStreamingBody {
         if self.finished {
             return Ok(());
         }
-        match self.recv.data().await {
+        match self.recv.next_chunk().await {
             Some(Ok(bytes)) => {
                 let chunk_len = bytes.len();
                 self.buffer.push(bytes);
-                if let Err(err) = self.recv.flow_control().release_capacity(chunk_len) {
+                if let Err(err) = self.recv.release_capacity(chunk_len) {
                     log::debug!("release_capacity failed: {err}");
                 }
                 Ok(())
             }
-            Some(Err(err)) => Err(Status::internal(format!("h2 error: {err}"))),
+            Some(Err(err)) => Err(Status::internal(format!("stream error: {err}"))),
             None => {
                 self.finished = true;
                 Ok(())
@@ -1293,7 +1337,10 @@ impl GrpcStreamingBody {
 }
 
 #[async_trait]
-impl ArrowRequestStream for GrpcStreamingBody {
+impl<S> ArrowRequestStream for GrpcStreamingBody<S>
+where
+    S: BodyStream + Unpin + 'static,
+{
     async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
         loop {
             if self.current_frame.is_none() {
@@ -2157,28 +2204,29 @@ fn respond_with_error(
 
 #[cfg(test)]
 mod tests {
+    use super::local;
     use super::{
         AcceptedGrpcEncodings, AckRegistry, AckToken, GrpcEncoding, GrpcMessageEncoder,
-        OTEL_RECEIVER_URN, OtelReceiver, RequestTimeout, build_accept_encoding_header,
-        negotiate_response_encoding, parse_grpc_accept_encoding, parse_grpc_encoding,
-        stream_batch_statuses,
+        GrpcStreamingBody, MIN_COMPRESSED_CAPACITY, OTEL_RECEIVER_URN, OtelReceiver,
+        RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
+        parse_grpc_accept_encoding, parse_grpc_encoding, stream_batch_statuses,
     };
-    use super::local;
     use crate::compression::CompressionMethod;
     use crate::otap_grpc::ArrowRequestStream;
     use crate::otap_mock::create_otap_batch;
     use crate::pdata::OtapPdata;
-    use async_trait::async_trait;
     use async_stream::stream;
+    use async_trait::async_trait;
+    use bytes::{BufMut, Bytes, BytesMut};
+    use flate2::Compression;
     use flate2::read::{GzDecoder, ZlibDecoder};
+    use flate2::write::{GzEncoder, ZlibEncoder};
     use futures::StreamExt;
     use http::{HeaderMap, HeaderValue};
     use otap_df_channel::mpsc;
     use otap_df_config::PortName;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::{
-        AckMsg, NackMsg, NodeControlMsg, pipeline_ctrl_msg_channel,
-    };
+    use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -2195,17 +2243,20 @@ mod tests {
     };
     use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message as _;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::future::Future;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
     use tokio::task::yield_now;
     use tokio::time::{Duration, timeout};
     use tokio_stream::wrappers::UnboundedReceiverStream;
     use tonic::Status;
+    use zstd::bulk::Compressor as ZstdCompressor;
 
     fn base_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -2402,10 +2453,7 @@ mod tests {
 
     fn build_test_effect_handler(
         channel_capacity: usize,
-    ) -> (
-        local::EffectHandler<OtapPdata>,
-        mpsc::Receiver<OtapPdata>,
-    ) {
+    ) -> (local::EffectHandler<OtapPdata>, mpsc::Receiver<OtapPdata>) {
         let (tx, rx) = mpsc::Channel::new(channel_capacity);
         let mut senders = HashMap::new();
         let default_port: PortName = PortName::from("default");
@@ -2422,7 +2470,10 @@ mod tests {
         (effect_handler, rx)
     }
 
-    fn arrow_batches(payload_type: ArrowPayloadType, batch_count: usize) -> VecDeque<BatchArrowRecords> {
+    fn arrow_batches(
+        payload_type: ArrowPayloadType,
+        batch_count: usize,
+    ) -> VecDeque<BatchArrowRecords> {
         let mut queue = VecDeque::with_capacity(batch_count);
         let mut producer = Producer::new();
         for batch_index in 0..batch_count {
@@ -2552,6 +2603,157 @@ mod tests {
     async fn stream_batch_statuses_handles_large_traces_load() {
         run_status_stream_load_test::<Traces>(ArrowPayloadType::Spans, OtapArrowRecords::Traces)
             .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn grpc_streaming_body_randomized_frames() {
+        async fn run_case(encoding: GrpcEncoding, seed: u64) {
+            let mut rng = StdRng::seed_from_u64(seed);
+            for iteration in 0..32 {
+                let frame_count = rng.random_range(1..=8);
+                let mut expected_ids = Vec::with_capacity(frame_count);
+                let mut chunk_queue: VecDeque<Result<Bytes, &'static str>> = VecDeque::new();
+                let mut expected_release = 0usize;
+
+                for frame_idx in 0..frame_count {
+                    let batch_id = (iteration * 100 + frame_idx) as i64;
+                    expected_ids.push(batch_id);
+                    let batch = BatchArrowRecords {
+                        batch_id,
+                        ..Default::default()
+                    };
+
+                    let frame = build_body_frame(&batch, encoding);
+                    for chunk in split_frame_into_chunks(frame, &mut rng) {
+                        expected_release += chunk.len();
+                        chunk_queue.push_back(Ok(chunk));
+                    }
+                }
+
+                let (stream, state_handle) = MockRecvStream::new(chunk_queue);
+                let mut body = GrpcStreamingBody::with_stream(stream, encoding);
+                let mut observed_ids = Vec::new();
+                while let Some(batch) = body
+                    .next_message()
+                    .await
+                    .expect("fuzzer should decode batches")
+                {
+                    observed_ids.push(batch.batch_id);
+                }
+                drop(body);
+
+                assert_eq!(
+                    observed_ids, expected_ids,
+                    "encoding {:?} iteration {}",
+                    encoding, iteration
+                );
+                let released = state_handle
+                    .lock()
+                    .expect("state lock poisoned")
+                    .released_bytes;
+                assert_eq!(
+                    released, expected_release,
+                    "flow control release mismatch for {:?}",
+                    encoding
+                );
+            }
+        }
+
+        run_case(GrpcEncoding::Identity, 0x1111).await;
+        run_case(GrpcEncoding::Gzip, 0x2222).await;
+        run_case(GrpcEncoding::Deflate, 0x3333).await;
+        run_case(GrpcEncoding::Zstd, 0x4444).await;
+    }
+
+    fn build_body_frame(batch: &BatchArrowRecords, encoding: GrpcEncoding) -> Bytes {
+        let payload = batch.encode_to_vec();
+        let (compressed, encoded_payload) = match encoding {
+            GrpcEncoding::Identity => (false, payload),
+            GrpcEncoding::Gzip => (true, compress_payload_gzip(&payload)),
+            GrpcEncoding::Deflate => (true, compress_payload_deflate(&payload)),
+            GrpcEncoding::Zstd => (true, compress_payload_zstd(&payload)),
+        };
+        let mut frame = BytesMut::with_capacity(5 + encoded_payload.len());
+        frame.put_u8(u8::from(compressed));
+        frame.put_u32(encoded_payload.len() as u32);
+        frame.extend_from_slice(&encoded_payload);
+        frame.freeze()
+    }
+
+    fn compress_payload_gzip(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).expect("gzip write");
+        encoder.finish().expect("gzip finish")
+    }
+
+    fn compress_payload_deflate(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).expect("deflate write");
+        encoder.finish().expect("deflate finish")
+    }
+
+    fn compress_payload_zstd(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = ZstdCompressor::new(0).expect("zstd encoder");
+        let mut buffer = vec![0u8; payload.len().max(MIN_COMPRESSED_CAPACITY)];
+        let written = encoder
+            .compress_to_buffer(payload, buffer.as_mut_slice())
+            .expect("zstd compress");
+        buffer.truncate(written);
+        buffer
+    }
+
+    fn split_frame_into_chunks(frame: Bytes, rng: &mut StdRng) -> Vec<Bytes> {
+        let mut offset = 0;
+        let mut chunks = Vec::new();
+        while offset < frame.len() {
+            let remaining = frame.len() - offset;
+            let max_chunk = remaining.clamp(1, 64);
+            let step = rng.random_range(1..=max_chunk);
+            chunks.push(frame.slice(offset..offset + step));
+            offset += step;
+        }
+        chunks
+    }
+
+    struct MockStreamState {
+        released_bytes: usize,
+    }
+
+    struct MockRecvStream {
+        chunks: VecDeque<Result<Bytes, &'static str>>,
+        state: Arc<Mutex<MockStreamState>>,
+    }
+
+    impl MockRecvStream {
+        fn new(
+            chunks: VecDeque<Result<Bytes, &'static str>>,
+        ) -> (Self, Arc<Mutex<MockStreamState>>) {
+            let state = Arc::new(Mutex::new(MockStreamState { released_bytes: 0 }));
+            (
+                Self {
+                    chunks,
+                    state: state.clone(),
+                },
+                state,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl super::BodyStream for MockRecvStream {
+        async fn next_chunk(&mut self) -> Option<Result<Bytes, super::BodyStreamError>> {
+            yield_now().await;
+            self.chunks
+                .pop_front()
+                .map(|res| res.map_err(|err| err.to_string()))
+        }
+
+        fn release_capacity(&mut self, released: usize) -> Result<(), super::BodyStreamError> {
+            if let Ok(mut state) = self.state.lock() {
+                state.released_bytes += released;
+            }
+            Ok(())
+        }
     }
 
     fn scenario(
