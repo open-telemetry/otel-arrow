@@ -714,7 +714,7 @@ fn split_metric_batches<const N: usize>(
         // column can have gaps.
 
         let batch_len = batch_length(batches);
-        
+
         // If this batch doesn't fit in remaining space AND we've already used some space,
         // start a fresh output batch
         if batch_len > batch_size_remaining && batch_size_remaining < max_output_batch {
@@ -766,9 +766,9 @@ fn split_metric_batches<const N: usize>(
                 let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
                     cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
                 });
-                
+
                 let ending_index = candidate_index.max(starting_index + 1).min(metric_length);
-                
+
                 // Update for next iteration
                 last_cumulative_child_count = cumulative_child_counts
                     .get(ending_index - 1)
@@ -779,7 +779,7 @@ fn split_metric_batches<const N: usize>(
                             .copied()
                             .expect("non-empty list"),
                     );
-                
+
                 // We should always make forward progress
                 assert!(ending_index > starting_index);
 
