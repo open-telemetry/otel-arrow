@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Sleep};
+use tokio::time::{sleep, Sleep, Instant as TokioInstant};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
@@ -190,6 +190,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             request_encodings,
             request_accept_header,
             response_methods,
+            request_timeout: config.timeout,
         });
 
         let cancel_token = CancellationToken::new();
@@ -587,6 +588,12 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
+fn reset_sleep(timer: &mut Option<Pin<Box<Sleep>>>, duration: Duration) {
+    if let Some(timer) = timer.as_mut() {
+        timer.as_mut().reset(TokioInstant::now() + duration);
+    }
+}
+
 struct ArrowRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,
@@ -596,6 +603,7 @@ struct ArrowRouter {
     request_encodings: AcceptedGrpcEncodings,
     request_accept_header: HeaderValue,
     response_methods: Vec<CompressionMethod>,
+    request_timeout: Option<Duration>,
 }
 
 impl ArrowRouter {
@@ -688,9 +696,33 @@ impl ArrowRouter {
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
 
-        while let Some(next) = status_stream.next().await {
-            match next {
-                Ok(status) => {
+        let timeout_duration = self.request_timeout;
+        let mut timeout = timeout_duration.map(|dur| Box::pin(sleep(dur)));
+
+        loop {
+            let next_item = if let Some(timeout) = timeout.as_mut() {
+                tokio::select! {
+                    _ = timeout.as_mut() => {
+                        if let Some(duration) = timeout_duration {
+                            log::debug!("Request timed out after {:?}", duration);
+                        }
+                        send_error_trailers(
+                            send_stream,
+                            Status::deadline_exceeded("request timed out"),
+                        );
+                        return Ok(());
+                    }
+                    next = status_stream.next() => next
+                }
+            } else {
+                status_stream.next().await
+            };
+
+            match next_item {
+                Some(Ok(status)) => {
+                    if let Some(duration) = timeout_duration {
+                        reset_sleep(&mut timeout, duration);
+                    }
                     // log::info!(
                     //     "Sending batch status id={} code={}",
                     //     status.batch_id,
@@ -702,11 +734,12 @@ impl ArrowRouter {
                         return Ok(());
                     }
                 }
-                Err(status) => {
+                Some(Err(status)) => {
                     log::error!("Stream aborted with status {}", status);
                     send_error_trailers(send_stream, status);
                     return Ok(());
                 }
+                None => break,
             }
         }
 
