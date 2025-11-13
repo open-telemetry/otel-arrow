@@ -75,7 +75,7 @@ nodes:
 
 The exporter uses Azure SDK authentication with the following precedence:
 
-1. Environment variables (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, 
+1. Environment variables (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
 `AZURE_TENANT_ID`)
 
 2. Managed Identity (when running in Azure)
@@ -137,6 +137,7 @@ structures into Azure Log Analytics table format:
 
 ### Resource Mapping
 Maps OpenTelemetry resource attributes to Azure fields:
+
 ```yaml
 resource_mapping:
   "service.name": "ServiceName"      # Maps service.name → ServiceName
@@ -145,6 +146,7 @@ resource_mapping:
 
 ### Scope Mapping  
 Maps OpenTelemetry instrumentation scope to Azure fields:
+
 ```yaml
 scope_mapping:
   "otel.library.name": "LibraryName"
@@ -153,6 +155,7 @@ scope_mapping:
 
 ### Log Record Mapping
 Maps OTLP log record fields to Azure columns:
+
 ```yaml
 log_record_mapping:
   "body": "Message"                  # Log body → Message column
@@ -176,9 +179,8 @@ Before using the GigLA exporter, you need to set up Azure Log Analytics:
 4. **Get the DCR endpoint URL** from the Azure portal
 
 Example DCR endpoint:
-```
+
 https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-abc123def456/streams/Custom-MyLogTable_CL
-```
 
 ## Features
 
