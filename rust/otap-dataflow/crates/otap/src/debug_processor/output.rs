@@ -9,17 +9,19 @@ use crate::debug_processor::detailed_marshaler::DetailedViewMarshaler;
 use crate::debug_processor::marshaler::ViewMarshaler;
 use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
 use crate::debug_processor::sampling::Sampler;
-use crate::fake_data_generator::config::OTLPSignal;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
-use otap_df_pdata::proto::opentelemetry::{
-    logs::v1::{LogsData, ResourceLogs, ScopeLogs},
-    metrics::v1::{MetricsData, ResourceMetrics, ScopeMetrics},
-    trace::v1::{ResourceSpans, ScopeSpans, TracesData},
+use otap_df_pdata::proto::{
+    OtlpProtoMessage,
+    opentelemetry::{
+        logs::v1::{LogsData, ResourceLogs, ScopeLogs},
+        metrics::v1::{MetricsData, ResourceMetrics, ScopeMetrics},
+        trace::v1::{ResourceSpans, ScopeSpans, TracesData},
+    },
 };
 use serde::Deserialize;
 use tokio::fs::File;
@@ -402,7 +404,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OTLPSignal::Metrics(metric_request).try_into()?)
+                    self.send_outports(OtlpProtoMessage::Metrics(metric_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -411,7 +413,7 @@ impl DebugOutput for DebugOutputPorts {
                 let metric_signals = self.split_metrics(metric_request);
                 for metric in metric_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OTLPSignal::Metrics(metric).try_into()?)
+                        self.send_outports(OtlpProtoMessage::Metrics(metric).try_into()?)
                             .await
                     };
                     sampler.sample(send_message).await?;
@@ -428,7 +430,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OTLPSignal::Traces(trace_request).try_into()?)
+                    self.send_outports(OtlpProtoMessage::Traces(trace_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -437,7 +439,7 @@ impl DebugOutput for DebugOutputPorts {
                 let trace_signals = self.split_traces(trace_request);
                 for trace in trace_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OTLPSignal::Traces(trace).try_into()?)
+                        self.send_outports(OtlpProtoMessage::Traces(trace).try_into()?)
                             .await
                     };
                     sampler.sample(send_message).await?;
@@ -454,7 +456,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OTLPSignal::Logs(log_request).try_into()?)
+                    self.send_outports(OtlpProtoMessage::Logs(log_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -463,7 +465,8 @@ impl DebugOutput for DebugOutputPorts {
                 let log_signals = self.split_logs(log_request);
                 for log in log_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OTLPSignal::Logs(log).try_into()?).await
+                        self.send_outports(OtlpProtoMessage::Logs(log).try_into()?)
+                            .await
                     };
                     sampler.sample(send_message).await?;
                 }

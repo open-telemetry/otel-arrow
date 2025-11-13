@@ -83,3 +83,211 @@ pub mod opentelemetry {
         pub mod v1;
     }
 }
+
+/// Protocol message data of some type.
+///
+/// Generally, callers should to use of OtlpProtoBytes type defined in
+/// crate::otlp instead, this is only useful where proto::Message
+/// objects are required, which is almost always in testing, see e.g.,
+/// otap-df-otap's fake_signal_generator and debug_processor.
+///
+/// TODO: Maybe add a similar type for OtlpExportMessage, which use
+/// the ::collector request types, are otherwise identical.
+#[derive(Clone, Debug)]
+pub enum OtlpProtoMessage {
+    /// metrics pdata
+    Metrics(opentelemetry::metrics::v1::MetricsData),
+    /// traces pdata
+    Traces(opentelemetry::trace::v1::TracesData),
+    /// log pdata
+    Logs(opentelemetry::logs::v1::LogsData),
+}
+
+impl OtlpProtoMessage {
+    /// Compute the batch length
+    #[must_use]
+    pub fn batch_length(&self) -> usize {
+        match self {
+            Self::Metrics(data) => metrics_batch_length(data),
+            Self::Logs(data) => logs_batch_length(data),
+            Self::Traces(data) => traces_batch_length(data),
+        }
+    }
+
+    /// Get the signal type.
+    #[must_use]
+    pub fn signal_type(&self) -> otap_df_config::SignalType {
+        use otap_df_config::SignalType;
+        match self {
+            Self::Logs(_) => SignalType::Logs,
+            Self::Metrics(_) => SignalType::Metrics,
+            Self::Traces(_) => SignalType::Traces,
+        }
+    }
+}
+
+fn logs_batch_length(logs: &opentelemetry::logs::v1::LogsData) -> usize {
+    logs.resource_logs
+        .iter()
+        .flat_map(|rl| &rl.scope_logs)
+        .map(|sl| sl.log_records.len())
+        .sum()
+}
+
+fn traces_batch_length(traces: &opentelemetry::trace::v1::TracesData) -> usize {
+    traces
+        .resource_spans
+        .iter()
+        .flat_map(|rs| &rs.scope_spans)
+        .map(|ss| ss.spans.len())
+        .sum()
+}
+
+fn metrics_batch_length(metrics: &opentelemetry::metrics::v1::MetricsData) -> usize {
+    use opentelemetry::metrics::v1::metric::Data;
+    metrics
+        .resource_metrics
+        .iter()
+        .flat_map(|rm| &rm.scope_metrics)
+        .flat_map(|sm| &sm.metrics)
+        .map(|metric| match &metric.data {
+            Some(Data::Gauge(gauge)) => gauge.data_points.len(),
+            Some(Data::Sum(sum)) => sum.data_points.len(),
+            Some(Data::Histogram(histogram)) => histogram.data_points.len(),
+            Some(Data::ExponentialHistogram(exp_histogram)) => exp_histogram.data_points.len(),
+            Some(Data::Summary(summary)) => summary.data_points.len(),
+            None => 0,
+        })
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric::Data,
+        number_data_point::Value,
+    };
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
+
+    #[test]
+    fn test_logs_batch_length() {
+        let logs = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::default(), LogRecord::default()],
+                    ),
+                    ScopeLogs::new(InstrumentationScope::default(), vec![LogRecord::default()]),
+                ],
+            ),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::default(), LogRecord::default()],
+                )],
+            ),
+        ]);
+
+        assert_eq!(logs_batch_length(&logs), 5);
+    }
+
+    #[test]
+    fn test_traces_batch_length() {
+        let traces = TracesData::new(vec![
+            ResourceSpans::new(
+                Resource::default(),
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::default(),
+                        vec![Span::default(), Span::default(), Span::default()],
+                    ),
+                    ScopeSpans::new(InstrumentationScope::default(), vec![Span::default()]),
+                ],
+            ),
+            ResourceSpans::new(
+                Resource::default(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::default(),
+                    vec![Span::default()],
+                )],
+            ),
+        ]);
+
+        assert_eq!(traces_batch_length(&traces), 5);
+    }
+
+    #[test]
+    fn test_metrics_batch_length() {
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric {
+                        name: "gauge1".into(),
+                        data: Some(Data::Gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint {
+                                    value: Some(Value::AsDouble(1.0)),
+                                    ..Default::default()
+                                },
+                                NumberDataPoint {
+                                    value: Some(Value::AsDouble(2.0)),
+                                    ..Default::default()
+                                },
+                            ],
+                        })),
+                        ..Default::default()
+                    },
+                    Metric {
+                        name: "gauge2".into(),
+                        data: Some(Data::Gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint {
+                                    value: Some(Value::AsDouble(3.0)),
+                                    ..Default::default()
+                                },
+                                NumberDataPoint {
+                                    value: Some(Value::AsDouble(4.0)),
+                                    ..Default::default()
+                                },
+                                NumberDataPoint {
+                                    value: Some(Value::AsDouble(5.0)),
+                                    ..Default::default()
+                                },
+                            ],
+                        })),
+                        ..Default::default()
+                    },
+                ],
+            )],
+        )]);
+
+        assert_eq!(metrics_batch_length(&metrics), 5);
+    }
+
+    #[test]
+    fn test_empty_logs() {
+        let logs = LogsData::new(vec![]);
+        assert_eq!(logs_batch_length(&logs), 0);
+    }
+
+    #[test]
+    fn test_empty_traces() {
+        let traces = TracesData::new(vec![]);
+        assert_eq!(traces_batch_length(&traces), 0);
+    }
+
+    #[test]
+    fn test_empty_metrics() {
+        let metrics = MetricsData::new(vec![]);
+        assert_eq!(metrics_batch_length(&metrics), 0);
+    }
+}
