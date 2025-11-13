@@ -584,9 +584,54 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
-fn reset_sleep(timer: &mut Option<Pin<Box<Sleep>>>, duration: Duration) {
-    if let Some(timer) = timer.as_mut() {
-        timer.as_mut().reset(TokioInstant::now() + duration);
+struct RequestTimeout {
+    duration: Option<Duration>,
+    sleep: Option<Pin<Box<Sleep>>>,
+}
+
+impl RequestTimeout {
+    fn new(duration: Option<Duration>) -> Self {
+        Self {
+            duration,
+            sleep: None,
+        }
+    }
+
+    fn arm(&mut self) {
+        if let Some(duration) = self.duration {
+            if self.sleep.is_none() {
+                self.sleep = Some(Box::pin(sleep(duration)));
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        if let (Some(duration), Some(sleep)) = (self.duration, self.sleep.as_mut()) {
+            sleep.as_mut().reset(TokioInstant::now() + duration);
+        }
+    }
+
+    async fn next_with<S, T>(&mut self, stream: &mut S) -> Result<Option<T>, ()>
+    where
+        S: Stream<Item = T> + Unpin,
+    {
+        match self.duration {
+            None => Ok(stream.next().await),
+            Some(_) => {
+                self.arm();
+                let sleep = self
+                    .sleep
+                    .as_mut()
+                    .expect("sleep must be armed when timeout is configured");
+                tokio::select! {
+                    _ = sleep.as_mut() => Err(()),
+                    item = stream.next() => {
+                        self.reset();
+                        Ok(item)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -691,33 +736,25 @@ impl ArrowRouter {
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
 
-        let timeout_duration = self.request_timeout;
-        let mut timeout = timeout_duration.map(|dur| Box::pin(sleep(dur)));
+        let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         loop {
-            let next_item = if let Some(timeout) = timeout.as_mut() {
-                tokio::select! {
-                    _ = timeout.as_mut() => {
-                        if let Some(duration) = timeout_duration {
-                            log::debug!("Request timed out after {:?}", duration);
-                        }
-                        send_error_trailers(
-                            send_stream,
-                            Status::deadline_exceeded("request timed out"),
-                        );
-                        return Ok(());
+            let next_item = match request_timeout.next_with(&mut status_stream).await {
+                Ok(item) => item,
+                Err(()) => {
+                    if let Some(duration) = self.request_timeout {
+                        log::debug!("Request timed out after {:?}", duration);
                     }
-                    next = status_stream.next() => next
+                    send_error_trailers(
+                        send_stream,
+                        Status::deadline_exceeded("request timed out"),
+                    );
+                    return Ok(());
                 }
-            } else {
-                status_stream.next().await
             };
 
             match next_item {
                 Some(Ok(status)) => {
-                    if let Some(duration) = timeout_duration {
-                        reset_sleep(&mut timeout, duration);
-                    }
                     // log::info!(
                     //     "Sending batch status id={} code={}",
                     //     status.batch_id,
@@ -2119,10 +2156,19 @@ fn respond_with_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{OTEL_RECEIVER_URN, OtelReceiver};
+    use super::{
+        AcceptedGrpcEncodings, GrpcEncoding, GrpcMessageEncoder, Http2Keepalive, OTEL_RECEIVER_URN,
+        OtelReceiver, RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
+        parse_grpc_accept_encoding, parse_grpc_encoding,
+    };
+    use crate::compression::CompressionMethod;
     use crate::otap_mock::create_otap_batch;
     use crate::pdata::OtapPdata;
     use async_stream::stream;
+    use bytes::Bytes;
+    use flate2::read::{GzDecoder, ZlibDecoder};
+    use h2::{client, server};
+    use http::{HeaderMap, HeaderValue, Request};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -2133,17 +2179,280 @@ mod tests {
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
+        ArrowPayloadType, BatchStatus, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use prost::Message as _;
     use std::collections::HashSet;
     use std::future::Future;
+    use std::io::Read;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::Instant;
+    use tokio::io::duplex;
     use tokio::time::{Duration, timeout};
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::Status;
+
+    fn base_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/grpc"),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_parse_grpc_encoding_variants() {
+        let accepted = AcceptedGrpcEncodings::from_methods(&[
+            CompressionMethod::Zstd,
+            CompressionMethod::Gzip,
+        ]);
+        let mut headers = base_headers();
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("zstd"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Zstd)
+        ));
+
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("gzip"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Gzip)
+        ));
+
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("zstdarrow1"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Zstd)
+        ));
+    }
+
+    #[test]
+    fn test_parse_grpc_encoding_respects_config() {
+        let accepted = AcceptedGrpcEncodings::from_methods(&[CompressionMethod::Deflate]);
+        let mut headers = base_headers();
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("gzip"));
+        assert!(parse_grpc_encoding(&headers, &accepted).is_err());
+    }
+
+    #[test]
+    fn test_parse_grpc_accept_encoding() {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            "grpc-accept-encoding",
+            HeaderValue::from_static("gzip,zstd, identity "),
+        );
+        let parsed = parse_grpc_accept_encoding(&headers);
+        assert!(parsed.identity);
+        assert!(parsed.zstd);
+        assert!(parsed.gzip);
+        assert!(!parsed.deflate);
+    }
+
+    #[test]
+    fn test_negotiate_response_encoding_prefers_config_order() {
+        let mut client_headers = HeaderMap::new();
+        let _ = client_headers.insert(
+            "grpc-accept-encoding",
+            HeaderValue::from_static("zstd,gzip"),
+        );
+        let client = parse_grpc_accept_encoding(&client_headers);
+        let cfg = vec![CompressionMethod::Gzip, CompressionMethod::Zstd];
+        assert!(matches!(
+            negotiate_response_encoding(&cfg, &client),
+            GrpcEncoding::Gzip
+        ));
+
+        let cfg = vec![CompressionMethod::Zstd];
+        assert!(matches!(
+            negotiate_response_encoding(&cfg, &client),
+            GrpcEncoding::Zstd
+        ));
+    }
+
+    #[test]
+    fn test_build_accept_encoding_header_includes_identity() {
+        let value =
+            build_accept_encoding_header(&[CompressionMethod::Zstd, CompressionMethod::Gzip]);
+        assert_eq!(value.to_str().unwrap(), "zstd,gzip,identity");
+    }
+
+    #[tokio::test]
+    async fn request_timeout_triggers_after_inactivity() {
+        let mut timeout = RequestTimeout::new(Some(Duration::from_millis(50)));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<&'static str, ()>>();
+        let mut stream = UnboundedReceiverStream::new(rx);
+
+        let _producer = tokio::spawn(async move {
+            let _ = tx.send(Ok("first"));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = tx.send(Ok("second"));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(Ok("third"));
+        });
+
+        assert!(timeout.next_with(&mut stream).await.unwrap().is_some());
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        assert!(timeout.next_with(&mut stream).await.unwrap().is_some());
+        assert!(timeout.next_with(&mut stream).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn request_timeout_disabled_when_unset() {
+        let mut timeout = RequestTimeout::new(None);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<&'static str, ()>>();
+        let mut stream = UnboundedReceiverStream::new(rx);
+
+        let _producer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(Ok("done"));
+        });
+
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        let next = timeout.next_with(&mut stream).await.unwrap();
+        assert!(next.is_some());
+    }
+
+    #[tokio::test]
+    async fn respond_with_error_sets_headers_and_trailers() {
+        let (client_io, server_io) = duplex(1024);
+        let mut server_conn = server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .expect("server handshake");
+        let (mut client, client_conn) = client::handshake(client_io).await.expect("client hs");
+        let client_task = tokio::spawn(async move { client_conn.await.expect("client conn") });
+
+        let request = Request::builder()
+            .uri("http://localhost/")
+            .body(())
+            .unwrap();
+        let (response_future, _send_stream) = client.send_request(request, true).unwrap();
+        let (_, respond) = server_conn.accept().await.unwrap().unwrap();
+
+        let accept_header = HeaderValue::from_static("identity");
+        super::respond_with_error(respond, Status::internal("boom"), &accept_header);
+
+        let response = response_future.await.expect("response");
+        assert_eq!(
+            response.headers().get("grpc-accept-encoding").unwrap(),
+            &accept_header
+        );
+
+        let mut body = response.into_body();
+        let trailers = body.trailers().await.expect("trailers").unwrap();
+        assert_eq!(trailers.get("grpc-status").unwrap(), "13");
+        assert_eq!(trailers.get("grpc-message").unwrap(), "boom");
+
+        client_task.abort();
+    }
+
+    #[tokio::test]
+    async fn keepalive_succeeds_when_connection_idle() {
+        let (client_io, server_io) = duplex(1024);
+        let mut server_conn = server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .expect("server handshake");
+        let (_client, client_conn) = client::handshake(client_io).await.expect("client hs");
+        let client_task = tokio::spawn(async move { client_conn.await.expect("client conn") });
+
+        let mut keepalive = Http2Keepalive::new(
+            server_conn.ping_pong(),
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(2)),
+        )
+        .expect("keepalive");
+
+        keepalive.update_idle_state(true);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(keepalive.poll_tick().await.is_ok());
+
+        client_task.abort();
+    }
+
+    #[tokio::test]
+    async fn keepalive_errors_when_connection_closed() {
+        let (client_io, server_io) = duplex(1024);
+        let mut server_conn = server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .expect("server handshake");
+        let (_client, client_conn) = client::handshake(client_io).await.expect("client hs");
+        let client_task = tokio::spawn(async move {
+            let _ = client_conn.await;
+        });
+        client_task.abort();
+
+        let mut keepalive = Http2Keepalive::new(
+            server_conn.ping_pong(),
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(2)),
+        )
+        .expect("keepalive");
+        keepalive.update_idle_state(true);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(keepalive.poll_tick().await.is_err());
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_identity_frame_layout() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Identity);
+        let message = BatchStatus {
+            batch_id: 42,
+            status_code: 7,
+            status_message: "ok".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("identity encode");
+        assert_eq!(encoded[0], 0);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        assert_eq!(
+            encoded[5..],
+            message.encode_to_vec(),
+            "payload matches prost encoding"
+        );
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_gzip_round_trip() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Gzip);
+        let message = BatchStatus {
+            batch_id: 99,
+            status_code: 14,
+            status_message: "compressed".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("gzip encode");
+        assert_eq!(encoded[0], 1);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        let mut decoder = GzDecoder::new(&encoded[5..]);
+        let mut decompressed = Vec::new();
+        let _ = decoder.read_to_end(&mut decompressed).expect("gunzip");
+        assert_eq!(decompressed, message.encode_to_vec());
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_deflate_round_trip() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Deflate);
+        let message = BatchStatus {
+            batch_id: 7,
+            status_code: 3,
+            status_message: "deflated".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("deflate encode");
+        assert_eq!(encoded[0], 1);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        let mut decoder = ZlibDecoder::new(&encoded[5..]);
+        let mut decompressed = Vec::new();
+        let _ = decoder.read_to_end(&mut decompressed).expect("inflate");
+        assert_eq!(decompressed, message.encode_to_vec());
+    }
 
     fn scenario(
         grpc_endpoint: String,
@@ -2453,12 +2762,7 @@ mod tests {
         expected_status_message: &str,
         signal_name: &str,
     ) where
-        S: futures::Stream<
-                Item = Result<
-                    otap_df_pdata::proto::opentelemetry::arrow::v1::BatchStatus,
-                    tonic::Status,
-                >,
-            > + Unpin,
+        S: futures::Stream<Item = Result<BatchStatus, Status>> + Unpin,
     {
         use futures::StreamExt;
         let mut received_batch_ids = HashSet::new();
