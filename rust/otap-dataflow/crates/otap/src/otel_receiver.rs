@@ -2158,38 +2158,51 @@ fn respond_with_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        AcceptedGrpcEncodings, GrpcEncoding, GrpcMessageEncoder, OTEL_RECEIVER_URN, OtelReceiver,
-        RequestTimeout, build_accept_encoding_header, negotiate_response_encoding,
-        parse_grpc_accept_encoding, parse_grpc_encoding,
+        AcceptedGrpcEncodings, AckRegistry, AckToken, GrpcEncoding, GrpcMessageEncoder,
+        OTEL_RECEIVER_URN, OtelReceiver, RequestTimeout, build_accept_encoding_header,
+        negotiate_response_encoding, parse_grpc_accept_encoding, parse_grpc_encoding,
+        stream_batch_statuses,
     };
+    use super::local;
     use crate::compression::CompressionMethod;
+    use crate::otap_grpc::ArrowRequestStream;
     use crate::otap_mock::create_otap_batch;
     use crate::pdata::OtapPdata;
+    use async_trait::async_trait;
     use async_stream::stream;
     use flate2::read::{GzDecoder, ZlibDecoder};
+    use futures::StreamExt;
     use http::{HeaderMap, HeaderValue};
+    use otap_df_channel::mpsc;
+    use otap_df_config::PortName;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+    use otap_df_engine::control::{
+        AckMsg, NackMsg, NodeControlMsg, pipeline_ctrl_msg_channel,
+    };
+    use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
     use otap_df_pdata::Producer;
-    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, BatchStatus, arrow_logs_service_client::ArrowLogsServiceClient,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode as ProtoStatusCode,
+        arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message as _;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::future::Future;
     use std::io::Read;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::Instant;
+    use tokio::task::yield_now;
     use tokio::time::{Duration, timeout};
     use tokio_stream::wrappers::UnboundedReceiverStream;
     use tonic::Status;
@@ -2368,6 +2381,177 @@ mod tests {
         let mut decompressed = Vec::new();
         let _ = decoder.read_to_end(&mut decompressed).expect("inflate");
         assert_eq!(decompressed, message.encode_to_vec());
+    }
+
+    struct FakeArrowStream {
+        batches: VecDeque<BatchArrowRecords>,
+    }
+
+    impl FakeArrowStream {
+        fn new(batches: VecDeque<BatchArrowRecords>) -> Self {
+            Self { batches }
+        }
+    }
+
+    #[async_trait]
+    impl ArrowRequestStream for FakeArrowStream {
+        async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
+            Ok(self.batches.pop_front())
+        }
+    }
+
+    fn build_test_effect_handler(
+        channel_capacity: usize,
+    ) -> (
+        local::EffectHandler<OtapPdata>,
+        mpsc::Receiver<OtapPdata>,
+    ) {
+        let (tx, rx) = mpsc::Channel::new(channel_capacity);
+        let mut senders = HashMap::new();
+        let default_port: PortName = PortName::from("default");
+        let _ = senders.insert(default_port.clone(), LocalSender::MpscSender(tx));
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = local::EffectHandler::new(
+            test_node("otel_receiver_status_test"),
+            senders,
+            Some(default_port),
+            ctrl_tx,
+            metrics_reporter,
+        );
+        (effect_handler, rx)
+    }
+
+    fn arrow_batches(payload_type: ArrowPayloadType, batch_count: usize) -> VecDeque<BatchArrowRecords> {
+        let mut queue = VecDeque::with_capacity(batch_count);
+        let mut producer = Producer::new();
+        for batch_index in 0..batch_count {
+            let mut batch = create_otap_batch(batch_index as i64, payload_type);
+            let bar = producer
+                .produce_bar(&mut batch)
+                .expect("failed to encode arrow batch");
+            queue.push_back(bar);
+        }
+        queue
+    }
+
+    async fn drive_ack_pipeline(
+        pdata_rx: mpsc::Receiver<OtapPdata>,
+        ack_registry: AckRegistry,
+        total_batches: usize,
+    ) -> (usize, usize) {
+        let mut success = 0;
+        let mut failure = 0;
+        for idx in 0..total_batches {
+            let pdata = pdata_rx
+                .recv()
+                .await
+                .expect("pdata channel closed unexpectedly");
+            let calldata = pdata
+                .current_calldata()
+                .expect("missing calldata for wait_for_result");
+            let token = AckToken::from_calldata(&calldata).expect("invalid ack token");
+
+            if idx % 11 == 0 {
+                tokio::time::sleep(Duration::from_micros(((idx % 5) + 1) as u64 * 20)).await;
+                let _ = ack_registry.complete(token, Err(format!("failure #{idx}")));
+                failure += 1;
+            } else {
+                if idx % 7 == 0 {
+                    tokio::time::sleep(Duration::from_micros(((idx % 3) + 1) as u64 * 10)).await;
+                } else if idx % 3 == 0 {
+                    yield_now().await;
+                }
+                let _ = ack_registry.complete(token, Ok(()));
+                success += 1;
+            }
+        }
+        (success, failure)
+    }
+
+    async fn run_status_stream_load_test<T>(
+        payload_type: ArrowPayloadType,
+        otap_batch: fn(T) -> OtapArrowRecords,
+    ) where
+        T: OtapBatchStore + 'static,
+    {
+        const TOTAL_BATCHES: usize = 1024;
+        const MAX_CONCURRENT_REQUESTS: usize = 256;
+        const MAX_IN_FLIGHT: usize = 64;
+
+        let stream = FakeArrowStream::new(arrow_batches(payload_type, TOTAL_BATCHES));
+        let (effect_handler, pdata_rx) = build_test_effect_handler(TOTAL_BATCHES);
+        let ack_registry = AckRegistry::new(MAX_CONCURRENT_REQUESTS);
+
+        let mut status_stream = stream_batch_statuses::<_, T, _>(
+            stream,
+            effect_handler,
+            Some(ack_registry.clone()),
+            otap_batch,
+            MAX_IN_FLIGHT,
+        );
+
+        let ack_task = drive_ack_pipeline(pdata_rx, ack_registry.clone(), TOTAL_BATCHES);
+
+        let status_task = async {
+            let mut successes = 0;
+            let mut failures = 0;
+            let mut ids = HashSet::with_capacity(TOTAL_BATCHES);
+            while let Some(next) = status_stream.next().await {
+                let status = next.expect("receiver should not emit tonic errors");
+                assert!(
+                    ids.insert(status.batch_id),
+                    "duplicate status for batch {}",
+                    status.batch_id
+                );
+                match status.status_code {
+                    code if code == ProtoStatusCode::Ok as i32 => {
+                        assert_eq!(status.status_message, "Successfully received");
+                        successes += 1;
+                    }
+                    code if code == ProtoStatusCode::Unavailable as i32 => {
+                        assert!(
+                            status
+                                .status_message
+                                .starts_with("Pipeline processing failed:"),
+                            "unexpected failure message {}",
+                            status.status_message
+                        );
+                        failures += 1;
+                    }
+                    other => panic!("unexpected status code {other}"),
+                }
+            }
+            assert_eq!(ids.len(), TOTAL_BATCHES);
+            (successes, failures)
+        };
+
+        let ((expected_successes, expected_failures), (actual_successes, actual_failures)) =
+            tokio::join!(ack_task, status_task);
+
+        assert_eq!(actual_successes, expected_successes);
+        assert_eq!(actual_failures, expected_failures);
+        assert_eq!(actual_successes + actual_failures, TOTAL_BATCHES);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_batch_statuses_handles_large_ack_nack_load() {
+        run_status_stream_load_test::<Metrics>(
+            ArrowPayloadType::MultivariateMetrics,
+            OtapArrowRecords::Metrics,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_batch_statuses_handles_large_logs_load() {
+        run_status_stream_load_test::<Logs>(ArrowPayloadType::Logs, OtapArrowRecords::Logs).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_batch_statuses_handles_large_traces_load() {
+        run_status_stream_load_test::<Traces>(ArrowPayloadType::Spans, OtapArrowRecords::Traces)
+            .await;
     }
 
     fn scenario(
