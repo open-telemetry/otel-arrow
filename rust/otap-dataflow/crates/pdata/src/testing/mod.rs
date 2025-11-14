@@ -1,10 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Testing utilities for OTLP/OTAP round-trip verification.
+//! Testing utilities for OTLP and OTAP verification.
 
 pub mod equiv;
-pub mod fixtures;
+
+#[cfg(test)]
+pub(crate) mod fixtures;
+
+#[cfg(test)]
 pub mod round_trip;
 
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;

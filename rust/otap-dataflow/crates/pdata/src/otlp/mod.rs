@@ -26,9 +26,6 @@ use crate::{error::Result, otap::OtapArrowRecords};
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod common_tests;
-
 /// Pipeline data represented as protobuf serialized OTLP request messages
 #[derive(Clone, Debug)]
 pub enum OtlpProtoBytes {
