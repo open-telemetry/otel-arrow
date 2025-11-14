@@ -21,7 +21,7 @@ pub mod otlp_receiver;
 /// Implementation of OTLP exporter that implements the exporter trait
 pub mod otlp_exporter;
 
-// Batch processor
+/// Batch processor
 pub mod batch_processor;
 
 // Retry processor that is aware of the OTAP PData/context.

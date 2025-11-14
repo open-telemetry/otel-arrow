@@ -86,25 +86,37 @@ pub mod opentelemetry {
 
 /// Protocol message data of some type.
 ///
-/// Generally, callers should to use of OtlpProtoBytes type defined in
+/// Generally, callers should use the OtlpProtoBytes type defined in
 /// crate::otlp instead, this is only useful where proto::Message
-/// objects are required, which is almost always in testing, see e.g.,
-/// otap-df-otap's fake_signal_generator and debug_processor.
+/// objects are required. OtlpProtoBytes has an efficient translation
+/// into OtapArrowRecords, this type does not.
 ///
-/// TODO: Maybe add a similar type for OtlpExportMessage, which use
-/// the ::collector request types, are otherwise identical.
+///
+/// Note this could be considered for #[cfg(test)], however we are
+/// aware of uses in otap-df-otap's fake_signal_generator and
+/// debug_processor.
 #[derive(Clone, Debug)]
 pub enum OtlpProtoMessage {
-    /// metrics pdata
-    Metrics(opentelemetry::metrics::v1::MetricsData),
-    /// traces pdata
-    Traces(opentelemetry::trace::v1::TracesData),
-    /// log pdata
+    /// Logs data. This is equivalent to ExportLogsServiceRequest.
     Logs(opentelemetry::logs::v1::LogsData),
+    /// Metrics data. This is equivalent to ExportMetricsServiceRequest.
+    Metrics(opentelemetry::metrics::v1::MetricsData),
+    /// Traces data. This is equivalent to ExportTraceServiceRequest.
+    Traces(opentelemetry::trace::v1::TracesData),
 }
 
 impl OtlpProtoMessage {
-    /// Compute the batch length
+    /// Compute the batch length.  This returns the same value as
+    /// OtapArrowRecords::batch_length().
+    ///
+    /// TODO: The OpenTelemetry Collector has no standard function
+    /// name for this, it has no multi-signal type so uses
+    /// Logs.NumRecords, Traces.NumSpans, and Metrics.NumDataPoints.
+    ///
+    /// This was named to match the OtapArrowRecords::batch_length()
+    /// function; we may conceive of renaming all of these methods to
+    /// be more descriptive, for example num_items() or batch_items()
+    /// which is a standard concept in Collector batch configuration.
     #[must_use]
     pub fn batch_length(&self) -> usize {
         match self {

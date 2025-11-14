@@ -7,7 +7,7 @@ use crate::proto::opentelemetry::common::v1::any_value;
 use prost::Message;
 use std::collections::BTreeSet;
 
-// Helper to recursively canonicalize AnyValue
+// Helper to recursively canonicalize AnyValue.
 pub(crate) fn canonicalize_any_value(av: &mut crate::proto::opentelemetry::common::v1::AnyValue) {
     if let Some(value) = &mut av.value {
         match value {
@@ -30,7 +30,8 @@ pub(crate) fn canonicalize_any_value(av: &mut crate::proto::opentelemetry::commo
     }
 }
 
-/// Canonicalize a slice of protobuf messages by encoding each, sorting, and reconstructing.
+/// Canonicalize a slice of protobuf messages by encoding them,
+/// sorting, and reconstructing in the canonical order.
 pub(crate) fn canonicalize_vec<T, F>(vec: &mut Vec<T>, mut canonicalize_fn: F)
 where
     T: Message + Default + Clone,
@@ -60,7 +61,8 @@ where
     }
 }
 
-// Canonicalize a messqage into bytes, assuming infallible.
+/// Canonicalize a messqage into bytes.  The data must have been
+/// canonicalized in-place before calling this method.
 pub(crate) fn canonicalize_message<T>(msg: T) -> Vec<u8>
 where
     T: Message,

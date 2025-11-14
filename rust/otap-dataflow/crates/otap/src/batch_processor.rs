@@ -178,7 +178,6 @@ pub struct OtapBatchProcessorMetrics {
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
     dropped_empty_records: Counter<u64>,
-
     /// Number of split requests issued to upstream batching
     #[metric(unit = "{event}")]
     split_requests: Counter<u64>,

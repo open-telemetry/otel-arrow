@@ -3,6 +3,7 @@
 
 //! This module contains various types and methods for interacting with and manipulating
 //! OTAP data / record batches
+
 use arrow::array::RecordBatch;
 use otap_df_config::SignalType;
 use transform::transport_optimize::{
@@ -18,9 +19,6 @@ use crate::{
 };
 
 pub mod batching;
-#[cfg(test)]
-mod batching_tests;
-
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;
@@ -95,9 +93,9 @@ impl OtapArrowRecords {
         }
     }
 
-    /// TODO: Rename signal_type()
+    /// The signal type of this data.
     #[must_use]
-    const fn tag(&self) -> SignalType {
+    const fn signal_type(&self) -> SignalType {
         match self {
             Self::Logs(_) => SignalType::Logs,
             Self::Metrics(_) => SignalType::Metrics,

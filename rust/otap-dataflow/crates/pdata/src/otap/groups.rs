@@ -54,13 +54,13 @@ impl RecordsGroup {
     /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
     #[must_use]
     fn separate_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
-        let log_count = tag_count(&records, SignalType::Logs);
+        let log_count = signal_count(&records, SignalType::Logs);
         let mut log_records = Vec::with_capacity(log_count);
 
-        let metric_count = tag_count(&records, SignalType::Metrics);
+        let metric_count = signal_count(&records, SignalType::Metrics);
         let mut metric_records = Vec::with_capacity(metric_count);
 
-        let trace_count = tag_count(&records, SignalType::Traces);
+        let trace_count = signal_count(&records, SignalType::Traces);
         let mut trace_records = Vec::with_capacity(trace_count);
 
         for records in records {
@@ -216,10 +216,10 @@ impl RecordsGroup {
 // Some helpers for `RecordsGroup`...
 // *************************************************************************************************
 
-fn tag_count(records: &[OtapArrowRecords], tag: SignalType) -> usize {
+fn signal_count(records: &[OtapArrowRecords], signal: SignalType) -> usize {
     records
         .iter()
-        .map(|records| (records.tag() == tag) as usize)
+        .map(|records| (records.signal_type() == signal) as usize)
         .sum()
 }
 
