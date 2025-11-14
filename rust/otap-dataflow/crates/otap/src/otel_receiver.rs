@@ -5,6 +5,18 @@
 //! crate.  This variant keeps all request handling on the current thread so it can integrate with
 //! the thread-per-core runtime without requiring `Send + Sync` futures.
 //!
+//! Design goals:
+//! - Support OTAP Arrow over gRPC with minimal dependencies.
+//! - Avoid `Send + Sync` bounds on request handlers to integrate with thread-per-core runtime.
+//! - No Arc, Mutex dependencies in the hot path.
+//! - Low use of heap allocations in the hot path.
+//!
+//! Note: This receiver only supports OTAP Arrow payloads. OTLP Protobuf payloads are not supported
+//! yet.
+//!
+//! Note: This receiver doesn't use `tonic` server framework to avoid `Send + Sync` bounds on
+//! request handlers but is inspired by tonic's gRPC implementation and borrows some code from it.
+//!
 //! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
 //! ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
 //! ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
