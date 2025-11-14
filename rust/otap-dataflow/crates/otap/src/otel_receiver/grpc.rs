@@ -542,7 +542,7 @@ where
             }
         }
     }
-    
+
     /// Makes sure the scratch buffer is large enough for the decoded payload.
     /// Complexity: amortized O(1) thanks to the doubling strategy.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
@@ -964,6 +964,356 @@ impl RequestTimeout {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compression::CompressionMethod;
+    use async_trait::async_trait;
+    use bytes::{BufMut, Bytes, BytesMut};
+    use flate2::Compression;
+    use flate2::read::{GzDecoder, ZlibDecoder};
+    use flate2::write::{GzEncoder, ZlibEncoder};
+    use http::{HeaderMap, HeaderValue};
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
+    use tokio::task::yield_now;
+    use tokio::time::Duration;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use zstd::bulk::Compressor as ZstdCompressor;
+
+    fn base_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/grpc"),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_parse_grpc_encoding_variants() {
+        let accepted = AcceptedGrpcEncodings::from_methods(&[
+            CompressionMethod::Zstd,
+            CompressionMethod::Gzip,
+        ]);
+        let mut headers = base_headers();
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("zstd"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Zstd)
+        ));
+
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("gzip"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Gzip)
+        ));
+
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("zstdarrow1"));
+        assert!(matches!(
+            parse_grpc_encoding(&headers, &accepted),
+            Ok(GrpcEncoding::Zstd)
+        ));
+    }
+
+    #[test]
+    fn test_parse_grpc_encoding_respects_config() {
+        let accepted = AcceptedGrpcEncodings::from_methods(&[CompressionMethod::Deflate]);
+        let mut headers = base_headers();
+        let _ = headers.insert("grpc-encoding", HeaderValue::from_static("gzip"));
+        assert!(parse_grpc_encoding(&headers, &accepted).is_err());
+    }
+
+    #[test]
+    fn test_parse_grpc_accept_encoding() {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            "grpc-accept-encoding",
+            HeaderValue::from_static("gzip,zstd, identity "),
+        );
+        let parsed = parse_grpc_accept_encoding(&headers);
+        assert!(parsed.identity);
+        assert!(parsed.zstd);
+        assert!(parsed.gzip);
+        assert!(!parsed.deflate);
+    }
+
+    #[test]
+    fn test_negotiate_response_encoding_prefers_config_order() {
+        let mut client_headers = HeaderMap::new();
+        let _ = client_headers.insert(
+            "grpc-accept-encoding",
+            HeaderValue::from_static("zstd,gzip"),
+        );
+        let client = parse_grpc_accept_encoding(&client_headers);
+        let cfg = vec![CompressionMethod::Gzip, CompressionMethod::Zstd];
+        assert!(matches!(
+            negotiate_response_encoding(&cfg, &client),
+            GrpcEncoding::Gzip
+        ));
+
+        let cfg = vec![CompressionMethod::Zstd];
+        assert!(matches!(
+            negotiate_response_encoding(&cfg, &client),
+            GrpcEncoding::Zstd
+        ));
+    }
+
+    #[test]
+    fn test_build_accept_encoding_header_includes_identity() {
+        let value =
+            build_accept_encoding_header(&[CompressionMethod::Zstd, CompressionMethod::Gzip]);
+        assert_eq!(value.to_str().unwrap(), "zstd,gzip,identity");
+    }
+
+    #[tokio::test]
+    async fn request_timeout_triggers_after_inactivity() {
+        let mut timeout = RequestTimeout::new(Some(Duration::from_millis(50)));
+        let (tx, rx) = mpsc::unbounded_channel::<Result<&'static str, ()>>();
+        let mut stream = UnboundedReceiverStream::new(rx);
+
+        let _producer = tokio::spawn(async move {
+            let _ = tx.send(Ok("first"));
+            sleep(Duration::from_millis(10)).await;
+            let _ = tx.send(Ok("second"));
+            sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(Ok("third"));
+        });
+
+        assert!(timeout.next_with(&mut stream).await.unwrap().is_some());
+        sleep(Duration::from_millis(15)).await;
+        assert!(timeout.next_with(&mut stream).await.unwrap().is_some());
+        assert!(timeout.next_with(&mut stream).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn request_timeout_disabled_when_unset() {
+        let mut timeout = RequestTimeout::new(None);
+        let (tx, rx) = mpsc::unbounded_channel::<Result<&'static str, ()>>();
+        let mut stream = UnboundedReceiverStream::new(rx);
+
+        let _producer = tokio::spawn(async move {
+            sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(Ok("done"));
+        });
+
+        sleep(Duration::from_millis(35)).await;
+        let next = timeout.next_with(&mut stream).await.unwrap();
+        assert!(next.is_some());
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_identity_frame_layout() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Identity);
+        let message = BatchStatus {
+            batch_id: 42,
+            status_code: 7,
+            status_message: "ok".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("identity encode");
+        assert_eq!(encoded[0], 0);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        assert_eq!(
+            encoded[5..],
+            message.encode_to_vec(),
+            "payload matches prost encoding"
+        );
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_gzip_round_trip() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Gzip);
+        let message = BatchStatus {
+            batch_id: 99,
+            status_code: 14,
+            status_message: "compressed".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("gzip encode");
+        assert_eq!(encoded[0], 1);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        let mut decoder = GzDecoder::new(&encoded[5..]);
+        let mut decompressed = Vec::new();
+        let _ = decoder.read_to_end(&mut decompressed).expect("gunzip");
+        assert_eq!(decompressed, message.encode_to_vec());
+    }
+
+    #[test]
+    fn test_grpc_message_encoder_deflate_round_trip() {
+        let mut encoder = GrpcMessageEncoder::new(GrpcEncoding::Deflate);
+        let message = BatchStatus {
+            batch_id: 7,
+            status_code: 3,
+            status_message: "deflated".to_string(),
+        };
+        let encoded = encoder.encode(&message).expect("deflate encode");
+        assert_eq!(encoded[0], 1);
+        let len = u32::from_be_bytes(encoded[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len, encoded.len() - 5);
+        let mut decoder = ZlibDecoder::new(&encoded[5..]);
+        let mut decompressed = Vec::new();
+        let _ = decoder.read_to_end(&mut decompressed).expect("inflate");
+        assert_eq!(decompressed, message.encode_to_vec());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn grpc_streaming_body_randomized_frames() {
+        async fn run_case(encoding: GrpcEncoding, seed: u64) {
+            let mut rng = StdRng::seed_from_u64(seed);
+            for iteration in 0..32 {
+                let frame_count = rng.random_range(1..=8);
+                let mut expected_ids = Vec::with_capacity(frame_count);
+                let mut chunk_queue: VecDeque<Result<Bytes, &'static str>> = VecDeque::new();
+                let mut expected_release = 0usize;
+
+                for frame_idx in 0..frame_count {
+                    let batch_id = (iteration * 100 + frame_idx) as i64;
+                    expected_ids.push(batch_id);
+                    let batch = BatchArrowRecords {
+                        batch_id,
+                        ..Default::default()
+                    };
+
+                    let frame = build_body_frame(&batch, encoding);
+                    for chunk in split_frame_into_chunks(frame, &mut rng) {
+                        expected_release += chunk.len();
+                        chunk_queue.push_back(Ok(chunk));
+                    }
+                }
+
+                let (stream, state_handle) = MockRecvStream::new(chunk_queue);
+                let mut body = GrpcStreamingBody::with_stream(stream, encoding);
+                let mut observed_ids = Vec::new();
+                while let Some(batch) = body
+                    .next_message()
+                    .await
+                    .expect("fuzzer should decode batches")
+                {
+                    observed_ids.push(batch.batch_id);
+                }
+                drop(body);
+
+                assert_eq!(
+                    observed_ids, expected_ids,
+                    "encoding {:?} iteration {}",
+                    encoding, iteration
+                );
+                let released = state_handle
+                    .lock()
+                    .expect("state lock poisoned")
+                    .released_bytes;
+                assert_eq!(
+                    released, expected_release,
+                    "flow control release mismatch for {:?}",
+                    encoding
+                );
+            }
+        }
+
+        run_case(GrpcEncoding::Identity, 0x1111).await;
+        run_case(GrpcEncoding::Gzip, 0x2222).await;
+        run_case(GrpcEncoding::Deflate, 0x3333).await;
+        run_case(GrpcEncoding::Zstd, 0x4444).await;
+    }
+
+    fn build_body_frame(batch: &BatchArrowRecords, encoding: GrpcEncoding) -> Bytes {
+        let payload = batch.encode_to_vec();
+        let (compressed, encoded_payload) = match encoding {
+            GrpcEncoding::Identity => (false, payload),
+            GrpcEncoding::Gzip => (true, compress_payload_gzip(&payload)),
+            GrpcEncoding::Deflate => (true, compress_payload_deflate(&payload)),
+            GrpcEncoding::Zstd => (true, compress_payload_zstd(&payload)),
+        };
+        let mut frame = BytesMut::with_capacity(5 + encoded_payload.len());
+        frame.put_u8(u8::from(compressed));
+        frame.put_u32(encoded_payload.len() as u32);
+        frame.extend_from_slice(&encoded_payload);
+        frame.freeze()
+    }
+
+    fn compress_payload_gzip(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).expect("gzip write");
+        encoder.finish().expect("gzip finish")
+    }
+
+    fn compress_payload_deflate(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).expect("deflate write");
+        encoder.finish().expect("deflate finish")
+    }
+
+    fn compress_payload_zstd(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = ZstdCompressor::new(0).expect("zstd encoder");
+        let mut buffer = vec![0u8; payload.len().max(MIN_COMPRESSED_CAPACITY)];
+        let written = encoder
+            .compress_to_buffer(payload, buffer.as_mut_slice())
+            .expect("zstd compress");
+        buffer.truncate(written);
+        buffer
+    }
+
+    fn split_frame_into_chunks(frame: Bytes, rng: &mut StdRng) -> Vec<Bytes> {
+        let mut offset = 0;
+        let mut chunks = Vec::new();
+        while offset < frame.len() {
+            let remaining = frame.len() - offset;
+            let max_chunk = remaining.clamp(1, 64);
+            let step = rng.random_range(1..=max_chunk);
+            chunks.push(frame.slice(offset..offset + step));
+            offset += step;
+        }
+        chunks
+    }
+
+    struct MockStreamState {
+        released_bytes: usize,
+    }
+
+    struct MockRecvStream {
+        chunks: VecDeque<Result<Bytes, &'static str>>,
+        state: Arc<Mutex<MockStreamState>>,
+    }
+
+    impl MockRecvStream {
+        fn new(
+            chunks: VecDeque<Result<Bytes, &'static str>>,
+        ) -> (Self, Arc<Mutex<MockStreamState>>) {
+            let state = Arc::new(Mutex::new(MockStreamState { released_bytes: 0 }));
+            (
+                Self {
+                    chunks,
+                    state: state.clone(),
+                },
+                state,
+            )
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl BodyStream for MockRecvStream {
+        async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>> {
+            yield_now().await;
+            self.chunks
+                .pop_front()
+                .map(|res| res.map_err(|err| err.to_string()))
+        }
+
+        fn release_capacity(&mut self, released: usize) -> Result<(), BodyStreamError> {
+            if let Ok(mut state) = self.state.lock() {
+                state.released_bytes += released;
+            }
+            Ok(())
         }
     }
 }
