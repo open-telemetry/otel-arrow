@@ -771,11 +771,10 @@ mod test {
     use crate::{
         arrays::MaybeDictArrayAccessor,
         otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
+        proto::OtlpProtoMessage,
         schema::consts,
+        testing::{fixtures::*, round_trip::*},
     };
-
-    use crate::testing::fixtures::*;
-    use crate::testing::round_trip::*;
 
     #[test]
     fn test_child_index_iter_shuffled_order() {
@@ -1048,83 +1047,50 @@ mod test {
     // Empty encoding tests
     //
 
+    /// OpenTelemetry data may contain "empty envelopes". This checks that
+    /// they encode to an empty OTAP encoding.
+    fn assert_empty_batch(msg: OtlpProtoMessage) {
+        let encoded = encode_otlp(&msg);
+        assert_eq!(encoded.batch_length(), 0, "Expected an empty batch");
+    }
+
     #[test]
     fn test_empty_logs() {
-        let encoded = encode_logs(&empty_logs());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Empty logs should have batch_length == 0"
-        );
+        assert_empty_batch(empty_logs().into());
     }
 
     #[test]
     fn test_logs_with_empty_scope_logs() {
-        let encoded = encode_logs(&logs_with_empty_scope_logs());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Logs with no records should have batch_length == 0"
-        );
+        assert_empty_batch(logs_with_empty_scope_logs().into());
     }
 
     #[test]
     fn test_empty_traces() {
-        let encoded = encode_traces(&empty_traces());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Empty traces should have batch_length == 0"
-        );
+        assert_empty_batch(empty_traces().into());
     }
 
     #[test]
     fn test_traces_with_empty_scope_spans() {
-        let encoded = encode_traces(&traces_with_empty_scope_spans());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Traces with no spans should have batch_length == 0"
-        );
+        assert_empty_batch(traces_with_empty_scope_spans().into());
     }
 
     #[test]
     fn test_traces_with_empty_spans() {
-        let encoded = encode_traces(&traces_with_empty_spans());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Traces with no spans should have batch_length == 0"
-        );
+        assert_empty_batch(traces_with_empty_spans().into());
     }
 
     #[test]
     fn test_empty_metrics() {
-        let encoded = encode_metrics(&empty_metrics());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Empty metrics should have batch_length == 0"
-        );
+        assert_empty_batch(empty_metrics().into());
     }
 
     #[test]
     fn test_metrics_with_no_scope_metrics() {
-        let encoded = encode_metrics(&metrics_with_no_scope_metrics());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Metrics with no scope metrics should have batch_length == 0"
-        );
+        assert_empty_batch(metrics_with_no_scope_metrics().into());
     }
 
     #[test]
     fn test_metrics_with_no_metrics() {
-        let encoded = encode_metrics(&metrics_with_no_metrics());
-        assert_eq!(
-            encoded.batch_length(),
-            0,
-            "Metrics with no metrics should have batch_length == 0"
-        );
+        assert_empty_batch(metrics_with_no_metrics().into());
     }
 }

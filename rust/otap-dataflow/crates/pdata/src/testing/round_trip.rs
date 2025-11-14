@@ -17,6 +17,15 @@ use crate::proto::opentelemetry::trace::v1::TracesData;
 use crate::testing::equiv::assert_equivalent;
 use prost::Message as ProstMessage;
 
+/// Transcode a protocol message object to OTAP records.
+pub fn encode_otlp(msg: &OtlpProtoMessage) -> OtapArrowRecords {
+    match msg {
+        OtlpProtoMessage::Logs(logs) => encode_logs(logs),
+        OtlpProtoMessage::Metrics(metrics) => encode_metrics(metrics),
+        OtlpProtoMessage::Traces(traces) => encode_traces(traces),
+    }
+}
+
 //
 // Logs
 //
