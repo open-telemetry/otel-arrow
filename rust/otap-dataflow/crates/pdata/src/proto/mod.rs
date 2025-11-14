@@ -173,6 +173,92 @@ fn metrics_batch_length(metrics: &opentelemetry::metrics::v1::MetricsData) -> us
         .sum()
 }
 
+//
+// From<> conversions between Request types and Data types
+//
+
+impl From<opentelemetry::collector::logs::v1::ExportLogsServiceRequest>
+    for opentelemetry::logs::v1::LogsData
+{
+    fn from(req: opentelemetry::collector::logs::v1::ExportLogsServiceRequest) -> Self {
+        Self {
+            resource_logs: req.resource_logs,
+        }
+    }
+}
+
+impl From<opentelemetry::logs::v1::LogsData>
+    for opentelemetry::collector::logs::v1::ExportLogsServiceRequest
+{
+    fn from(data: opentelemetry::logs::v1::LogsData) -> Self {
+        Self {
+            resource_logs: data.resource_logs,
+        }
+    }
+}
+
+impl From<opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest>
+    for opentelemetry::metrics::v1::MetricsData
+{
+    fn from(req: opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest) -> Self {
+        Self {
+            resource_metrics: req.resource_metrics,
+        }
+    }
+}
+
+impl From<opentelemetry::metrics::v1::MetricsData>
+    for opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest
+{
+    fn from(data: opentelemetry::metrics::v1::MetricsData) -> Self {
+        Self {
+            resource_metrics: data.resource_metrics,
+        }
+    }
+}
+
+impl From<opentelemetry::collector::trace::v1::ExportTraceServiceRequest>
+    for opentelemetry::trace::v1::TracesData
+{
+    fn from(req: opentelemetry::collector::trace::v1::ExportTraceServiceRequest) -> Self {
+        Self {
+            resource_spans: req.resource_spans,
+        }
+    }
+}
+
+impl From<opentelemetry::trace::v1::TracesData>
+    for opentelemetry::collector::trace::v1::ExportTraceServiceRequest
+{
+    fn from(data: opentelemetry::trace::v1::TracesData) -> Self {
+        Self {
+            resource_spans: data.resource_spans,
+        }
+    }
+}
+
+//
+// From<> conversions from Data types to OtlpProtoMessage enum
+//
+
+impl From<opentelemetry::logs::v1::LogsData> for OtlpProtoMessage {
+    fn from(data: opentelemetry::logs::v1::LogsData) -> Self {
+        Self::Logs(data)
+    }
+}
+
+impl From<opentelemetry::metrics::v1::MetricsData> for OtlpProtoMessage {
+    fn from(data: opentelemetry::metrics::v1::MetricsData) -> Self {
+        Self::Metrics(data)
+    }
+}
+
+impl From<opentelemetry::trace::v1::TracesData> for OtlpProtoMessage {
+    fn from(data: opentelemetry::trace::v1::TracesData) -> Self {
+        Self::Traces(data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
