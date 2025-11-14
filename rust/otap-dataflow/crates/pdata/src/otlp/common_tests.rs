@@ -10,7 +10,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use crate::encode::{encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch};
     use crate::otap::OtapArrowRecords;
     use crate::otlp::OtlpProtoBytes;
     use crate::payload::OtapPayload;
@@ -18,6 +18,10 @@ mod tests {
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+    };
+    use crate::proto::opentelemetry::metrics::v1::{
+        AggregationTemporality, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+        ScopeMetrics, Sum,
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::{
@@ -667,5 +671,257 @@ mod tests {
             0,
             "Traces with no spans should have batch_length == 0"
         );
+    }
+
+    // ============================================================================
+    // Metrics Tests (Sum only)
+    // ============================================================================
+
+    /// Encode OTLP MetricsData to OTAP Arrow Records
+    fn encode_metrics(metrics: &MetricsData) -> OtapArrowRecords {
+        encode_metrics_otap_batch(metrics).expect("encode should succeed")
+    }
+
+    /// Decode OTAP Arrow Records back to OTLP MetricsData
+    fn decode_metrics(otap: OtapArrowRecords) -> MetricsData {
+        let pdata: OtapPayload = otap.into();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+        match otlp_bytes {
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                MetricsData::decode(bytes.as_ref()).expect("decode should succeed")
+            }
+            _ => panic!("expected metrics"),
+        }
+    }
+
+    /// Perform round-trip test: OTLP -> OTAP -> OTLP and verify equivalence
+    fn test_metrics_round_trip(input: MetricsData) {
+        let encoded = encode_metrics(&input);
+        let decoded = decode_metrics(encoded);
+
+        let input_msg = OtlpProtoMessage::Metrics(input);
+        let decoded_msg = OtlpProtoMessage::Metrics(decoded);
+
+        assert_equivalent(&[input_msg], &[decoded_msg]);
+    }
+
+    #[test]
+    fn test_metrics_sum_with_full_resource_and_scope() {
+        // Test the normal case: metrics with resource, scope, and data points
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("test-scope".to_string())
+                    .finish(),
+                vec![Metric::build()
+                    .name("test.counter")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        vec![
+                            NumberDataPoint::build()
+                                .time_unix_nano(1000u64)
+                                .value_int(42i64)
+                                .finish(),
+                            NumberDataPoint::build()
+                                .time_unix_nano(2000u64)
+                                .value_int(84i64)
+                                .finish(),
+                        ],
+                    ))
+                    .finish()],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_resource() {
+        // Test case 1: Metrics with no resource
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(), // Empty resource
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("test-scope".to_string())
+                    .finish(),
+                vec![Metric::build()
+                    .name("test.counter")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        vec![NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_int(42i64)
+                            .finish()],
+                    ))
+                    .finish()],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_scope() {
+        // Test case 2: Metrics with resource but no scope
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(), // Empty scope
+                vec![Metric::build()
+                    .name("test.counter")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        vec![NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_int(42i64)
+                            .finish()],
+                    ))
+                    .finish()],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_resource_no_scope() {
+        // Test case 3: Metrics with neither resource nor scope
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![Metric::build()
+                    .name("test.counter")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        vec![NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_int(42i64)
+                            .finish()],
+                    ))
+                    .finish()],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_data_points() {
+        // Test case 4: Sum with no data points
+        // This is a key test - a metric with no points should be handled gracefully
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("test-scope".to_string())
+                    .finish(),
+                vec![Metric::build()
+                    .name("test.counter")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        vec![], // No data points
+                    ))
+                    .finish()],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
+    }
+
+    #[test]
+    fn test_empty_metrics() {
+        // Edge case: completely empty metrics data
+        // Per OpenTelemetry spec, empty envelopes can be dropped
+        // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
+        let metrics = MetricsData::new(vec![]);
+        let encoded = encode_metrics(&metrics);
+        assert_eq!(
+            encoded.batch_length(),
+            0,
+            "Empty metrics should have batch_length == 0"
+        );
+    }
+
+    #[test]
+    fn test_metrics_with_no_scope_metrics() {
+        // Edge case: resource with no scope metrics (no actual metrics)
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![], // No scope metrics
+        )]);
+
+        let encoded = encode_metrics(&metrics);
+        assert_eq!(
+            encoded.batch_length(),
+            0,
+            "Metrics with no scope metrics should have batch_length == 0"
+        );
+    }
+
+    #[test]
+    fn test_metrics_with_no_metrics() {
+        // Edge case: scope with no metrics
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("scope".to_string())
+                    .finish(),
+                vec![], // No metrics
+            )],
+        )]);
+
+        let encoded = encode_metrics(&metrics);
+        assert_eq!(
+            encoded.batch_length(),
+            0,
+            "Metrics with no metrics should have batch_length == 0"
+        );
+    }
+
+    #[test]
+    fn test_metrics_multiple_sums_no_resource() {
+        // Test multiple Sum metrics with no resource
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("scope".to_string())
+                    .finish(),
+                vec![
+                    Metric::build()
+                        .name("test.counter1")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![NumberDataPoint::build()
+                                .time_unix_nano(1000u64)
+                                .value_int(10i64)
+                                .finish()],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("test.counter2")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Delta,
+                            false,
+                            vec![NumberDataPoint::build()
+                                .time_unix_nano(2000u64)
+                                .value_double(3.14)
+                                .finish()],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+
+        test_metrics_round_trip(metrics);
     }
 }
