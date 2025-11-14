@@ -128,7 +128,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                     SignalType::Traces => self
                         .config
-                        .span_filters()
+                        .trace_filters()
                         .filter(arrow_records)
                         .map_err(|e| {
                             let source_detail = format_error_sources(&e);
