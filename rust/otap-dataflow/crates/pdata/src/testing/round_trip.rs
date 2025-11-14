@@ -18,6 +18,7 @@ use crate::testing::equiv::assert_equivalent;
 use prost::Message as ProstMessage;
 
 /// Transcode a protocol message object to OTAP records.
+#[must_use]
 pub fn encode_otlp(msg: &OtlpProtoMessage) -> OtapArrowRecords {
     match msg {
         OtlpProtoMessage::Logs(logs) => encode_logs(logs),
@@ -31,11 +32,13 @@ pub fn encode_otlp(msg: &OtlpProtoMessage) -> OtapArrowRecords {
 //
 
 /// Encode OTLP LogsData to OTAP Arrow Records
+#[must_use]
 pub fn encode_logs(logs: &LogsData) -> OtapArrowRecords {
     encode_logs_otap_batch(logs).expect("encode should succeed")
 }
 
 /// Decode OTAP Arrow Records to OTLP LogsData
+#[must_use]
 pub fn decode_logs(otap: OtapArrowRecords) -> LogsData {
     let pdata: OtapPayload = otap.into();
     let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
@@ -60,11 +63,13 @@ pub fn test_logs_round_trip(input: LogsData) {
 //
 
 /// Encode OTLP TracesData to OTAP Arrow Records
+#[must_use]
 pub fn encode_traces(traces: &TracesData) -> OtapArrowRecords {
     encode_spans_otap_batch(traces).expect("encode should succeed")
 }
 
 /// Decode OTAP Arrow Records to OTLP TracesData
+#[must_use]
 pub fn decode_traces(otap: OtapArrowRecords) -> TracesData {
     let pdata: OtapPayload = otap.into();
     let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
@@ -92,11 +97,13 @@ pub fn test_traces_round_trip(input: TracesData) {
 //
 
 /// Encode OTLP MetricsData to OTAP Arrow Records
+#[must_use]
 pub fn encode_metrics(metrics: &MetricsData) -> OtapArrowRecords {
     encode_metrics_otap_batch(metrics).expect("encode should succeed")
 }
 
 /// Decode OTAP Arrow Records to OTLP MetricsData
+#[must_use]
 pub fn decode_metrics(otap: OtapArrowRecords) -> MetricsData {
     let pdata: OtapPayload = otap.into();
     let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");

@@ -91,15 +91,17 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         // Resource column is nullable - if it's missing, return all None values
         let resource_column = rb.column_by_name(consts::RESOURCE);
-        if resource_column.is_none() {
+
+        let struct_array = if let Some(resource_column) = resource_column {
+            resource_column
+        } else {
             return Ok(Self {
                 id: None,
                 dropped_attributes_count: None,
                 schema_url: None,
             });
-        }
+        };
 
-        let struct_array = resource_column.unwrap();
         let struct_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -152,16 +154,18 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         // Scope column is nullable - if it's missing, return all None values
         let scope_column = rb.column_by_name(consts::SCOPE);
-        if scope_column.is_none() {
+
+        let struct_array = if let Some(scope_column) = scope_column {
+            scope_column
+        } else {
             return Ok(Self {
                 name: None,
                 version: None,
                 dropped_attributes_count: None,
                 id: None,
             });
-        }
+        };
 
-        let struct_array = scope_column.unwrap();
         let scope_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
