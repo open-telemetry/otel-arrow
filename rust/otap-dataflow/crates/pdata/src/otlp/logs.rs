@@ -209,14 +209,19 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
+        
+        // Check if logs table exists - if not, batch_length() == 0 (empty batch)
+        // Return early with empty result (valid per OTLP spec)
+        let logs_rb = match otap_batch.get(ArrowPayloadType::Logs) {
+            Some(rb) => rb,
+            None => return Ok(()), // Empty batch, nothing to encode
+        };
+        
         let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
 
         self.reset();
 
         // get the list of indices in the root record to visit in order
-        let logs_rb = otap_batch
-            .get(ArrowPayloadType::Logs)
-            .ok_or(Error::LogRecordNotFound)?;
         self.batch_sorter
             .init_cursor_for_root_batch(logs_rb, &mut self.root_cursor)?;
 
@@ -299,7 +304,8 @@ impl LogsProtoBytesEncoder {
         );
 
         // encode all `ScopeLog`s for this `ResourceLog`
-        let resource_id = logs_data_arrays.resource_arrays.id.value_at(index);
+        let resource_id = logs_data_arrays.resource_arrays.id
+            .and_then(|arr| arr.value_at(index));
 
         loop {
             proto_encode_len_delimited_unknown_size!(
@@ -315,7 +321,9 @@ impl LogsProtoBytesEncoder {
 
             // check if we've found a new resource ID. If so, break
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
-            if resource_id != logs_data_arrays.resource_arrays.id.value_at(next_index) {
+            let next_resource_id = logs_data_arrays.resource_arrays.id
+                .and_then(|arr| arr.value_at(next_index));
+            if resource_id != next_resource_id {
                 break;
             }
         }
@@ -353,7 +361,8 @@ impl LogsProtoBytesEncoder {
         );
 
         // encode all `LogRecord`s for this `ScopeLog`
-        let scope_id = logs_data_arrays.scope_arrays.id.value_at(index);
+        let scope_id = logs_data_arrays.scope_arrays.id
+            .and_then(|arr| arr.value_at(index));
 
         loop {
             proto_encode_len_delimited_unknown_size!(
@@ -370,7 +379,9 @@ impl LogsProtoBytesEncoder {
             // check if we've found a new scope ID. If so, break
             // Safety: we've just checked above that cursor isn't finished
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
-            if scope_id != logs_data_arrays.scope_arrays.id.value_at(next_index) {
+            let next_scope_id = logs_data_arrays.scope_arrays.id
+                .and_then(|arr| arr.value_at(next_index));
+            if scope_id != next_scope_id {
                 break;
             }
         }
