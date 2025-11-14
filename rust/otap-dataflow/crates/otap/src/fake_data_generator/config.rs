@@ -4,9 +4,6 @@
 //! Implementation of the configuration of the fake signal receiver
 //!
 
-use otap_df_pdata::proto::opentelemetry::{
-    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
-};
 use serde::{Deserialize, Serialize};
 
 use weaver_common::result::WResult;
@@ -16,17 +13,6 @@ use weaver_resolver::SchemaResolver;
 use weaver_semconv::registry::SemConvRegistry;
 use weaver_semconv::registry_repo::RegistryRepo;
 
-/// Temp pdata
-/// TODO: Move somewhere in otap_df_pdata
-#[derive(Clone, Debug)]
-pub enum OTLPSignal {
-    /// metrics pdata
-    Metrics(MetricsData),
-    /// traces pdata
-    Traces(TracesData),
-    /// log pdata
-    Logs(LogsData),
-}
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

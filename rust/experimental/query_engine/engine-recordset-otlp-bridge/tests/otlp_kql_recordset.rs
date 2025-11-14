@@ -418,6 +418,51 @@ fn test_strlen_function() {
 }
 
 #[test]
+fn test_strcat_function() {
+    let log = LogRecord::new()
+        .with_event_name("_name_".into())
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "_value_".into(),
+            ))),
+        );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | extend a = strcat('hello', EventName, text, Unknown)";
+
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(
+        attributes.get("a").map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello_name__value_".into()
+            )))
+            .to_value()
+            .to_string()
+        )
+    );
+}
+
+#[test]
 fn test_replace_string_function() {
     let log = LogRecord::new()
         .with_event_name("A magic trick can turn a cat into a dog".into())
