@@ -283,7 +283,7 @@ mod tests {
         let compressed = client.gzip_compress(data).unwrap();
 
         // Verify it's actually compressed (should be smaller for repetitive data)
-        assert!(compressed.len() > 0);
+        assert!(!compressed.is_empty());
 
         // Verify gzip magic bytes
         assert_eq!(compressed[0], 0x1f);
