@@ -779,9 +779,9 @@ mod tests {
         stream_batch_statuses,
     };
     use crate::compression::CompressionMethod;
-    use crate::otap_grpc::ArrowRequestStream;
     use crate::otap_mock::create_otap_batch;
     use crate::otel_receiver::ack::AckToken;
+    use crate::otel_receiver::grpc::RequestStream;
     use crate::otel_receiver::grpc::{
         BodyStream, BodyStreamError, GrpcEncoding, MIN_COMPRESSED_CAPACITY,
     };
@@ -1015,8 +1015,8 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl ArrowRequestStream for FakeArrowStream {
+    #[async_trait(?Send)]
+    impl RequestStream for FakeArrowStream {
         async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
             Ok(self.batches.pop_front())
         }
@@ -1310,7 +1310,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
+    #[async_trait(?Send)]
     impl BodyStream for MockRecvStream {
         async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>> {
             yield_now().await;

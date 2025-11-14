@@ -18,7 +18,7 @@
 use super::ack::{
     AckPollResult, AckRegistry, AckToken, nack_status, overloaded_status, success_status,
 };
-use crate::otap_grpc::ArrowRequestStream;
+use super::grpc::RequestStream;
 use crate::pdata::{Context, OtapPdata};
 use futures::Stream;
 use futures::future::{LocalBoxFuture, poll_fn};
@@ -44,7 +44,7 @@ pub(crate) fn stream_batch_statuses<S, T, F>(
     max_in_flight_per_connection: usize,
 ) -> StatusStream<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
@@ -65,7 +65,7 @@ where
 /// and yielding `BatchStatus` items as soon as ACK/NACK signals arrive.
 pub(crate) struct StatusStream<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
@@ -76,7 +76,7 @@ where
 
 impl<S, T, F> StatusStream<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
@@ -107,7 +107,7 @@ where
 
 impl<S, T, F> Stream for StatusStream<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
@@ -170,7 +170,7 @@ where
 /// inflight count plus the registry capacity are what enforce backpressure.
 struct StatusStreamState<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
@@ -204,7 +204,7 @@ enum PreparedBatch {
 
 impl<S, T, F> StatusStreamState<S, T, F>
 where
-    S: ArrowRequestStream + Unpin,
+    S: RequestStream + Unpin + 'static,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {

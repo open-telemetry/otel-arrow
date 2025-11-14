@@ -10,7 +10,6 @@
 //! - abstracting the underlying `RecvStream` so it can be fuzzed in tests.
 
 use crate::compression::CompressionMethod;
-use crate::otap_grpc::ArrowRequestStream;
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use flate2::Compression;
@@ -296,8 +295,8 @@ pub(crate) fn grpc_encoding_token(encoding: GrpcEncoding) -> Option<&'static str
 pub(crate) type BodyStreamError = String;
 
 /// Abstraction over the inbound h2 data stream so tests can inject fakes.
-#[async_trait]
-pub(crate) trait BodyStream: Send {
+#[async_trait(?Send)]
+pub(crate) trait BodyStream {
     async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>>;
     fn release_capacity(&mut self, released: usize) -> Result<(), BodyStreamError>;
 }
@@ -312,7 +311,7 @@ impl H2BodyStream {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl BodyStream for H2BodyStream {
     /// Pulls the next DATA frame chunk from h2.
     async fn next_chunk(&mut self) -> Option<Result<Bytes, BodyStreamError>> {
@@ -629,8 +628,13 @@ where
     }
 }
 
-#[async_trait]
-impl<S> ArrowRequestStream for GrpcStreamingBody<S>
+#[async_trait(?Send)]
+pub(crate) trait RequestStream {
+    async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status>;
+}
+
+#[async_trait(?Send)]
+impl<S> RequestStream for GrpcStreamingBody<S>
 where
     S: BodyStream + Unpin + 'static,
 {
