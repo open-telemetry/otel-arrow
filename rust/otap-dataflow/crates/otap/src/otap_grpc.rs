@@ -265,7 +265,7 @@ fn build_status_stream<S, T, F>(
     state: ArrowBatchStreamState<S, T, F>,
 ) -> impl Stream<Item = Result<BatchStatus, Status>>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Send,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {
@@ -279,7 +279,7 @@ where
 
 pub(crate) struct ArrowBatchStreamState<S, T, F>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Send,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {
@@ -306,7 +306,7 @@ enum PreparedBatch {
 
 impl<S, T, F> ArrowBatchStreamState<S, T, F>
 where
-    S: ArrowRequestStream,
+    S: ArrowRequestStream + Send,
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static,
 {

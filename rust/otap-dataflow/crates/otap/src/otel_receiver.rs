@@ -6,70 +6,62 @@
 //! the thread-per-core runtime without requiring `Send + Sync` futures.
 //!
 //! ToDo grpc-accept-encoding parsing: read client preference list, validate tokens, intersect with supported codecs, and propagate the chosen response codec through request handling.
-//  ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
-//  ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
-//  ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
+//! ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
+//! ToDo Error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
+//! ToDo Tests: add unit/integration coverage for accept header parsing, per-codec request/response flows, and zstdarrow alias handling to prevent regressions.
+//! ToDo Add support for Unix domain sockets as a transport option.
 
-use crate::compression::CompressionMethod;
 use crate::OTAP_RECEIVER_FACTORIES;
+use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
-use crate::otap_grpc::otlp::server::RouteResponse;
-use crate::otap_grpc::{ArrowRequestStream, GrpcServerSettings, Settings, per_connection_limit};
+use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
 use crate::otap_receiver::OtapReceiverMetrics;
-use crate::pdata::{Context, OtapPdata};
+use ack::{AckRegistries, AckRegistry, route_local_ack_response, route_local_nack_response};
+use futures::StreamExt;
+use grpc::{
+    AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
+    build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
+    parse_grpc_accept_encoding, parse_grpc_encoding,
+};
+use stream::stream_batch_statuses;
+
+mod ack;
+mod grpc;
+mod stream;
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use flate2::read::{GzDecoder, ZlibDecoder};
-use flate2::write::{GzEncoder, ZlibEncoder};
-use flate2::Compression;
-use futures::future::{LocalBoxFuture, poll_fn};
-use futures::stream::FuturesUnordered;
-use futures::{Stream, StreamExt};
+use bytes::Bytes;
 use h2::server::{self, SendResponse};
 use h2::{Ping, PingPong};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::admitter::{AdmitDecision, Admitter, ConnectionGuard};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg};
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
-use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces, from_record_messages};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-    BatchArrowRecords, BatchStatus, StatusCode as ProtoStatusCode,
-};
-use otap_df_pdata::{Consumer, OtapArrowRecords};
+use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otap_df_telemetry::metrics::MetricSet;
-use prost::Message;
 use serde::Deserialize;
-use smallvec::smallvec;
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::fmt;
-use std::future::Future;
-use std::io::{self, Read, Write};
-use std::marker::PhantomData;
-use std::mem;
+use std::io;
 use std::ops::Add;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Sleep, Instant as TokioInstant};
+use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
-use zstd::bulk::{Compressor as ZstdCompressor, Decompressor as ZstdDecompressor};
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
 const ARROW_LOGS_SERVICE: &str =
@@ -78,9 +70,6 @@ const ARROW_METRICS_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
 const ARROW_TRACES_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
-const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
-const MIN_COMPRESSED_CAPACITY: usize = 1024;
-
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -175,13 +164,11 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         );
 
         let request_encoding_methods = config.request_compression_methods();
-        let request_encodings =
-            AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
-        let request_accept_header =
-            build_accept_encoding_header(&request_encoding_methods);
+        let request_encodings = AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
+        let request_accept_header = build_accept_encoding_header(&request_encoding_methods);
         let response_methods = config.response_compression_methods();
 
-        let router = Rc::new(ArrowRouter {
+        let router = Rc::new(GrpcRequestRouter {
             effect_handler: effect_handler.clone(),
             logs_ack_registry,
             metrics_ack_registry,
@@ -286,7 +273,7 @@ fn build_h2_builder(settings: &GrpcServerSettings) -> server::Builder {
 async fn run_grpc_server(
     incoming: &mut TcpIncoming,
     grpc_config: Rc<GrpcServerSettings>,
-    arrow_router: Rc<ArrowRouter>,
+    arrow_router: Rc<GrpcRequestRouter>,
     cancel: CancellationToken,
     admitter: Admitter,
 ) -> Result<(), io::Error> {
@@ -393,7 +380,7 @@ async fn run_grpc_server(
 async fn handle_tcp_conn(
     socket: tokio::net::TcpStream,
     builder: server::Builder,
-    router: Rc<ArrowRouter>,
+    router: Rc<GrpcRequestRouter>,
     // IMPORTANT: this keeps one connection slot while the connection is alive.
     tcp_conn_guard: ConnectionGuard,
     keepalive_interval: Option<Duration>,
@@ -417,9 +404,7 @@ async fn handle_tcp_conn(
         if let Some(ka) = keepalive.as_mut() {
             ka.update_idle_state(stream_tasks.is_empty());
         }
-        let keepalive_armed = keepalive
-            .as_ref()
-            .is_some_and(Http2Keepalive::is_armed);
+        let keepalive_armed = keepalive.as_ref().is_some_and(Http2Keepalive::is_armed);
 
         tokio::select! {
             // Accept next H2 stream while accepting
@@ -517,6 +502,7 @@ async fn handle_tcp_conn(
     Ok(())
 }
 
+/// Tracks whether a connection needs a HTTP/2 PING/PONG to keep the client alive.
 struct Http2Keepalive {
     ping_pong: PingPong,
     interval: Duration,
@@ -588,13 +574,8 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
-fn reset_sleep(timer: &mut Option<Pin<Box<Sleep>>>, duration: Duration) {
-    if let Some(timer) = timer.as_mut() {
-        timer.as_mut().reset(TokioInstant::now() + duration);
-    }
-}
-
-struct ArrowRouter {
+/// Routes each inbound gRPC request to the appropriate OTAP signal stream.
+struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,
     metrics_ack_registry: Option<AckRegistry>,
@@ -606,7 +587,7 @@ struct ArrowRouter {
     request_timeout: Option<Duration>,
 }
 
-impl ArrowRouter {
+impl GrpcRequestRouter {
     async fn handle_request(
         self: Rc<Self>,
         request: Request<h2::RecvStream>,
@@ -668,8 +649,7 @@ impl ArrowRouter {
     {
         let encoding = parse_grpc_encoding(request.headers(), &self.request_encodings)?;
         let client_accept = parse_grpc_accept_encoding(request.headers());
-        let response_encoding =
-            negotiate_response_encoding(&self.response_methods, &client_accept);
+        let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
         let mut response_encoder = GrpcMessageEncoder::new(response_encoding);
         let recv_stream = request.into_body();
         let body = GrpcStreamingBody::new(recv_stream, encoding);
@@ -696,33 +676,25 @@ impl ArrowRouter {
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
 
-        let timeout_duration = self.request_timeout;
-        let mut timeout = timeout_duration.map(|dur| Box::pin(sleep(dur)));
+        let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         loop {
-            let next_item = if let Some(timeout) = timeout.as_mut() {
-                tokio::select! {
-                    _ = timeout.as_mut() => {
-                        if let Some(duration) = timeout_duration {
-                            log::debug!("Request timed out after {:?}", duration);
-                        }
-                        send_error_trailers(
-                            send_stream,
-                            Status::deadline_exceeded("request timed out"),
-                        );
-                        return Ok(());
+            let next_item = match request_timeout.next_with(&mut status_stream).await {
+                Ok(item) => item,
+                Err(()) => {
+                    if let Some(duration) = self.request_timeout {
+                        log::debug!("Request timed out after {:?}", duration);
                     }
-                    next = status_stream.next() => next
+                    send_error_trailers(
+                        send_stream,
+                        Status::deadline_exceeded("request timed out"),
+                    );
+                    return Ok(());
                 }
-            } else {
-                status_stream.next().await
             };
 
             match next_item {
                 Some(Ok(status)) => {
-                    if let Some(duration) = timeout_duration {
-                        reset_sleep(&mut timeout, duration);
-                    }
                     // log::info!(
                     //     "Sending batch status id={} code={}",
                     //     status.batch_id,
@@ -745,1348 +717,6 @@ impl ArrowRouter {
 
         send_ok_trailers(send_stream);
         Ok(())
-    }
-}
-
-fn parse_grpc_encoding(
-    headers: &HeaderMap,
-    accepted: &AcceptedGrpcEncodings,
-) -> Result<GrpcEncoding, Status> {
-    match headers.get(http::header::CONTENT_TYPE) {
-        Some(value) if value.as_bytes().starts_with(b"application/grpc") => {}
-        other => {
-            log::error!("Rejecting stream due to invalid content-type: {other:?}");
-            return Err(Status::invalid_argument(
-                "missing application/grpc content-type",
-            ));
-        }
-    }
-    match headers.get("grpc-encoding") {
-        None => Ok(GrpcEncoding::Identity),
-        Some(value) => {
-            let raw = value.to_str().map_err(|_| {
-                log::error!("Non-UTF8 grpc-encoding header");
-                Status::invalid_argument("invalid grpc-encoding header")
-            })?;
-            let trimmed = raw.trim();
-            let ascii = trimmed.as_bytes();
-            const PREFIX: &[u8] = b"zstdarrow";
-
-            let encoding = if ascii.is_empty() || eq_ascii_case_insensitive(ascii, b"identity") {
-                GrpcEncoding::Identity
-            } else if eq_ascii_case_insensitive(ascii, b"zstd") {
-                GrpcEncoding::Zstd
-            } else if eq_ascii_case_insensitive(ascii, b"gzip") {
-                GrpcEncoding::Gzip
-            } else if eq_ascii_case_insensitive(ascii, b"deflate") {
-                GrpcEncoding::Deflate
-            } else if ascii.len() >= PREFIX.len()
-                && starts_with_ascii_case_insensitive(ascii, PREFIX)
-            {
-                let tail = &ascii[PREFIX.len()..];
-                if tail.len() == 1 && tail[0].is_ascii_digit() {
-                    GrpcEncoding::Zstd
-                } else {
-                    log::error!("Unsupported grpc-encoding {}", trimmed);
-                    return Err(Status::unimplemented("grpc compression not supported"));
-                }
-            } else {
-                log::error!("Unsupported grpc-encoding {}", trimmed);
-                return Err(Status::unimplemented("grpc compression not supported"));
-            };
-
-            if accepted.allows(encoding) {
-                Ok(encoding)
-            } else {
-                log::error!(
-                    "grpc-encoding {} not enabled in server configuration",
-                    trimmed
-                );
-                Err(Status::unimplemented("grpc compression not supported"))
-            }
-        }
-    }
-}
-
-fn eq_ascii_case_insensitive(value: &[u8], expected: &[u8]) -> bool {
-    value.len() == expected.len()
-        && value
-            .iter()
-            .zip(expected)
-            .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
-}
-
-fn starts_with_ascii_case_insensitive(value: &[u8], prefix: &[u8]) -> bool {
-    value.len() >= prefix.len()
-        && value
-            .iter()
-            .zip(prefix)
-            .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
-}
-
-fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
-    lhs == rhs || lhs.eq_ignore_ascii_case(&rhs)
-}
-
-fn parse_grpc_accept_encoding(headers: &HeaderMap) -> ClientAcceptEncodings {
-    let Some(value) = headers.get("grpc-accept-encoding") else {
-        return ClientAcceptEncodings::identity_only();
-    };
-    let raw = match value.to_str() {
-        Ok(raw) => raw,
-        Err(_) => return ClientAcceptEncodings::identity_only(),
-    };
-
-    let mut encodings = ClientAcceptEncodings {
-        identity: false,
-        zstd: false,
-        gzip: false,
-        deflate: false,
-    };
-    let mut recognized = false;
-
-    for token in raw.split(',') {
-        let trimmed = token.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let ascii = trimmed.as_bytes();
-        if eq_ascii_case_insensitive(ascii, b"identity") {
-            encodings.identity = true;
-            recognized = true;
-        } else if eq_ascii_case_insensitive(ascii, b"zstd") {
-            encodings.zstd = true;
-            recognized = true;
-        } else if eq_ascii_case_insensitive(ascii, b"gzip") {
-            encodings.gzip = true;
-            recognized = true;
-        } else if eq_ascii_case_insensitive(ascii, b"deflate") {
-            encodings.deflate = true;
-            recognized = true;
-        }
-    }
-
-    if recognized {
-        encodings
-    } else {
-        ClientAcceptEncodings::identity_only()
-    }
-}
-
-fn negotiate_response_encoding(
-    configured: &[CompressionMethod],
-    client: &ClientAcceptEncodings,
-) -> GrpcEncoding {
-    for method in configured {
-        if client.supports(*method) {
-            return match method {
-                CompressionMethod::Zstd => GrpcEncoding::Zstd,
-                CompressionMethod::Gzip => GrpcEncoding::Gzip,
-                CompressionMethod::Deflate => GrpcEncoding::Deflate,
-            };
-        }
-    }
-    GrpcEncoding::Identity
-}
-
-#[derive(Clone, Copy)]
-enum GrpcEncoding {
-    Identity,
-    Zstd,
-    Gzip,
-    Deflate,
-    // ToDo Add support for Snappy to follow Go implementation
-}
-
-#[derive(Clone, Copy)]
-struct AcceptedGrpcEncodings {
-    zstd: bool,
-    gzip: bool,
-    deflate: bool,
-}
-
-impl AcceptedGrpcEncodings {
-    fn from_methods(methods: &[CompressionMethod]) -> Self {
-        let mut encodings = Self {
-            zstd: false,
-            gzip: false,
-            deflate: false,
-        };
-
-        for method in methods {
-            match method {
-                CompressionMethod::Zstd => encodings.zstd = true,
-                CompressionMethod::Gzip => encodings.gzip = true,
-                CompressionMethod::Deflate => encodings.deflate = true,
-            }
-        }
-
-        encodings
-    }
-
-    fn allows(self, encoding: GrpcEncoding) -> bool {
-        match encoding {
-            GrpcEncoding::Identity => true,
-            GrpcEncoding::Zstd => self.zstd,
-            GrpcEncoding::Gzip => self.gzip,
-            GrpcEncoding::Deflate => self.deflate,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ClientAcceptEncodings {
-    identity: bool,
-    zstd: bool,
-    gzip: bool,
-    deflate: bool,
-}
-
-impl ClientAcceptEncodings {
-    fn identity_only() -> Self {
-        Self {
-            identity: true,
-            zstd: false,
-            gzip: false,
-            deflate: false,
-        }
-    }
-
-    fn supports(self, method: CompressionMethod) -> bool {
-        match method {
-            CompressionMethod::Zstd => self.zstd,
-            CompressionMethod::Gzip => self.gzip,
-            CompressionMethod::Deflate => self.deflate,
-        }
-    }
-}
-
-fn build_accept_encoding_header(methods: &[CompressionMethod]) -> HeaderValue {
-    let mut tokens = Vec::with_capacity(methods.len() + 1);
-    for method in methods {
-        tokens.push(compression_method_token(*method));
-    }
-    // `identity` is always supported but least preferred.
-    tokens.push("identity");
-    let joined = tokens.join(",");
-    HeaderValue::from_str(&joined).unwrap_or_else(|_| HeaderValue::from_static("identity"))
-}
-
-fn compression_method_token(method: CompressionMethod) -> &'static str {
-    match method {
-        CompressionMethod::Zstd => "zstd",
-        CompressionMethod::Gzip => "gzip",
-        CompressionMethod::Deflate => "deflate",
-    }
-}
-
-fn grpc_encoding_token(encoding: GrpcEncoding) -> Option<&'static str> {
-    match encoding {
-        GrpcEncoding::Identity => None,
-        GrpcEncoding::Zstd => Some("zstd"),
-        GrpcEncoding::Gzip => Some("gzip"),
-        GrpcEncoding::Deflate => Some("deflate"),
-    }
-}
-
-struct GrpcStreamingBody {
-    recv: h2::RecvStream,
-    buffer: ChunkBuffer,
-    current_frame: Option<FrameHeader>,
-    finished: bool,
-    encoding: GrpcEncoding,
-    zstd: Option<ZstdDecompressor<'static>>,
-    decompressed_buf: Vec<u8>,
-}
-
-#[derive(Clone, Copy)]
-struct FrameHeader {
-    length: usize,
-    compressed: bool,
-}
-
-struct ChunkBuffer {
-    chunks: VecDeque<Bytes>,
-    len: usize,
-}
-
-impl ChunkBuffer {
-    fn new() -> Self {
-        Self {
-            chunks: VecDeque::new(),
-            len: 0,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn push(&mut self, chunk: Bytes) {
-        if chunk.is_empty() {
-            return;
-        }
-        self.len += chunk.len();
-        self.chunks.push_back(chunk);
-    }
-
-    fn split_frame(&mut self, size: usize) -> Option<FrameBuf> {
-        if size > self.len {
-            return None;
-        }
-        if size == 0 {
-            return Some(FrameBuf::new(VecDeque::new(), 0));
-        }
-
-        let mut needed = size;
-        let mut parts = VecDeque::new();
-        while needed > 0 {
-            let mut chunk = self.chunks.pop_front()?;
-            if chunk.len() > needed {
-                let part = chunk.split_to(needed);
-                self.len -= needed;
-                parts.push_back(part);
-                self.chunks.push_front(chunk);
-                needed = 0;
-            } else {
-                needed -= chunk.len();
-                self.len -= chunk.len();
-                parts.push_back(chunk);
-            }
-        }
-        Some(FrameBuf::new(parts, size))
-    }
-}
-
-struct FrameBuf {
-    chunks: VecDeque<Bytes>,
-    remaining: usize,
-}
-
-impl FrameBuf {
-    fn new(chunks: VecDeque<Bytes>, remaining: usize) -> Self {
-        Self { chunks, remaining }
-    }
-
-    fn into_bytes(mut self) -> Bytes {
-        match self.chunks.len() {
-            0 => Bytes::new(),
-            1 => self
-                .chunks
-                .pop_front()
-                .expect("frame buffer length mismatch"),
-            _ => {
-                let mut buf = BytesMut::with_capacity(self.remaining);
-                while let Some(chunk) = self.chunks.pop_front() {
-                    buf.extend_from_slice(&chunk);
-                }
-                buf.freeze()
-            }
-        }
-    }
-}
-
-impl Buf for FrameBuf {
-    fn remaining(&self) -> usize {
-        self.remaining
-    }
-
-    fn chunk(&self) -> &[u8] {
-        self.chunks
-            .front()
-            .map(|bytes| bytes.as_ref())
-            .unwrap_or(&[])
-    }
-
-    fn advance(&mut self, mut cnt: usize) {
-        assert!(cnt <= self.remaining);
-        self.remaining -= cnt;
-        while cnt > 0 {
-            let Some(front_len) = self.chunks.front().map(|b| b.len()) else {
-                break;
-            };
-            if cnt < front_len {
-                if let Some(front) = self.chunks.front_mut() {
-                    front.advance(cnt);
-                }
-                break;
-            } else {
-                cnt -= front_len;
-                let _ = self.chunks.pop_front();
-            }
-        }
-    }
-}
-
-impl GrpcStreamingBody {
-    fn new(recv: h2::RecvStream, encoding: GrpcEncoding) -> Self {
-        Self {
-            recv,
-            buffer: ChunkBuffer::new(),
-            current_frame: None,
-            finished: false,
-            encoding,
-            zstd: None,
-            decompressed_buf: Vec::new(),
-        }
-    }
-
-    async fn fill_buffer(&mut self) -> Result<(), Status> {
-        if self.finished {
-            return Ok(());
-        }
-        match self.recv.data().await {
-            Some(Ok(bytes)) => {
-                let chunk_len = bytes.len();
-                self.buffer.push(bytes);
-                if let Err(err) = self.recv.flow_control().release_capacity(chunk_len) {
-                    log::debug!("release_capacity failed: {err}");
-                }
-                Ok(())
-            }
-            Some(Err(err)) => Err(Status::internal(format!("h2 error: {err}"))),
-            None => {
-                self.finished = true;
-                Ok(())
-            }
-        }
-    }
-    fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
-        let required_capacity = payload_len
-            .saturating_mul(2)
-            .max(MIN_DECOMPRESSED_CAPACITY);
-        if self.decompressed_buf.capacity() < required_capacity {
-            self.decompressed_buf
-                .reserve(required_capacity - self.decompressed_buf.capacity());
-        }
-    }
-
-    fn decompress(&mut self, payload: Bytes) -> Result<&[u8], Status> {
-        match self.encoding {
-            GrpcEncoding::Identity => {
-                log::error!("Received compressed frame but grpc-encoding=identity");
-                Err(Status::unimplemented("message compression not negotiated"))
-            }
-            GrpcEncoding::Zstd => self.decompress_zstd(payload),
-            GrpcEncoding::Gzip => self.decompress_gzip(payload),
-            GrpcEncoding::Deflate => self.decompress_deflate(payload),
-        }
-    }
-
-    fn decompress_zstd(&mut self, payload: Bytes) -> Result<&[u8], Status> {
-        self.ensure_zstd_decompressor()?;
-        let mut required_capacity = self
-            .decompressed_buf
-            .capacity()
-            .max(payload.len().saturating_mul(2))
-            .max(MIN_DECOMPRESSED_CAPACITY);
-
-        loop {
-            if self.decompressed_buf.capacity() < required_capacity {
-                self.decompressed_buf
-                    .reserve(required_capacity - self.decompressed_buf.capacity());
-            }
-            self.decompressed_buf.clear();
-            let result = {
-                let decompressor = self
-                    .zstd
-                    .as_mut()
-                    .expect("decompressor must be initialized");
-                decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
-            };
-            match result {
-                Ok(_) => return Ok(self.decompressed_buf.as_slice()),
-                Err(err) => {
-                    let err_msg = err.to_string();
-                    if err.kind() == io::ErrorKind::Other
-                        && err_msg.contains("Destination buffer is too small")
-                    {
-                        required_capacity =
-                            required_capacity.checked_mul(2).ok_or_else(|| {
-                                log::error!(
-                                    "zstd decompression failed: required buffer overflow"
-                                );
-                                Status::internal(
-                                    "zstd decompression failed: output too large",
-                                )
-                            })?;
-                        continue;
-                    }
-                    log::error!("zstd decompression failed: {err_msg}");
-                    return Err(Status::internal(format!(
-                        "zstd decompression failed: {err_msg}"
-                    )));
-                }
-            }
-        }
-    }
-
-    fn decompress_gzip(&mut self, payload: Bytes) -> Result<&[u8], Status> {
-        self.reserve_decompressed_capacity(payload.len());
-        self.decompressed_buf.clear();
-        let mut decoder = GzDecoder::new(payload.as_ref());
-        let _ = decoder
-            .read_to_end(&mut self.decompressed_buf)
-            .map_err(|err| {
-                log::error!("gzip decompression failed: {err}");
-                Status::internal(format!("gzip decompression failed: {err}"))
-            })?;
-        Ok(self.decompressed_buf.as_slice())
-    }
-
-    fn decompress_deflate(&mut self, payload: Bytes) -> Result<&[u8], Status> {
-        self.reserve_decompressed_capacity(payload.len());
-        self.decompressed_buf.clear();
-        let mut decoder = ZlibDecoder::new(payload.as_ref());
-        let _ = decoder
-            .read_to_end(&mut self.decompressed_buf)
-            .map_err(|err| {
-                log::error!("deflate decompression failed: {err}");
-                Status::internal(format!("deflate decompression failed: {err}"))
-            })?;
-        Ok(self.decompressed_buf.as_slice())
-    }
-
-    fn ensure_zstd_decompressor(&mut self) -> Result<(), Status> {
-        if self.zstd.is_some() {
-            return Ok(());
-        }
-        match ZstdDecompressor::new() {
-            Ok(decoder) => {
-                self.zstd = Some(decoder);
-                Ok(())
-            }
-            Err(err) => {
-                log::error!("Failed to construct zstd decompressor: {err}");
-                Err(Status::internal(format!(
-                    "failed to initialize zstd decompressor: {err}"
-                )))
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl ArrowRequestStream for GrpcStreamingBody {
-    async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
-        loop {
-            if self.current_frame.is_none() {
-                if self.buffer.len() < 5 {
-                    if self.finished {
-                        return Ok(None);
-                    }
-                    self.fill_buffer().await?;
-                    continue;
-                }
-                let header = self
-                    .buffer
-                    .split_frame(5)
-                    .expect("buffer len checked above")
-                    .into_bytes();
-                let compressed = header[0] == 1;
-                let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
-                self.current_frame = Some(FrameHeader {
-                    length: len,
-                    compressed,
-                });
-            }
-
-            if let Some(header) = self.current_frame.take() {
-                if self.buffer.len() < header.length {
-                    if self.finished {
-                        log::error!("Stream ended before full gRPC frame was received");
-                        return Err(Status::internal("truncated gRPC frame"));
-                    }
-                    self.fill_buffer().await?;
-                    self.current_frame = Some(header);
-                    continue;
-                }
-
-                let payload = self
-                    .buffer
-                    .split_frame(header.length)
-                    .expect("buffer len checked above");
-                let decoded = if header.compressed {
-                    let bytes = self.decompress(payload.into_bytes())?;
-                    BatchArrowRecords::decode(bytes)
-                } else {
-                    BatchArrowRecords::decode(payload)
-                };
-                let message = decoded.map_err(|e| {
-                    log::error!("Failed to decode BatchArrowRecords: {e}");
-                    Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
-                })?;
-                return Ok(Some(message));
-            }
-        }
-    }
-}
-
-struct GrpcMessageEncoder {
-    compression: GrpcEncoding,
-    frame_buf: BytesMut,
-    message_buf: BytesMut,
-    compressed_buf: Vec<u8>,
-    zstd: Option<ZstdCompressor<'static>>,
-}
-
-impl GrpcMessageEncoder {
-    fn new(compression: GrpcEncoding) -> Self {
-        Self {
-            compression,
-            frame_buf: BytesMut::with_capacity(512),
-            message_buf: BytesMut::with_capacity(512),
-            compressed_buf: Vec::new(),
-            zstd: None,
-        }
-    }
-
-    fn encode<M: Message>(&mut self, message: &M) -> Result<Bytes, Status> {
-        self.message_buf.clear();
-        message
-            .encode(&mut self.message_buf)
-            .map_err(|e| Status::internal(format!("failed to encode response: {e}")))?;
-        let uncompressed = self.message_buf.split().freeze();
-
-        match self.compression {
-            GrpcEncoding::Identity => {
-                self.finish_frame(false, uncompressed.as_ref())
-            }
-            GrpcEncoding::Zstd => {
-                self.compress_zstd(uncompressed.as_ref())?;
-                let mut payload = mem::take(&mut self.compressed_buf);
-                let result = self.finish_frame(true, payload.as_slice());
-                payload.clear();
-                self.compressed_buf = payload;
-                result
-            }
-            GrpcEncoding::Gzip => {
-                self.compress_gzip(uncompressed.as_ref())?;
-                let mut payload = mem::take(&mut self.compressed_buf);
-                let result = self.finish_frame(true, payload.as_slice());
-                payload.clear();
-                self.compressed_buf = payload;
-                result
-            }
-            GrpcEncoding::Deflate => {
-                self.compress_deflate(uncompressed.as_ref())?;
-                let mut payload = mem::take(&mut self.compressed_buf);
-                let result = self.finish_frame(true, payload.as_slice());
-                payload.clear();
-                self.compressed_buf = payload;
-                result
-            }
-        }
-    }
-
-    fn finish_frame(&mut self, compressed: bool, payload: &[u8]) -> Result<Bytes, Status> {
-        let needed = 5 + payload.len();
-        if self.frame_buf.capacity() < needed {
-            self.frame_buf
-                .reserve(needed - self.frame_buf.capacity());
-        }
-        self.frame_buf.clear();
-        self.frame_buf.put_u8(u8::from(compressed));
-        self.frame_buf.put_u32(payload.len() as u32);
-        self.frame_buf.extend_from_slice(payload);
-        Ok(self.frame_buf.split().freeze())
-    }
-
-    fn compress_zstd(&mut self, payload: &[u8]) -> Result<(), Status> {
-        self.ensure_zstd_encoder()?;
-        let mut required_capacity = payload.len().max(MIN_COMPRESSED_CAPACITY);
-        loop {
-            if self.compressed_buf.len() != required_capacity {
-                self.compressed_buf.resize(required_capacity, 0);
-            }
-            let result = {
-                let encoder = self
-                    .zstd
-                    .as_mut()
-                    .expect("zstd encoder must exist");
-                encoder.compress_to_buffer(payload, self.compressed_buf.as_mut_slice())
-            };
-            match result {
-                Ok(written) => {
-                    self.compressed_buf.truncate(written);
-                    return Ok(());
-                }
-                Err(err)
-                    if err.kind() == io::ErrorKind::Other
-                        && err.to_string().contains("Destination buffer is too small") =>
-                {
-                    required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
-                        log::error!("zstd compression failed: required buffer overflow");
-                        Status::internal("zstd compression failed: output too large")
-                    })?;
-                }
-                Err(err) => {
-                    log::error!("zstd compression failed: {err}");
-                    return Err(Status::internal(format!(
-                        "zstd compression failed: {err}"
-                    )));
-                }
-            }
-        }
-    }
-
-    fn compress_gzip(&mut self, payload: &[u8]) -> Result<(), Status> {
-        self.compressed_buf.clear();
-        {
-            let mut encoder =
-                GzEncoder::new(&mut self.compressed_buf, Compression::default());
-            encoder
-                .write_all(payload)
-                .and_then(|_| encoder.try_finish())
-                .map_err(|err| {
-                    log::error!("gzip compression failed: {err}");
-                    Status::internal(format!("gzip compression failed: {err}"))
-                })?;
-        }
-        Ok(())
-    }
-
-    fn compress_deflate(&mut self, payload: &[u8]) -> Result<(), Status> {
-        self.compressed_buf.clear();
-        {
-            let mut encoder =
-                ZlibEncoder::new(&mut self.compressed_buf, Compression::default());
-            encoder
-                .write_all(payload)
-                .and_then(|_| encoder.try_finish())
-                .map_err(|err| {
-                    log::error!("deflate compression failed: {err}");
-                    Status::internal(format!("deflate compression failed: {err}"))
-                })?;
-        }
-        Ok(())
-    }
-
-    fn ensure_zstd_encoder(&mut self) -> Result<(), Status> {
-        if self.zstd.is_some() {
-            return Ok(());
-        }
-        match ZstdCompressor::new(0) {
-            Ok(encoder) => {
-                self.zstd = Some(encoder);
-                Ok(())
-            }
-            Err(err) => {
-                log::error!("Failed to construct zstd compressor: {err}");
-                Err(Status::internal(format!(
-                    "failed to initialize zstd compressor: {err}"
-                )))
-            }
-        }
-    }
-}
-
-fn stream_batch_statuses<S, T, F>(
-    input_stream: S,
-    effect_handler: local::EffectHandler<OtapPdata>,
-    ack_registry: Option<AckRegistry>,
-    otap_batch: F,
-    max_in_flight_per_connection: usize,
-) -> ArrowBatchStatusStream<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    let state = ArrowBatchStreamState::new(
-        input_stream,
-        effect_handler,
-        ack_registry,
-        otap_batch,
-        max_in_flight_per_connection,
-    );
-    ArrowBatchStatusStream::new(state)
-}
-
-struct ArrowBatchStatusStream<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    state: Option<ArrowBatchStreamState<S, T, F>>,
-    pending: Option<LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)>>,
-    finished: bool,
-}
-
-impl<S, T, F> ArrowBatchStatusStream<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    fn new(state: ArrowBatchStreamState<S, T, F>) -> Self {
-        Self {
-            state: Some(state),
-            pending: None,
-            finished: false,
-        }
-    }
-
-    fn drive_next(
-        state: ArrowBatchStreamState<S, T, F>,
-    ) -> LocalBoxFuture<'static, (ArrowBatchStreamState<S, T, F>, StreamStep)> {
-        Box::pin(async move {
-            let mut state = state;
-            let step = state.next_item().await;
-            (state, step)
-        })
-    }
-}
-
-impl<S, T, F> Stream for ArrowBatchStatusStream<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    type Item = Result<BatchStatus, Status>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-
-        if this.finished {
-            return Poll::Ready(None);
-        }
-
-        if this.pending.is_none() {
-            let state = match this.state.take() {
-                Some(state) => state,
-                None => {
-                    this.finished = true;
-                    return Poll::Ready(None);
-                }
-            };
-            this.pending = Some(Self::drive_next(state));
-        }
-
-        match this
-            .pending
-            .as_mut()
-            .expect("pending future must exist")
-            .as_mut()
-            .poll(cx)
-        {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready((state, step)) => {
-                this.pending = None;
-                match step {
-                    StreamStep::Yield(item) => {
-                        this.state = Some(state);
-                        Poll::Ready(Some(item))
-                    }
-                    StreamStep::Done => {
-                        this.finished = true;
-                        this.state = None;
-                        Poll::Ready(None)
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct ArrowBatchStreamState<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    input_stream: S,
-    consumer: Consumer,
-    effect_handler: local::EffectHandler<OtapPdata>,
-    state: Option<AckRegistry>,
-    otap_batch: F,
-    in_flight: LocalFutureSet<LocalAckWaitFuture>,
-    max_in_flight: usize,
-    finished: bool,
-    _marker: PhantomData<fn() -> T>,
-}
-
-enum StreamStep {
-    Yield(Result<BatchStatus, Status>),
-    Done,
-}
-
-enum PreparedBatch {
-    Enqueued,
-    Immediate(StreamStep),
-}
-
-impl<S, T, F> ArrowBatchStreamState<S, T, F>
-where
-    S: ArrowRequestStream + Unpin,
-    T: OtapBatchStore + 'static,
-    F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
-{
-    fn new(
-        input_stream: S,
-        effect_handler: local::EffectHandler<OtapPdata>,
-        state: Option<AckRegistry>,
-        otap_batch: F,
-        max_in_flight_per_connection: usize,
-    ) -> Self {
-        Self {
-            input_stream,
-            consumer: Consumer::default(),
-            effect_handler,
-            state,
-            otap_batch,
-            in_flight: LocalFutureSet::with_capacity(max_in_flight_per_connection.max(1)),
-            max_in_flight: max_in_flight_per_connection.max(1),
-            finished: false,
-            _marker: PhantomData,
-        }
-    }
-
-    async fn next_item(&mut self) -> StreamStep {
-        if let Some(step) = self.fill_inflight().await {
-            return step;
-        }
-
-        match poll_fn(|cx| self.in_flight.poll_next(cx)).await {
-            Some(step) => {
-                if matches!(step, StreamStep::Done) {
-                    self.finished = true;
-                }
-                step
-            }
-            None => StreamStep::Done,
-        }
-    }
-
-    async fn fill_inflight(&mut self) -> Option<StreamStep> {
-        while !self.finished && self.in_flight.len() < self.max_in_flight {
-            match self.input_stream.next_message().await {
-                Ok(Some(batch)) => match self.enqueue_batch(batch).await {
-                    PreparedBatch::Enqueued => continue,
-                    PreparedBatch::Immediate(step) => return Some(step),
-                },
-                Ok(None) => {
-                    self.finished = true;
-                    break;
-                }
-                Err(status) => {
-                    self.finished = true;
-                    return Some(StreamStep::Yield(Err(status)));
-                }
-            }
-        }
-        None
-    }
-
-    async fn enqueue_batch(&mut self, mut batch: BatchArrowRecords) -> PreparedBatch {
-        let batch_id = batch.batch_id;
-
-        let batch = match self.consumer.consume_bar(&mut batch) {
-            Ok(batch) => batch,
-            Err(e) => {
-                log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
-                self.finished = true;
-                return PreparedBatch::Immediate(StreamStep::Done);
-            }
-        };
-
-        let batch = from_record_messages::<T>(batch);
-        let otap_batch_as_otap_arrow_records = (self.otap_batch)(batch);
-        let mut otap_pdata =
-            OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
-
-        let wait_token = if let Some(state) = self.state.clone() {
-            match state.allocate() {
-                None => {
-                    log::error!("Too many concurrent requests");
-                    return PreparedBatch::Immediate(StreamStep::Yield(Ok(
-                        local_overloaded_status(batch_id),
-                    )));
-                }
-                Some(token) => {
-                    self.effect_handler.subscribe_to(
-                        Interests::ACKS | Interests::NACKS,
-                        token.to_calldata(),
-                        &mut otap_pdata,
-                    );
-                    Some((state, token))
-                }
-            }
-        } else {
-            None
-        };
-
-        if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
-            log::error!("Failed to send to pipeline: {e}");
-            self.finished = true;
-            return PreparedBatch::Immediate(StreamStep::Done);
-        };
-
-        if let Some((state, token)) = wait_token {
-            if let Err(_future) = self
-                .in_flight
-                .push(LocalAckWaitFuture::new(batch_id, token, state))
-            {
-                log::error!("In-flight future set unexpectedly full");
-                return PreparedBatch::Immediate(StreamStep::Yield(Ok(local_overloaded_status(
-                    batch_id,
-                ))));
-            }
-            PreparedBatch::Enqueued
-        } else {
-            PreparedBatch::Immediate(StreamStep::Yield(Ok(local_success_status(batch_id))))
-        }
-    }
-}
-
-struct LocalFutureSet<F> {
-    futures: FuturesUnordered<F>,
-    capacity: usize,
-}
-
-impl<F> LocalFutureSet<F> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            futures: FuturesUnordered::new(),
-            capacity,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.futures.len()
-    }
-
-    fn push(&mut self, future: F) -> Result<(), F> {
-        if self.len() >= self.capacity {
-            Err(future)
-        } else {
-            self.futures.push(future);
-            Ok(())
-        }
-    }
-
-    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<<F as Future>::Output>>
-    where
-        F: Future + Unpin,
-    {
-        Pin::new(&mut self.futures).poll_next(cx)
-    }
-}
-
-struct LocalAckWaitFuture {
-    batch_id: i64,
-    token: AckToken,
-    state: AckRegistry,
-    completed: bool,
-}
-
-impl LocalAckWaitFuture {
-    fn new(batch_id: i64, token: AckToken, state: AckRegistry) -> Self {
-        Self {
-            batch_id,
-            token,
-            state,
-            completed: false,
-        }
-    }
-}
-
-impl Future for LocalAckWaitFuture {
-    type Output = StreamStep;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        match this.state.poll_slot(this.token, cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(LocalPollResult::Ack) => {
-                this.completed = true;
-                Poll::Ready(StreamStep::Yield(Ok(local_success_status(this.batch_id))))
-            }
-            Poll::Ready(LocalPollResult::Nack(reason)) => {
-                this.completed = true;
-                Poll::Ready(StreamStep::Yield(Ok(local_nack_status(
-                    this.batch_id,
-                    reason,
-                ))))
-            }
-            Poll::Ready(LocalPollResult::Cancelled) => {
-                this.completed = true;
-                Poll::Ready(StreamStep::Done)
-            }
-        }
-    }
-}
-
-impl Drop for LocalAckWaitFuture {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.state.cancel(self.token);
-        }
-    }
-}
-
-enum LocalPollResult {
-    Ack,
-    Nack(String),
-    Cancelled,
-}
-
-#[derive(Clone)]
-struct AckRegistry {
-    inner: Rc<RefCell<AckRegistryInner>>,
-}
-
-struct AckRegistryInner {
-    slots: Box<[AckSlot]>,
-    free_stack: Vec<usize>,
-}
-
-impl AckRegistry {
-    fn new(max_size: usize) -> Self {
-        let mut slots = Vec::with_capacity(max_size);
-        for _ in 0..max_size {
-            slots.push(AckSlot::new());
-        }
-        let mut free_stack = Vec::with_capacity(max_size);
-        for idx in (0..max_size).rev() {
-            free_stack.push(idx);
-        }
-        Self {
-            inner: Rc::new(RefCell::new(AckRegistryInner {
-                slots: slots.into_boxed_slice(),
-                free_stack,
-            })),
-        }
-    }
-
-    fn allocate(&self) -> Option<AckToken> {
-        let mut inner = self.inner.borrow_mut();
-        let slot_index = inner.free_stack.pop()?;
-        let slot = &mut inner.slots[slot_index];
-        debug_assert!(matches!(slot.state, SlotState::Free));
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.state = SlotState::Waiting(WaitingSlot::new());
-        Some(AckToken {
-            slot_index,
-            generation: slot.generation,
-        })
-    }
-
-    fn complete(&self, token: AckToken, result: Result<(), String>) -> RouteResponse {
-        let mut inner = self.inner.borrow_mut();
-        let Some(slot) = inner.slots.get_mut(token.slot_index) else {
-            return RouteResponse::Invalid;
-        };
-        if slot.generation != token.generation {
-            return RouteResponse::Expired;
-        }
-        match &mut slot.state {
-            SlotState::Waiting(waiting) => {
-                waiting.outcome = match result {
-                    Ok(()) => AckOutcome::Ack,
-                    Err(reason) => AckOutcome::Nack(reason),
-                };
-                if let Some(waker) = waiting.waker.take() {
-                    waker.wake();
-                }
-                RouteResponse::Sent
-            }
-            SlotState::Free => RouteResponse::Expired,
-        }
-    }
-
-    fn poll_slot(&self, token: AckToken, cx: &mut TaskContext<'_>) -> Poll<LocalPollResult> {
-        let mut inner = self.inner.borrow_mut();
-        let Some(slot) = inner.slots.get_mut(token.slot_index) else {
-            return Poll::Ready(LocalPollResult::Cancelled);
-        };
-        if slot.generation != token.generation {
-            return Poll::Ready(LocalPollResult::Cancelled);
-        }
-        match &mut slot.state {
-            SlotState::Waiting(waiting) => match &mut waiting.outcome {
-                AckOutcome::Pending => {
-                    let replace = match &waiting.waker {
-                        Some(existing) => !existing.will_wake(cx.waker()),
-                        None => true,
-                    };
-                    if replace {
-                        waiting.waker = Some(cx.waker().clone());
-                    }
-                    Poll::Pending
-                }
-                AckOutcome::Ack => {
-                    slot.state = SlotState::Free;
-                    inner.free_stack.push(token.slot_index);
-                    Poll::Ready(LocalPollResult::Ack)
-                }
-                AckOutcome::Nack(reason) => {
-                    let reason = mem::take(reason);
-                    slot.state = SlotState::Free;
-                    inner.free_stack.push(token.slot_index);
-                    Poll::Ready(LocalPollResult::Nack(reason))
-                }
-            },
-            SlotState::Free => Poll::Ready(LocalPollResult::Cancelled),
-        }
-    }
-
-    fn cancel(&self, token: AckToken) {
-        let mut inner = self.inner.borrow_mut();
-        if let Some(slot) = inner.slots.get_mut(token.slot_index) {
-            if slot.generation != token.generation {
-                return;
-            }
-            if matches!(slot.state, SlotState::Waiting(_)) {
-                slot.state = SlotState::Free;
-                inner.free_stack.push(token.slot_index);
-            }
-        }
-    }
-}
-
-struct AckSlot {
-    generation: u32,
-    state: SlotState,
-}
-
-impl AckSlot {
-    fn new() -> Self {
-        Self {
-            generation: 0,
-            state: SlotState::Free,
-        }
-    }
-}
-
-enum SlotState {
-    Free,
-    Waiting(WaitingSlot),
-}
-
-struct WaitingSlot {
-    waker: Option<Waker>,
-    outcome: AckOutcome,
-}
-
-impl WaitingSlot {
-    fn new() -> Self {
-        Self {
-            waker: None,
-            outcome: AckOutcome::Pending,
-        }
-    }
-}
-
-enum AckOutcome {
-    Pending,
-    Ack,
-    Nack(String),
-}
-
-#[derive(Clone, Copy)]
-struct AckToken {
-    slot_index: usize,
-    generation: u32,
-}
-
-impl AckToken {
-    fn to_calldata(self) -> CallData {
-        smallvec![
-            Context8u8::from(self.slot_index as u64),
-            Context8u8::from(self.generation as u64)
-        ]
-    }
-
-    fn from_calldata(calldata: &CallData) -> Option<Self> {
-        if calldata.len() < 2 {
-            return None;
-        }
-        let slot_index = usize::try_from(u64::from(calldata[0])).ok()?;
-        let generation = u64::from(calldata[1]) as u32;
-        Some(Self {
-            slot_index,
-            generation,
-        })
-    }
-}
-
-#[derive(Clone, Default)]
-struct AckRegistries {
-    logs: Option<AckRegistry>,
-    metrics: Option<AckRegistry>,
-    traces: Option<AckRegistry>,
-}
-
-impl AckRegistries {
-    fn new(
-        logs: Option<AckRegistry>,
-        metrics: Option<AckRegistry>,
-        traces: Option<AckRegistry>,
-    ) -> Self {
-        Self {
-            logs,
-            metrics,
-            traces,
-        }
-    }
-
-    fn ack_registry_for_signal(&self, signal: SignalType) -> Option<&AckRegistry> {
-        match signal {
-            SignalType::Logs => self.logs.as_ref(),
-            SignalType::Metrics => self.metrics.as_ref(),
-            SignalType::Traces => self.traces.as_ref(),
-        }
-    }
-}
-
-fn route_local_ack_response(states: &AckRegistries, ack: AckMsg<OtapPdata>) -> RouteResponse {
-    let Some(token) = AckToken::from_calldata(&ack.calldata) else {
-        return RouteResponse::Invalid;
-    };
-    states
-        .ack_registry_for_signal(ack.accepted.signal_type())
-        .map(|state| state.complete(token, Ok(())))
-        .unwrap_or(RouteResponse::None)
-}
-
-fn route_local_nack_response(
-    states: &AckRegistries,
-    mut nack: NackMsg<OtapPdata>,
-) -> RouteResponse {
-    let Some(token) = AckToken::from_calldata(&nack.calldata) else {
-        return RouteResponse::Invalid;
-    };
-    let reason = mem::take(&mut nack.reason);
-    states
-        .ack_registry_for_signal(nack.refused.signal_type())
-        .map(|state| state.complete(token, Err(reason)))
-        .unwrap_or(RouteResponse::None)
-}
-
-fn local_success_status(batch_id: i64) -> BatchStatus {
-    BatchStatus {
-        batch_id,
-        status_code: ProtoStatusCode::Ok as i32,
-        status_message: "Successfully received".to_string(),
-    }
-}
-
-fn local_nack_status(batch_id: i64, reason: String) -> BatchStatus {
-    BatchStatus {
-        batch_id,
-        status_code: ProtoStatusCode::Unavailable as i32,
-        status_message: format!("Pipeline processing failed: {reason}"),
-    }
-}
-
-fn local_overloaded_status(batch_id: i64) -> BatchStatus {
-    BatchStatus {
-        batch_id,
-        status_code: ProtoStatusCode::Unavailable as i32,
-        status_message: "Pipeline processing failed: Too many concurrent requests".to_string(),
     }
 }
 
@@ -2136,5 +766,851 @@ fn respond_with_error(
     match respond.send_response(response, false) {
         Ok(stream) => send_error_trailers(stream, status),
         Err(e) => log::debug!("failed to send error response: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OTEL_RECEIVER_URN;
+    use super::OtelReceiver;
+    use crate::otap_mock::create_otap_batch;
+    use crate::pdata::OtapPdata;
+    use async_stream::stream;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
+    use otap_df_pdata::Producer;
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::{
+        ArrowPayloadType, BatchStatus, StatusCode as ProtoStatusCode,
+        arrow_logs_service_client::ArrowLogsServiceClient,
+        arrow_metrics_service_client::ArrowMetricsServiceClient,
+        arrow_traces_service_client::ArrowTracesServiceClient,
+    };
+    use std::collections::HashSet;
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::time::{Duration, timeout};
+    use tonic::Status;
+    use tonic::codec::CompressionEncoding;
+
+    fn pick_free_port() -> u16 {
+        portpicker::pick_unused_port().expect("No free ports")
+    }
+
+    fn scenario(
+        grpc_endpoint: String,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |ctx| {
+            Box::pin(async move {
+                let mut arrow_metrics_client =
+                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect metrics client");
+                #[allow(tail_expr_drop_order)]
+                let metrics_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut metrics_records =
+                            create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let bar = producer.produce_bar(&mut metrics_records).unwrap();
+                        yield bar
+                    }
+                };
+                let metrics_response = arrow_metrics_client
+                    .arrow_metrics(metrics_stream)
+                    .await
+                    .expect("metrics request failed");
+                validate_batch_responses(
+                    metrics_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "metrics",
+                )
+                .await;
+
+                let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect logs client");
+                #[allow(tail_expr_drop_order)]
+                let logs_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
+                    }
+                };
+                let logs_response = arrow_logs_client
+                    .arrow_logs(logs_stream)
+                    .await
+                    .expect("logs request failed");
+                validate_batch_responses(
+                    logs_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "logs",
+                )
+                .await;
+
+                let mut arrow_traces_client =
+                    ArrowTracesServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect traces client");
+                #[allow(tail_expr_drop_order)]
+                let traces_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut traces_records =
+                            create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                        let bar = producer.produce_bar(&mut traces_records).unwrap();
+                        yield bar;
+                    }
+                };
+                let traces_response = arrow_traces_client
+                    .arrow_traces(traces_stream)
+                    .await
+                    .expect("traces request failed");
+                validate_batch_responses(
+                    traces_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    "traces",
+                )
+                .await;
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("shutdown send failed");
+            })
+        }
+    }
+
+    fn validation_procedure()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                for batch_id in 0..3 {
+                    let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("metrics timeout")
+                        .expect("missing metrics");
+                    let metrics_records: OtapArrowRecords = metrics_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("metrics conversion");
+                    let _expected_metrics =
+                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                    assert!(matches!(metrics_records, _expected_metrics));
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("metrics ack send failed");
+                    }
+                }
+
+                for batch_id in 0..3 {
+                    let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("logs timeout")
+                        .expect("missing logs");
+                    let logs_records: OtapArrowRecords = logs_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("logs conversion");
+                    let _expected_logs = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                    assert!(matches!(logs_records, _expected_logs));
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("logs ack send failed");
+                    }
+                }
+
+                for batch_id in 0..3 {
+                    let traces_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("traces timeout")
+                        .expect("missing traces");
+                    let traces_records: OtapArrowRecords = traces_pdata
+                        .clone()
+                        .payload()
+                        .try_into()
+                        .expect("traces conversion");
+                    let _expected_traces = create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                    assert!(matches!(traces_records, _expected_traces));
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("traces ack send failed");
+                    }
+                }
+            })
+        }
+    }
+
+    fn nack_scenario(
+        grpc_endpoint: String,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |ctx| {
+            Box::pin(async move {
+                let mut arrow_metrics_client =
+                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect metrics client");
+                #[allow(tail_expr_drop_order)]
+                let metrics_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut metrics_records =
+                            create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let bar = producer.produce_bar(&mut metrics_records).unwrap();
+                        yield bar
+                    }
+                };
+                let metrics_response = arrow_metrics_client
+                    .arrow_metrics(metrics_stream)
+                    .await
+                    .expect("metrics request failed");
+                validate_batch_responses(
+                    metrics_response.into_inner(),
+                    14,
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for metrics"
+                    ),
+                    "metrics",
+                )
+                .await;
+
+                let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect logs client");
+                #[allow(tail_expr_drop_order)]
+                let logs_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
+                    }
+                };
+                let logs_response = arrow_logs_client
+                    .arrow_logs(logs_stream)
+                    .await
+                    .expect("logs request failed");
+                validate_batch_responses(
+                    logs_response.into_inner(),
+                    14,
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for logs"
+                    ),
+                    "logs",
+                )
+                .await;
+
+                let mut arrow_traces_client =
+                    ArrowTracesServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect traces client");
+                #[allow(tail_expr_drop_order)]
+                let traces_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut traces_records =
+                            create_otap_batch(batch_id, ArrowPayloadType::Spans);
+                        let bar = producer.produce_bar(&mut traces_records).unwrap();
+                        yield bar;
+                    }
+                };
+                let traces_response = arrow_traces_client
+                    .arrow_traces(traces_stream)
+                    .await
+                    .expect("traces request failed");
+                validate_batch_responses(
+                    traces_response.into_inner(),
+                    14,
+                    &format!(
+                        "Pipeline processing failed: {}",
+                        "Test NACK reason for traces"
+                    ),
+                    "traces",
+                )
+                .await;
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("shutdown send failed");
+            })
+        }
+    }
+
+    fn nack_validation_procedure()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                for _batch_id in 0..3 {
+                    let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("metrics timeout")
+                        .expect("missing metrics");
+                    let nack = NackMsg::new("Test NACK reason for metrics", metrics_pdata);
+                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                        ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                            .await
+                            .expect("metrics nack send failed");
+                    }
+                }
+
+                for _batch_id in 0..3 {
+                    let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("logs timeout")
+                        .expect("missing logs");
+                    let nack = NackMsg::new("Test NACK reason for logs", logs_pdata);
+                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                        ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                            .await
+                            .expect("logs nack send failed");
+                    }
+                }
+
+                for _batch_id in 0..3 {
+                    let traces_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("traces timeout")
+                        .expect("missing traces");
+                    let nack = NackMsg::new("Test NACK reason for traces", traces_pdata);
+                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                        ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                            .await
+                            .expect("traces nack send failed");
+                    }
+                }
+            })
+        }
+    }
+
+    type StatusPlan = Vec<Result<(), &'static str>>;
+
+    /// gRPC client harness for the Zstd log regression test.
+    ///
+    /// It streams a predetermined number of OTAP log batches, forces tonic to use request-side
+    /// Zstd compression, and asserts that the streamed `BatchStatus` items match the provided
+    /// `status_plan` (ACK vs NACK). Once validation finishes we trigger the runtime shutdown so
+    /// the paired validator can complete.
+    fn zstd_logs_scenario(
+        grpc_endpoint: String,
+        status_plan: StatusPlan,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |ctx| {
+            Box::pin(async move {
+                let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect logs client")
+                    .send_compressed(CompressionEncoding::Zstd);
+
+                let plan_len = status_plan.len();
+                #[allow(tail_expr_drop_order)]
+                let logs_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..plan_len {
+                        let mut logs_records =
+                            create_otap_batch(batch_id as i64, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
+                    }
+                };
+
+                let logs_response = arrow_logs_client
+                    .arrow_logs(logs_stream)
+                    .await
+                    .expect("logs request failed");
+                validate_mixed_log_statuses(logs_response.into_inner(), &status_plan, "logs").await;
+
+                ctx.send_shutdown(Instant::now(), "Zstd logs test complete")
+                    .await
+                    .expect("shutdown send failed");
+            })
+        }
+    }
+
+    /// Validator companion for `zstd_logs_scenario`.
+    ///
+    /// Consumes the decoded batches the receiver pushes into the pipeline channel, verifies each
+    /// payload matches what the client sent, and sends either an ACK or NACK back into the system
+    /// to simulate downstream processing outcomes.
+    fn zstd_logs_validation(
+        status_plan: StatusPlan,
+    ) -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                for (batch_id, expected) in status_plan.into_iter().enumerate() {
+                    let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("logs timeout")
+                        .expect("missing logs");
+                    let records: OtapArrowRecords =
+                        pdata.clone().payload().try_into().expect("logs conversion");
+                    let expected_logs = create_otap_batch(batch_id as i64, ArrowPayloadType::Logs);
+                    assert_eq!(records, expected_logs);
+                    match expected {
+                        Ok(()) => {
+                            if let Some((_node_id, ack)) =
+                                crate::pdata::Context::next_ack(AckMsg::new(pdata))
+                            {
+                                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                                    .await
+                                    .expect("logs ack send failed");
+                            }
+                        }
+                        Err(reason) => {
+                            let nack_msg = NackMsg::new(reason, pdata);
+                            if let Some((_node_id, nack)) =
+                                crate::pdata::Context::next_nack(nack_msg)
+                            {
+                                ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                                    .await
+                                    .expect("logs nack send failed");
+                            }
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    /// Confirms that the gRPC response stream mirrors the ACK/NACK plan.
+    ///
+    /// ACK responses must arrive as `OK` with the default success message, while NACKs surface as
+    /// `UNAVAILABLE` plus the provided failure reason.
+    async fn validate_mixed_log_statuses<S>(
+        mut inbound_stream: S,
+        status_plan: &[Result<(), &'static str>],
+        signal_name: &str,
+    ) where
+        S: futures::Stream<Item = Result<BatchStatus, Status>> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut index = 0;
+        while let Some(result) = inbound_stream.next().await {
+            let batch_status = result.expect("Expected successful response");
+            let expected = status_plan
+                .get(index)
+                .unwrap_or_else(|| panic!("unexpected extra response for {}", signal_name));
+            match expected {
+                Ok(()) => {
+                    assert_eq!(
+                        batch_status.status_code,
+                        ProtoStatusCode::Ok as i32,
+                        "Unexpected success code for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                    assert_eq!(
+                        batch_status.status_message, "Successfully received",
+                        "Unexpected success message for {} batch {}",
+                        signal_name, batch_status.batch_id
+                    );
+                }
+                Err(reason) => {
+                    assert_eq!(
+                        batch_status.status_code,
+                        ProtoStatusCode::Unavailable as i32,
+                        "Unexpected failure code for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                    assert_eq!(
+                        batch_status.status_message,
+                        format!("Pipeline processing failed: {}", reason),
+                        "Unexpected failure message for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                }
+            }
+            index += 1;
+        }
+        assert_eq!(
+            index,
+            status_plan.len(),
+            "Missing responses for {} (expected {}, saw {index})",
+            signal_name,
+            status_plan.len()
+        );
+    }
+
+    async fn validate_batch_responses<S>(
+        mut inbound_stream: S,
+        expected_status_code: i32,
+        expected_status_message: &str,
+        signal_name: &str,
+    ) where
+        S: futures::Stream<Item = Result<BatchStatus, Status>> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut received_batch_ids = HashSet::new();
+        while let Some(result) = inbound_stream.next().await {
+            assert!(
+                result.is_ok(),
+                "Expected successful response for {}",
+                signal_name
+            );
+            let batch_status = result.unwrap();
+            let batch_id = batch_status.batch_id;
+            assert!(
+                received_batch_ids.insert(batch_id),
+                "Duplicate response for batch {} ({})",
+                batch_id,
+                signal_name
+            );
+            assert_eq!(
+                batch_status.status_code, expected_status_code,
+                "Unexpected status code for {} batch {}",
+                signal_name, batch_id
+            );
+            assert_eq!(
+                batch_status.status_message, expected_status_message,
+                "Unexpected status message for {} batch {}",
+                signal_name, batch_id
+            );
+        }
+        assert_eq!(
+            received_batch_ids,
+            (0..3).collect::<HashSet<_>>(),
+            "Missing responses for {}",
+            signal_name
+        );
+    }
+
+    #[test]
+    fn test_otel_receiver() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = pick_free_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config = json!({ "listening_addr": addr.to_string() });
+        let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+
+        let receiver = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario(grpc_endpoint))
+            .run_validation(validation_procedure());
+    }
+
+    #[test]
+    fn test_otel_receiver_ack() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = pick_free_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true
+        });
+        let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+        let receiver = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario(grpc_endpoint))
+            .run_validation_concurrent(validation_procedure());
+    }
+
+    #[test]
+    fn test_otel_receiver_nack() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = pick_free_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true
+        });
+        let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+        let receiver = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(nack_scenario(grpc_endpoint))
+            .run_validation_concurrent(nack_validation_procedure());
+    }
+
+    #[test]
+    /// End-to-end test for request-side Zstd compression with mixed ACK/NACK outcomes.
+    ///
+    /// The receiver is configured with `wait_for_result` and `compression_method = "zstd"` so the
+    /// gRPC client can compress request frames. The `status_plan` drives alternating ACK/NACK
+    /// responses from the validation harness, exercising the effect-handler path (decoded batches
+    /// hit the channel) and the control path (ACK/NACK is reflected back to the client via
+    /// `BatchStatus`).
+    fn test_otel_receiver_zstd_logs_ack_nack() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = pick_free_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true,
+            "compression_method": "zstd"
+        });
+        let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+        let receiver = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let status_plan = vec![
+            Ok(()),
+            Err("Test NACK reason for logs 1"),
+            Ok(()),
+            Err("Test NACK reason for logs 2"),
+        ];
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(zstd_logs_scenario(grpc_endpoint, status_plan.clone()))
+            .run_validation_concurrent(zstd_logs_validation(status_plan));
+    }
+
+    #[test]
+    fn test_otel_receiver_config_parsing() {
+        use crate::compression::CompressionMethod;
+        use serde_json::json;
+
+        let metrics_registry_handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config_with_max_concurrent_requests = json!({
+            "listening_addr": "127.0.0.1:4417",
+            "max_concurrent_requests": 5000
+        });
+        let receiver =
+            OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
+                .unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4417"
+        );
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
+        assert!(!receiver.config.grpc.wait_for_result);
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
+
+        let config_minimal = json!({ "listening_addr": "127.0.0.1:4418" });
+        let receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_minimal).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4418"
+        );
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
+        assert!(!receiver.config.grpc.wait_for_result);
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
+
+        let config_full_gzip = json!({
+            "listening_addr": "127.0.0.1:4419",
+            "compression_method": "gzip",
+            "max_concurrent_requests": 2500,
+            "wait_for_result": true,
+            "timeout": "30s"
+        });
+        let receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_full_gzip).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4419"
+        );
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
+        assert!(receiver.config.grpc.wait_for_result);
+        assert_eq!(
+            receiver.config.grpc.request_compression,
+            Some(vec![CompressionMethod::Gzip])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
+        assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
+
+        let config_with_zstd = json!({
+            "listening_addr": "127.0.0.1:4420",
+            "compression_method": "zstd",
+            "wait_for_result": false
+        });
+        let receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_zstd).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4420"
+        );
+        assert!(!receiver.config.grpc.wait_for_result);
+        assert_eq!(
+            receiver.config.grpc.request_compression,
+            Some(vec![CompressionMethod::Zstd])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
+
+        let config_with_deflate = json!({
+            "listening_addr": "127.0.0.1:4421",
+            "compression_method": "deflate"
+        });
+        let receiver =
+            OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_deflate).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4421"
+        );
+        assert_eq!(
+            receiver.config.grpc.request_compression,
+            Some(vec![CompressionMethod::Deflate])
+        );
+        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(
+            receiver
+                .config
+                .grpc
+                .preferred_response_compression()
+                .is_none()
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
+
+        let config_with_response_only = json!({
+            "listening_addr": "127.0.0.1:4422",
+            "response_compression_method": "gzip"
+        });
+        let receiver =
+            OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_response_only).unwrap();
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4422"
+        );
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert_eq!(
+            receiver.config.grpc.response_compression,
+            Some(vec![CompressionMethod::Gzip])
+        );
+        assert_eq!(
+            receiver.config.grpc.preferred_response_compression(),
+            Some(CompressionMethod::Gzip)
+        );
+        assert!(receiver.config.grpc.timeout.is_none());
     }
 }
