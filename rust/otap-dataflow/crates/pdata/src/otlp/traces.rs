@@ -246,7 +246,9 @@ impl TracesProtoBytesEncoder {
         );
 
         // encode all `ScopeSpans`s for this `ResourceSpans`
-        let resource_id = traces_data_arrays.resource_arrays.id
+        let resource_id = traces_data_arrays
+            .resource_arrays
+            .id
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -265,7 +267,9 @@ impl TracesProtoBytesEncoder {
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
 
             // check if we've found a new resource ID. If so, break
-            let next_resource_id = traces_data_arrays.resource_arrays.id
+            let next_resource_id = traces_data_arrays
+                .resource_arrays
+                .id
                 .and_then(|arr| arr.value_at(next_index));
             if resource_id != next_resource_id {
                 break;
@@ -306,7 +310,9 @@ impl TracesProtoBytesEncoder {
         );
 
         // encode all `Span`s for this `ScopeSpans`
-        let scope_id = traces_data_arrays.scope_arrays.id
+        let scope_id = traces_data_arrays
+            .scope_arrays
+            .id
             .and_then(|arr| arr.value_at(index));
         loop {
             proto_encode_len_delimited_unknown_size!(
@@ -324,7 +330,9 @@ impl TracesProtoBytesEncoder {
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
 
             // check if we've found a new scope ID. If so, break
-            let next_scope_id = traces_data_arrays.scope_arrays.id
+            let next_scope_id = traces_data_arrays
+                .scope_arrays
+                .id
                 .and_then(|arr| arr.value_at(next_index));
             if scope_id != next_scope_id {
                 break;

@@ -518,7 +518,9 @@ impl MetricsProtoBytesEncoder {
         );
 
         // encode all the `ScopeMetrics` for this `ResourceMetrics`
-        let resource_id = metrics_data_arrays.resource_arrays.id
+        let resource_id = metrics_data_arrays
+            .resource_arrays
+            .id
             .and_then(|arr| arr.value_at(index));
         loop {
             proto_encode_len_delimited_unknown_size!(
@@ -536,7 +538,9 @@ impl MetricsProtoBytesEncoder {
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
 
             // check if we've found a new resource ID. If so, break
-            let next_resource_id = metrics_data_arrays.resource_arrays.id
+            let next_resource_id = metrics_data_arrays
+                .resource_arrays
+                .id
                 .and_then(|arr| arr.value_at(next_index));
             if resource_id != next_resource_id {
                 break;
@@ -577,7 +581,9 @@ impl MetricsProtoBytesEncoder {
         );
 
         // encode all `Metrics` for this `ScopeMetrics`
-        let scope_id = metrics_data_arrays.scope_arrays.id
+        let scope_id = metrics_data_arrays
+            .scope_arrays
+            .id
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -596,7 +602,9 @@ impl MetricsProtoBytesEncoder {
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
 
             // check if we've found a new scope ID. If so, break
-            let next_scope_id = metrics_data_arrays.scope_arrays.id
+            let next_scope_id = metrics_data_arrays
+                .scope_arrays
+                .id
                 .and_then(|arr| arr.value_at(next_index));
             if scope_id != next_scope_id {
                 break;
