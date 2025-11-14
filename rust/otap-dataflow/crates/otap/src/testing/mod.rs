@@ -61,7 +61,8 @@ impl TryFrom<CallData> for TestCallData {
 /// Create minimal test pdata
 #[must_use]
 pub fn create_test_pdata() -> OtapPdata {
-    let otlp_service_req = otap_df_pdata::testing::create_test_logs();
+    // Note this has to be one log record for existing tests.
+    let otlp_service_req = otap_df_pdata::testing::fixtures::logs_with_no_scope();
     let mut otlp_bytes = vec![];
     otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
