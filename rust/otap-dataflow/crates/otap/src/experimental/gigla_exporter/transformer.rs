@@ -984,7 +984,9 @@ mod tests {
             KeyValue {
                 key: "otel.library.name".to_string(),
                 value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("my-instrumentation".to_string())),
+                    value: Some(OtelAnyValueEnum::StringValue(
+                        "my-instrumentation".to_string(),
+                    )),
                 }),
             },
             KeyValue {
@@ -997,7 +999,10 @@ mod tests {
 
         let result = transformer.apply_scope_mapping(&Some(scope));
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get("InstrumentationLibrary").unwrap(), "my-instrumentation");
+        assert_eq!(
+            result.get("InstrumentationLibrary").unwrap(),
+            "my-instrumentation"
+        );
         assert_eq!(result.get("InstrumentationVersion").unwrap(), "1.2.3");
     }
 
@@ -1134,7 +1139,7 @@ mod tests {
     #[test]
     fn test_transform_log_record_with_non_string_attribute_mapping_value() {
         let mut attr_mapping = serde_json::Map::new();
-        let _ = attr_mapping.insert("count".to_string(), json!(123));  // Non-string value
+        let _ = attr_mapping.insert("count".to_string(), json!(123)); // Non-string value
         let _ = attr_mapping.insert("active".to_string(), json!(true)); // Boolean value
 
         let mut log_record_mapping = HashMap::new();
@@ -1196,7 +1201,11 @@ mod tests {
 
         // Direct field mapping with non-string value should fail
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Field mapping value must be a string"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Field mapping value must be a string")
+        );
     }
 
     #[test]
