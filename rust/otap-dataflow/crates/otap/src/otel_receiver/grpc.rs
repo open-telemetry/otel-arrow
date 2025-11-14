@@ -8,6 +8,9 @@
 //! - decoding/encoding length-prefixed frames,
 //! - managing request time limits,
 //! - abstracting the underlying `RecvStream` so it can be fuzzed in tests.
+//!
+//! Note: The implementation is heavily inspired by tonic's framing and compression stack, but
+//! tailored to the single-threaded OTAP runtime.
 
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
@@ -33,10 +36,15 @@ const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
 pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 1024;
 
 /// Parses the client's `grpc-encoding` header and enforces server policy.
+///
+/// Note: Non-UTF8 headers, unknown tokens, or disabled algorithms all yield a gRPC `unimplemented`
+/// status so clients get immediate, well-scoped errors instead of silently falling back.
 pub(crate) fn parse_grpc_encoding(
     headers: &HeaderMap,
     accepted: &AcceptedGrpcEncodings,
 ) -> Result<GrpcEncoding, Status> {
+    // The method first validates that the `content-type` header begins with `application/grpc`.
+    // This keeps HTTP/2 requests that merely mimic the header names from being accepted.
     match headers.get(http::header::CONTENT_TYPE) {
         Some(value) if value.as_bytes().starts_with(b"application/grpc") => {}
         other => {
@@ -46,6 +54,10 @@ pub(crate) fn parse_grpc_encoding(
             ));
         }
     }
+
+    // Only encodings explicitly advertised in `AcceptedGrpcEncodings` are permitted, even though
+    // the parser understands additional aliases (such as `zstdarrow{n}`), the request is rejected
+    // unless the server opted in to the corresponding [`CompressionMethod`].
     match headers.get("grpc-encoding") {
         None => Ok(GrpcEncoding::Identity),
         Some(value) => {
@@ -93,6 +105,8 @@ pub(crate) fn parse_grpc_encoding(
     }
 }
 
+/// Returns true when two ASCII byte slices are equal ignoring case (without allocating or
+/// converting to UTF-8).
 fn eq_ascii_case_insensitive(value: &[u8], expected: &[u8]) -> bool {
     value.len() == expected.len()
         && value
@@ -101,6 +115,8 @@ fn eq_ascii_case_insensitive(value: &[u8], expected: &[u8]) -> bool {
             .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
 }
 
+/// Returns true if `value` starts with `prefix`, ignoring ASCII case (without allocating or
+/// converting to UTF-8).
 fn starts_with_ascii_case_insensitive(value: &[u8], prefix: &[u8]) -> bool {
     value.len() >= prefix.len()
         && value
@@ -109,12 +125,12 @@ fn starts_with_ascii_case_insensitive(value: &[u8], prefix: &[u8]) -> bool {
             .all(|(lhs, rhs)| ascii_byte_eq_ignore_case(*lhs, *rhs))
 }
 
+/// Compares two ASCII bytes without allocating or converting to UTF-8.
 fn ascii_byte_eq_ignore_case(lhs: u8, rhs: u8) -> bool {
     lhs == rhs || lhs.eq_ignore_ascii_case(&rhs)
 }
 
 /// Parses the client's `grpc-accept-encoding` header into capability flags.
-/// Parses the client's declared `grpc-accept-encoding` list into flags.
 pub(crate) fn parse_grpc_accept_encoding(headers: &HeaderMap) -> ClientAcceptEncodings {
     let Some(value) = headers.get("grpc-accept-encoding") else {
         return ClientAcceptEncodings::identity_only();
@@ -161,6 +177,13 @@ pub(crate) fn parse_grpc_accept_encoding(headers: &HeaderMap) -> ClientAcceptEnc
 }
 
 /// Chooses the response encoding based on server preference & client support.
+///
+/// The caller provides the ordered list of server-supported compression methods and the client's
+/// advertised capabilities. The function walks the server list in order, returning the first method
+/// that the client also supports. This gives the server deterministic control over preference
+/// ordering (e.g. pick `zstd` when available, otherwise fall back to `gzip`, etc.) while still
+/// honoring the client's declared limits. When no overlap exists the function returns
+/// `GrpcEncoding::Identity`, signaling that the response must be sent uncompressed.
 pub(crate) fn negotiate_response_encoding(
     configured: &[CompressionMethod],
     client: &ClientAcceptEncodings,
@@ -189,6 +212,7 @@ pub(crate) enum GrpcEncoding {
     /// Deflate compression.
     Deflate,
     // ToDo Add support for Snappy to follow Go implementation
+    // ToDo Add support for OpenZL in the future
 }
 
 #[derive(Clone, Copy)]
@@ -331,13 +355,16 @@ impl BodyStream for H2BodyStream {
 }
 
 /// Pull-based view over an h2 stream that yields decoded `BatchArrowRecords`.
-/// Pull-based view over an h2 stream that yields decoded `BatchArrowRecords`.
 pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     recv: S,
     buffer: ChunkBuffer,
     current_frame: Option<FrameHeader>,
     finished: bool,
     encoding: GrpcEncoding,
+    /// Cached zstd decompressor; zstd initialisation is expensive, so reusing the same instance per
+    /// stream avoids repeated allocations and lets us grow the scratch buffer incrementally. Flate
+    /// codecs (gzip/deflate) are recreated per frame because their constructors are cheap and hold
+    /// no reusable state.
     zstd: Option<ZstdDecompressor<'static>>,
     decompressed_buf: Vec<u8>,
 }
@@ -356,6 +383,7 @@ struct ChunkBuffer {
 }
 
 impl ChunkBuffer {
+    /// Creates an empty buffer that tracks total buffered length.
     fn new() -> Self {
         Self {
             chunks: VecDeque::new(),
@@ -363,10 +391,12 @@ impl ChunkBuffer {
         }
     }
 
+    /// Returns the number of bytes buffered across all chunks.
     fn len(&self) -> usize {
         self.len
     }
 
+    /// Appends a chunk to the tail of the buffer without copying.
     fn push(&mut self, chunk: Bytes) {
         if chunk.is_empty() {
             return;
@@ -411,10 +441,12 @@ struct FrameBuf {
 }
 
 impl FrameBuf {
+    /// Wraps the supplied deque and remaining length into a `FrameBuf`.
     fn new(chunks: VecDeque<Bytes>, remaining: usize) -> Self {
         Self { chunks, remaining }
     }
 
+    /// Converts the buffered slices into a single `Bytes`, coalescing if needed.
     fn into_bytes(mut self) -> Bytes {
         match self.chunks.len() {
             0 => Bytes::new(),
@@ -510,6 +542,7 @@ where
             }
         }
     }
+    
     /// Makes sure the scratch buffer is large enough for the decoded payload.
     /// Complexity: amortized O(1) thanks to the doubling strategy.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
@@ -537,6 +570,7 @@ where
     /// Complexity: amortized O(n) over the payload size because each retry doubles
     /// the buffer.
     fn decompress_zstd(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+        // Lazily create the decoder once per stream, since this is costly.
         self.ensure_zstd_decompressor()?;
         let mut required_capacity = self
             .decompressed_buf
@@ -545,6 +579,7 @@ where
             .max(MIN_DECOMPRESSED_CAPACITY);
 
         loop {
+            // Grow the scratch buffer until it can hold the entire frame.
             if self.decompressed_buf.capacity() < required_capacity {
                 self.decompressed_buf
                     .reserve(required_capacity - self.decompressed_buf.capacity());
@@ -556,6 +591,7 @@ where
                     .zstd
                     .as_mut()
                     .expect("zstd decompressor is ensured above for this single-threaded path");
+                // Decompress directly into the reusable scratch buffer to avoid reallocations.
                 decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
             };
             match result {
@@ -565,12 +601,14 @@ where
                     if err.kind() == io::ErrorKind::Other
                         && err_msg.contains("Destination buffer is too small")
                     {
+                        // Double the capacity and retry when the destination buffer overflowed.
                         required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
                             log::error!("zstd decompression failed: required buffer overflow");
                             Status::internal("zstd decompression failed: output too large")
                         })?;
                         continue;
                     }
+                    // Any other error is terminal for this frame.
                     log::error!("zstd decompression failed: {err_msg}");
                     return Err(Status::internal(format!(
                         "zstd decompression failed: {err_msg}"
@@ -628,8 +666,13 @@ where
     }
 }
 
+/// Minimal async interface that lets the experimental receiver consume Arrow batches without
+/// requiring the underlying stream to be `Send`. It mirrors the subset of `ArrowRequestStream`
+/// used by this module so tests can inject local fakes.
 #[async_trait(?Send)]
 pub(crate) trait RequestStream {
+    /// Fetches the next `BatchArrowRecords`, or `Ok(None)` when the peer half closes the stream.
+    /// Implementations translate transport/protobuf failures into gRPC `Status` errors.
     async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status>;
 }
 
@@ -638,6 +681,8 @@ impl<S> RequestStream for GrpcStreamingBody<S>
 where
     S: BodyStream + Unpin + 'static,
 {
+    /// Reassembles length-prefixed gRPC frames, handling optional compression, and yields decoded
+    /// `BatchArrowRecords` to the caller.
     async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
         loop {
             if self.current_frame.is_none() {
@@ -645,9 +690,13 @@ where
                     if self.finished {
                         return Ok(None);
                     }
+                    // Continue pulling h2 DATA until we have the 5-byte frame header.
                     self.fill_buffer().await?;
                     continue;
                 }
+                // gRPC wire format prefixes every message with 1 byte of flags (bit 0 = compressed)
+                // followed by a 4-byte big-endian payload length. We read the full 5-byte header
+                // before attempting to parse or pull the body.
                 let header = self
                     .buffer
                     .split_frame(5)
@@ -684,6 +733,7 @@ where
                 } else {
                     BatchArrowRecords::decode(payload)
                 };
+                // Surface decoding failures as gRPC errors so clients know the batch was invalid.
                 let message = decoded.map_err(|e| {
                     log::error!("Failed to decode BatchArrowRecords: {e}");
                     Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
@@ -769,15 +819,19 @@ impl GrpcMessageEncoder {
         self.ensure_zstd_encoder()?;
         let mut required_capacity = payload.len().max(MIN_COMPRESSED_CAPACITY);
         loop {
+            // Make sure the scratch buffer is large enough for the next attempt.
             if self.compressed_buf.len() != required_capacity {
                 self.compressed_buf.resize(required_capacity, 0);
             }
             let result = {
+                // Safe because `ensure_zstd_encoder` guarantees we have an encoder.
                 let encoder = self.zstd.as_mut().expect("zstd encoder must exist");
+                // Compress directly into the reusable scratch buffer to avoid extra allocations.
                 encoder.compress_to_buffer(payload, self.compressed_buf.as_mut_slice())
             };
             match result {
                 Ok(written) => {
+                    // Shrink to the actual size once compression finishes successfully.
                     self.compressed_buf.truncate(written);
                     return Ok(());
                 }
@@ -785,12 +839,14 @@ impl GrpcMessageEncoder {
                     if err.kind() == io::ErrorKind::Other
                         && err.to_string().contains("Destination buffer is too small") =>
                 {
+                    // Double the capacity and retry when the destination buffer was insufficient.
                     required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
                         log::error!("zstd compression failed: required buffer overflow");
                         Status::internal("zstd compression failed: output too large")
                     })?;
                 }
                 Err(err) => {
+                    // Any other compression failure aborts this response frame.
                     log::error!("zstd compression failed: {err}");
                     return Err(Status::internal(format!("zstd compression failed: {err}")));
                 }
@@ -851,6 +907,12 @@ impl GrpcMessageEncoder {
 }
 
 /// Utility wrapper that enforces per-request idle deadlines.
+///
+/// Each inbound OTAP Arrow request shares the single-threaded runtime with other tasks. To prevent
+/// a stalled client from tying up resources indefinitely, `RequestTimeout` arms a `tokio::time::Sleep`
+/// whenever we poll the status stream and cancels/reset it as soon as new data arrives. If the timer
+/// elapses before the stream yields another item we abort the request with `DEADLINE_EXCEEDED`,
+/// mirroring the behaviour of tonic's server stack.
 pub(crate) struct RequestTimeout {
     duration: Option<Duration>,
     sleep: Option<Pin<Box<Sleep>>>,
@@ -893,7 +955,9 @@ impl RequestTimeout {
                     .as_mut()
                     .expect("sleep must be armed when timeout is configured");
                 tokio::select! {
+                    // Timeout fired first: signal the caller to abort the request.
                     _ = sleep.as_mut() => Err(()),
+                    // Stream yielded before the deadline; reset and pass the item through.
                     item = stream.next() => {
                         self.reset();
                         Ok(item)
