@@ -86,7 +86,7 @@ pub mod opentelemetry {
 
 /// Protocol message data of some type.
 ///
-/// Generally, callers should to use of OtlpProtoBytes type defined in
+/// Generally, callers should use the OtlpProtoBytes type defined in
 /// crate::otlp instead, this is only useful where proto::Message
 /// objects are required. OtlpProtoBytes has an efficient translation
 /// into OtapArrowRecords, this type does not.
