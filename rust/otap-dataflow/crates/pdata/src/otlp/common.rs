@@ -936,7 +936,7 @@ mod test {
 
     #[test]
     fn test_logs_with_no_scope() {
-        test_logs_round_trip(logs_with_no_scope());
+        test_logs_round_trip(log_with_no_scope());
     }
 
     #[test]

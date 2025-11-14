@@ -20,11 +20,11 @@ use crate::proto::opentelemetry::trace::v1::{
     ResourceSpans, ScopeSpans, Span, Status, TracesData, span::SpanKind,
 };
 
-// ============================================================================
+//
 // Logs Fixtures
-// ============================================================================
+//
 
-/// Logs with full resource and scope - baseline test with all fields populated
+/// Two logs with full resource and scope
 #[must_use]
 pub fn logs_with_full_resource_and_scope() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
@@ -49,11 +49,11 @@ pub fn logs_with_full_resource_and_scope() -> LogsData {
     )])
 }
 
-/// Logs with no resource - empty Resource
+/// Logs with no resource
 #[must_use]
 pub fn logs_with_no_resource() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
-        Resource::default(), // Empty resource
+        Resource::default(),
         vec![ScopeLogs::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
@@ -69,9 +69,9 @@ pub fn logs_with_no_resource() -> LogsData {
     )])
 }
 
-/// Logs with no scope - empty InstrumentationScope
+/// One log with empty scope
 #[must_use]
-pub fn logs_with_no_scope() -> LogsData {
+pub fn log_with_no_scope() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
         Resource::build()
             .attributes(vec![KeyValue::new(
@@ -80,7 +80,7 @@ pub fn logs_with_no_scope() -> LogsData {
             )])
             .finish(),
         vec![ScopeLogs::new(
-            InstrumentationScope::default(), // Empty scope
+            InstrumentationScope::default(),
             vec![
                 LogRecord::build()
                     .time_unix_nano(1000u64)
@@ -92,7 +92,7 @@ pub fn logs_with_no_scope() -> LogsData {
     )])
 }
 
-/// Logs with neither resource nor scope data - minimal case
+/// Logs with no resource, no scope
 #[must_use]
 pub fn logs_with_no_resource_no_scope() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
@@ -114,21 +114,20 @@ pub fn logs_with_no_resource_no_scope() -> LogsData {
     )])
 }
 
-/// Logs with resource and scope but no attributes
+/// Logs with resource and scope, no attributes
 #[must_use]
 pub fn logs_with_no_attributes() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
-        Resource::build().finish(), // No attributes
+        Resource::build().finish(),
         vec![ScopeLogs::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
-                .finish(), // No attributes
+                .finish(),
             vec![
                 LogRecord::build()
                     .time_unix_nano(1000u64)
                     .observed_time_unix_nano(1100u64)
                     .severity_number(SeverityNumber::Info as i32)
-                    // No attributes
                     .finish(),
             ],
         )],
@@ -141,13 +140,10 @@ pub fn empty_logs() -> LogsData {
     LogsData::new(vec![])
 }
 
-/// Resource with no scope logs (no actual log records)
+/// Resource with no scope logs
 #[must_use]
 pub fn logs_with_empty_scope_logs() -> LogsData {
-    LogsData::new(vec![ResourceLogs::new(
-        Resource::build().finish(),
-        vec![], // No scope logs
-    )])
+    LogsData::new(vec![ResourceLogs::new(Resource::build().finish(), vec![])])
 }
 
 /// Scope with no log records
@@ -159,7 +155,7 @@ pub fn logs_with_empty_log_records() -> LogsData {
             InstrumentationScope::build()
                 .name("scope".to_string())
                 .finish(),
-            vec![], // No log records
+            vec![],
         )],
     )])
 }
@@ -194,7 +190,7 @@ pub fn logs_multiple_records_no_resource() -> LogsData {
     )])
 }
 
-/// Multiple scopes with no resource
+/// Logs with scopes with no resource
 #[must_use]
 pub fn logs_multiple_scopes_no_resource() -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
@@ -228,12 +224,12 @@ pub fn logs_multiple_scopes_no_resource() -> LogsData {
     )])
 }
 
-/// Multiple resources with different content
+/// Logs with multiple resources with different content
 #[must_use]
 pub fn logs_multiple_resources_mixed_content() -> LogsData {
     LogsData::new(vec![
         ResourceLogs::new(
-            Resource::default(), // Empty resource
+            Resource::default(),
             vec![ScopeLogs::new(
                 InstrumentationScope::build()
                     .name("scope1".to_string())
@@ -248,9 +244,9 @@ pub fn logs_multiple_resources_mixed_content() -> LogsData {
             )],
         ),
         ResourceLogs::new(
-            Resource::build().finish(), // Non-empty resource
+            Resource::build().finish(),
             vec![ScopeLogs::new(
-                InstrumentationScope::default(), // Empty scope
+                InstrumentationScope::default(),
                 vec![
                     LogRecord::build()
                         .time_unix_nano(2000u64)
@@ -263,11 +259,11 @@ pub fn logs_multiple_resources_mixed_content() -> LogsData {
     ])
 }
 
-// ============================================================================
+//
 // Traces Fixtures
-// ============================================================================
+//
 
-/// Traces with full resource and scope - baseline test with all fields populated
+/// Traces with full resource and scope
 #[must_use]
 pub fn traces_with_full_resource_and_scope() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
@@ -300,11 +296,11 @@ pub fn traces_with_full_resource_and_scope() -> TracesData {
     )])
 }
 
-/// Traces with no resource - empty Resource
+/// Traces with no resource
 #[must_use]
 pub fn traces_with_no_resource() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
-        Resource::default(), // Empty resource
+        Resource::default(),
         vec![ScopeSpans::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
@@ -323,7 +319,7 @@ pub fn traces_with_no_resource() -> TracesData {
     )])
 }
 
-/// Traces with no scope - empty InstrumentationScope
+/// Traces with no scope
 #[must_use]
 pub fn traces_with_no_scope() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
@@ -334,7 +330,7 @@ pub fn traces_with_no_scope() -> TracesData {
             )])
             .finish(),
         vec![ScopeSpans::new(
-            InstrumentationScope::default(), // Empty scope
+            InstrumentationScope::default(),
             vec![
                 Span::build()
                     .trace_id(vec![1u8; 16])
@@ -349,7 +345,7 @@ pub fn traces_with_no_scope() -> TracesData {
     )])
 }
 
-/// Traces with neither resource nor scope data - minimal case
+/// Traces with neither resource nor scope data
 #[must_use]
 pub fn traces_with_no_resource_no_scope() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
@@ -378,11 +374,11 @@ pub fn traces_with_no_resource_no_scope() -> TracesData {
 #[must_use]
 pub fn traces_with_no_attributes() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
-        Resource::build().finish(), // No attributes
+        Resource::build().finish(),
         vec![ScopeSpans::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
-                .finish(), // No attributes
+                .finish(),
             vec![
                 Span::build()
                     .trace_id(vec![1u8; 16])
@@ -391,7 +387,6 @@ pub fn traces_with_no_attributes() -> TracesData {
                     .kind(SpanKind::Internal)
                     .start_time_unix_nano(1000u64)
                     .end_time_unix_nano(2000u64)
-                    // No attributes
                     .finish(),
             ],
         )],
@@ -404,13 +399,10 @@ pub fn empty_traces() -> TracesData {
     TracesData::new(vec![])
 }
 
-/// Resource with no scope spans (no actual spans)
+/// Resource with no scope spans
 #[must_use]
 pub fn traces_with_empty_scope_spans() -> TracesData {
-    TracesData::new(vec![ResourceSpans::new(
-        Resource::build().finish(),
-        vec![], // No scope spans
-    )])
+    TracesData::new(vec![ResourceSpans::new(Resource::build().finish(), vec![])])
 }
 
 /// Scope with no spans
@@ -422,7 +414,7 @@ pub fn traces_with_empty_spans() -> TracesData {
             InstrumentationScope::build()
                 .name("scope".to_string())
                 .finish(),
-            vec![], // No spans
+            vec![],
         )],
     )])
 }
@@ -511,7 +503,7 @@ pub fn traces_multiple_scopes_no_resource() -> TracesData {
 pub fn traces_multiple_resources_mixed_content() -> TracesData {
     TracesData::new(vec![
         ResourceSpans::new(
-            Resource::default(), // Empty resource
+            Resource::default(),
             vec![ScopeSpans::new(
                 InstrumentationScope::build()
                     .name("scope1".to_string())
@@ -529,9 +521,9 @@ pub fn traces_multiple_resources_mixed_content() -> TracesData {
             )],
         ),
         ResourceSpans::new(
-            Resource::build().finish(), // Non-empty resource
+            Resource::build().finish(),
             vec![ScopeSpans::new(
-                InstrumentationScope::default(), // Empty scope
+                InstrumentationScope::default(),
                 vec![
                     Span::build()
                         .trace_id(vec![2u8; 16])
@@ -547,11 +539,11 @@ pub fn traces_multiple_resources_mixed_content() -> TracesData {
     ])
 }
 
-// ============================================================================
+//
 // Metrics Fixtures
-// ============================================================================
+//
 
-/// Metrics with full resource, scope, and data points - baseline test
+/// Metrics with full resource, scope, and data points
 #[must_use]
 pub fn metrics_sum_with_full_resource_and_scope() -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
@@ -583,11 +575,11 @@ pub fn metrics_sum_with_full_resource_and_scope() -> MetricsData {
     )])
 }
 
-/// Metrics with no resource - empty Resource
+/// Metrics with no resource
 #[must_use]
 pub fn metrics_sum_with_no_resource() -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
-        Resource::default(), // Empty resource
+        Resource::default(),
         vec![ScopeMetrics::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
@@ -611,7 +603,7 @@ pub fn metrics_sum_with_no_resource() -> MetricsData {
     )])
 }
 
-/// Metrics with no scope - empty InstrumentationScope
+/// Metrics with no scope
 #[must_use]
 pub fn metrics_sum_with_no_scope() -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
@@ -622,7 +614,7 @@ pub fn metrics_sum_with_no_scope() -> MetricsData {
             )])
             .finish(),
         vec![ScopeMetrics::new(
-            InstrumentationScope::default(), // Empty scope
+            InstrumentationScope::default(),
             vec![
                 Metric::build()
                     .name("test.counter")
@@ -642,7 +634,7 @@ pub fn metrics_sum_with_no_scope() -> MetricsData {
     )])
 }
 
-/// Metrics with neither resource nor scope - minimal case
+/// Metrics with neither resource nor scope
 #[must_use]
 pub fn metrics_sum_with_no_resource_no_scope() -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
@@ -684,11 +676,7 @@ pub fn metrics_sum_with_no_data_points() -> MetricsData {
             vec![
                 Metric::build()
                     .name("test.counter")
-                    .data_sum(Sum::new(
-                        AggregationTemporality::Cumulative,
-                        true,
-                        vec![], // No data points
-                    ))
+                    .data_sum(Sum::new(AggregationTemporality::Cumulative, true, vec![]))
                     .finish(),
             ],
         )],
@@ -701,12 +689,12 @@ pub fn empty_metrics() -> MetricsData {
     MetricsData::new(vec![])
 }
 
-/// Resource with no scope metrics (no actual metrics)
+/// Resource with no scope metrics
 #[must_use]
 pub fn metrics_with_no_scope_metrics() -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
         Resource::build().finish(),
-        vec![], // No scope metrics
+        vec![],
     )])
 }
 
@@ -719,7 +707,7 @@ pub fn metrics_with_no_metrics() -> MetricsData {
             InstrumentationScope::build()
                 .name("scope".to_string())
                 .finish(),
-            vec![], // No metrics
+            vec![],
         )],
     )])
 }
