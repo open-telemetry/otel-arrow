@@ -31,6 +31,30 @@ pub struct GigLaClient {
 }
 
 impl GigLaClient {
+    /// Creates a new GigLA client instance from provided components.
+    ///
+    /// # Arguments
+    /// * `http_client` - The HTTP client to use for requests
+    /// * `endpoint` - The full endpoint URL for the GigLA ingestion API
+    /// * `credential` - The token credential for authentication
+    /// * `scope` - The OAuth scope for token acquisition
+    ///
+    /// # Returns
+    /// * `GigLaClient` - A configured client instance
+    pub fn from_parts(
+        http_client: Client,
+        endpoint: String,
+        credential: Arc<dyn TokenCredential>,
+        scope: String,
+    ) -> Self {
+        Self {
+            http_client,
+            endpoint,
+            credential,
+            scope,
+        }
+    }
+
     /// Creates a new GigLA client instance from the configuration.
     ///
     /// # Arguments
@@ -113,7 +137,10 @@ impl GigLaClient {
         // Use scope from config instead of hardcoded value
         let token_response = self
             .credential
-            .get_token(&[&self.scope], None)
+            .get_token(
+                &[&self.scope],
+                Some(azure_core::credentials::TokenRequestOptions::default()),
+            )
             .await
             .map_err(|e| format!("Failed to get token: {e}"))?;
 
@@ -169,5 +196,162 @@ impl GigLaClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
+    use time::{Duration, OffsetDateTime};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{header, method},
+    };
+
+    #[derive(Debug)]
+    struct FakeCredential;
+
+    #[async_trait::async_trait]
+    impl TokenCredential for FakeCredential {
+        async fn get_token(
+            &self,
+            _scopes: &[&str],
+            _options: Option<TokenRequestOptions<'_>>,
+        ) -> azure_core::Result<AccessToken> {
+            Ok(AccessToken::new(
+                "fake-token",
+                OffsetDateTime::now_utc() + Duration::hours(1),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(header("content-encoding", "gzip"))
+            .and(header("authorization", "Bearer fake-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = GigLaClient::from_parts(
+            Client::new(),
+            server.uri(),
+            Arc::new(FakeCredential),
+            "https://monitor.azure.com/.default".into(),
+        );
+
+        let body = serde_json::json!({"test": "data"});
+        let result = client.send(body).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_auth_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let client = GigLaClient::from_parts(
+            Client::new(),
+            server.uri(),
+            Arc::new(FakeCredential),
+            "https://monitor.azure.com/.default".into(),
+        );
+
+        let result = client.send(serde_json::json!({"test": "data"})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Authentication failed"));
+    }
+
+    #[test]
+    fn test_gzip_compress() {
+        let client = GigLaClient::from_parts(
+            Client::new(),
+            String::new(),
+            Arc::new(FakeCredential),
+            String::new(),
+        );
+
+        let data = b"test data to compress";
+        let compressed = client.gzip_compress(data).unwrap();
+
+        // Verify it's actually compressed (should be smaller for repetitive data)
+        assert!(compressed.len() > 0);
+
+        // Verify gzip magic bytes
+        assert_eq!(compressed[0], 0x1f);
+        assert_eq!(compressed[1], 0x8b);
+    }
+
+    #[tokio::test]
+    async fn test_error_responses() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+        let cases = vec![
+            (403, "Authorization failed"),
+            (413, "Payload too large"),
+            (429, "Rate limited"),
+            (500, "Request failed"),
+        ];
+
+        for (status, expected_msg) in cases {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            let client = GigLaClient::from_parts(
+                Client::new(),
+                server.uri(),
+                Arc::new(FakeCredential),
+                "scope".into(),
+            );
+
+            let result = client.send(serde_json::json!({"test": "data"})).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains(expected_msg));
+        }
+    }
+
+    #[tokio::test]
+    async fn send_happy_path_compresses_and_posts() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method, path, query_param},
+        };
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(header("content-encoding", "gzip"))
+            .and(path("/dataCollectionRules/dcr/streams/stream"))
+            .and(query_param("api-version", "2021-11-01-preview"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let gigla = GigLaClient::from_parts(
+            client,
+            format!(
+                "{}/dataCollectionRules/dcr/streams/stream?api-version=2021-11-01-preview",
+                server.uri()
+            ),
+            Arc::new(FakeCredential),
+            "https://monitor.azure.com/.default".to_string(),
+        );
+
+        gigla
+            .send(vec![serde_json::json!({"foo": "bar"})])
+            .await
+            .unwrap();
     }
 }
