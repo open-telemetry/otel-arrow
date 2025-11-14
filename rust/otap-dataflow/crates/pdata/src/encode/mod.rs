@@ -63,7 +63,7 @@ where
     let mut spans = TracesRecordBatchBuilder::new();
     let mut events = EventsRecordBatchBuilder::new();
     let mut links = LinksRecordBatchBuilder::new();
-    
+
     let mut total_span_count = 0;
 
     // First, we traverse the view collecting the trace data into our RecordBatch builders.
@@ -149,14 +149,14 @@ where
                 spans.append_dropped_events_count(Some(span.dropped_events_count()));
                 spans.append_dropped_links_count(Some(span.dropped_links_count()));
 
-                spans
-                    .status
-                    .append_code(span.status().map(|s| s.status_code()));
-                
-                if let Some(status) = span.status() {
-                    spans.status.append_status_message(status.message());
+                if let Some(status) = &span.status() {
+                    let code = status.status_code();
+                    let message = status.message();
+                    spans.status.append_code((code != 0).then_some(code));
+                    spans.status.append_status_message(message);
                 } else {
-                    spans.status.append_status_message(None);
+                    spans.status.append_code(None);
+                    spans.status.append_status_message(None)
                 }
 
                 for event in span.events() {
@@ -248,7 +248,7 @@ where
     let mut curr_log_id = 0;
     let mut logs = LogsRecordBatchBuilder::new();
     let mut log_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    
+
     let mut total_log_count = 0;
 
     for (curr_resource_id, resource_logs) in logs_view.resources().enumerate() {
