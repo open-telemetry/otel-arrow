@@ -786,7 +786,8 @@ mod tests {
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, BatchStatus, arrow_logs_service_client::ArrowLogsServiceClient,
+        ArrowPayloadType, BatchStatus, StatusCode as ProtoStatusCode,
+        arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
@@ -798,6 +799,7 @@ mod tests {
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
     use tonic::Status;
+    use tonic::codec::CompressionEncoding;
 
     fn pick_free_port() -> u16 {
         portpicker::pick_unused_port().expect("No free ports")
@@ -1105,6 +1107,156 @@ mod tests {
         }
     }
 
+    type StatusPlan = Vec<Result<(), &'static str>>;
+
+    /// gRPC client harness for the Zstd log regression test.
+    ///
+    /// It streams a predetermined number of OTAP log batches, forces tonic to use request-side
+    /// Zstd compression, and asserts that the streamed `BatchStatus` items match the provided
+    /// `status_plan` (ACK vs NACK). Once validation finishes we trigger the runtime shutdown so
+    /// the paired validator can complete.
+    fn zstd_logs_scenario(
+        grpc_endpoint: String,
+        status_plan: StatusPlan,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |ctx| {
+            Box::pin(async move {
+                let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect logs client")
+                    .send_compressed(CompressionEncoding::Zstd);
+
+                let plan_len = status_plan.len();
+                #[allow(tail_expr_drop_order)]
+                let logs_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..plan_len {
+                        let mut logs_records =
+                            create_otap_batch(batch_id as i64, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
+                    }
+                };
+
+                let logs_response = arrow_logs_client
+                    .arrow_logs(logs_stream)
+                    .await
+                    .expect("logs request failed");
+                validate_mixed_log_statuses(logs_response.into_inner(), &status_plan, "logs").await;
+
+                ctx.send_shutdown(Instant::now(), "Zstd logs test complete")
+                    .await
+                    .expect("shutdown send failed");
+            })
+        }
+    }
+
+    /// Validator companion for `zstd_logs_scenario`.
+    ///
+    /// Consumes the decoded batches the receiver pushes into the pipeline channel, verifies each
+    /// payload matches what the client sent, and sends either an ACK or NACK back into the system
+    /// to simulate downstream processing outcomes.
+    fn zstd_logs_validation(
+        status_plan: StatusPlan,
+    ) -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                for (batch_id, expected) in status_plan.into_iter().enumerate() {
+                    let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("logs timeout")
+                        .expect("missing logs");
+                    let records: OtapArrowRecords =
+                        pdata.clone().payload().try_into().expect("logs conversion");
+                    let expected_logs = create_otap_batch(batch_id as i64, ArrowPayloadType::Logs);
+                    assert_eq!(records, expected_logs);
+                    match expected {
+                        Ok(()) => {
+                            if let Some((_node_id, ack)) =
+                                crate::pdata::Context::next_ack(AckMsg::new(pdata))
+                            {
+                                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                                    .await
+                                    .expect("logs ack send failed");
+                            }
+                        }
+                        Err(reason) => {
+                            let nack_msg = NackMsg::new(reason, pdata);
+                            if let Some((_node_id, nack)) =
+                                crate::pdata::Context::next_nack(nack_msg)
+                            {
+                                ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                                    .await
+                                    .expect("logs nack send failed");
+                            }
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    /// Confirms that the gRPC response stream mirrors the ACK/NACK plan.
+    ///
+    /// ACK responses must arrive as `OK` with the default success message, while NACKs surface as
+    /// `UNAVAILABLE` plus the provided failure reason.
+    async fn validate_mixed_log_statuses<S>(
+        mut inbound_stream: S,
+        status_plan: &[Result<(), &'static str>],
+        signal_name: &str,
+    ) where
+        S: futures::Stream<Item = Result<BatchStatus, Status>> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut index = 0;
+        while let Some(result) = inbound_stream.next().await {
+            let batch_status = result.expect("Expected successful response");
+            let expected = status_plan
+                .get(index)
+                .unwrap_or_else(|| panic!("unexpected extra response for {}", signal_name));
+            match expected {
+                Ok(()) => {
+                    assert_eq!(
+                        batch_status.status_code,
+                        ProtoStatusCode::Ok as i32,
+                        "Unexpected success code for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                    assert_eq!(
+                        batch_status.status_message, "Successfully received",
+                        "Unexpected success message for {} batch {}",
+                        signal_name, batch_status.batch_id
+                    );
+                }
+                Err(reason) => {
+                    assert_eq!(
+                        batch_status.status_code,
+                        ProtoStatusCode::Unavailable as i32,
+                        "Unexpected failure code for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                    assert_eq!(
+                        batch_status.status_message,
+                        format!("Pipeline processing failed: {}", reason),
+                        "Unexpected failure message for {} batch {}",
+                        signal_name,
+                        batch_status.batch_id
+                    );
+                }
+            }
+            index += 1;
+        }
+        assert_eq!(
+            index,
+            status_plan.len(),
+            "Missing responses for {} (expected {}, saw {index})",
+            signal_name,
+            status_plan.len()
+        );
+    }
+
     async fn validate_batch_responses<S>(
         mut inbound_stream: S,
         expected_status_code: i32,
@@ -1255,6 +1407,58 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario(grpc_endpoint))
             .run_validation_concurrent(nack_validation_procedure());
+    }
+
+    #[test]
+    /// End-to-end test for request-side Zstd compression with mixed ACK/NACK outcomes.
+    ///
+    /// The receiver is configured with `wait_for_result` and `compression_method = "zstd"` so the
+    /// gRPC client can compress request frames. The `status_plan` drives alternating ACK/NACK
+    /// responses from the validation harness, exercising the effect-handler path (decoded batches
+    /// hit the channel) and the control path (ACK/NACK is reflected back to the client via
+    /// `BatchStatus`).
+    fn test_otel_receiver_zstd_logs_ack_nack() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = pick_free_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use serde_json::json;
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true,
+            "compression_method": "zstd"
+        });
+        let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config).unwrap();
+        receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+        let receiver = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let status_plan = vec![
+            Ok(()),
+            Err("Test NACK reason for logs 1"),
+            Ok(()),
+            Err("Test NACK reason for logs 2"),
+        ];
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(zstd_logs_scenario(grpc_endpoint, status_plan.clone()))
+            .run_validation_concurrent(zstd_logs_validation(status_plan));
     }
 
     #[test]
