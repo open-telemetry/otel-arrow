@@ -207,7 +207,6 @@ where
     }
 
     // If there are no spans, return empty batch (all None record batches).
-    // This is acceptable per OpenTelemetry spec - empty envelopes can be dropped.
     // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
     if total_span_count == 0 {
         return Ok(OtapArrowRecords::Traces(Traces::default()));
@@ -498,7 +497,6 @@ where
     }
 
     // If there are no log records, return empty batch (all None record batches).
-    // This is acceptable per OpenTelemetry spec - empty envelopes can be dropped.
     // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
     if total_log_count == 0 {
         return Ok(OtapArrowRecords::Logs(Logs::default()));
@@ -593,7 +591,7 @@ where
     Ok(())
 }
 
-// A helper function to centralize handling `Exemplar` data since we use it in several places.
+/// A helper function to centralize handling `Exemplar` data since we use it in several places.
 fn append_exemplar<View>(
     exemplar: &mut ExemplarsRecordBatchBuilder,
     exemplar_view: &View,
@@ -956,7 +954,6 @@ where
     }
 
     // If there are no metrics, return empty batch (all None record batches).
-    // This is acceptable per OpenTelemetry spec - empty envelopes can be dropped.
     // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
     if curr_metric_id == 0 {
         return Ok(OtapArrowRecords::Metrics(Metrics::default()));
