@@ -325,1107 +325,356 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-    use opentelemetry_proto::tonic::logs::v1::LogRecord;
-    use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
-    use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
-    use opentelemetry_proto::tonic::resource::v1::Resource;
+    use opentelemetry_proto::tonic::{
+        collector::logs::v1::ExportLogsServiceRequest,
+        common::v1::{AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+        resource::v1::Resource,
+    };
     use std::collections::HashMap;
 
-    fn create_test_config() -> Config {
+    fn create_test_config(disable_mapping: bool) -> Config {
+        use super::super::config::{ApiConfig, AuthConfig, Config, SchemaConfig};
+
         Config {
             client_config: HashMap::new(),
-            api: super::super::config::ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "test_stream".to_string(),
-                dcr: "test_dcr".to_string(),
-                schema: SchemaConfig::default(),
+            api: ApiConfig {
+                dcr_endpoint: "https://test.com".to_string(),
+                stream_name: "test-stream".to_string(),
+                dcr: "test-dcr".to_string(),
+                schema: SchemaConfig {
+                    disable_schema_mapping: disable_mapping,
+                    resource_mapping: HashMap::from([(
+                        "service.name".to_string(),
+                        "ServiceName".to_string(),
+                    )]),
+                    scope_mapping: HashMap::from([(
+                        "scope.name".to_string(),
+                        "ScopeName".to_string(),
+                    )]),
+                    log_record_mapping: HashMap::from([
+                        ("body".to_string(), json!("Body")),
+                        ("severity_text".to_string(), json!("Severity")),
+                        (
+                            "attributes".to_string(),
+                            json!({
+                                "test.attr": "TestAttr"
+                            }),
+                        ),
+                    ]),
+                },
             },
-            auth: super::super::config::AuthConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 
-    fn create_test_config_with_schema(
-        resource_mapping: HashMap<String, String>,
-        scope_mapping: HashMap<String, String>,
-        log_record_mapping: HashMap<String, Value>,
-        disable_schema_mapping: bool,
-    ) -> Config {
-        let mut config = create_test_config();
-        config.api.schema = SchemaConfig {
-            resource_mapping,
-            scope_mapping,
-            log_record_mapping,
-            disable_schema_mapping,
+    #[test]
+    fn test_legacy_transform() {
+        let config = create_test_config(true);
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        observed_time_unix_nano: 2_000_000_000,
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("test body".to_string())),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
         };
-        config
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert_eq!(result.len(), 1);
+        assert!(result[0]["TimeGenerated"].as_str().is_some());
+        assert_eq!(result[0]["RawData"], "test body");
     }
 
-    // ===================== Helper Functions =====================
-
     #[test]
-    fn test_bytes_to_hex() {
-        let config = create_test_config();
+    fn test_schema_mapping() {
+        let config = create_test_config(false);
         let transformer = Transformer::new(&config);
 
-        assert_eq!(transformer.bytes_to_hex(&[]), "".to_string());
-        assert_eq!(transformer.bytes_to_hex(&[0]), "00".to_string());
-        assert_eq!(transformer.bytes_to_hex(&[255]), "ff".to_string());
-        assert_eq!(transformer.bytes_to_hex(&[1, 2, 3]), "010203".to_string());
-        assert_eq!(
-            transformer.bytes_to_hex(&[0xab, 0xcd, 0xef]),
-            "abcdef".to_string()
-        );
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("my-service".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "test-scope".to_string(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("my-scope".to_string())),
+                            }),
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::IntValue(42)),
+                        }),
+                        severity_text: "INFO".to_string(),
+                        attributes: vec![KeyValue {
+                            key: "test.attr".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::BoolValue(true)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["ServiceName"], "my-service");
+        assert_eq!(result[0]["ScopeName"], "my-scope");
+        assert_eq!(result[0]["Body"], "42");
+        assert_eq!(result[0]["Severity"], "INFO");
+        assert_eq!(result[0]["TestAttr"], true);
     }
 
     #[test]
-    fn test_format_timestamp_with_valid_time() {
-        let config = create_test_config();
+    fn test_all_log_record_fields() {
+        let mut config = create_test_config(false);
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("time_unix_nano".to_string(), json!("Time")),
+            ("observed_time_unix_nano".to_string(), json!("ObservedTime")),
+            ("trace_id".to_string(), json!("TraceId")),
+            ("span_id".to_string(), json!("SpanId")),
+            ("flags".to_string(), json!("Flags")),
+            ("severity_number".to_string(), json!("SeverityNum")),
+        ]);
+
         let transformer = Transformer::new(&config);
 
-        // 1609459200000000000 is 2021-01-01T00:00:00Z in nanoseconds
-        let timestamp = transformer.format_timestamp(1609459200000000000);
-        assert!(timestamp.contains("2021-01-01"));
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        observed_time_unix_nano: 2_000_000_000,
+                        trace_id: vec![0xFF, 0x00],
+                        span_id: vec![0xAB, 0xCD],
+                        flags: 1,
+                        severity_number: 9,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert!(result[0]["Time"].as_str().unwrap().contains("1970"));
+        assert!(result[0]["ObservedTime"].as_str().unwrap().contains("1970"));
+        assert_eq!(result[0]["TraceId"], "ff00");
+        assert_eq!(result[0]["SpanId"], "abcd");
+        assert_eq!(result[0]["Flags"], 1);
+        assert_eq!(result[0]["SeverityNum"], 9);
     }
 
     #[test]
-    fn test_format_timestamp_with_zero() {
-        let config = create_test_config();
+    fn test_any_value_types() {
+        let config = create_test_config(false);
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::ArrayValue(ArrayValue {
+                                values: vec![
+                                    AnyValue {
+                                        value: Some(OtelAnyValueEnum::DoubleValue(4.14)),
+                                    },
+                                    AnyValue {
+                                        value: Some(OtelAnyValueEnum::BytesValue(vec![0xDE, 0xAD])),
+                                    },
+                                ],
+                            })),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert_eq!(result[0]["Body"], "[4.14, dead]");
+    }
+
+    #[test]
+    fn test_kvlist_value() {
+        let config = create_test_config(false);
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::KvlistValue(KeyValueList {
+                                values: vec![KeyValue {
+                                    key: "nested".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(OtelAnyValueEnum::StringValue(
+                                            "value".to_string(),
+                                        )),
+                                    }),
+                                }],
+                            })),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert!(result[0]["Body"].as_str().unwrap().contains("nested"));
+    }
+
+    #[test]
+    fn test_empty_values() {
+        let mut config = create_test_config(false);
+        let _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("trace_id".to_string(), json!("TraceId"));
+        let _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("span_id".to_string(), json!("SpanId"));
+        let _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("body".to_string(), json!("Body"));
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        trace_id: vec![],
+                        span_id: vec![],
+                        body: None,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert_eq!(result[0]["TraceId"], json!(null));
+        assert_eq!(result[0]["SpanId"], json!(null));
+        assert_eq!(result[0]["Body"], json!(null));
+    }
+
+    #[test]
+    fn test_invalid_mapping_error() {
+        let mut config = create_test_config(false);
+        let _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("invalid_field".to_string(), json!("Invalid"));
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord::default()],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
+        assert_eq!(result.len(), 0); // Record skipped due to error
+    }
+
+    #[test]
+    fn test_zero_timestamp() {
+        let config = create_test_config(false);
         let transformer = Transformer::new(&config);
 
         let timestamp = transformer.format_timestamp(0);
-        // Should return current time
-        assert!(!timestamp.is_empty());
-        assert!(timestamp.contains('T')); // ISO format
+        assert!(timestamp.contains('T')); // RFC3339 format
     }
 
     #[test]
-    fn test_format_timestamp_with_nanos() {
-        let config = create_test_config();
+    fn test_observed_time_fallback() {
+        let config = create_test_config(true);
         let transformer = Transformer::new(&config);
 
-        // Test with specific nanoseconds
-        let time_nano = 1000000000000000001u64; // 1 second + 1 nano
-        let timestamp = transformer.format_timestamp(time_nano);
-        assert!(!timestamp.is_empty());
-    }
-
-    // ===================== Value Conversion Tests =====================
-
-    #[test]
-    fn test_extract_string_value_string() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::StringValue("hello".to_string());
-        assert_eq!(transformer.extract_string_value(&value), "hello");
-    }
-
-    #[test]
-    fn test_extract_string_value_int() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::IntValue(42);
-        assert_eq!(transformer.extract_string_value(&value), "42");
-    }
-
-    #[test]
-    fn test_extract_string_value_double() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::DoubleValue(3.14);
-        assert!(transformer.extract_string_value(&value).contains("3.14"));
-    }
-
-    #[test]
-    fn test_extract_string_value_bool() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value_true = OtelAnyValueEnum::BoolValue(true);
-        let value_false = OtelAnyValueEnum::BoolValue(false);
-        assert_eq!(transformer.extract_string_value(&value_true), "true");
-        assert_eq!(transformer.extract_string_value(&value_false), "false");
-    }
-
-    #[test]
-    fn test_extract_string_value_bytes() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::BytesValue(vec![0xde, 0xad, 0xbe, 0xef]);
-        assert_eq!(transformer.extract_string_value(&value), "deadbeef");
-    }
-
-    #[test]
-    fn test_extract_string_value_array() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut array_value = opentelemetry_proto::tonic::common::v1::ArrayValue::default();
-        array_value.values = vec![
-            AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("a".to_string())),
-            },
-            AnyValue {
-                value: Some(OtelAnyValueEnum::IntValue(1)),
-            },
-        ];
-
-        let value = OtelAnyValueEnum::ArrayValue(array_value);
-        let result = transformer.extract_string_value(&value);
-        assert_eq!(result, "[a, 1]");
-    }
-
-    #[test]
-    fn test_extract_string_value_kvlist() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut kvlist = opentelemetry_proto::tonic::common::v1::KeyValueList::default();
-        kvlist.values = vec![KeyValue {
-            key: "key1".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("val1".to_string())),
-            }),
-        }];
-
-        let value = OtelAnyValueEnum::KvlistValue(kvlist);
-        let result = transformer.extract_string_value(&value);
-        assert!(result.contains("key1"));
-        assert!(result.contains("val1"));
-    }
-
-    #[test]
-    fn test_convert_any_value_string() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::StringValue("test".to_string());
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!("test"));
-    }
-
-    #[test]
-    fn test_convert_any_value_int() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::IntValue(123);
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!(123));
-    }
-
-    #[test]
-    fn test_convert_any_value_double() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::DoubleValue(2.71);
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!(2.71));
-    }
-
-    #[test]
-    fn test_convert_any_value_bool() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::BoolValue(true);
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!(true));
-    }
-
-    #[test]
-    fn test_convert_any_value_bytes() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let value = OtelAnyValueEnum::BytesValue(vec![1, 2, 3]);
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!("010203"));
-    }
-
-    #[test]
-    fn test_convert_any_value_array() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut array_value = opentelemetry_proto::tonic::common::v1::ArrayValue::default();
-        array_value.values = vec![
-            AnyValue {
-                value: Some(OtelAnyValueEnum::IntValue(1)),
-            },
-            AnyValue {
-                value: Some(OtelAnyValueEnum::IntValue(2)),
-            },
-        ];
-
-        let value = OtelAnyValueEnum::ArrayValue(array_value);
-        let result = transformer.convert_any_value(&value);
-        assert_eq!(result, json!([1, 2]));
-    }
-
-    #[test]
-    fn test_convert_any_value_kvlist() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut kvlist = opentelemetry_proto::tonic::common::v1::KeyValueList::default();
-        kvlist.values = vec![
-            KeyValue {
-                key: "name".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("Alice".to_string())),
-                }),
-            },
-            KeyValue {
-                key: "age".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::IntValue(30)),
-                }),
-            },
-        ];
-
-        let value = OtelAnyValueEnum::KvlistValue(kvlist);
-        let result = transformer.convert_any_value(&value);
-
-        assert!(result.is_object());
-        let obj = result.as_object().unwrap();
-        assert_eq!(obj.get("name").unwrap(), "Alice");
-        assert_eq!(obj.get("age").unwrap(), 30);
-    }
-
-    // ===================== Attribute Extraction Tests =====================
-
-    #[test]
-    fn test_extract_attribute_found() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let attributes = vec![KeyValue {
-            key: "service.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("my-service".to_string())),
-            }),
-        }];
-
-        let result = transformer.extract_attribute(&attributes, "service.name");
-        assert_eq!(result, Some(json!("my-service")));
-    }
-
-    #[test]
-    fn test_extract_attribute_not_found() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let attributes = vec![KeyValue {
-            key: "service.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("my-service".to_string())),
-            }),
-        }];
-
-        let result = transformer.extract_attribute(&attributes, "service.version");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_attribute_empty_list() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let attributes: Vec<KeyValue> = vec![];
-        let result = transformer.extract_attribute(&attributes, "key");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_attribute_multiple_values() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let attributes = vec![
-            KeyValue {
-                key: "key1".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("value1".to_string())),
-                }),
-            },
-            KeyValue {
-                key: "key2".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::IntValue(42)),
-                }),
-            },
-            KeyValue {
-                key: "key3".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::BoolValue(true)),
-                }),
-            },
-        ];
-
-        assert_eq!(
-            transformer.extract_attribute(&attributes, "key1"),
-            Some(json!("value1"))
-        );
-        assert_eq!(
-            transformer.extract_attribute(&attributes, "key2"),
-            Some(json!(42))
-        );
-        assert_eq!(
-            transformer.extract_attribute(&attributes, "key3"),
-            Some(json!(true))
-        );
-    }
-
-    // ===================== Extract Value from Log Record Tests =====================
-
-    #[test]
-    fn test_extract_value_time_unix_nano() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.time_unix_nano = 1609459200000000000;
-
-        let result = transformer.extract_value_from_log_record("time_unix_nano", &log_record);
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        assert!(value.is_string());
-        assert!(value.as_str().unwrap().contains("2021-01-01"));
-    }
-
-    #[test]
-    fn test_extract_value_observed_time_unix_nano() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.observed_time_unix_nano = 1609459200000000000;
-
-        let result =
-            transformer.extract_value_from_log_record("observed_time_unix_nano", &log_record);
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        assert!(value.is_string());
-    }
-
-    #[test]
-    fn test_extract_value_trace_id_non_empty() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.trace_id = vec![0x01, 0x02, 0x03, 0x04];
-
-        let result = transformer.extract_value_from_log_record("trace_id", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!("01020304"));
-    }
-
-    #[test]
-    fn test_extract_value_trace_id_empty() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let log_record = LogRecord::default();
-
-        let result = transformer.extract_value_from_log_record("trace_id", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!(null));
-    }
-
-    #[test]
-    fn test_extract_value_span_id_non_empty() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.span_id = vec![0xaa, 0xbb];
-
-        let result = transformer.extract_value_from_log_record("span_id", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!("aabb"));
-    }
-
-    #[test]
-    fn test_extract_value_span_id_empty() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let log_record = LogRecord::default();
-
-        let result = transformer.extract_value_from_log_record("span_id", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!(null));
-    }
-
-    #[test]
-    fn test_extract_value_flags() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.flags = 0x01;
-
-        let result = transformer.extract_value_from_log_record("flags", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!(1));
-    }
-
-    #[test]
-    fn test_extract_value_severity_number() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.severity_number = 17;
-
-        let result = transformer.extract_value_from_log_record("severity_number", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!(17));
-    }
-
-    #[test]
-    fn test_extract_value_severity_text() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.severity_text = "ERROR".to_string();
-
-        let result = transformer.extract_value_from_log_record("severity_text", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!("ERROR"));
-    }
-
-    #[test]
-    fn test_extract_value_body_with_string() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("Log message".to_string())),
-        });
-
-        let result = transformer.extract_value_from_log_record("body", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!("Log message"));
-    }
-
-    #[test]
-    fn test_extract_value_body_none() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let log_record = LogRecord::default();
-
-        let result = transformer.extract_value_from_log_record("body", &log_record);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), json!(null));
-    }
-
-    #[test]
-    fn test_extract_value_unknown_field() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let log_record = LogRecord::default();
-
-        let result = transformer.extract_value_from_log_record("unknown_field", &log_record);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown field name"));
-    }
-
-    #[test]
-    fn test_extract_value_case_insensitive() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.flags = 5;
-
-        // Test various case combinations
-        let result1 = transformer.extract_value_from_log_record("FLAGS", &log_record);
-        let result2 = transformer.extract_value_from_log_record("Flags", &log_record);
-        let result3 = transformer.extract_value_from_log_record("flags", &log_record);
-
-        assert_eq!(result1.unwrap(), json!(5));
-        assert_eq!(result2.unwrap(), json!(5));
-        assert_eq!(result3.unwrap(), json!(5));
-    }
-
-    // ===================== Resource and Scope Mapping Tests =====================
-
-    #[test]
-    fn test_apply_resource_mapping_empty() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let result = transformer.apply_resource_mapping(&None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_apply_resource_mapping_with_attributes() {
-        let mut resource_mapping = HashMap::new();
-        let _ = resource_mapping.insert("service.name".to_string(), "ServiceName".to_string());
-        let _ = resource_mapping.insert("host.name".to_string(), "HostName".to_string());
-
-        let config =
-            create_test_config_with_schema(resource_mapping, HashMap::new(), HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let mut resource = Resource::default();
-        resource.attributes = vec![
-            KeyValue {
-                key: "service.name".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("payment-api".to_string())),
-                }),
-            },
-            KeyValue {
-                key: "host.name".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("server-01".to_string())),
-                }),
-            },
-        ];
-
-        let result = transformer.apply_resource_mapping(&Some(resource));
-        assert_eq!(result.get("ServiceName").unwrap(), "payment-api");
-        assert_eq!(result.get("HostName").unwrap(), "server-01");
-    }
-
-    #[test]
-    fn test_apply_resource_mapping_missing_attributes() {
-        let mut resource_mapping = HashMap::new();
-        let _ = resource_mapping.insert("service.name".to_string(), "ServiceName".to_string());
-        let _ = resource_mapping.insert("missing.attr".to_string(), "MissingAttr".to_string());
-
-        let config =
-            create_test_config_with_schema(resource_mapping, HashMap::new(), HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let mut resource = Resource::default();
-        resource.attributes = vec![KeyValue {
-            key: "service.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("api".to_string())),
-            }),
-        }];
-
-        let result = transformer.apply_resource_mapping(&Some(resource));
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.get("ServiceName").unwrap(), "api");
-    }
-
-    #[test]
-    fn test_apply_scope_mapping_empty() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let result = transformer.apply_scope_mapping(&None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_apply_scope_mapping_with_attributes() {
-        let mut scope_mapping = HashMap::new();
-        let _ = scope_mapping.insert(
-            "instrumentation.name".to_string(),
-            "InstrumentationName".to_string(),
-        );
-
-        let config =
-            create_test_config_with_schema(HashMap::new(), scope_mapping, HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let mut scope = InstrumentationScope::default();
-        scope.name = "tracer-provider".to_string();
-        scope.attributes = vec![KeyValue {
-            key: "instrumentation.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("otel-js".to_string())),
-            }),
-        }];
-
-        let result = transformer.apply_scope_mapping(&Some(scope));
-        assert_eq!(result.get("InstrumentationName").unwrap(), "otel-js");
-    }
-
-    #[test]
-    fn test_apply_scope_mapping_with_multiple_attributes() {
-        let mut scope_mapping = HashMap::new();
-        let _ = scope_mapping.insert(
-            "otel.library.name".to_string(),
-            "InstrumentationLibrary".to_string(),
-        );
-        let _ = scope_mapping.insert(
-            "otel.library.version".to_string(),
-            "InstrumentationVersion".to_string(),
-        );
-
-        let config =
-            create_test_config_with_schema(HashMap::new(), scope_mapping, HashMap::new(), false);
-        let transformer = Transformer::new(&config);
-
-        let mut scope = InstrumentationScope::default();
-        scope.name = "my-logger".to_string();
-        scope.version = "1.0.0".to_string();
-        scope.attributes = vec![
-            KeyValue {
-                key: "otel.library.name".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue(
-                        "my-instrumentation".to_string(),
-                    )),
-                }),
-            },
-            KeyValue {
-                key: "otel.library.version".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("1.2.3".to_string())),
-                }),
-            },
-        ];
-
-        let result = transformer.apply_scope_mapping(&Some(scope));
-        assert_eq!(result.len(), 2);
-        assert_eq!(
-            result.get("InstrumentationLibrary").unwrap(),
-            "my-instrumentation"
-        );
-        assert_eq!(result.get("InstrumentationVersion").unwrap(), "1.2.3");
-    }
-
-    // ===================== Legacy Transform Tests =====================
-
-    #[test]
-    fn test_legacy_transform_with_time_unix_nano() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), true);
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.time_unix_nano = 1609459200000000000;
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("test log".to_string())),
-        });
-
-        let mut entry = serde_json::Map::new();
-        transformer.legacy_transform(&mut entry, &log_record);
-
-        assert!(entry.contains_key("TimeGenerated"));
-        assert!(entry.contains_key("RawData"));
-        assert_eq!(entry.get("RawData").unwrap(), "test log");
-    }
-
-    #[test]
-    fn test_legacy_transform_fallback_to_observed_time() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), true);
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.time_unix_nano = 0; // Will fallback to observed_time_unix_nano
-        log_record.observed_time_unix_nano = 1609459200000000000;
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("observed log".to_string())),
-        });
-
-        let mut entry = serde_json::Map::new();
-        transformer.legacy_transform(&mut entry, &log_record);
-
-        assert!(entry.contains_key("TimeGenerated"));
-        assert!(entry.get("RawData").unwrap() == "observed log");
-    }
-
-    #[test]
-    fn test_legacy_transform_no_body() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), true);
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.time_unix_nano = 1609459200000000000;
-        log_record.body = None;
-
-        let mut entry = serde_json::Map::new();
-        transformer.legacy_transform(&mut entry, &log_record);
-
-        assert!(entry.contains_key("TimeGenerated"));
-        assert!(!entry.contains_key("RawData"));
-    }
-
-    // ===================== Full Transformation Tests =====================
-
-    #[test]
-    fn test_transform_log_record_with_mappings() {
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("body".to_string(), json!("Message"));
-        let _ = log_record_mapping.insert("severity_text".to_string(), json!("Level"));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("error occurred".to_string())),
-        });
-        log_record.severity_text = "ERROR".to_string();
-
-        let mut entry = serde_json::Map::new();
-        let result = transformer.transform_log_record(&mut entry, &log_record);
-
-        assert!(result.is_ok());
-        assert_eq!(entry.get("Message").unwrap(), "error occurred");
-        assert_eq!(entry.get("Level").unwrap(), "ERROR");
-    }
-
-    #[test]
-    fn test_transform_log_record_with_attribute_mapping() {
-        let mut attr_mapping = serde_json::Map::new();
-        let _ = attr_mapping.insert("request.id".to_string(), json!("RequestId"));
-        let _ = attr_mapping.insert("user.id".to_string(), json!("UserId"));
-
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("attributes".to_string(), Value::Object(attr_mapping));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.attributes = vec![
-            KeyValue {
-                key: "request.id".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("req-123".to_string())),
-                }),
-            },
-            KeyValue {
-                key: "user.id".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::IntValue(42)),
-                }),
-            },
-        ];
-
-        let mut entry = serde_json::Map::new();
-        let result = transformer.transform_log_record(&mut entry, &log_record);
-
-        assert!(result.is_ok());
-        assert_eq!(entry.get("RequestId").unwrap(), "req-123");
-        assert_eq!(entry.get("UserId").unwrap(), 42);
-    }
-
-    #[test]
-    fn test_transform_log_record_with_non_string_attribute_mapping_value() {
-        let mut attr_mapping = serde_json::Map::new();
-        let _ = attr_mapping.insert("count".to_string(), json!(123)); // Non-string value
-        let _ = attr_mapping.insert("active".to_string(), json!(true)); // Boolean value
-
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("attributes".to_string(), Value::Object(attr_mapping));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.attributes = vec![
-            KeyValue {
-                key: "count".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::IntValue(42)),
-                }),
-            },
-            KeyValue {
-                key: "active".to_string(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::BoolValue(true)),
-                }),
-            },
-        ];
-
-        let mut entry = serde_json::Map::new();
-        let result = transformer.transform_log_record(&mut entry, &log_record);
-
-        assert!(result.is_ok());
-        // Non-string mapping values should be converted to their JSON string representation
-        assert_eq!(entry.get("123").unwrap(), 42);
-        assert_eq!(entry.get("true").unwrap(), true);
-    }
-
-    #[test]
-    fn test_transform_log_record_with_direct_field_non_string_mapping_fails() {
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("body".to_string(), json!(123)); // Non-string field name mapping
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("test".to_string())),
-        });
-
-        let mut entry = serde_json::Map::new();
-        let result = transformer.transform_log_record(&mut entry, &log_record);
-
-        // Direct field mapping with non-string value should fail
-        assert!(result.is_err());
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 0,
+                        observed_time_unix_nano: 3_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = transformer.convert_to_log_analytics(&request);
         assert!(
-            result
-                .unwrap_err()
-                .contains("Field mapping value must be a string")
+            result[0]["TimeGenerated"]
+                .as_str()
+                .unwrap()
+                .contains("1970")
         );
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_legacy_mode() {
-        let config =
-            create_test_config_with_schema(HashMap::new(), HashMap::new(), HashMap::new(), true);
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.time_unix_nano = 1609459200000000000;
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("test message".to_string())),
-        });
-
-        let mut scope_logs = ScopeLogs::default();
-        scope_logs.log_records = vec![log_record];
-
-        let mut resource_logs = ResourceLogs::default();
-        resource_logs.scope_logs = vec![scope_logs];
-
-        let mut request = ExportLogsServiceRequest::default();
-        request.resource_logs = vec![resource_logs];
-
-        let results = transformer.convert_to_log_analytics(&request);
-
-        assert_eq!(results.len(), 1);
-        let entry = results[0].as_object().unwrap();
-        assert!(entry.contains_key("TimeGenerated"));
-        assert!(entry.contains_key("RawData"));
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_with_schema_mapping() {
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("body".to_string(), json!("LogMessage"));
-        let _ = log_record_mapping.insert("trace_id".to_string(), json!("TraceId"));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue(
-                "application error".to_string(),
-            )),
-        });
-        log_record.trace_id = vec![0x01, 0x02];
-
-        let mut scope_logs = ScopeLogs::default();
-        scope_logs.log_records = vec![log_record];
-
-        let mut resource_logs = ResourceLogs::default();
-        resource_logs.scope_logs = vec![scope_logs];
-
-        let mut request = ExportLogsServiceRequest::default();
-        request.resource_logs = vec![resource_logs];
-
-        let results = transformer.convert_to_log_analytics(&request);
-
-        assert_eq!(results.len(), 1);
-        let entry = results[0].as_object().unwrap();
-        assert_eq!(entry.get("LogMessage").unwrap(), "application error");
-        assert_eq!(entry.get("TraceId").unwrap(), "0102");
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_multiple_records() {
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("body".to_string(), json!("Message"));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record1 = LogRecord::default();
-        log_record1.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("message 1".to_string())),
-        });
-
-        let mut log_record2 = LogRecord::default();
-        log_record2.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("message 2".to_string())),
-        });
-
-        let mut scope_logs = ScopeLogs::default();
-        scope_logs.log_records = vec![log_record1, log_record2];
-
-        let mut resource_logs = ResourceLogs::default();
-        resource_logs.scope_logs = vec![scope_logs];
-
-        let mut request = ExportLogsServiceRequest::default();
-        request.resource_logs = vec![resource_logs];
-
-        let results = transformer.convert_to_log_analytics(&request);
-
-        assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_empty_request() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        let request = ExportLogsServiceRequest::default();
-        let results = transformer.convert_to_log_analytics(&request);
-
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_with_resource_and_scope_mapping() {
-        let mut resource_mapping = HashMap::new();
-        let _ = resource_mapping.insert("service.name".to_string(), "Service".to_string());
-
-        let mut scope_mapping = HashMap::new();
-        let _ = scope_mapping.insert(
-            "instrumentation.name".to_string(),
-            "Instrumentation".to_string(),
-        );
-
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("body".to_string(), json!("Message"));
-
-        let config = create_test_config_with_schema(
-            resource_mapping,
-            scope_mapping,
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("test".to_string())),
-        });
-
-        let mut scope = InstrumentationScope::default();
-        scope.attributes = vec![KeyValue {
-            key: "instrumentation.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("otel-rust".to_string())),
-            }),
-        }];
-
-        let mut scope_logs = ScopeLogs::default();
-        scope_logs.scope = Some(scope);
-        scope_logs.log_records = vec![log_record];
-
-        let mut resource = Resource::default();
-        resource.attributes = vec![KeyValue {
-            key: "service.name".to_string(),
-            value: Some(AnyValue {
-                value: Some(OtelAnyValueEnum::StringValue("my-service".to_string())),
-            }),
-        }];
-
-        let mut resource_logs = ResourceLogs::default();
-        resource_logs.resource = Some(resource);
-        resource_logs.scope_logs = vec![scope_logs];
-
-        let mut request = ExportLogsServiceRequest::default();
-        request.resource_logs = vec![resource_logs];
-
-        let results = transformer.convert_to_log_analytics(&request);
-
-        assert_eq!(results.len(), 1);
-        let entry = results[0].as_object().unwrap();
-        assert_eq!(entry.get("Service").unwrap(), "my-service");
-        assert_eq!(entry.get("Instrumentation").unwrap(), "otel-rust");
-        assert_eq!(entry.get("Message").unwrap(), "test");
-    }
-
-    #[test]
-    fn test_convert_to_log_analytics_with_invalid_field_mapping() {
-        let mut log_record_mapping = HashMap::new();
-        let _ = log_record_mapping.insert("invalid_field".to_string(), json!("Field"));
-        let _ = log_record_mapping.insert("body".to_string(), json!("Message"));
-
-        let config = create_test_config_with_schema(
-            HashMap::new(),
-            HashMap::new(),
-            log_record_mapping,
-            false,
-        );
-        let transformer = Transformer::new(&config);
-
-        let mut log_record = LogRecord::default();
-        log_record.body = Some(AnyValue {
-            value: Some(OtelAnyValueEnum::StringValue("test".to_string())),
-        });
-
-        let mut scope_logs = ScopeLogs::default();
-        scope_logs.log_records = vec![log_record];
-
-        let mut resource_logs = ResourceLogs::default();
-        resource_logs.scope_logs = vec![scope_logs];
-
-        let mut request = ExportLogsServiceRequest::default();
-        request.resource_logs = vec![resource_logs];
-
-        let results = transformer.convert_to_log_analytics(&request);
-
-        // Invalid field causes entire record to be skipped
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn test_transformer_creation() {
-        let config = create_test_config();
-        let transformer = Transformer::new(&config);
-
-        assert_eq!(transformer.schema.disable_schema_mapping, false);
     }
 }
