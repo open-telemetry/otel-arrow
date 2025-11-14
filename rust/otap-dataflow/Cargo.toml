@@ -47,7 +47,7 @@ otap-df-otap = { path = "crates/otap" }
 
 ahash = "0.8.11"
 arrayvec = "0.7.6"
-arrow = "56.1"
+arrow = "56.1" # TODO upgrade to 57 after perf test
 arrow-ipc = { version = "56.1", features=["zstd"] }
 arrow-schema = { version = "56.1" }
 async-stream = "0.3.6"
