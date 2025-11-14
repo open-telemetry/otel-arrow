@@ -3,10 +3,17 @@
 
 //! Glue between incoming OTAP Arrow streams and the ACK registry.
 //!
-//! This module owns `StatusStream`, which fans batches from a gRPC request into
-//! the local pipeline and fans ACK/NACK notifications back into `BatchStatus`
-//! responses. By keeping the concurrency limits, inflight tracking, and timeout
-//! handling here, the top-level router can stay focused on transport setup.
+//! `StatusStream` fans batches from a gRPC request into the downstream pipeline and
+//! fans ACK/NACK notifications back into `BatchStatus` responses. The bounded
+//! registry supplies backpressure—when no tokens remain we immediately return an
+//! overloaded status and stop enqueueing more work. Each stream also tracks how many
+//! batches are currently `in_flight`, so a single connection can’t monopolize every
+//! token. Both limits interact with the rest of the system by gating how much work
+//! we hand the pipeline; excess demand is reflected back to the client. Everything
+//! runs on the single-threaded runtime, so the implementation uses `Rc`/`RefCell` and futures
+//! that never cross threads, operations such as enqueueing batches, polling inflight
+//! futures, and reclaiming registry slots are all O(1), keeping the hot path
+//! predictable under load.
 
 use super::ack::{
     AckPollResult, AckRegistry, AckToken, nack_status, overloaded_status, success_status,
@@ -52,6 +59,10 @@ where
 }
 
 /// Drives an inbound OTAP stream while waiting for ACK/NACK outcomes.
+///
+/// Each instance manages a single gRPC request/response pair. It is `!Send`
+/// and lives entirely on the local executor, feeding batches into the pipeline
+/// and yielding `BatchStatus` items as soon as ACK/NACK signals arrive.
 pub(crate) struct StatusStream<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
@@ -69,6 +80,7 @@ where
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
+    /// Wraps the prepared state in the facade consumed by the router.
     fn new(state: StatusStreamState<S, T, F>) -> Self {
         Self {
             state: Some(state),
@@ -77,6 +89,11 @@ where
         }
     }
 
+    /// Drives the state machine until it produces the next `StreamStep`.
+    ///
+    /// Internally this means "fill" until we either enqueue more work or hit an
+    /// error, and if that doesn't yield anything new we "drain" by awaiting the
+    /// next inflight ACK future.
     fn drive_next(
         state: StatusStreamState<S, T, F>,
     ) -> LocalBoxFuture<'static, (StatusStreamState<S, T, F>, StreamStep)> {
@@ -96,6 +113,7 @@ where
 {
     type Item = Result<BatchStatus, Status>;
 
+    /// Implements the `Stream` contract by repeatedly driving the state machine.
     fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
@@ -104,6 +122,8 @@ where
         }
 
         if this.pending.is_none() {
+            // Lazily grab ownership of the state the first time we are polled. If it
+            // is already `None` we know the stream is complete.
             let state = match this.state.take() {
                 Some(state) => state,
                 None => {
@@ -111,6 +131,7 @@ where
                     return Poll::Ready(None);
                 }
             };
+            // Kick off an async step that will either enqueue more work or drain an inflight future.
             this.pending = Some(Self::drive_next(state));
         }
 
@@ -126,10 +147,12 @@ where
                 this.pending = None;
                 match step {
                     StreamStep::Yield(item) => {
+                        // Save the updated state and yield the status/error to the caller.
                         this.state = Some(state);
                         Poll::Ready(Some(item))
                     }
                     StreamStep::Done => {
+                        // No more work; mark finished and drop the state.
                         this.finished = true;
                         this.state = None;
                         Poll::Ready(None)
@@ -141,6 +164,10 @@ where
 }
 
 /// Mutable state carried across polls while the `StatusStream` is active.
+///
+/// Tracks the source stream, the effect handler used to push into the pipeline,
+/// the optional Ack registry, and the set of in-flight ACK wait futures. The
+/// inflight count plus the registry capacity are what enforce backpressure.
 struct StatusStreamState<S, T, F>
 where
     S: ArrowRequestStream + Unpin,
@@ -158,13 +185,20 @@ where
     _marker: PhantomData<fn() -> T>,
 }
 
+/// What the stream should do next.
 enum StreamStep {
+    /// Emit a `BatchStatus` (or gRPC error) downstream.
     Yield(Result<BatchStatus, Status>),
+    /// Tear down the stream.
+    /// No more messages will be produced.
     Done,
 }
 
+/// Result of attempting to enqueue a batch into the pipeline.
 enum PreparedBatch {
+    /// The batch was queued and we should continue filling/draining.
     Enqueued,
+    /// The batch triggered an immediate status (success/failure) or termination.
     Immediate(StreamStep),
 }
 
@@ -174,6 +208,7 @@ where
     T: OtapBatchStore + 'static,
     F: Fn(T) -> OtapArrowRecords + Send + Copy + 'static + Unpin,
 {
+    /// Creates state for a single inbound connection/request.
     fn new(
         input_stream: S,
         effect_handler: local::EffectHandler<OtapPdata>,
@@ -194,6 +229,7 @@ where
         }
     }
 
+    /// Pulls the next work item by either filling or draining the pipeline.
     async fn next_item(&mut self) -> StreamStep {
         if let Some(step) = self.fill_inflight().await {
             return step;
@@ -210,6 +246,10 @@ where
         }
     }
 
+    /// Attempts to enqueue additional batches while respecting capacity limits.
+    ///
+    /// At most `max_in_flight` iterations and each operation is O(1), so the loop
+    /// remains bounded even when the inbound stream is eager.
     async fn fill_inflight(&mut self) -> Option<StreamStep> {
         while !self.finished && self.in_flight.len() < self.max_in_flight {
             match self.input_stream.next_message().await {
@@ -230,9 +270,16 @@ where
         None
     }
 
+    /// Converts an incoming `BatchArrowRecords` into pipeline work plus wait token.
+    ///
+    /// Aside from the actual pipeline send (which is async), all bookkeeping here
+    /// is O(1): decoding, registry allocation, and inflight bookkeeping simply
+    /// index into fixed-size structures.
     async fn enqueue_batch(&mut self, mut batch: BatchArrowRecords) -> PreparedBatch {
         let batch_id = batch.batch_id;
 
+        // Decode the batch. Because this receiver pulls everything onto a single
+        // thread, there is no concurrent mutation of `batch` after this point.
         let batch = match self.consumer.consume_bar(&mut batch) {
             Ok(batch) => batch,
             Err(e) => {
@@ -268,6 +315,8 @@ where
             None
         };
 
+        // Push the batch into the downstream pipeline. This is the only `.await`
+        // in the method and will yield until the local channel accepts the data.
         if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
             error!("Failed to send to pipeline: {e}");
             self.finished = true;
@@ -292,12 +341,16 @@ where
 }
 
 /// Bounded collection of ACK wait futures that enforces inflight limits.
+///
+/// All operations are O(1) because we only ever push/pop up to the fixed
+/// capacity and delegate actual polling to `FuturesUnordered`.
 struct InFlightSet<F> {
     futures: FuturesUnordered<F>,
     capacity: usize,
 }
 
 impl<F> InFlightSet<F> {
+    /// Creates a set that can hold up to `capacity` futures.
     fn with_capacity(capacity: usize) -> Self {
         Self {
             futures: FuturesUnordered::new(),
@@ -305,10 +358,12 @@ impl<F> InFlightSet<F> {
         }
     }
 
+    /// Returns the number of currently tracked futures.
     fn len(&self) -> usize {
         self.futures.len()
     }
 
+    /// Attempts to push a future, returning it back if the set is full.
     fn push(&mut self, future: F) -> Result<(), F> {
         if self.len() >= self.capacity {
             Err(future)
@@ -318,6 +373,7 @@ impl<F> InFlightSet<F> {
         }
     }
 
+    /// Polls the underlying futures, forwarding readiness to the caller.
     fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<<F as Future>::Output>>
     where
         F: Future + Unpin,
@@ -335,6 +391,7 @@ struct AckWaitFuture {
 }
 
 impl AckWaitFuture {
+    /// Builds a wait future tied to the provided registry token.
     fn new(batch_id: i64, token: AckToken, state: AckRegistry) -> Self {
         Self {
             batch_id,
@@ -348,6 +405,7 @@ impl AckWaitFuture {
 impl Future for AckWaitFuture {
     type Output = StreamStep;
 
+    /// Resolves once the registry slot finishes with ACK/NACK/cancelled.
     fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.state.poll_slot(this.token, cx) {
@@ -369,6 +427,7 @@ impl Future for AckWaitFuture {
 }
 
 impl Drop for AckWaitFuture {
+    /// Ensures the registry slot is released if the future is dropped early.
     fn drop(&mut self) {
         if !self.completed {
             self.state.cancel(self.token);
