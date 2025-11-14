@@ -442,7 +442,7 @@ impl FieldRanges for SpanStatusFieldRanges {
             }
             SPAN_STATUS_CODE => {
                 if wire_type == wire_types::VARINT {
-                    self.message.set(Some(range))
+                    self.code.set(Some(range))
                 }
             }
             _ => { /* ignore */ }
