@@ -168,6 +168,9 @@ pub enum Error {
     )]
     InvalidId { expected: usize, given: usize },
 
+    #[error("Mixed signals")]
+    MixedSignals,
+
     #[error("Encoding error: {}", error)]
     Encoding {
         #[from]
