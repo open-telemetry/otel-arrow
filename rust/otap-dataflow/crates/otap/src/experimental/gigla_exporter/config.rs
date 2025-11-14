@@ -9,10 +9,6 @@ use std::collections::HashMap;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// HTTP client configuration (timeout, TLS, etc.)
-    #[serde(flatten)]
-    pub client_config: HashMap<String, Value>,
-
     /// API configuration for GigLA
     pub api: ApiConfig,
 
@@ -137,7 +133,6 @@ mod tests {
     #[test]
     fn test_valid_config() {
         let config = Config {
-            client_config: HashMap::new(),
             api: ApiConfig {
                 dcr_endpoint: "https://example.com".to_string(),
                 stream_name: "mystream".to_string(),
@@ -158,7 +153,6 @@ mod tests {
     #[test]
     fn test_invalid_config_missing_api_fields() {
         let config = Config {
-            client_config: HashMap::new(),
             api: ApiConfig {
                 dcr_endpoint: "".to_string(),
                 stream_name: "".to_string(),

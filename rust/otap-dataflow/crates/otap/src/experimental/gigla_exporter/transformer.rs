@@ -337,7 +337,6 @@ mod tests {
         use super::super::config::{ApiConfig, AuthConfig, Config, SchemaConfig};
 
         Config {
-            client_config: HashMap::new(),
             api: ApiConfig {
                 dcr_endpoint: "https://test.com".to_string(),
                 stream_name: "test-stream".to_string(),
