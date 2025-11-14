@@ -97,7 +97,7 @@ pub mod opentelemetry {
 /// debug_processor.
 #[derive(Clone, Debug)]
 pub enum OtlpProtoMessage {
-    /// Llogs data.  This is equivalent to ExportLogsServiceRequest.
+    /// Logs data. This is equivalent to ExportLogsServiceRequest.
     Logs(opentelemetry::logs::v1::LogsData),
     /// Metrics data. This is equivalent to ExportMetricsServiceRequest.
     Metrics(opentelemetry::metrics::v1::MetricsData),
