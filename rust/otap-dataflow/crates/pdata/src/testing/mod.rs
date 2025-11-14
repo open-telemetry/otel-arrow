@@ -4,6 +4,8 @@
 //! Testing utilities for OTLP/OTAP round-trip verification.
 
 pub mod equiv;
+pub mod fixtures;
+pub mod round_trip;
 
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::{
