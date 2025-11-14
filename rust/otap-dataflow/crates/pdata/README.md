@@ -105,6 +105,20 @@ The `otap_df_pdata::schema` module provides constants related to the
 OTAP records payload representation, defining the OpenTelemetry
 Protocol with Apache Arrow.
 
+### OTAP
+
+This module defines the `OtapArrowRecords` enum, for representing
+OTel-Arrow signal data in memory. This is generally how
+`otap-dataflow` carries OTAP protocol data, and there are optimized
+code paths for encoding to and decoding from `OtlpProtoBytes`.
+
+### OTLP
+
+This module defines the `OtlpProtoBytes` enum, for representing
+OpenTelemetry protocol data without decoding into message objects.
+This is generally how `otap-dataflow` carries OTLP protocol data,
+and in the ordinarily case no OTLP message objects are constructed.
+
 ### Proto
 
 The `otap_df_pdata::proto` module provides access to the original OTLP
@@ -112,6 +126,19 @@ and OTAP protocol message objects, for reference and testing.  This
 also exposes constants such as protocol tag numbers used for directly
 encoding and decoding OTLP bytes. These use the Prost and Tonic crates
 to generate structs and gRPC client/server stubs.
+
+This module defines the `OtlpProtoMessage` type, an enum of OTLP
+protocol message objects by signal. This types is mostly used in
+testing, because it has human-readable correspondence with
+`OtapArrowRecords`, however it can be used anywhere Prost message
+objects are required.
+
+### Testing
+
+The `otap_df_pdata::testing::equiv` module contains equivalence tests
+for OTLP data. This compares two slices of `OtlpProtoMessage` to ensure
+that they contain equivalent data. This internally canonicalizes the
+two sets of messages and compares them with human-readable output.
 
 ### Views
 
