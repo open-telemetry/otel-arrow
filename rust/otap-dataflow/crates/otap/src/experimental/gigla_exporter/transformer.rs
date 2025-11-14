@@ -961,6 +961,46 @@ mod tests {
         assert_eq!(result.get("InstrumentationName").unwrap(), "otel-js");
     }
 
+    #[test]
+    fn test_apply_scope_mapping_with_multiple_attributes() {
+        let mut scope_mapping = HashMap::new();
+        let _ = scope_mapping.insert(
+            "otel.library.name".to_string(),
+            "InstrumentationLibrary".to_string(),
+        );
+        let _ = scope_mapping.insert(
+            "otel.library.version".to_string(),
+            "InstrumentationVersion".to_string(),
+        );
+
+        let config =
+            create_test_config_with_schema(HashMap::new(), scope_mapping, HashMap::new(), false);
+        let transformer = Transformer::new(&config);
+
+        let mut scope = InstrumentationScope::default();
+        scope.name = "my-logger".to_string();
+        scope.version = "1.0.0".to_string();
+        scope.attributes = vec![
+            KeyValue {
+                key: "otel.library.name".to_string(),
+                value: Some(AnyValue {
+                    value: Some(OtelAnyValueEnum::StringValue("my-instrumentation".to_string())),
+                }),
+            },
+            KeyValue {
+                key: "otel.library.version".to_string(),
+                value: Some(AnyValue {
+                    value: Some(OtelAnyValueEnum::StringValue("1.2.3".to_string())),
+                }),
+            },
+        ];
+
+        let result = transformer.apply_scope_mapping(&Some(scope));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("InstrumentationLibrary").unwrap(), "my-instrumentation");
+        assert_eq!(result.get("InstrumentationVersion").unwrap(), "1.2.3");
+    }
+
     // ===================== Legacy Transform Tests =====================
 
     #[test]
