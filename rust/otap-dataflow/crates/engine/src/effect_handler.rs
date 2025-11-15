@@ -159,7 +159,7 @@ impl<PData> EffectHandlerCore<PData> {
     /// Reports the provided metrics to the engine.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
-        &mut self,
+        &self,
         metrics: &mut MetricSet<M>,
     ) -> Result<(), TelemetryError> {
         self.metrics_reporter.report(metrics)

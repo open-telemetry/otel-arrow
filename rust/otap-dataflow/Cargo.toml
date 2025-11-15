@@ -37,6 +37,7 @@ thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 mimalloc-rust.workspace = true
+env_logger.workspace = true
 
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
@@ -64,6 +65,7 @@ criterion = "0.7.0"
 data-encoding = "2.9.0"
 fluke-hpack = "0.3.1"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
+flate2 = "1.1.5"
 futures = "0.3.31"
 futures-channel = "0.3"
 futures-timer = "3.0"
@@ -133,6 +135,11 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
+byte-unit = "5.1.6"
+bytes = "1.10.1"
+env_logger = "0.11"
+h2 = "0.4.7"
+zstd = "0.13"
 
 [features]
 default = []

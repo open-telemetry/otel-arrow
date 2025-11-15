@@ -6,7 +6,7 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
+    plugin_urn: "urn:otel:otap2:receiver"
     out_ports:
       out_port:
         destinations:
@@ -14,7 +14,6 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "0.0.0.0:4317"
-      response_stream_channel_size: 100
       compression_method: zstd
 
   attr:

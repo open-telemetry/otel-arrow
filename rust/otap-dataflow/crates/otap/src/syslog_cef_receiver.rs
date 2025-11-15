@@ -149,7 +149,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let _ = timer_cancel_handle.cancel().await;
                                     break;
                                 }
-                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
                                     let _ = metrics_reporter.report(&mut m);
                                 }
@@ -375,7 +375,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let _ = timer_cancel_handle.cancel().await;
                                     break;
                                 }
-                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
                                     let _ = metrics_reporter.report(&mut m);
                                 }
