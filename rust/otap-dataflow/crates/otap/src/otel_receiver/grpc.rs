@@ -23,6 +23,7 @@ use http::{HeaderMap, HeaderValue};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use prost::Message;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io::{self, Read, Write};
 use std::mem;
 use std::pin::Pin;
@@ -543,6 +544,51 @@ where
         }
     }
 
+    /// Reassembles the next gRPC frame payload, including the compression flag bit.
+    async fn next_payload(&mut self) -> Result<Option<(bool, Bytes)>, Status> {
+        loop {
+            if self.current_frame.is_none() {
+                if self.buffer.len() < 5 {
+                    if self.finished {
+                        return Ok(None);
+                    }
+                    self.fill_buffer().await?;
+                    continue;
+                }
+                let header = self
+                    .buffer
+                    .split_frame(5)
+                    .expect("buffer len checked above")
+                    .into_bytes();
+                let compressed = header[0] == 1;
+                let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+                self.current_frame = Some(FrameHeader {
+                    length: len,
+                    compressed,
+                });
+            }
+
+            if let Some(header) = self.current_frame.take() {
+                if self.buffer.len() < header.length {
+                    if self.finished {
+                        log::error!("Stream ended before full gRPC frame was received");
+                        return Err(Status::internal("truncated gRPC frame"));
+                    }
+                    self.fill_buffer().await?;
+                    self.current_frame = Some(header);
+                    continue;
+                }
+
+                let payload = self
+                    .buffer
+                    .split_frame(header.length)
+                    .expect("buffer len checked above")
+                    .into_bytes();
+                return Ok(Some((header.compressed, payload)));
+            }
+        }
+    }
+
     /// Makes sure the scratch buffer is large enough for the decoded payload.
     /// Complexity: amortized O(1) thanks to the doubling strategy.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
@@ -684,62 +730,40 @@ where
     /// Reassembles length-prefixed gRPC frames, handling optional compression, and yields decoded
     /// `BatchArrowRecords` to the caller.
     async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
-        loop {
-            if self.current_frame.is_none() {
-                if self.buffer.len() < 5 {
-                    if self.finished {
-                        return Ok(None);
-                    }
-                    // Continue pulling h2 DATA until we have the 5-byte frame header.
-                    self.fill_buffer().await?;
-                    continue;
-                }
-                // gRPC wire format prefixes every message with 1 byte of flags (bit 0 = compressed)
-                // followed by a 4-byte big-endian payload length. We read the full 5-byte header
-                // before attempting to parse or pull the body.
-                let header = self
-                    .buffer
-                    .split_frame(5)
-                    // Safe because we guard on `self.buffer.len() < 5` right above.
-                    .expect("buffer len checked above")
-                    .into_bytes();
-                let compressed = header[0] == 1;
-                let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
-                self.current_frame = Some(FrameHeader {
-                    length: len,
-                    compressed,
-                });
-            }
+        let Some((compressed, payload)) = self.next_payload().await? else {
+            return Ok(None);
+        };
 
-            if let Some(header) = self.current_frame.take() {
-                if self.buffer.len() < header.length {
-                    if self.finished {
-                        log::error!("Stream ended before full gRPC frame was received");
-                        return Err(Status::internal("truncated gRPC frame"));
-                    }
-                    self.fill_buffer().await?;
-                    self.current_frame = Some(header);
-                    continue;
-                }
+        let decoded = if compressed {
+            let bytes = self.decompress(payload)?;
+            BatchArrowRecords::decode(bytes)
+        } else {
+            BatchArrowRecords::decode(payload)
+        };
 
-                let payload = self
-                    .buffer
-                    .split_frame(header.length)
-                    // Safe because we verified the buffer length before splitting.
-                    .expect("buffer len checked above");
-                let decoded = if header.compressed {
-                    let bytes = self.decompress(payload.into_bytes())?;
-                    BatchArrowRecords::decode(bytes)
-                } else {
-                    BatchArrowRecords::decode(payload)
-                };
-                // Surface decoding failures as gRPC errors so clients know the batch was invalid.
-                let message = decoded.map_err(|e| {
-                    log::error!("Failed to decode BatchArrowRecords: {e}");
-                    Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
-                })?;
-                return Ok(Some(message));
-            }
+        // Surface decoding failures as gRPC errors so clients know the batch was invalid.
+        let message = decoded.map_err(|e| {
+            log::error!("Failed to decode BatchArrowRecords: {e}");
+            Status::invalid_argument(format!("failed to decode BatchArrowRecords: {e}"))
+        })?;
+        Ok(Some(message))
+    }
+}
+
+impl<S> GrpcStreamingBody<S>
+where
+    S: BodyStream + Unpin + 'static,
+{
+    /// Returns the next raw gRPC frame payload, copying when compression is enabled.
+    pub(crate) async fn next_message_bytes(&mut self) -> Result<Option<Vec<u8>>, Status> {
+        let Some((compressed, payload)) = self.next_payload().await? else {
+            return Ok(None);
+        };
+        if compressed {
+            let bytes = self.decompress(payload)?;
+            Ok(Some(bytes.to_vec()))
+        } else {
+            Ok(Some(payload.to_vec()))
         }
     }
 }
@@ -961,6 +985,31 @@ impl RequestTimeout {
                     item = stream.next() => {
                         self.reset();
                         Ok(item)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Awaits the provided future while enforcing the configured timeout.
+    pub(crate) async fn with_future<F, T>(&mut self, future: F) -> Result<T, ()>
+    where
+        F: Future<Output = T>,
+    {
+        match self.duration {
+            None => Ok(future.await),
+            Some(_) => {
+                self.arm();
+                let sleep = self
+                    .sleep
+                    .as_mut()
+                    .expect("sleep must be armed when timeout is configured");
+                let mut future = Box::pin(future);
+                tokio::select! {
+                    _ = sleep.as_mut() => Err(()),
+                    result = future.as_mut() => {
+                        self.reset();
+                        Ok(result)
                     }
                 }
             }

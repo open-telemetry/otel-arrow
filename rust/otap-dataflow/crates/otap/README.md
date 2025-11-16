@@ -45,10 +45,11 @@ cargo xtask compile-proto
 
 ## OTel Receiver (experimental)
 
-The experimental OTEL receiver implements a gRPC Arrow endpoint directly on
-top of `h2`, optimized for the thread-per-core runtime. Support for serving
-OTLP traffic on the same listener is under active development so a single port
-can accept both OTAP and OTLP gRPC streams.
+The experimental OTEL receiver implements both the OTAP Arrow streaming
+endpoints and the OTLP unary `Export` services directly on top of `h2`,
+optimized for the thread-per-core runtime. A single listener now accepts
+standard OTLP gRPC clients alongside the Arrow-based OTAP streams, sharing the
+same concurrency/ACK handling.
 
 ![OTel Receiver Design](assets/otel_receiver_design.png)
 

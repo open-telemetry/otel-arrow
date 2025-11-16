@@ -1,0 +1,536 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use super::{OTEL_RECEIVER_URN, OtelReceiver};
+use crate::compression::CompressionMethod;
+use crate::pdata::OtapPdata;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::context::ControllerContext;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::testing::{
+    receiver::{NotSendValidateContext, TestContext, TestRuntime},
+    test_node,
+};
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
+    ExportLogsServiceRequest, ExportLogsServiceResponse,
+};
+use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
+    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+};
+use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
+    ExportTraceServiceRequest, ExportTraceServiceResponse,
+};
+use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
+use otap_df_telemetry::registry::MetricsRegistryHandle;
+use prost::Message;
+use serde_json::json;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::time::timeout;
+use tonic::Code;
+
+fn create_logs_service_request() -> ExportLogsServiceRequest {
+    ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "a".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                scope: Some(InstrumentationScope {
+                    attributes: vec![KeyValue {
+                        key: "b".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                log_records: vec![
+                    LogRecord {
+                        time_unix_nano: 1,
+                        attributes: vec![KeyValue {
+                            key: "c".to_string(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    LogRecord {
+                        time_unix_nano: 2,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+fn create_metrics_service_request() -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+fn create_traces_service_request() -> ExportTraceServiceRequest {
+    ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: None,
+            scope_spans: vec![
+                ScopeSpans {
+                    ..Default::default()
+                },
+                ScopeSpans {
+                    ..Default::default()
+                },
+            ],
+            schema_url: "opentelemetry.io/schema/traces".to_string(),
+        }],
+    }
+}
+
+#[test]
+fn test_otlp_config_parsing() {
+    let metrics_registry_handle = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+    let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+    let config_with_max_concurrent_requests = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "max_concurrent_requests": 5000
+    });
+    let receiver =
+        OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
+            .unwrap();
+    assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
+    assert!(receiver.config.grpc.request_compression.is_none());
+    assert!(receiver.config.grpc.response_compression.is_none());
+    assert!(receiver.config.grpc.tcp_nodelay);
+    assert_eq!(
+        receiver.config.grpc.tcp_keepalive,
+        Some(Duration::from_secs(45))
+    );
+    assert_eq!(
+        receiver.config.grpc.tcp_keepalive_interval,
+        Some(Duration::from_secs(15))
+    );
+    assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(5));
+    assert_eq!(receiver.config.grpc.transport_concurrency_limit, None);
+    assert!(receiver.config.grpc.load_shed);
+    assert_eq!(
+        receiver.config.grpc.initial_stream_window_size,
+        Some(8 * 1024 * 1024)
+    );
+    assert_eq!(
+        receiver.config.grpc.initial_connection_window_size,
+        Some(32 * 1024 * 1024)
+    );
+    assert!(!receiver.config.grpc.http2_adaptive_window);
+    assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024));
+    assert_eq!(
+        receiver.config.grpc.max_decoding_message_size,
+        Some(4 * 1024 * 1024)
+    );
+    assert_eq!(
+        receiver.config.grpc.http2_keepalive_interval,
+        Some(Duration::from_secs(30))
+    );
+    assert_eq!(
+        receiver.config.grpc.http2_keepalive_timeout,
+        Some(Duration::from_secs(10))
+    );
+    assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
+
+    let config_with_server_overrides = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "max_concurrent_requests": 512,
+        "tcp_nodelay": false,
+        "tcp_keepalive": "60s",
+        "tcp_keepalive_interval": "20s",
+        "tcp_keepalive_retries": 3,
+        "transport_concurrency_limit": 256,
+        "load_shed": false,
+        "initial_stream_window_size": "4MiB",
+        "initial_connection_window_size": "16MiB",
+        "max_frame_size": "8MiB",
+        "max_decoding_message_size": "6MiB",
+        "http2_keepalive_interval": "45s",
+        "http2_keepalive_timeout": "20s",
+        "max_concurrent_streams": 1024,
+        "http2_adaptive_window": true
+    });
+    let receiver =
+        OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_server_overrides).unwrap();
+    assert_eq!(receiver.config.grpc.max_concurrent_requests, 512);
+    assert!(!receiver.config.grpc.tcp_nodelay);
+    assert_eq!(
+        receiver.config.grpc.tcp_keepalive,
+        Some(Duration::from_secs(60))
+    );
+    assert_eq!(
+        receiver.config.grpc.tcp_keepalive_interval,
+        Some(Duration::from_secs(20))
+    );
+    assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(3));
+    assert_eq!(receiver.config.grpc.transport_concurrency_limit, Some(256));
+    assert!(!receiver.config.grpc.load_shed);
+    assert_eq!(
+        receiver.config.grpc.initial_stream_window_size,
+        Some(4 * 1024 * 1024)
+    );
+    assert_eq!(
+        receiver.config.grpc.initial_connection_window_size,
+        Some(16 * 1024 * 1024)
+    );
+    assert_eq!(receiver.config.grpc.max_frame_size, Some(8 * 1024 * 1024));
+    assert_eq!(
+        receiver.config.grpc.max_decoding_message_size,
+        Some(6 * 1024 * 1024)
+    );
+    assert_eq!(
+        receiver.config.grpc.http2_keepalive_interval,
+        Some(Duration::from_secs(45))
+    );
+    assert_eq!(
+        receiver.config.grpc.http2_keepalive_timeout,
+        Some(Duration::from_secs(20))
+    );
+    assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(1024));
+    assert!(receiver.config.grpc.http2_adaptive_window);
+
+    let config_with_compression_list = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "compression_method": ["gzip","zstd"]
+    });
+    let receiver =
+        OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_list).unwrap();
+    assert_eq!(
+        receiver.config.grpc.request_compression,
+        Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
+    );
+
+    let config_with_compression_none = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "compression_method": "none"
+    });
+    let receiver =
+        OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_none).unwrap();
+    assert_eq!(receiver.config.grpc.request_compression, Some(vec![]));
+
+    let config_with_timeout = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "timeout": "30s"
+    });
+    let receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
+    assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
+
+    let config_with_timeout_ms = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "timeout": "500ms"
+    });
+    let receiver = OtelReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
+    assert_eq!(
+        receiver.config.grpc.timeout,
+        Some(Duration::from_millis(500))
+    );
+}
+
+#[test]
+fn test_otlp_tune_max_concurrent_requests() {
+    let metrics_registry_handle = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+    let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+    let config_default = json!({ "listening_addr": "127.0.0.1:4317" });
+    let mut receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
+    receiver.tune_max_concurrent_requests(128);
+    assert_eq!(receiver.config.grpc.max_concurrent_requests, 128);
+
+    let config_small = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "max_concurrent_requests": 32
+    });
+    let mut receiver = OtelReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
+    receiver.tune_max_concurrent_requests(128);
+    assert_eq!(receiver.config.grpc.max_concurrent_requests, 32);
+
+    let config_zero = json!({
+        "listening_addr": "127.0.0.1:4317",
+        "max_concurrent_requests": 0
+    });
+    let mut receiver = OtelReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
+    receiver.tune_max_concurrent_requests(256);
+    assert_eq!(receiver.config.grpc.max_concurrent_requests, 256);
+}
+
+fn otlp_scenario(
+    grpc_endpoint: String,
+) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    move |ctx| {
+        Box::pin(async move {
+            let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                .await
+                .expect("logs client connect");
+            let logs_response = logs_client
+                .export(create_logs_service_request())
+                .await
+                .expect("logs request succeeds")
+                .into_inner();
+            assert_eq!(
+                logs_response,
+                ExportLogsServiceResponse {
+                    partial_success: None
+                }
+            );
+
+            let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone())
+                .await
+                .expect("metrics client connect");
+            let metrics_response = metrics_client
+                .export(create_metrics_service_request())
+                .await
+                .expect("metrics request succeeds")
+                .into_inner();
+            assert_eq!(
+                metrics_response,
+                ExportMetricsServiceResponse {
+                    partial_success: None
+                }
+            );
+
+            let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone())
+                .await
+                .expect("traces client connect");
+            let traces_response = traces_client
+                .export(create_traces_service_request())
+                .await
+                .expect("traces request succeeds")
+                .into_inner();
+            assert_eq!(
+                traces_response,
+                ExportTraceServiceResponse {
+                    partial_success: None
+                }
+            );
+
+            ctx.send_shutdown(Instant::now(), "OTLP test")
+                .await
+                .expect("shutdown send");
+        })
+    }
+}
+
+fn validation_procedure()
+-> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    |mut ctx| {
+        Box::pin(async move {
+            let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("logs timeout")
+                .expect("missing logs");
+            let logs_proto: OtlpProtoBytes = logs_pdata
+                .clone()
+                .payload()
+                .try_into()
+                .expect("logs conversion");
+            assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
+            let expected = create_logs_service_request();
+            let mut expected_bytes = Vec::new();
+            expected.encode(&mut expected_bytes).unwrap();
+            assert_eq!(&expected_bytes, logs_proto.as_bytes());
+            if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+            {
+                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                    .await
+                    .expect("logs ack");
+            }
+
+            let metrics_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("metrics timeout")
+                .expect("missing metrics");
+            let metrics_proto: OtlpProtoBytes = metrics_pdata
+                .clone()
+                .payload()
+                .try_into()
+                .expect("metrics conversion");
+            assert!(matches!(
+                metrics_proto,
+                OtlpProtoBytes::ExportMetricsRequest(_)
+            ));
+            let expected = create_metrics_service_request();
+            let mut expected_bytes = Vec::new();
+            expected.encode(&mut expected_bytes).unwrap();
+            assert_eq!(&expected_bytes, metrics_proto.as_bytes());
+            if let Some((_node_id, ack)) =
+                crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+            {
+                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                    .await
+                    .expect("metrics ack");
+            }
+
+            let traces_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("traces timeout")
+                .expect("missing traces");
+            let traces_proto: OtlpProtoBytes = traces_pdata
+                .clone()
+                .payload()
+                .try_into()
+                .expect("traces conversion");
+            assert!(matches!(
+                traces_proto,
+                OtlpProtoBytes::ExportTracesRequest(_)
+            ));
+            let expected = create_traces_service_request();
+            let mut expected_bytes = Vec::new();
+            expected.encode(&mut expected_bytes).unwrap();
+            assert_eq!(&expected_bytes, traces_proto.as_bytes());
+            if let Some((_node_id, ack)) =
+                crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
+            {
+                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                    .await
+                    .expect("traces ack");
+            }
+        })
+    }
+}
+
+#[test]
+fn test_otlp_receiver_ack() {
+    let test_runtime = TestRuntime::new();
+    let grpc_addr = "127.0.0.1";
+    let grpc_port = portpicker::pick_unused_port().expect("free port");
+    let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+    let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+    let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+
+    let metrics_registry_handle = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+    let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+    let mut receiver = OtelReceiver::from_config(
+        pipeline_ctx,
+        &json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true
+        }),
+    )
+    .unwrap();
+    receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+    let receiver = ReceiverWrapper::local(
+        receiver,
+        test_node(test_runtime.config().name.clone()),
+        node_config,
+        test_runtime.config(),
+    );
+
+    test_runtime
+        .set_receiver(receiver)
+        .run_test(otlp_scenario(grpc_endpoint))
+        .run_validation_concurrent(validation_procedure());
+}
+
+fn nack_scenario(
+    grpc_endpoint: String,
+) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    move |ctx| {
+        Box::pin(async move {
+            let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                .await
+                .expect("logs client connect");
+            let result = logs_client.export(create_logs_service_request()).await;
+            assert!(result.is_err(), "nack should surface error");
+            let status = result.unwrap_err();
+            assert_eq!(status.code(), Code::Unavailable);
+            assert!(
+                status
+                    .message()
+                    .contains("Pipeline processing failed: Test nack reason")
+            );
+
+            ctx.send_shutdown(Instant::now(), "OTLP nack test")
+                .await
+                .expect("shutdown send");
+        })
+    }
+}
+
+fn nack_validation()
+-> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    |mut ctx| {
+        Box::pin(async move {
+            let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("logs timeout")
+                .expect("missing logs");
+            let nack = NackMsg::new("Test nack reason", logs_pdata);
+            if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                    .await
+                    .expect("send nack");
+            }
+        })
+    }
+}
+
+#[test]
+fn test_otlp_receiver_nack() {
+    let test_runtime = TestRuntime::new();
+    let grpc_addr = "127.0.0.1";
+    let grpc_port = portpicker::pick_unused_port().expect("free port");
+    let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+    let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+    let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTEL_RECEIVER_URN));
+
+    let metrics_registry_handle = MetricsRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(metrics_registry_handle);
+    let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+    let mut receiver = OtelReceiver::from_config(
+        pipeline_ctx,
+        &json!({
+            "listening_addr": addr.to_string(),
+            "wait_for_result": true
+        }),
+    )
+    .unwrap();
+    receiver.tune_max_concurrent_requests(test_runtime.config().output_pdata_channel.capacity);
+    let receiver = ReceiverWrapper::local(
+        receiver,
+        test_node(test_runtime.config().name.clone()),
+        node_config,
+        test_runtime.config(),
+    );
+
+    test_runtime
+        .set_receiver(receiver)
+        .run_test(nack_scenario(grpc_endpoint))
+        .run_validation_concurrent(nack_validation());
+}

@@ -29,7 +29,9 @@ use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchStatus, StatusCode as ProtoStatusCode};
 use smallvec::smallvec;
 use std::cell::RefCell;
+use std::future::Future;
 use std::mem;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context as TaskContext, Poll, Waker};
 
@@ -170,6 +172,46 @@ impl AckRegistry {
                 slot.state = SlotState::Free;
                 inner.free_stack.push(token.slot_index);
             }
+        }
+    }
+}
+
+/// Future that resolves once the provided slot receives an ACK/NACK (or is cancelled).
+pub(crate) struct AckCompletionFuture {
+    token: AckToken,
+    state: AckRegistry,
+    completed: bool,
+}
+
+impl AckCompletionFuture {
+    pub(crate) fn new(token: AckToken, state: AckRegistry) -> Self {
+        Self {
+            token,
+            state,
+            completed: false,
+        }
+    }
+}
+
+impl Future for AckCompletionFuture {
+    type Output = AckPollResult;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match this.state.poll_slot(this.token, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                this.completed = true;
+                Poll::Ready(result)
+            }
+        }
+    }
+}
+
+impl Drop for AckCompletionFuture {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.state.cancel(self.token);
         }
     }
 }
