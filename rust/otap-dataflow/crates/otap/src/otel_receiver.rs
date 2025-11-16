@@ -1,18 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental OTAP receiver that serves the Arrow gRPC endpoints directly on top of the `h2`
-//! crate.  This variant keeps all request handling on the current thread so it can integrate with
-//! the thread-per-core runtime without requiring `Send + Sync` futures.
+//! Experimental OTLP & OTAP receiver that serves OTLP and Arrow gRPC endpoints directly on top of
+//! the `h2`crate.  This variant keeps all request handling on the current thread so it can
+//! integrate with the thread-per-core runtime without requiring `Send + Sync` futures.
 //!
 //! Design goals:
-//! - Support OTAP Arrow over gRPC with minimal dependencies.
+//! - Support OTLP and OTAP Arrow over gRPC with minimal dependencies.
 //! - Avoid `Send + Sync` bounds on request handlers to integrate with thread-per-core runtime.
 //! - No Arc, Mutex dependencies in the hot path.
 //! - Low use of heap allocations in the hot path.
-//!
-//! Note: This receiver only supports OTAP Arrow payloads. OTLP Protobuf payloads are not supported
-//! yet.
 //!
 //! Note: This receiver doesn't use `tonic` server framework to avoid `Send + Sync` bounds on
 //! request handlers but is inspired by tonic's gRPC implementation and borrows some code from it.
@@ -83,17 +80,20 @@ use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
 
-const OTEL_RECEIVER_URN: &str = "urn:otel:otap2:receiver";
+const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
+
 const ARROW_LOGS_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs";
 const ARROW_METRICS_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics";
 const ARROW_TRACES_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
+
 const OTLP_LOGS_SERVICE: &str = "/opentelemetry.proto.collector.logs.v1.LogsService/Export";
 const OTLP_METRICS_SERVICE: &str =
     "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
 const OTLP_TRACES_SERVICE: &str = "/opentelemetry.proto.collector.trace.v1.TraceService/Export";
+
 /// Configuration for the experimental H2 receiver.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,7 +104,6 @@ pub struct Config {
 }
 
 /// Experimental OTLP+OTAP receiver powered directly by the `h2` crate.
-/// Note: Only OTAP Arrow payloads are supported in this version.
 pub struct OtelReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
@@ -112,7 +111,7 @@ pub struct OtelReceiver {
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-/// Registers the experimental H2 OTAP receiver factory.
+/// Registers the experimental H2 OTLP+OTAP receiver factory.
 pub static OTEL_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTEL_RECEIVER_URN,
     create: |pipeline: PipelineContext,
@@ -261,7 +260,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                 admitter.clone(),
             ) => {
                 if let Err(error) = server_result {
-                    log::error!("OTAP H2 receiver server loop failed: {error}");
+                    log::error!("OTEL H2 receiver server loop failed: {error}");
                     let source_detail = format_error_sources(&error);
                     return Err(Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
@@ -598,7 +597,7 @@ impl fmt::Display for Http2KeepaliveError {
     }
 }
 
-/// Routes each inbound gRPC request to the appropriate OTAP signal stream.
+/// Routes each inbound gRPC request to the appropriate OTLP+OTAP signal stream.
 struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,

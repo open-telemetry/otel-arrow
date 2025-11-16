@@ -208,6 +208,12 @@ missing_crate_level_docs = "deny"
 
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
+#opt-level = 3
+#lto = "thin"
+#codegen-units = 1
+#panic = "abort"
+#incremental = false
+#strip = "debuginfo"
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
 #[profile.release]
