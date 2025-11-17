@@ -163,14 +163,7 @@ impl GigLaClient {
                 .map_err(|_| "Invalid token format".to_string())?,
         );
 
-        // Log compression ratio for debugging
         let compression_ratio = json_bytes.len() as f64 / compressed_body.len() as f64;
-        log::debug!(
-            "Compressed {} bytes to {} bytes (ratio: {:.2}x)",
-            json_bytes.len(),
-            compressed_body.len(),
-            compression_ratio
-        );
 
         // Send compressed body
         let response = self
