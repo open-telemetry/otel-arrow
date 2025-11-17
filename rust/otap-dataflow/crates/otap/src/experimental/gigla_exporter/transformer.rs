@@ -27,6 +27,8 @@ impl Transformer {
     /// Convert OTLP logs to flat JSON objects for Log Analytics.
     /// Must be used; otherwise transformed entries are lost.
     #[must_use]
+    // TODO: Remove print_stdout after logging is set up
+    #[allow(clippy::print_stdout)]
     pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Value> {
         let mut entries = Vec::new();
 
@@ -170,7 +172,8 @@ impl Transformer {
                                         .as_str()
                                         .map(|s| s.to_string())
                                         .unwrap_or_else(|| attr_value.to_string());
-                                    let _ = destination.insert(field_name, Self::convert_any_value(v));
+                                    let _ =
+                                        destination.insert(field_name, Self::convert_any_value(v));
                                 }
                             }
                         }
@@ -275,7 +278,7 @@ impl Transformer {
         // Pre-allocate the exact size needed (2 hex chars per byte)
         // This avoids repeated allocations
         const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-        
+
         let mut hex = String::with_capacity(bytes.len() * 2);
         for &byte in bytes {
             hex.push(HEX_CHARS[(byte >> 4) as usize] as char);

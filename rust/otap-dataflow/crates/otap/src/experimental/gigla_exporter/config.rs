@@ -45,7 +45,7 @@ pub struct AuthConfig {
 
     /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
     #[serde(default = "default_scope")]
-    pub scope: String
+    pub scope: String,
 }
 
 impl Default for AuthConfig {
@@ -53,7 +53,7 @@ impl Default for AuthConfig {
         Self {
             method: AuthMethod::default(),
             client_id: None,
-            scope: default_scope()
+            scope: default_scope(),
         }
     }
 }

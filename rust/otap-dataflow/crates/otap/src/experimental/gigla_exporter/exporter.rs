@@ -53,20 +53,28 @@ impl GigLaExporter {
         &self,
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         // Split pdata into context and payload
         let (_context, payload) = pdata.into_parts();
 
+        // TODO: Ack/Nack handling
+
         // Convert OTAP payload to OTLP bytes
-        // TODO: This conversion step should be eliminated (see method documentation above)
-        let otlp_bytes: OtlpProtoBytes = payload
-            .try_into()
-            .map_err(|e| format!("Failed to convert OTAP to OTLP: {e:?}"))?;
+        // TODO: This conversion step should be eliminated
+        let otlp_bytes: OtlpProtoBytes =
+            payload
+                .try_into()
+                .map_err(|e| Error::PdataConversionError {
+                    error: format!("Failed to convert OTAP to OTLP: {e:?}"),
+                })?;
 
         match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                let request = ExportLogsServiceRequest::decode(bytes.as_slice())
-                    .map_err(|e| format!("Failed to decode logs request: {e}"))?;
+                let request = ExportLogsServiceRequest::decode(bytes.as_slice()).map_err(|e| {
+                    Error::PDataError {
+                        reason: format!("Failed to decode OTLP logs request: {e}"),
+                    }
+                })?;
 
                 // Use the transformer with config
                 let log_entries = self.transformer.convert_to_log_analytics(&request);
@@ -98,7 +106,12 @@ impl GigLaExporter {
                 }
 
                 // Send to Azure Log Analytics
-                self.client.send(&log_entries).await?;
+                self.client
+                    .send(&log_entries)
+                    .await
+                    .map_err(|e| Error::InternalError {
+                        message: format!("GigLA HTTP send failed: {e}"),
+                    })?;
 
                 // TODO: Use debug level when logging is integrated
                 effect_handler

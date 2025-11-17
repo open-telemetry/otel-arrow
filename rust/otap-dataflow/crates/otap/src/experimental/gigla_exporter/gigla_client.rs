@@ -55,6 +55,8 @@ impl GigLaClient {
         }
     }
 
+    // TODO: Remove print_stdout after logging is set up
+    #[allow(clippy::print_stdout)]
     /// Creates a new GigLA client instance from the configuration.
     ///
     /// # Arguments
@@ -162,8 +164,6 @@ impl GigLaClient {
             HeaderValue::from_str(&format!("Bearer {token}"))
                 .map_err(|_| "Invalid token format".to_string())?,
         );
-
-        let compression_ratio = json_bytes.len() as f64 / compressed_body.len() as f64;
 
         // Send compressed body
         let response = self
