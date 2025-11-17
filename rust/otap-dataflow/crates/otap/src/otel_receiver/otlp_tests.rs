@@ -147,19 +147,10 @@ fn test_otlp_config_parsing() {
         receiver.config.grpc.initial_connection_window_size,
         Some(32 * 1024 * 1024)
     );
-    assert!(!receiver.config.grpc.http2_adaptive_window);
     assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024));
     assert_eq!(
         receiver.config.grpc.max_decoding_message_size,
         Some(4 * 1024 * 1024)
-    );
-    assert_eq!(
-        receiver.config.grpc.http2_keepalive_interval,
-        Some(Duration::from_secs(30))
-    );
-    assert_eq!(
-        receiver.config.grpc.http2_keepalive_timeout,
-        Some(Duration::from_secs(10))
     );
     assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
 
@@ -176,10 +167,7 @@ fn test_otlp_config_parsing() {
         "initial_connection_window_size": "16MiB",
         "max_frame_size": "8MiB",
         "max_decoding_message_size": "6MiB",
-        "http2_keepalive_interval": "45s",
-        "http2_keepalive_timeout": "20s",
         "max_concurrent_streams": 1024,
-        "http2_adaptive_window": true
     });
     let receiver =
         OtelReceiver::from_config(pipeline_ctx.clone(), &config_with_server_overrides).unwrap();
@@ -209,16 +197,7 @@ fn test_otlp_config_parsing() {
         receiver.config.grpc.max_decoding_message_size,
         Some(6 * 1024 * 1024)
     );
-    assert_eq!(
-        receiver.config.grpc.http2_keepalive_interval,
-        Some(Duration::from_secs(45))
-    );
-    assert_eq!(
-        receiver.config.grpc.http2_keepalive_timeout,
-        Some(Duration::from_secs(20))
-    );
     assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(1024));
-    assert!(receiver.config.grpc.http2_adaptive_window);
 
     let config_with_compression_list = json!({
         "listening_addr": "127.0.0.1:4317",

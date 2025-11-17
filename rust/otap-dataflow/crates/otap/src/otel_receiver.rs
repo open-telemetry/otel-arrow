@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental OTLP & OTAP receiver that serves OTLP and Arrow gRPC endpoints directly on top of
-//! the `h2`crate.  This variant keeps all request handling on the current thread so it can
-//! integrate with the thread-per-core runtime without requiring `Send + Sync` futures.
+//! Experimental receiver that serves OTLP and OTAP endpoints directly on top of the `h2`crate.
+//! This variant keeps all request handling on the current thread so it can integrate with the
+//! thread-per-core runtime without requiring `Send + Sync` futures.
 //!
 //! Design goals:
 //! - Support OTLP and OTAP Arrow over gRPC with minimal dependencies.
@@ -11,37 +11,32 @@
 //! - No Arc, Mutex dependencies in the hot path.
 //! - Low use of heap allocations in the hot path.
 //!
-//! Note: This receiver doesn't use `tonic` server framework to avoid `Send + Sync` bounds on
-//! request handlers but is inspired by tonic's gRPC implementation and borrows some code from it.
-//!
 //! ToDo Add snappy support. Wire in the matching decompress/encode routines with shared helpers for both request frames and response frames.
 //! ToDo Improve error handling & metrics: surface clear statuses when the client requests unsupported codecs, log negotiation results, and add counters for negotiated/unsupported compression cases.
 //! ToDo Add support for Unix domain sockets as a transport option.
+
+mod ack;
+mod grpc;
+mod stream;
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
 use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
 use crate::otap_receiver::OtapReceiverMetrics;
+use crate::pdata::{Context, OtapPdata};
 use ack::{
-    AckCompletionFuture, AckPollResult, AckRegistries, AckRegistry, route_local_ack_response,
-    route_local_nack_response,
+    AckCompletionFuture, AckPollResult, AckRegistries, AckRegistry, route_ack_response,
+    route_nack_response,
 };
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use grpc::{
     AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
     build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
     parse_grpc_accept_encoding, parse_grpc_encoding,
 };
-use stream::stream_batch_statuses;
-
-mod ack;
-mod grpc;
-mod stream;
-
-use crate::pdata::{Context, OtapPdata};
-use async_trait::async_trait;
-use bytes::Bytes;
 use h2::server::{self, SendResponse};
 use h2::{Ping, PingPong};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode as HttpStatusCode};
@@ -74,6 +69,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use stream::stream_batch_statuses;
 use tokio::task::JoinSet;
 use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
@@ -94,7 +90,7 @@ const OTLP_METRICS_SERVICE: &str =
     "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
 const OTLP_TRACES_SERVICE: &str = "/opentelemetry.proto.collector.trace.v1.TraceService/Export";
 
-/// Configuration for the experimental H2 receiver.
+/// Configuration for the OTEL receiver.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -103,7 +99,7 @@ pub struct Config {
     pub grpc: GrpcServerSettings,
 }
 
-/// Experimental OTLP+OTAP receiver powered directly by the `h2` crate.
+/// Experimental OTEL receiver powered directly by the `h2` crate.
 pub struct OtelReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
@@ -111,7 +107,7 @@ pub struct OtelReceiver {
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-/// Registers the experimental H2 OTLP+OTAP receiver factory.
+/// Registers the experimental OTEL receiver factory.
 pub static OTEL_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTEL_RECEIVER_URN,
     create: |pipeline: PipelineContext,
@@ -227,7 +223,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = route_local_ack_response(&ack_registries, ack);
+                            let resp = route_ack_response(&ack_registries, ack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -236,7 +232,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                             );
                         }
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = route_local_nack_response(&ack_registries, nack);
+                            let resp = route_nack_response(&ack_registries, nack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -254,8 +250,8 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
 
             server_result = run_grpc_server(
                 &mut incoming,
-                Rc::clone(&config),
-                Rc::clone(&router),
+                config,
+                router,
                 cancel_token.clone(),
                 admitter.clone(),
             ) => {
@@ -445,7 +441,7 @@ async fn handle_tcp_conn(
                                         // `request.uri()` is cheap, but we still avoid doing it if TRACE is off.
                                         log::trace!("New H2 stream: {}", request.uri().path());
                                     }
-                                    if let Err(status) = router.handle_request(request, respond).await {
+                                    if let Err(status) = router.route_grpc_request(request, respond).await {
                                         if log::log_enabled!(log::Level::Debug) {
                                             log::debug!("Request failed: {}", status);
                                         }
@@ -611,7 +607,7 @@ struct GrpcRequestRouter {
 }
 
 impl GrpcRequestRouter {
-    async fn handle_request(
+    async fn route_grpc_request(
         self: Rc<Self>,
         request: Request<h2::RecvStream>,
         respond: SendResponse<Bytes>,
@@ -620,7 +616,7 @@ impl GrpcRequestRouter {
         match path {
             ARROW_LOGS_SERVICE => {
                 // log::info!("Handling ArrowLogs stream");
-                self.serve_stream::<Logs>(
+                self.serve_otap_stream::<Logs>(
                     request,
                     respond,
                     OtapArrowRecords::Logs,
@@ -630,7 +626,7 @@ impl GrpcRequestRouter {
             }
             ARROW_METRICS_SERVICE => {
                 // log::info!("Handling ArrowMetrics stream");
-                self.serve_stream::<Metrics>(
+                self.serve_otap_stream::<Metrics>(
                     request,
                     respond,
                     OtapArrowRecords::Metrics,
@@ -640,7 +636,7 @@ impl GrpcRequestRouter {
             }
             ARROW_TRACES_SERVICE => {
                 // log::info!("Handling ArrowTraces stream");
-                self.serve_stream::<Traces>(
+                self.serve_otap_stream::<Traces>(
                     request,
                     respond,
                     OtapArrowRecords::Traces,
@@ -687,7 +683,7 @@ impl GrpcRequestRouter {
         }
     }
 
-    async fn serve_stream<T>(
+    async fn serve_otap_stream<T>(
         self: &Rc<Self>,
         request: Request<h2::RecvStream>,
         mut respond: SendResponse<Bytes>,

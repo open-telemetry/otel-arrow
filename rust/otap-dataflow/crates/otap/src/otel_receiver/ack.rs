@@ -318,10 +318,7 @@ impl AckRegistries {
 }
 
 /// Routes an Ack control message back into the appropriate registry.
-pub(crate) fn route_local_ack_response(
-    states: &AckRegistries,
-    ack: AckMsg<OtapPdata>,
-) -> RouteResponse {
+pub(crate) fn route_ack_response(states: &AckRegistries, ack: AckMsg<OtapPdata>) -> RouteResponse {
     let Some(token) = AckToken::from_calldata(&ack.calldata) else {
         return RouteResponse::Invalid;
     };
@@ -332,7 +329,7 @@ pub(crate) fn route_local_ack_response(
 }
 
 /// Routes a Nack control message back into the appropriate registry.
-pub(crate) fn route_local_nack_response(
+pub(crate) fn route_nack_response(
     states: &AckRegistries,
     nack: NackMsg<OtapPdata>,
 ) -> RouteResponse {

@@ -8,13 +8,13 @@ settings:
 
 {# Determine plugin URN and config for receiver #}
 {%- if receiver_type == "otap" -%}
-  {% set plugin_urn = "urn:otel:otap2:receiver" %}
+  {% set plugin_urn = "urn:otel:otel:receiver" %}
   {% set compression = compression_method | default("zstd") %}
   {% set extra_config = {
     "compression_method": compression
   } %}
 {%- elif receiver_type == "otlp" -%}
-  {% set plugin_urn = "urn:otel:otlp:receiver" %}
+  {% set plugin_urn = "urn:otel:otel:receiver" %}
   {% set compression = compression_method | default("gzip") %}
   {% set extra_config = {
     "compression_method": compression
