@@ -63,7 +63,6 @@ pub enum PipelineType {
 }
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct PipelineSettings {
     /// The default size of the node control message channels.
     /// These channels are used for sending control messages by the pipeline engine to nodes.

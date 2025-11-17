@@ -45,6 +45,9 @@ where
                     a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
                         match r.to_value() {
                             Value::String(v) => s.push_str(v.get_value()),
+                            Value::Null => {
+                                // Note: Null becomes empty string
+                            },
                             v => {
                                 let mut result = None;
                                 v.convert_to_string(&mut |v| {
