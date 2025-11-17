@@ -163,5 +163,9 @@ mod tests {
         };
 
         assert!(config.validate().is_err());
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "Invalid configuration: dcr_endpoint must be non-empty"
+        );
     }
 }

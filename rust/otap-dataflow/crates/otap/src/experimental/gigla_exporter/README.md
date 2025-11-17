@@ -175,11 +175,13 @@ Before using the GigLA exporter, you need to set up Azure Log Analytics:
 
 1. **Create a Log Analytics Workspace**
 
-2. **Create a Data Collection Rule (DCR)** with a custom log table
+2. **Create a custom table as needed with the expected columns**
 
-3. **Configure authentication** (service principal or managed identity)
+3. **Create a Data Collection Rule (DCR)** with a custom log table
 
-4. **Get the DCR endpoint URL** from the Azure portal
+4. **Configure authentication** (service principal or managed identity)
+
+5. **Get the DCR endpoint URL** from the Azure portal
 
 Example DCR endpoint:
 

@@ -134,6 +134,14 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
 
+# GigLA Exporter
+azure_identity = "0.30.0"
+flate2 = "1.1.5"
+reqwest = "0.12.24"
+azure_core = "0.30.1"
+time = "0.3.44"
+wiremock = "0.6.5"
+
 [features]
 default = []
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
@@ -222,3 +230,4 @@ inherits = "release"
 debug = true  # Or 2 for full debug info
 strip = "none" # Keep symbols and debug info
 panic = "unwind"
+

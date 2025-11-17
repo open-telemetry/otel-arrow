@@ -53,7 +53,7 @@ impl Transformer {
 
                     if self.schema.disable_schema_mapping {
                         // Legacy transform when schema mapping is disabled
-                        self.legacy_transform(&mut entry, log_record);
+                        Self::legacy_transform(&mut entry, log_record);
                     } else {
                         // Apply configured mappings when schema mapping is enabled
 
@@ -82,133 +82,27 @@ impl Transformer {
 
     /// Legacy transform when schema mapping is disabled (matches Go implementation)
     fn legacy_transform(
-        &self,
         destination: &mut serde_json::Map<String, Value>,
         log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
     ) {
         // Use timestamp or fallback to observed timestamp
         let timestamp = if log_record.time_unix_nano != 0 {
-            self.format_timestamp(log_record.time_unix_nano)
+            Self::format_timestamp(log_record.time_unix_nano)
         } else {
-            self.format_timestamp(log_record.observed_time_unix_nano)
+            Self::format_timestamp(log_record.observed_time_unix_nano)
         };
         let _ = destination.insert("TimeGenerated".to_string(), json!(timestamp));
 
         // Add raw data as body string
         if let Some(ref body) = log_record.body {
             if let Some(ref value) = body.value {
-                let body_str = self.extract_string_value(value);
+                let body_str = Self::extract_string_value(value);
                 let _ = destination.insert("RawData".to_string(), json!(body_str));
             }
         }
     }
 
-    /// Transform log record fields based on the log_record_mapping configuration
-    fn transform_log_record(
-        &self,
-        destination: &mut serde_json::Map<String, Value>,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
-    ) -> Result<(), String> {
-        // Process each mapping in log_record_mapping
-        for (key, value) in &self.schema.log_record_mapping {
-            if key == ATTRIBUTES_FIELD {
-                // Handle nested attribute mapping
-                if let Some(attr_mapping) = value.as_object() {
-                    for (attr_key, attr_value) in attr_mapping {
-                        if let Some(actual_value) =
-                            self.extract_attribute(&log_record.attributes, attr_key)
-                        {
-                            let field_name = attr_value
-                                .as_str()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| attr_value.to_string());
-                            let _ = destination.insert(field_name, actual_value);
-                        }
-                    }
-                }
-            } else {
-                // Handle direct log record field mapping - PROPAGATE ERRORS
-                let log_record_value = self.extract_value_from_log_record(key, log_record)?;
-                let field_name = value
-                    .as_str()
-                    .ok_or_else(|| "Field mapping value must be a string".to_string())?;
-                let _ = destination.insert(field_name.to_string(), log_record_value);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Extract value from log record properties by field name
-    fn extract_value_from_log_record(
-        &self,
-        key: &str,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
-    ) -> Result<Value, String> {
-        let key_lower = key.to_lowercase();
-        match key_lower.as_str() {
-            "time_unix_nano" => {
-                let timestamp = self.format_timestamp(log_record.time_unix_nano);
-                Ok(json!(timestamp))
-            }
-            "observed_time_unix_nano" => {
-                let timestamp = self.format_timestamp(log_record.observed_time_unix_nano);
-                Ok(json!(timestamp))
-            }
-            "trace_id" => {
-                if log_record.trace_id.is_empty() {
-                    Ok(json!(null))
-                } else {
-                    let trace_id = self.bytes_to_hex(&log_record.trace_id);
-                    Ok(json!(trace_id))
-                }
-            }
-            "span_id" => {
-                if log_record.span_id.is_empty() {
-                    Ok(json!(null))
-                } else {
-                    let span_id = self.bytes_to_hex(&log_record.span_id);
-                    Ok(json!(span_id))
-                }
-            }
-            "flags" => Ok(json!(log_record.flags)),
-            "severity_number" => Ok(json!(log_record.severity_number as i64)),
-            "severity_text" => Ok(json!(log_record.severity_text)),
-            "body" => {
-                if let Some(ref body) = log_record.body {
-                    if let Some(ref value) = body.value {
-                        let body_str = self.extract_string_value(value);
-                        Ok(json!(body_str))
-                    } else {
-                        Ok(json!(null))
-                    }
-                } else {
-                    Ok(json!(null))
-                }
-            }
-            _ => Err(format!("Unknown field name: {key}")),
-        }
-    }
-
-    /// Extract attribute value by key from the attributes list
-    fn extract_attribute(
-        &self,
-        attributes: &[opentelemetry_proto::tonic::common::v1::KeyValue],
-        key: &str,
-    ) -> Option<Value> {
-        for attr in attributes {
-            if attr.key == key {
-                if let Some(ref value) = attr.value {
-                    if let Some(ref v) = value.value {
-                        return Some(self.convert_any_value(v));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Apply resource mapping based on configuration
+    /// Apply resource mapping based on configuration  
     fn apply_resource_mapping(
         &self,
         resource: &Option<opentelemetry_proto::tonic::resource::v1::Resource>,
@@ -216,9 +110,14 @@ impl Transformer {
         let mut attrs = serde_json::Map::new();
 
         if let Some(resource) = resource {
-            for (key, mapped_name) in &self.schema.resource_mapping {
-                if let Some(actual_value) = self.extract_attribute(&resource.attributes, key) {
-                    let _ = attrs.insert(mapped_name.clone(), actual_value);
+            // Iterate over attributes once, lookup in HashMap for each
+            for attr in &resource.attributes {
+                if let Some(mapped_name) = self.schema.resource_mapping.get(&attr.key) {
+                    if let Some(ref value) = attr.value {
+                        if let Some(ref v) = value.value {
+                            let _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(v));
+                        }
+                    }
                 }
             }
         }
@@ -234,9 +133,14 @@ impl Transformer {
         let mut attrs = serde_json::Map::new();
 
         if let Some(scope) = scope {
-            for (key, mapped_name) in &self.schema.scope_mapping {
-                if let Some(actual_value) = self.extract_attribute(&scope.attributes, key) {
-                    let _ = attrs.insert(mapped_name.clone(), actual_value);
+            // Iterate over attributes once, lookup in HashMap for each
+            for attr in &scope.attributes {
+                if let Some(mapped_name) = self.schema.scope_mapping.get(&attr.key) {
+                    if let Some(ref value) = attr.value {
+                        if let Some(ref v) = value.value {
+                            let _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(v));
+                        }
+                    }
                 }
             }
         }
@@ -244,33 +148,97 @@ impl Transformer {
         attrs
     }
 
-    /// Extract string value from AnyValue (matches Go's AsString behavior)
-    fn extract_string_value(&self, value: &OtelAnyValueEnum) -> String {
-        match value {
-            OtelAnyValueEnum::StringValue(s) => s.clone(),
-            OtelAnyValueEnum::IntValue(i) => i.to_string(),
-            OtelAnyValueEnum::DoubleValue(d) => d.to_string(),
-            OtelAnyValueEnum::BoolValue(b) => b.to_string(),
-            OtelAnyValueEnum::ArrayValue(arr) => {
-                let values: Vec<String> = arr
-                    .values
-                    .iter()
-                    .filter_map(|v| v.value.as_ref())
-                    .map(|v| self.extract_string_value(v))
-                    .collect();
-                format!("[{}]", values.join(", "))
+    /// Transform log record fields based on the log_record_mapping configuration
+    fn transform_log_record(
+        &self,
+        destination: &mut serde_json::Map<String, Value>,
+        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+    ) -> Result<(), String> {
+        // Process each mapping in log_record_mapping
+        for (key, value) in &self.schema.log_record_mapping {
+            if key == ATTRIBUTES_FIELD {
+                // Handle nested attribute mapping
+                if let Some(attr_mapping) = value.as_object() {
+                    // Iterate over log attributes once, lookup each in the mapping
+                    for attr in &log_record.attributes {
+                        if let Some(attr_value) = attr_mapping.get(&attr.key) {
+                            if let Some(ref value) = attr.value {
+                                if let Some(ref v) = value.value {
+                                    let field_name = attr_value
+                                        .as_str()
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| attr_value.to_string());
+                                    let _ = destination.insert(field_name, Self::convert_any_value(v));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Handle direct log record field mapping - PROPAGATE ERRORS
+                let log_record_value = Self::extract_value_from_log_record(key, log_record)?;
+                let field_name = value
+                    .as_str()
+                    .ok_or_else(|| "Field mapping value must be a string".to_string())?;
+                let _ = destination.insert(field_name.to_string(), log_record_value);
             }
-            OtelAnyValueEnum::KvlistValue(_) => {
-                // Convert to JSON string for complex values
-                let json_val = self.convert_any_value(value);
-                json_val.to_string()
+        }
+
+        Ok(())
+    }
+
+    /// Extract value from log record properties by field name
+    fn extract_value_from_log_record(
+        key: &str,
+        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+    ) -> Result<Value, String> {
+        let key_lower = key.to_lowercase();
+        match key_lower.as_str() {
+            "time_unix_nano" => {
+                let timestamp = Self::format_timestamp(log_record.time_unix_nano);
+                Ok(json!(timestamp))
             }
-            OtelAnyValueEnum::BytesValue(bytes) => self.bytes_to_hex(bytes),
+            "observed_time_unix_nano" => {
+                let timestamp = Self::format_timestamp(log_record.observed_time_unix_nano);
+                Ok(json!(timestamp))
+            }
+            "trace_id" => {
+                if log_record.trace_id.is_empty() {
+                    Ok(json!(null))
+                } else {
+                    let trace_id = Self::bytes_to_hex(&log_record.trace_id);
+                    Ok(json!(trace_id))
+                }
+            }
+            "span_id" => {
+                if log_record.span_id.is_empty() {
+                    Ok(json!(null))
+                } else {
+                    let span_id = Self::bytes_to_hex(&log_record.span_id);
+                    Ok(json!(span_id))
+                }
+            }
+            "flags" => Ok(json!(log_record.flags)),
+            "severity_number" => Ok(json!(log_record.severity_number as i64)),
+            "severity_text" => Ok(json!(log_record.severity_text)),
+            "body" => {
+                if let Some(ref body) = log_record.body {
+                    if let Some(ref value) = body.value {
+                        let body_str = Self::extract_string_value(value);
+                        Ok(json!(body_str))
+                    } else {
+                        Ok(json!(null))
+                    }
+                } else {
+                    Ok(json!(null))
+                }
+            }
+            _ => Err(format!("Unknown field name: {key}")),
         }
     }
 
     /// Convert AnyValue to JSON Value
-    fn convert_any_value(&self, value: &OtelAnyValueEnum) -> Value {
+    fn convert_any_value(value: &OtelAnyValueEnum) -> Value {
         match value {
             OtelAnyValueEnum::StringValue(s) => json!(s),
             OtelAnyValueEnum::IntValue(i) => json!(i),
@@ -281,7 +249,7 @@ impl Transformer {
                     .values
                     .iter()
                     .filter_map(|v| v.value.as_ref())
-                    .map(|v| self.convert_any_value(v))
+                    .map(Self::convert_any_value)
                     .collect();
                 json!(values)
             }
@@ -290,23 +258,32 @@ impl Transformer {
                 for item in &kv.values {
                     if let Some(value) = &item.value {
                         if let Some(v) = &value.value {
-                            let _ = map.insert(item.key.clone(), self.convert_any_value(v));
+                            let _ = map.insert(item.key.clone(), Self::convert_any_value(v));
                         }
                     }
                 }
                 Value::Object(map)
             }
-            OtelAnyValueEnum::BytesValue(bytes) => json!(self.bytes_to_hex(bytes)),
+            OtelAnyValueEnum::BytesValue(bytes) => json!(Self::bytes_to_hex(bytes)),
         }
     }
 
     /// Convert bytes to hex string
-    fn bytes_to_hex(&self, bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        // Pre-allocate the exact size needed (2 hex chars per byte)
+        // This avoids repeated allocations
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
+            hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
+        }
+        hex
     }
 
     /// Format timestamp from Unix nano to datetime string
-    fn format_timestamp(&self, time_unix_nano: u64) -> String {
+    fn format_timestamp(time_unix_nano: u64) -> String {
         if time_unix_nano > 0 {
             let secs = (time_unix_nano / 1_000_000_000) as i64;
             let nanos = (time_unix_nano % 1_000_000_000) as u32;
@@ -318,6 +295,31 @@ impl Transformer {
             }
         } else {
             chrono::Utc::now().to_rfc3339()
+        }
+    }
+
+    /// Extract string value from AnyValue (matches Go's AsString behavior)
+    fn extract_string_value(value: &OtelAnyValueEnum) -> String {
+        match value {
+            OtelAnyValueEnum::StringValue(s) => s.clone(),
+            OtelAnyValueEnum::IntValue(i) => i.to_string(),
+            OtelAnyValueEnum::DoubleValue(d) => d.to_string(),
+            OtelAnyValueEnum::BoolValue(b) => b.to_string(),
+            OtelAnyValueEnum::ArrayValue(arr) => {
+                let values: Vec<String> = arr
+                    .values
+                    .iter()
+                    .filter_map(|v| v.value.as_ref())
+                    .map(Self::extract_string_value)
+                    .collect();
+                format!("[{}]", values.join(", "))
+            }
+            OtelAnyValueEnum::KvlistValue(_) => {
+                // Convert to JSON string for complex values
+                let json_val = Self::convert_any_value(value);
+                json_val.to_string()
+            }
+            OtelAnyValueEnum::BytesValue(bytes) => Self::bytes_to_hex(bytes),
         }
     }
 }
@@ -640,10 +642,7 @@ mod tests {
 
     #[test]
     fn test_zero_timestamp() {
-        let config = create_test_config(false);
-        let transformer = Transformer::new(&config);
-
-        let timestamp = transformer.format_timestamp(0);
+        let timestamp = Transformer::format_timestamp(0);
         assert!(timestamp.contains('T')); // RFC3339 format
     }
 

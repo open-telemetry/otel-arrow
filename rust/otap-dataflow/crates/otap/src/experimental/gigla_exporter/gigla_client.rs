@@ -82,11 +82,11 @@ impl GigLaClient {
 
                 if let Some(client_id) = &config.auth.client_id {
                     // User-assigned managed identity
-                    log::info!("Using user-assigned managed identity with client_id: {client_id}");
+                    println!("Using user-assigned managed identity with client_id: {client_id}");
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
                     // System-assigned managed identity
-                    log::info!("Using system-assigned managed identity");
+                    println!("Using system-assigned managed identity");
                     // user_assigned_id remains None for system-assigned
                 }
 
@@ -94,7 +94,7 @@ impl GigLaClient {
                     .map_err(|e| format!("Failed to create managed identity credential: {e}"))?
             }
             AuthMethod::Development => {
-                log::info!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
+                println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
                 // DeveloperToolsCredential tries Azure CLI and Azure Developer CLI
                 DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
                     .map_err(|e| {

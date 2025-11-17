@@ -72,10 +72,12 @@ impl GigLaExporter {
                 let log_entries = self.transformer.convert_to_log_analytics(&request);
 
                 if log_entries.is_empty() {
+                    // TODO: Use debug level when logging is integrated
                     effect_handler.info("[GigLaExporter] No logs to send").await;
                     return Ok(());
                 }
 
+                // TODO: Use debug level when logging is integrated
                 effect_handler
                     .info(&format!(
                         "[GigLaExporter] Sending {} log entries to stream '{}'",
@@ -86,6 +88,7 @@ impl GigLaExporter {
 
                 // Debug: Print first entry as sample
                 if let Some(first) = log_entries.first() {
+                    // TODO: Use debug level when logging is integrated
                     effect_handler
                         .info(&format!(
                             "[GigLaExporter] Sample entry: {}",
@@ -97,6 +100,7 @@ impl GigLaExporter {
                 // Send to Azure Log Analytics
                 self.client.send(&log_entries).await?;
 
+                // TODO: Use debug level when logging is integrated
                 effect_handler
                     .info(&format!(
                         "[GigLaExporter] Successfully sent {} logs",
@@ -105,11 +109,13 @@ impl GigLaExporter {
                     .await;
             }
             OtlpProtoBytes::ExportMetricsRequest(_) => {
+                // TODO: Use debug level when logging is integrated
                 effect_handler
                     .info("[GigLaExporter] Metrics not supported; dropping payload")
                     .await;
             }
             OtlpProtoBytes::ExportTracesRequest(_) => {
+                // TODO: Use debug level when logging is integrated
                 effect_handler
                     .info("[GigLaExporter] Traces not supported; dropping payload")
                     .await;

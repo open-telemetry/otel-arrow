@@ -1,4 +1,4 @@
-# rust/otap-dataflow/crates/otap/src/experimental/gigla_exporter/otlp-gigla-aks.yaml
+# rust/otap-dataflow/crates/otap/src/experimental/gigla_exporter/otlp-gigla.yaml
 # Azure GigLA Exporter Configuration for AKS with Managed Identity
 #
 # This configuration is designed for running in AKS with workload identity
