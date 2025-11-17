@@ -152,7 +152,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        // Scope column is nullable - if it's missing, return all None values
+        // Scope column is optional - if it's missing, return all None values
         let scope_column = rb.column_by_name(consts::SCOPE);
 
         let struct_array = if let Some(scope_column) = scope_column {
