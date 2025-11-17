@@ -42,9 +42,42 @@ config:
       bodies:
         - checkout started
     log_record: []
+  traces:
+    include:
+      match_type: strict
+      resource_attributes:
+        - key: deployment.environment
+          value: prod
+      span_attributes: []
+      span_names:
+        - checkout-warn
+        - checkout-error
+      event_names:
+        - checkout-event
+      event_attributes: []
+      link_attributes: []
+    exclude:
+      match_type: strict
+      resource_attributes:
+        - key: deployment.environment
+          value: staging
+      span_attributes:
+        - key: component
+          value: db
+      span_names:
+        - payment-warn
+        - payment-error
+      event_names:
+        - payment-event
+      event_attributes:
+        - key: success
+          value: false
+      link_attributes:
+        - key: correlation
+          value: false
 ```
 
-Currently we only support log filter
+Currently we don't support metric filtering
 
 ### Logs
 
@@ -56,3 +89,11 @@ based on `resource_attributes` (all the attributes must match),
 `severity_number`, and `bodies`. When defining the `severity_number` you set
 the min acceptable `severity_number` you can also choose whether to match
 on undefined
+
+### Traces
+
+To filter traces, just like logs, you define the `include` or `exclude` fields.
+You can filter based on `resource_attributes` (all the attributes must match,
+for each of the remaining fields only one entry has to match),
+`span_attributes`, `span_names`, `event_names`, `event_attributes` and
+`link_attributes`.

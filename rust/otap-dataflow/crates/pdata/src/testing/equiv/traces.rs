@@ -3,7 +3,7 @@
 
 //! Trace equivalence checking.
 
-use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
+use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Status, TracesData};
 use crate::testing::equiv::canonical::{
     assert_equivalent, canonicalize_any_value, canonicalize_vec,
 };
@@ -57,6 +57,20 @@ fn traces_canonicalize_singleton_in_place(traces_data: &mut TracesData) {
 
             // Canonicalize span fields
             for span in &mut scope_spans.spans {
+                // When encoding OTLP -> OTAP -> OTLP, spans without
+                // Status=None are round-trip encoded with a Status struct
+                // containing all-default values (code=0, message="").
+                //
+                // See: encode/mod.rs encode_spans_otap_batch.
+                //
+                // TODO: For now, we normalize by removing message
+                // values equal to the default.
+                if let Some(status) = &span.status {
+                    if *status == Status::default() {
+                        span.status = None;
+                    }
+                }
+
                 // Canonicalize span attributes
                 canonicalize_vec(&mut span.attributes, |attr| {
                     if let Some(value) = &mut attr.value {

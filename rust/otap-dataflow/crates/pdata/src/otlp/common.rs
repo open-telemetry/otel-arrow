@@ -89,17 +89,19 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        // Resource column is nullable - if it's missing, return all None values
+        // Resource column is optional - if it's missing, return all None values
         let resource_column = rb.column_by_name(consts::RESOURCE);
-        if resource_column.is_none() {
+
+        let struct_array = if let Some(resource_column) = resource_column {
+            resource_column
+        } else {
             return Ok(Self {
                 id: None,
                 dropped_attributes_count: None,
                 schema_url: None,
             });
-        }
+        };
 
-        let struct_array = resource_column.unwrap();
         let struct_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -150,18 +152,20 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        // Scope column is nullable - if it's missing, return all None values
+        // Scope column is optional - if it's missing, return all None values
         let scope_column = rb.column_by_name(consts::SCOPE);
-        if scope_column.is_none() {
+
+        let struct_array = if let Some(scope_column) = scope_column {
+            scope_column
+        } else {
             return Ok(Self {
                 name: None,
                 version: None,
                 dropped_attributes_count: None,
                 id: None,
             });
-        }
+        };
 
-        let struct_array = scope_column.unwrap();
         let scope_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -771,7 +775,9 @@ mod test {
     use crate::{
         arrays::MaybeDictArrayAccessor,
         otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
+        proto::OtlpProtoMessage,
         schema::consts,
+        testing::{fixtures::*, round_trip::*},
     };
 
     #[test]
@@ -912,5 +918,183 @@ mod test {
             .init_cursor_for_root_batch(&record_batch, &mut cursor)
             .unwrap();
         assert_eq!(rows_ptr_before, batch_sorter.rows.as_ptr());
+    }
+
+    //
+    // Logs Tests
+    //
+
+    #[test]
+    fn test_logs_with_full_resource_and_scope() {
+        test_logs_round_trip(logs_with_full_resource_and_scope());
+    }
+
+    #[test]
+    fn test_logs_with_no_resource() {
+        test_logs_round_trip(logs_with_no_resource());
+    }
+
+    #[test]
+    fn test_logs_with_no_scope() {
+        test_logs_round_trip(log_with_no_scope());
+    }
+
+    #[test]
+    fn test_logs_with_no_attributes() {
+        test_logs_round_trip(logs_with_no_attributes());
+    }
+
+    #[test]
+    fn test_logs_with_no_resource_no_scope() {
+        test_logs_round_trip(logs_with_no_resource_no_scope());
+    }
+
+    #[test]
+    fn test_logs_multiple_records_no_resource() {
+        test_logs_round_trip(logs_multiple_records_no_resource());
+    }
+
+    #[test]
+    fn test_logs_multiple_scopes_no_resource() {
+        test_logs_round_trip(logs_multiple_scopes_no_resource());
+    }
+
+    #[test]
+    fn test_logs_multiple_resources_mixed_content() {
+        test_logs_round_trip(logs_multiple_resources_mixed_content());
+    }
+
+    #[test]
+    fn test_logs_with_empty_log_records() {
+        test_logs_round_trip(logs_with_empty_log_records());
+    }
+
+    //
+    // Traces Tests
+    //
+
+    #[test]
+    fn test_traces_with_full_resource_and_scope() {
+        test_traces_round_trip(traces_with_full_resource_and_scope());
+    }
+
+    #[test]
+    fn test_traces_with_no_resource() {
+        test_traces_round_trip(traces_with_no_resource());
+    }
+
+    #[test]
+    fn test_traces_with_no_scope() {
+        test_traces_round_trip(traces_with_no_scope());
+    }
+
+    #[test]
+    fn test_traces_with_no_attributes() {
+        test_traces_round_trip(traces_with_no_attributes());
+    }
+
+    #[test]
+    fn test_traces_with_no_resource_no_scope() {
+        test_traces_round_trip(traces_with_no_resource_no_scope());
+    }
+
+    #[test]
+    fn test_traces_multiple_spans_no_resource() {
+        test_traces_round_trip(traces_multiple_spans_no_resource());
+    }
+
+    #[test]
+    fn test_traces_multiple_scopes_no_resource() {
+        test_traces_round_trip(traces_multiple_scopes_no_resource());
+    }
+
+    #[test]
+    fn test_traces_multiple_resources_mixed_content() {
+        test_traces_round_trip(traces_multiple_resources_mixed_content());
+    }
+
+    //
+    // Metrics Tests
+    //
+
+    #[test]
+    fn test_metrics_sum_with_full_resource_and_scope() {
+        test_metrics_round_trip(metrics_sum_with_full_resource_and_scope());
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_resource() {
+        test_metrics_round_trip(metrics_sum_with_no_resource());
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_scope() {
+        test_metrics_round_trip(metrics_sum_with_no_scope());
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_resource_no_scope() {
+        test_metrics_round_trip(metrics_sum_with_no_resource_no_scope());
+    }
+
+    #[test]
+    fn test_metrics_sum_with_no_data_points() {
+        test_metrics_round_trip(metrics_sum_with_no_data_points());
+    }
+
+    #[test]
+    fn test_metrics_multiple_sums_no_resource() {
+        test_metrics_round_trip(metrics_multiple_sums_no_resource());
+    }
+
+    //
+    // Empty encoding tests
+    //
+
+    /// OpenTelemetry data may contain "empty envelopes". This checks that
+    /// they encode to an empty OTAP encoding.
+    fn assert_empty_batch(msg: OtlpProtoMessage) {
+        let encoded = encode_otlp(&msg);
+        assert_eq!(encoded.batch_length(), 0, "Expected an empty batch");
+    }
+
+    #[test]
+    fn test_empty_logs() {
+        assert_empty_batch(empty_logs().into());
+    }
+
+    #[test]
+    fn test_logs_with_empty_scope_logs() {
+        assert_empty_batch(logs_with_empty_scope_logs().into());
+    }
+
+    #[test]
+    fn test_empty_traces() {
+        assert_empty_batch(empty_traces().into());
+    }
+
+    #[test]
+    fn test_traces_with_empty_scope_spans() {
+        assert_empty_batch(traces_with_empty_scope_spans().into());
+    }
+
+    #[test]
+    fn test_traces_with_empty_spans() {
+        assert_empty_batch(traces_with_empty_spans().into());
+    }
+
+    #[test]
+    fn test_empty_metrics() {
+        assert_empty_batch(empty_metrics().into());
+    }
+
+    #[test]
+    fn test_metrics_with_no_scope_metrics() {
+        assert_empty_batch(metrics_with_no_scope_metrics().into());
+    }
+
+    #[test]
+    fn test_metrics_with_no_metrics() {
+        assert_empty_batch(metrics_with_no_metrics().into());
     }
 }
