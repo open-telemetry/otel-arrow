@@ -66,8 +66,10 @@ impl Transformer {
                         }
 
                         // Transform log record based on mapping
+                        // TODO: a mechanism needed to handle logs that are dropped
                         if let Err(e) = self.transform_log_record(&mut entry, log_record) {
-                            log::warn!("Failed to transform log record: {e}");
+                            // TODO: log it appropriately (perhaps as part of monmon)
+                            println!("Failed to transform log record: {e}");
                             continue;
                         }
                     }
