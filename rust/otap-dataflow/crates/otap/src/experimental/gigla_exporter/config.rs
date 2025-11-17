@@ -45,10 +45,7 @@ pub struct AuthConfig {
 
     /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
     #[serde(default = "default_scope")]
-    pub scope: String,
-
-    /// Azure AD tenant ID (optional, currently not used but kept for future compatibility)
-    pub tenant_id: Option<String>,
+    pub scope: String
 }
 
 impl Default for AuthConfig {
@@ -56,8 +53,7 @@ impl Default for AuthConfig {
         Self {
             method: AuthMethod::default(),
             client_id: None,
-            scope: default_scope(),
-            tenant_id: None,
+            scope: default_scope()
         }
     }
 }
@@ -140,7 +136,6 @@ mod tests {
                 schema: SchemaConfig::default(),
             },
             auth: AuthConfig {
-                tenant_id: Some("mytenant".to_string()),
                 scope: "https://monitor.azure.com/.default".to_string(),
                 client_id: Some("myclientid".to_string()),
                 method: AuthMethod::ManagedIdentity,
