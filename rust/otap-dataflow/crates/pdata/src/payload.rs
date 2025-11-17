@@ -353,7 +353,7 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::testing::create_test_logs;
+    use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -384,7 +384,7 @@ mod test {
     #[test]
     fn test_conversion_logs() {
         let mut otlp_bytes = vec![];
-        let otlp_service_req = create_test_logs();
+        let otlp_service_req = logs_with_full_resource_and_scope();
         otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
         let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
