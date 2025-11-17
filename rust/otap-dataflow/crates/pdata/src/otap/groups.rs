@@ -1035,9 +1035,9 @@ fn reindex_record_batch(
     column_name: &'static str,
     mut next_starting_id: u32,
 ) -> Result<(RecordBatch, u32)> {
-    // If the column doesn't exist, return the batch unchanged
+    // If the column doesn't exist, return the batch unchanged, same offset.
     if rb.column_by_name(column_name).is_none() {
-        return Ok((rb, 0));
+        return Ok((rb, next_starting_id));
     }
 
     let id = IDColumn::extract(&rb, column_name)?;
