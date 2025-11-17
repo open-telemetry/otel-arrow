@@ -42,8 +42,8 @@ use crate::views::metrics::{
 };
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
-    FieldRanges, PackedFixed64Iter, PackedVarintIter, ProtoBytesParser,
-    RepeatedFieldProtoBytesParser, decode_sint32, from_option_nonzero_range_to_primitive,
+    FieldRanges, ProtoBytesParser, RepeatedFieldEncodings, RepeatedFieldProtoBytesParser,
+    RepeatedFixed64Iter, RepeatedVarintIter, decode_sint32, from_option_nonzero_range_to_primitive,
     read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
@@ -605,12 +605,15 @@ pub struct HistogramDataPointFieldRanges {
     count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     sum: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     flags: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    explicit_bounds: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     min: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     max: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_attributes: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     first_exemplar: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // these are repeated primitive fields that may use either packed or expanded encoding
+    // so we store an extra flag which determines if it's packed encoding.
+    first_explicit_bounds: Cell<Option<((NonZeroUsize, NonZeroUsize), bool)>>,
+    first_bucket_counts: Cell<Option<((NonZeroUsize, NonZeroUsize), bool)>>,
 }
 
 impl FieldRanges for HistogramDataPointFieldRanges {
@@ -628,8 +631,10 @@ impl FieldRanges for HistogramDataPointFieldRanges {
             HISTOGRAM_DP_MIN => self.min.get(),
             HISTOGRAM_DP_MAX => self.max.get(),
             HISTOGRAM_DP_ATTRIBUTES => self.first_attributes.get(),
-            HISTOGRAM_DP_BUCKET_COUNTS => self.bucket_counts.get(),
-            HISTOGRAM_DP_EXPLICIT_BOUNDS => self.explicit_bounds.get(),
+            HISTOGRAM_DP_BUCKET_COUNTS => self.first_bucket_counts.get().map(|(range, _)| range),
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
+                self.first_explicit_bounds.get().map(|(range, _)| range)
+            }
             HISTOGRAM_DP_EXEMPLARS => self.first_exemplar.get(),
             _ => return None,
         };
@@ -670,13 +675,19 @@ impl FieldRanges for HistogramDataPointFieldRanges {
                 }
             }
             HISTOGRAM_DP_EXPLICIT_BOUNDS => {
-                if wire_type == wire_types::LEN {
-                    self.explicit_bounds.set(Some(range));
+                if (wire_type == wire_types::LEN || wire_type == wire_types::FIXED64)
+                    && self.first_explicit_bounds.get().is_none()
+                {
+                    let packed = wire_type == wire_types::LEN;
+                    self.first_explicit_bounds.set(Some((range, packed)));
                 }
             }
             HISTOGRAM_DP_BUCKET_COUNTS => {
-                if wire_type == wire_types::LEN {
-                    self.bucket_counts.set(Some(range));
+                if (wire_type == wire_types::LEN || wire_type == wire_types::FIXED64)
+                    && self.first_bucket_counts.get().is_none()
+                {
+                    let packed = wire_type == wire_types::LEN;
+                    self.first_bucket_counts.set(Some((range, packed)));
                 }
             }
             HISTOGRAM_DP_MIN => {
@@ -702,6 +713,20 @@ impl FieldRanges for HistogramDataPointFieldRanges {
 
             _ => { /* ignore */ }
         }
+    }
+}
+
+impl RepeatedFieldEncodings for HistogramDataPointFieldRanges {
+    fn is_packed(&self, field_num: u64) -> bool {
+        match field_num {
+            HISTOGRAM_DP_BUCKET_COUNTS => self.first_bucket_counts.get().map(|(_, packed)| packed),
+
+            HISTOGRAM_DP_EXPLICIT_BOUNDS => {
+                self.first_explicit_bounds.get().map(|(_, packed)| packed)
+            }
+            _ => None,
+        }
+        .unwrap_or_default()
     }
 }
 
@@ -849,7 +874,10 @@ pub struct RawBuckets<'a> {
 #[derive(Default)]
 pub struct BucketsFieldRanges {
     offset: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
-    bucket_counts: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+
+    // this is repeated primitive fields that may use either packed or expanded encoding
+    // so we store an extra flag which determines if it's packed encoding.
+    first_bucket_count: Cell<Option<((NonZeroUsize, NonZeroUsize), bool)>>,
 }
 
 impl FieldRanges for BucketsFieldRanges {
@@ -860,7 +888,9 @@ impl FieldRanges for BucketsFieldRanges {
     fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
         let range = match field_num {
             EXP_HISTOGRAM_BUCKET_OFFSET => self.offset.get(),
-            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => self.bucket_counts.get(),
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
+                self.first_bucket_count.get().map(|(range, _)| range)
+            }
             _ => return None,
         };
 
@@ -880,12 +910,27 @@ impl FieldRanges for BucketsFieldRanges {
                 }
             }
             EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
-                if wire_type == wire_types::LEN {
-                    self.bucket_counts.set(Some(range))
+                if (wire_type == wire_types::LEN || wire_type == wire_types::VARINT)
+                    && self.first_bucket_count.get().is_none()
+                {
+                    let packed = wire_type == wire_types::LEN;
+                    self.first_bucket_count.set(Some((range, packed)))
                 }
             }
             _ => { /* ignore */ }
         }
+    }
+}
+
+impl RepeatedFieldEncodings for BucketsFieldRanges {
+    fn is_packed(&self, field_num: u64) -> bool {
+        match field_num {
+            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS => {
+                self.first_bucket_count.get().map(|(_, packed)| packed)
+            }
+            _ => None,
+        }
+        .unwrap_or_default()
     }
 }
 
@@ -1752,12 +1797,12 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
         Self: 'att;
 
     type BucketCountIter<'bc>
-        = PackedFixed64Iter<'bc, u64>
+        = RepeatedFixed64Iter<'bc, HistogramDataPointFieldRanges, u64>
     where
         Self: 'bc;
 
     type ExplicitBoundsIter<'eb>
-        = PackedFixed64Iter<'eb, f64>
+        = RepeatedFixed64Iter<'eb, HistogramDataPointFieldRanges, f64>
     where
         Self: 'eb;
 
@@ -1779,11 +1824,7 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     }
 
     fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
-        let buf = self
-            .byte_parser
-            .advance_to_find_field(HISTOGRAM_DP_BUCKET_COUNTS)
-            .unwrap_or_default();
-        PackedFixed64Iter::new(buf)
+        RepeatedFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_BUCKET_COUNTS)
     }
 
     fn count(&self) -> u64 {
@@ -1805,12 +1846,7 @@ impl HistogramDataPointView for RawHistogramDataPoint<'_> {
     }
 
     fn explicit_bounds(&self) -> Self::ExplicitBoundsIter<'_> {
-        let buf = self
-            .byte_parser
-            .advance_to_find_field(HISTOGRAM_DP_EXPLICIT_BOUNDS)
-            .unwrap_or_default();
-
-        PackedFixed64Iter::new(buf)
+        RepeatedFixed64Iter::from_byte_parser(&self.byte_parser, HISTOGRAM_DP_EXPLICIT_BOUNDS)
     }
 
     fn flags(&self) -> DataPointFlags {
@@ -2004,16 +2040,12 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
 
 impl BucketsView for RawBuckets<'_> {
     type BucketCountIter<'bc>
-        = PackedVarintIter<'bc>
+        = RepeatedVarintIter<'bc, BucketsFieldRanges>
     where
         Self: 'bc;
 
     fn bucket_counts(&self) -> Self::BucketCountIter<'_> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS)
-            .unwrap_or_default();
-        PackedVarintIter::new(slice)
+        RepeatedVarintIter::from_byte_parser(&self.byte_parser, EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS)
     }
 
     fn offset(&self) -> i32 {
@@ -2189,8 +2221,11 @@ impl ExemplarView for RawExemplar<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::proto::opentelemetry::metrics::v1::{
-        Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
+    use crate::{
+        otlp::ProtoBuffer,
+        proto::opentelemetry::metrics::v1::{
+            Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
+        },
     };
     use prost::Message;
 
@@ -2223,5 +2258,129 @@ mod test {
         };
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
+    }
+
+    #[test]
+    fn test_packed_and_expanded_decoding_hist_dp() {
+        // In histogram data-points there are two fields that are repeated primitives which should
+        // be "packed" encoded: bucket_counts and explicit_bounds. However, proto docs say we need
+        // to support maybe reading these as packed & expanded, so we test for this
+
+        let mut buffer = ProtoBuffer::new();
+
+        // first write packed encoded
+        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(3 * 8); // 8 bytes per val (fixed64)
+        buffer.extend_from_slice(&1u64.to_le_bytes());
+        buffer.extend_from_slice(&2u64.to_le_bytes());
+        buffer.extend_from_slice(&3u64.to_le_bytes());
+
+        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        buffer.encode_varint(2 * 8); // 8 bytes per val (double)
+        buffer.extend_from_slice(&4.0f64.to_le_bytes());
+        buffer.extend_from_slice(&5.0f64.to_le_bytes());
+
+        // check results
+        let hist_dp_view = RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let result_bucket_counts = hist_dp_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(result_bucket_counts, vec![1, 2, 3]);
+        let result_explicit_bounds = hist_dp_view.explicit_bounds().collect::<Vec<_>>();
+        assert_eq!(result_explicit_bounds, vec![4.0, 5.0]);
+
+        // now write with expanded encoding
+        buffer.clear();
+        for i in [6u64, 7, 8] {
+            buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::FIXED64);
+            buffer.extend_from_slice(&i.to_le_bytes());
+        }
+        for i in [9f64, 0.0] {
+            buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::FIXED64);
+            buffer.extend_from_slice(&i.to_le_bytes());
+        }
+
+        // check results
+        let hist_dp_view = RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let result_bucket_counts = hist_dp_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(result_bucket_counts, vec![6, 7, 8]);
+        let result_explicit_bounds = hist_dp_view.explicit_bounds().collect::<Vec<_>>();
+        assert_eq!(result_explicit_bounds, vec![9.0, 0.0]);
+
+        // there's an extra edge-case where when using packed encoding, multiple key-value
+        // pairs are allowed. test to ensure we handle this:
+        buffer.clear();
+        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(2 * 8);
+        buffer.extend_from_slice(&1u64.to_le_bytes());
+        buffer.extend_from_slice(&2u64.to_le_bytes());
+        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(8);
+        buffer.extend_from_slice(&3u64.to_le_bytes());
+
+        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        buffer.encode_varint(8);
+        buffer.extend_from_slice(&4.0f64.to_le_bytes());
+        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        buffer.encode_varint(8);
+        buffer.extend_from_slice(&5.0f64.to_le_bytes());
+        let hist_dp_view = RawHistogramDataPoint {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let result_bucket_counts = hist_dp_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(result_bucket_counts, vec![1, 2, 3]);
+        let result_explicit_bounds = hist_dp_view.explicit_bounds().collect::<Vec<_>>();
+        assert_eq!(result_explicit_bounds, vec![4.0, 5.0]);
+    }
+
+    #[test]
+    fn test_packed_and_expanded_decoding_exp_hist_dp_bucket() {
+        // same as the above test case, but for the bucket_counts field on
+        // ExponentialHistogramDataPoint Bucket's bucket_counts field which
+        // contains a repeated uint64
+
+        let mut buffer = ProtoBuffer::new();
+
+        // test packed encoding
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(3); // 3 x 1byte varints
+        buffer.extend_from_slice(&[0x01, 0x02, 0x03]);
+
+        let bucket_view = RawBuckets {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let bucket_counts = bucket_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(bucket_counts, vec![1, 2, 3]);
+
+        // test expanded encoding
+        buffer.clear();
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        buffer.encode_varint(1);
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        buffer.encode_varint(2);
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        buffer.encode_varint(3);
+        let bucket_view = RawBuckets {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let bucket_counts = bucket_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(bucket_counts, vec![1, 2, 3]);
+
+        // there's an extra edge-case where when using packed encoding, multiple key-value
+        // pairs are allowed. test to ensure we handle this:
+        buffer.clear();
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(2);
+        buffer.extend_from_slice(&[0x01, 0x02]);
+        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        buffer.encode_varint(1);
+        buffer.extend_from_slice(&[0x03]);
+        let bucket_view = RawBuckets {
+            byte_parser: ProtoBytesParser::new(buffer.as_ref()),
+        };
+        let bucket_counts = bucket_view.bucket_counts().collect::<Vec<_>>();
+        assert_eq!(bucket_counts, vec![1, 2, 3]);
     }
 }

@@ -195,13 +195,22 @@ pub(crate) fn proto_encode_histogram_data_point(
             let value_offsets = bucket_counts.list.value_offsets();
             let start = value_offsets[index] as usize;
             let end = value_offsets[index + 1] as usize;
-            for i in start..end {
-                if bucket_counts.value.is_valid(i) {
-                    let val = bucket_counts.value.value(i);
-                    result_buf.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::FIXED64);
-                    result_buf.extend_from_slice(&val.to_le_bytes());
-                }
-            }
+            let values = bucket_counts.value.slice(start, end - start);
+
+            // encode using packed encoding for repeated primitive
+            // https://protobuf.dev/programming-guides/encoding/#repeated
+
+            // append tag & len
+            result_buf.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+            let num_values = values.len() - values.null_count();
+            result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
+
+            // write values
+            values
+                .iter()
+                .flatten()
+                .map(u64::to_le_bytes)
+                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
         }
     }
 
@@ -210,13 +219,22 @@ pub(crate) fn proto_encode_histogram_data_point(
             let value_offsets = explicit_bounds.list.value_offsets();
             let start = value_offsets[index] as usize;
             let end = value_offsets[index + 1] as usize;
-            for i in start..end {
-                if explicit_bounds.value.is_valid(i) {
-                    let val = explicit_bounds.value.value(i);
-                    result_buf.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::FIXED64);
-                    result_buf.extend_from_slice(&val.to_le_bytes());
-                }
-            }
+            let values = explicit_bounds.value.slice(start, end - start);
+
+            // encode using packed encoding for repeated primitive
+            // https://protobuf.dev/programming-guides/encoding/#repeated
+
+            // append tag & len
+            result_buf.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+            let num_values = values.len() - values.null_count();
+            result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
+
+            // write values
+            values
+                .iter()
+                .flatten()
+                .map(f64::to_le_bytes)
+                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
         }
     }
 

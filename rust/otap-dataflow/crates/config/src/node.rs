@@ -23,7 +23,6 @@ use std::collections::{HashMap, HashSet};
 /// - The hyper-edge configuration determines which downstream nodes are connected,
 ///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
     /// The kind of this node, which determines its role in the pipeline.
     /// 4 kinds are currently specified:
@@ -60,13 +59,15 @@ pub struct NodeUserConfig {
     /// Note: A pre-validation step using a JSON schema or protobuf could be added to the
     /// management plane to ensure that the configuration is valid.
     #[serde(default)]
+    // The serde_json::Value serializes to an invalid schema as far as the kubernetes api is concerned.
+    // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
+    #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
 }
 
 /// Describes a hyper-edge from a node output port to one or more destination nodes,
 /// and defines the dispatching strategy for this port.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct HyperEdgeConfig {
     /// List of downstream node IDs this port connects to.
     ///
@@ -190,19 +191,6 @@ impl NodeUserConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn node_user_config_unknown_field_is_rejected() {
-        // Includes an extra unknown field "unknown" that should cause an error
-        let json = r#"{
-            "kind": "receiver",
-            "plugin_urn": "urn:example:receiver",
-            "out_ports": {},
-            "config": {},
-            "unknown": 1
-        }"#;
-        assert!(serde_json::from_str::<NodeUserConfig>(json).is_err());
-    }
 
     #[test]
     fn node_user_config_minimal_valid() {
