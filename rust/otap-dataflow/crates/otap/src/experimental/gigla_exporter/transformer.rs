@@ -9,6 +9,7 @@ use super::config::{Config, SchemaConfig};
 
 const ATTRIBUTES_FIELD: &str = "attributes";
 
+// TODO: Performance review and improvements
 /// Converts OTLP logs to Azure Log Analytics format
 pub struct Transformer {
     schema: SchemaConfig,
