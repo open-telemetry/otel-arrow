@@ -238,6 +238,19 @@ fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&
     }
 }
 
+// When we're done, the data should be an empty husk; if there's anything still left there,
+// that means we screwed up!
+fn assert_empty<const N: usize>(data: &[Option<RecordBatch>; N]) {
+    assert_eq!(data, &[const { None }; N]);
+}
+
+// Calls assert_empty for all data in a batch.
+fn assert_all_empty<const N: usize>(data: &[[Option<RecordBatch>; N]]) {
+    for rec in data.iter() {
+        assert_empty(rec);
+    }
+}
+
 // Code for splitting batches
 // *************************************************************************************************
 
@@ -341,9 +354,7 @@ fn generic_split<const N: usize>(
             panic!("expected to have primary for every group");
         }
 
-        // When we're done, the input should be an empty husk; if there's anything still left there,
-        // that means we screwed up!
-        assert_eq!(batches, &[const { None }; N]);
+        assert_empty(batches);
     }
 
     Ok(result)
@@ -899,12 +910,9 @@ fn generic_concatenate<const N: usize>(
             reindex(&mut current, allowed_payloads)?;
             result.push(generic_schemaless_concatenate(&mut current)?);
             current_batch_length = 0;
-            for batches in current.iter() {
-                assert_eq!(batches, &[const { None }; N]);
-            }
+            assert_all_empty(&current);
             current.clear();
         }
-        // Always add the current batch to the accumulator
         current_batch_length += batch_length(&batches);
         current.push(batches);
     }
@@ -912,9 +920,7 @@ fn generic_concatenate<const N: usize>(
     if !current.is_empty() {
         reindex(&mut current, allowed_payloads)?;
         result.push(generic_schemaless_concatenate(&mut current)?);
-        for batches in current.iter() {
-            assert_eq!(batches, &[const { None }; N]);
-        }
+        assert_all_empty(&current);
     }
     Ok(result)
 }
@@ -954,9 +960,7 @@ fn generic_schemaless_concatenate<const N: usize>(
         }
     }
 
-    for batches in batches {
-        assert_eq!(batches, &[const { None }; N]);
-    }
+    assert_all_empty(&batches);
     Ok(result)
 }
 
