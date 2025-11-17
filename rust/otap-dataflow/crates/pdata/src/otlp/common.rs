@@ -89,7 +89,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        // Resource column is nullable - if it's missing, return all None values
+        // Resource column is optional - if it's missing, return all None values
         let resource_column = rb.column_by_name(consts::RESOURCE);
 
         let struct_array = if let Some(resource_column) = resource_column {
